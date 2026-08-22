@@ -3,6 +3,9 @@
 Local wallpaper curation: filesystem scan → pairwise voting → TrueSkill ranking → review/reject-to-folder.
 Rust/Tauri backend, React/shadcn frontend.
 
+use bun instead of npm and bunx instead of npx.
+Don't prematurely close an issue. Make sure it makes it on main through a PR or a direct commit if told to.
+
 ## Domain
 
 Read `CONTEXT.md` before touching domain logic — it defines Wallpaper, Status
