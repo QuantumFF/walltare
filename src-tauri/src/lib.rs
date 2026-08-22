@@ -1,5 +1,6 @@
 mod db;
 mod error;
+pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod scanner;
 
 use std::path::PathBuf;
