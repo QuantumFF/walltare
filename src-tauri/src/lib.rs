@@ -48,6 +48,15 @@ fn start_scan(path: PathBuf, app: AppHandle) -> Result<(), error::AppError> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_review(limit: i64, state: tauri::State<Db>) -> Result<Vec<db::Wallpaper>, error::AppError> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| error::AppError::Db("database lock poisoned".into()))?;
+    db::get_review(&conn, limit).map_err(Into::into)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -60,7 +69,7 @@ pub fn run() {
             app.manage(Db(Mutex::new(conn)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_scan])
+        .invoke_handler(tauri::generate_handler![start_scan, get_review])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

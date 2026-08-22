@@ -45,18 +45,58 @@ pub fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(DDL)
 }
 
-pub fn insert_new_wallpapers(conn: &Connection, paths: &[PathBuf]) -> Result<usize, rusqlite::Error> {
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)",
-    )?;
+pub fn insert_new_wallpapers(
+    conn: &Connection,
+    paths: &[PathBuf],
+) -> Result<usize, rusqlite::Error> {
+    let mut stmt =
+        conn.prepare_cached("INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)")?;
     let mut added = 0;
     for path in paths {
         added += stmt.execute(rusqlite::params![
-            path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default(),
             path.to_str().expect("walk only yields UTF-8 paths"),
         ])?;
     }
     Ok(added)
+}
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Wallpaper {
+    pub id: i64,
+    pub filename: String,
+    pub path: String,
+    pub status: String,
+    pub rating_mu: f64,
+    pub rating_sigma: f64,
+    pub comparisons_count: i64,
+}
+
+pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusqlite::Error> {
+    if limit <= 0 {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, filename, path, status, rating_mu, rating_sigma, comparisons_count
+         FROM wallpapers
+         WHERE status = 'active'
+         ORDER BY rating_mu ASC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![limit], |row| {
+        Ok(Wallpaper {
+            id: row.get(0)?,
+            filename: row.get(1)?,
+            path: row.get(2)?,
+            status: row.get(3)?,
+            rating_mu: row.get(4)?,
+            rating_sigma: row.get(5)?,
+            comparisons_count: row.get(6)?,
+        })
+    })?;
+    rows.collect()
 }
 
 #[cfg(test)]
@@ -73,5 +113,62 @@ mod tests {
 
         let mixed = vec![PathBuf::from("/w/b.png"), PathBuf::from("/w/c.webp")];
         assert_eq!(insert_new_wallpapers(&conn, &mixed).unwrap(), 1);
+    }
+
+    fn seed_wallpaper(conn: &Connection, path: &str, status: &str, mu: f64) -> i64 {
+        conn.execute(
+            "INSERT INTO wallpapers (filename, path, status, rating_mu) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![path.rsplit('/').next().unwrap(), path, status, mu],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn get_review_returns_active_ordered_by_mu_ascending() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let hi = seed_wallpaper(&conn, "/w/hi.jpg", "active", 30.0);
+        let lo = seed_wallpaper(&conn, "/w/lo.jpg", "active", 10.0);
+        let mid = seed_wallpaper(&conn, "/w/mid.png", "active", 20.0);
+        seed_wallpaper(&conn, "/w/kept.jpg", "kept", 5.0);
+        seed_wallpaper(&conn, "/w/rej.jpg", "rejected", 1.0);
+
+        let review = get_review(&conn, 50).unwrap();
+        let ids: Vec<i64> = review.iter().map(|w| w.id).collect();
+        assert_eq!(ids, vec![lo, mid, hi]);
+
+        assert_eq!(review[0].status, "active");
+        assert_eq!(review[0].rating_mu, 10.0);
+    }
+
+    #[test]
+    fn get_review_respects_limit() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        for (i, mu) in [30.0, 10.0, 20.0].iter().enumerate() {
+            seed_wallpaper(&conn, &format!("/w/{i}.jpg"), "active", *mu);
+        }
+
+        assert_eq!(get_review(&conn, 2).unwrap().len(), 2);
+        assert_eq!(get_review(&conn, 10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn get_review_limit_at_most_one_returns_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        assert_eq!(get_review(&conn, 0).unwrap(), Vec::new());
+        assert_eq!(get_review(&conn, -5).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn get_review_empty_library_returns_empty_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
     }
 }

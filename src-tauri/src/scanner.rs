@@ -4,11 +4,10 @@ use std::path::{Path, PathBuf};
 const SUPPORTED_EXTENSIONS: [&str; 4] = ["jpg", "jpeg", "png", "webp"];
 
 pub fn is_supported(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|ext| {
-            let ext = ext.to_string_lossy().to_lowercase();
-            SUPPORTED_EXTENSIONS.contains(&ext.as_str())
-        })
+    path.extension().is_some_and(|ext| {
+        let ext = ext.to_string_lossy().to_lowercase();
+        SUPPORTED_EXTENSIONS.contains(&ext.as_str())
+    })
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
@@ -25,7 +24,9 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
         }
         // metadata() follows symlinks, so symlinked image files are listed
         // like os.walk does; symlinked dirs are never recursed into.
-        let Ok(md) = std::fs::metadata(&path) else { continue };
+        let Ok(md) = std::fs::metadata(&path) else {
+            continue;
+        };
         if md.is_file()
             && is_supported(&path)
             && path.to_str().is_some()
