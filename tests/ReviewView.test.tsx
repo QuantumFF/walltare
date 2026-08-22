@@ -1,10 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import App from "@/App";
+import { REVIEW_LIMIT } from "@/components/ReviewView";
 import type { Wallpaper } from "@/lib/client";
 import { emitEvent, mockCommand, resetIpcMocks } from "./ipc-mocks";
-
-const REVIEW_LIMIT = 20;
 
 function wallpaper(
   id: number,

@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-const REVIEW_LIMIT = 20;
+export const REVIEW_LIMIT = 50;
 const DEFAULT_MOVE_PATH = "./rejected";
 const LOAD_FAILED_ERROR = "Failed to load the review list.";
 const KEEP_FAILED_ERROR = "Failed to keep wallpaper. Please try again.";
