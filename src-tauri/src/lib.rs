@@ -85,6 +85,37 @@ fn start_scan(path: PathBuf, app: AppHandle) -> Result<(), error::AppError> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_review(limit: i64, state: tauri::State<Db>) -> Result<Vec<db::Wallpaper>, error::AppError> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| error::AppError::Db("database lock poisoned".into()))?;
+    db::get_review(&conn, limit).map_err(Into::into)
+}
+
+#[tauri::command]
+fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppError> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| error::AppError::Db("database lock poisoned".into()))?;
+    db::keep_wallpaper(&conn, id)
+}
+
+#[tauri::command]
+fn move_wallpaper(
+    id: i64,
+    destination_folder: String,
+    state: tauri::State<Db>,
+) -> Result<(), error::AppError> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| error::AppError::Db("database lock poisoned".into()))?;
+    db::move_wallpaper(&conn, id, &destination_folder)
+}
+
 fn resolve_image(app: &AppHandle, uri: &Uri) -> Result<Vec<u8>, error::AppError> {
     let segments: Vec<&str> = uri.path().trim_start_matches('/').split('/').collect();
     let ["image", id] = segments.as_slice() else {
@@ -158,7 +189,13 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            start_scan, get_pair, vote, get_stats
+            start_scan,
+            get_pair,
+            vote,
+            get_stats,
+            get_review,
+            keep_wallpaper,
+            move_wallpaper
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

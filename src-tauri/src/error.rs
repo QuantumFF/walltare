@@ -3,9 +3,9 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum AppError {
+    NotFound(String),
     InvalidPath(String),
     BadRequest(String),
-    NotFound(String),
     NotEnoughWallpapers(String),
     UnknownWallpaper(String),
     Io(String),
@@ -28,9 +28,9 @@ impl From<std::io::Error> for AppError {
 impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (kind, message) = match self {
+            AppError::NotFound(m) => ("not_found", m),
             AppError::InvalidPath(m) => ("invalid_path", m),
             AppError::BadRequest(m) => ("bad_request", m),
-            AppError::NotFound(m) => ("not_found", m),
             AppError::NotEnoughWallpapers(m) => ("not_enough_wallpapers", m),
             AppError::UnknownWallpaper(m) => ("unknown_wallpaper", m),
             AppError::Io(m) => ("io", m),
