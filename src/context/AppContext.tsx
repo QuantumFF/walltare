@@ -1,4 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState } from "react";
 
 export type View = "scan" | "rank" | "review";
