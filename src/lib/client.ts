@@ -6,12 +6,12 @@ import { listen } from "@tauri-apps/api/event";
 
 export type ThumbnailSize = "small" | "medium" | "full";
 
-/** Mirrors voting::Wallpaper */
+/** Mirrors voting::Wallpaper; status is the lowercase DB value (db.rs CHECK constraint) */
 export interface Wallpaper {
   id: number;
   filename: string;
   path: string;
-  status: string;
+  status: "active" | "kept" | "rejected";
   rating_mu: number;
   rating_sigma: number;
   comparisons_count: number;
@@ -88,12 +88,12 @@ export interface Client {
   onScanComplete(handler: (payload: ScanComplete) => void): Promise<() => void>;
 }
 
-async function voidCommand(name: string, args?: Record<string, unknown>) {
+async function invokeVoid(name: string, args?: Record<string, unknown>) {
   await invoke<null>(name, args);
 }
 
 export const client: Client = {
-  startScan: (path) => voidCommand("start_scan", { path }),
+  startScan: (path) => invokeVoid("start_scan", { path }),
 
   getPair: () => invoke<[Wallpaper, Wallpaper]>("get_pair"),
 
@@ -104,11 +104,14 @@ export const client: Client = {
 
   getReview: (limit = 50) => invoke<Wallpaper[]>("get_review", { limit }),
 
-  keepWallpaper: (id) => voidCommand("keep_wallpaper", { id }),
+  keepWallpaper: (id) => invokeVoid("keep_wallpaper", { id }),
 
   moveWallpaper: (id, destinationFolder) =>
-    voidCommand("move_wallpaper", { id, destinationFolder }),
+    invokeVoid("move_wallpaper", { id, destinationFolder }),
 
+  // `listen` returns Promise<UnlistenFn>, not Promise<() => void>; UnlistenFn
+  // is a branded type that isn't nominally assignable, so cast to the plain
+  // function type the Client interface promises.
   onScanProgress: (handler) =>
     listen<ScanProgress>("scan-progress", (event) =>
       handler(event.payload),
