@@ -4,6 +4,8 @@ use serde::Serialize;
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum AppError {
     InvalidPath(String),
+    NotEnoughWallpapers(String),
+    UnknownWallpaper(String),
     Io(String),
     Db(String),
 }
@@ -24,6 +26,8 @@ impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (kind, message) = match self {
             AppError::InvalidPath(m) => ("invalid_path", m),
+            AppError::NotEnoughWallpapers(m) => ("not_enough_wallpapers", m),
+            AppError::UnknownWallpaper(m) => ("unknown_wallpaper", m),
             AppError::Io(m) => ("io", m),
             AppError::Db(m) => ("db", m),
         };
