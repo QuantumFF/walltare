@@ -90,7 +90,7 @@ test("invalid path shows the existing error copy and stays usable", async () => 
 
   expect(
     await screen.findByText(
-      /Failed to scan directory\. Please check the path\./i,
+      /That directory doesn't exist or can't be read\./i,
     ),
   ).toBeDefined();
   expect(screen.getByPlaceholderText("/home/user/wallpapers")).toBeDefined();

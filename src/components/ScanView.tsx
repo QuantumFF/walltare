@@ -1,9 +1,10 @@
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
-import { client } from "@/lib/client";
+import { client, isAppError } from "@/lib/client";
 import { FolderOpen, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+const INVALID_PATH_ERROR = "That directory doesn't exist or can't be read.";
 const NO_IMAGES_ERROR = "No supported images found in that directory.";
 const SCAN_FAILED_ERROR = "Failed to scan directory. Please check the path.";
 
@@ -62,7 +63,11 @@ export function ScanView() {
     } catch (err) {
       setScanning(false);
       setProgress(null);
-      setError(SCAN_FAILED_ERROR);
+      setError(
+        isAppError(err) && err.kind === "invalid_path"
+          ? INVALID_PATH_ERROR
+          : SCAN_FAILED_ERROR,
+      );
       console.error(err);
     }
   };
