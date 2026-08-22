@@ -167,17 +167,23 @@ export function RankView() {
 
   if (loading) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
+      <>
+        <h1 className="sr-only">Rank</h1>
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      </>
     );
   }
 
   if (!currentPair) {
     return (
-      <div className="flex flex-1 items-center justify-center text-muted-foreground">
-        Error loading wallpapers.
-      </div>
+      <>
+        <h1 className="sr-only">Rank</h1>
+        <div className="flex flex-1 items-center justify-center text-muted-foreground">
+          Error loading wallpapers.
+        </div>
+      </>
     );
   }
 
@@ -186,6 +192,7 @@ export function RankView() {
   return (
     <div className="flex h-full w-full max-w-[1920px] min-h-0 mx-auto flex-1 flex-col p-4">
       <h1 className="sr-only">Rank</h1>
+
 
       <div className="flex w-full flex-1 flex-col justify-center gap-4">
         {/* Progress headline */}
