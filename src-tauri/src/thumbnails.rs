@@ -198,8 +198,7 @@ fn flatten_to_rgb(img: DynamicImage) -> RgbImage {
             let mut out = RgbImage::new(rgba.width(), rgba.height());
             for (x, y, p) in rgba.enumerate_pixels() {
                 let [r, g, b, a] = p.0;
-                let blend =
-                    |c: u8| ((c as u32 * a as u32 + 255 * (255 - a as u32)) / 255) as u8;
+                let blend = |c: u8| ((c as u32 * a as u32 + 255 * (255 - a as u32)) / 255) as u8;
                 out.put_pixel(x, y, Rgb([blend(r), blend(g), blend(b)]));
             }
             out
@@ -253,7 +252,8 @@ mod tests {
 
     fn seed_wallpaper(conn: &Connection, dir: &Path, name: &str, img: &DynamicImage) -> i64 {
         let path = dir.join(name);
-        img.save_with_format(&path, image::ImageFormat::Png).unwrap();
+        img.save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
         conn.execute(
             "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
             rusqlite::params![name, path.to_str().unwrap()],
@@ -274,7 +274,12 @@ mod tests {
     #[test]
     fn first_request_generates_cache_file_and_upserts_row() {
         let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "a.png", &solid(800, 600, [10, 20, 30, 255]));
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "a.png",
+            &solid(800, 600, [10, 20, 30, 255]),
+        );
         let expected_mtime = source_mtime(&tmp.path().join("a.png")).unwrap();
 
         let thumb = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
@@ -349,11 +354,7 @@ mod tests {
         let thumb = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
 
         let decoded = image::load_from_memory(&thumb.bytes).unwrap().to_rgb8();
-        let near = |a: [u8; 3], b: [u8; 3]| {
-            a.iter()
-                .zip(b)
-                .all(|(x, y)| x.abs_diff(y) <= 4)
-        };
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 4);
         assert!(near(decoded.get_pixel(25, 50).0, [255, 255, 255]));
         assert!(near(decoded.get_pixel(75, 50).0, [255, 0, 0]));
     }
@@ -372,7 +373,12 @@ mod tests {
     #[test]
     fn missing_source_file_resolves_to_not_found() {
         let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "gone.png", &solid(10, 10, [0, 0, 0, 255]));
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "gone.png",
+            &solid(10, 10, [0, 0, 0, 255]),
+        );
         std::fs::remove_file(tmp.path().join("gone.png")).unwrap();
 
         let err = resolve(&conn, tmp.path(), id, Size::Small).unwrap_err();
@@ -435,7 +441,12 @@ mod tests {
     #[test]
     fn purge_removes_rows_and_cache_files_across_sizes() {
         let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "p.png", &solid(2400, 1200, [3, 3, 3, 255]));
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "p.png",
+            &solid(2400, 1200, [3, 3, 3, 255]),
+        );
         resolve(&conn, tmp.path(), id, Size::Small).unwrap();
         resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
 
