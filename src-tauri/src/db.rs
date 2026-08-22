@@ -63,6 +63,60 @@ pub fn insert_new_wallpapers(
     Ok(added)
 }
 
+pub fn move_wallpaper(
+    conn: &Connection,
+    wallpaper_id: i64,
+    destination_folder: &str,
+) -> Result<(), crate::error::AppError> {
+    let (path, filename): (String, String) = conn
+        .query_row(
+            "SELECT path, filename FROM wallpapers WHERE id = ?1",
+            rusqlite::params![wallpaper_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::error::AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
+            }
+            other => other.into(),
+        })?;
+
+    let source = PathBuf::from(&path);
+    let dest_dir = if Path::new(destination_folder).is_absolute() {
+        PathBuf::from(destination_folder)
+    } else {
+        source
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .join(destination_folder)
+    };
+    let dest_path = dest_dir.join(&filename);
+
+    std::fs::create_dir_all(&dest_dir)?;
+    match std::fs::rename(&source, &dest_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            std::fs::copy(&source, &dest_path)?;
+            std::fs::remove_file(&source)?;
+        }
+        Err(e) => return Err(e.into()),
+    }
+
+    conn.execute(
+        "UPDATE wallpapers SET status = 'rejected', path = ?1, filename = ?2 WHERE id = ?3",
+        rusqlite::params![
+            dest_path
+                .to_str()
+                .ok_or_else(|| crate::error::AppError::InvalidPath(
+                    dest_path.display().to_string()
+                ))?,
+            &filename,
+            wallpaper_id
+        ],
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Wallpaper {
     pub id: i64,
@@ -194,6 +248,30 @@ mod tests {
         .unwrap()
     }
 
+    fn seed_real_wallpaper(conn: &Connection, dir: &Path, name: &str) -> i64 {
+        let path = dir.join(name);
+        std::fs::File::create(&path).unwrap();
+        insert_new_wallpapers(conn, &[path]).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn add_comparison(conn: &Connection, winner_id: i64, loser_id: i64) {
+        conn.execute(
+            "INSERT INTO comparisons (winner_id, loser_id, voted_at) VALUES (?1, ?2, unixepoch())",
+            rusqlite::params![winner_id, loser_id],
+        )
+        .unwrap();
+    }
+
+    fn row_status_and_path(conn: &Connection, id: i64) -> (String, String) {
+        conn.query_row(
+            "SELECT status, path FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn keep_wallpaper_transitions_active_to_kept() {
         let conn = Connection::open_in_memory().unwrap();
@@ -240,5 +318,143 @@ mod tests {
         let err = keep_wallpaper(&conn, 9999).unwrap_err();
         assert!(matches!(err, crate::error::AppError::NotFound(_)));
         assert_eq!(status_of(&conn, id), "active");
+    }
+
+    #[test]
+    fn move_wallpaper_moves_file_and_marks_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "a.jpg");
+
+        let dest_dir = dest.path().join("out");
+        move_wallpaper(&conn, id, dest_dir.to_str().unwrap()).unwrap();
+
+        assert!(dest_dir.join("a.jpg").is_file());
+        assert!(!tmp.path().join("a.jpg").exists());
+        let (status, path) = row_status_and_path(&conn, id);
+        assert_eq!(status, "rejected");
+        assert_eq!(PathBuf::from(&path), dest_dir.join("a.jpg"));
+
+        assert!(get_review(&conn, 50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn relative_destination_resolves_against_wallpaper_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let sub = tmp.path().join("library");
+        std::fs::create_dir_all(&sub).unwrap();
+        let id = seed_real_wallpaper(&conn, &sub, "b.png");
+
+        move_wallpaper(&conn, id, "rejects").unwrap();
+
+        assert!(sub.join("rejects").join("b.png").is_file());
+        let (_, path) = row_status_and_path(&conn, id);
+        assert_eq!(PathBuf::from(path), sub.join("rejects").join("b.png"));
+    }
+
+    #[test]
+    fn missing_destination_directories_are_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "c.webp");
+
+        let nested = dest.path().join("x").join("y").join("z");
+        move_wallpaper(&conn, id, nested.to_str().unwrap()).unwrap();
+
+        assert!(nested.join("c.webp").is_file());
+        assert_eq!(row_status_and_path(&conn, id).0, "rejected");
+    }
+
+    #[test]
+    fn rejected_row_keeps_comparison_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let moved = seed_real_wallpaper(&conn, tmp.path(), "moved.jpg");
+        let other = seed_real_wallpaper(&conn, tmp.path(), "other.jpg");
+        add_comparison(&conn, other, moved);
+
+        move_wallpaper(&conn, moved, dest.path().to_str().unwrap()).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM comparisons WHERE winner_id = ?1 OR loser_id = ?1",
+                rusqlite::params![moved],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn rescan_after_move_does_not_readd_as_active() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "d.jpg");
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        let found = crate::scanner::collect_images(&[tmp.path().to_path_buf()]);
+        assert!(found.is_empty());
+        insert_new_wallpapers(&conn, &found).unwrap();
+
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wallpapers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+
+        let found2 = crate::scanner::collect_images(&[dest.path().to_path_buf()]);
+        insert_new_wallpapers(&conn, &found2).unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM wallpapers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(
+            row_status_and_path(&conn, id),
+            (
+                "rejected".into(),
+                dest.path().join("d.jpg").display().to_string()
+            )
+        );
+        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn failed_move_leaves_db_untouched_and_propagates_io_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "e.jpg");
+        add_comparison(&conn, id, id);
+
+        std::fs::remove_file(tmp.path().join("e.jpg")).unwrap();
+        let err = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::Io(_)));
+
+        assert_eq!(row_status_and_path(&conn, id).0, "active");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM comparisons", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn unknown_id_returns_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        let err = move_wallpaper(&conn, 1234, tmp.path().to_str().unwrap()).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::NotFound(_)));
     }
 }
