@@ -99,6 +99,19 @@ pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusql
     rows.collect()
 }
 
+pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<(), crate::error::AppError> {
+    let updated = conn.execute(
+        "UPDATE wallpapers SET status = 'kept' WHERE id = ?1",
+        rusqlite::params![id],
+    )?;
+    if updated == 0 {
+        return Err(crate::error::AppError::NotFound(format!(
+            "no wallpaper with id {id}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +183,62 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+    }
+
+    fn status_of(conn: &Connection, id: i64) -> String {
+        conn.query_row(
+            "SELECT status FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn keep_wallpaper_transitions_active_to_kept() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        keep_wallpaper(&conn, id).unwrap();
+        assert_eq!(status_of(&conn, id), "kept");
+    }
+
+    #[test]
+    fn keep_wallpaper_removes_it_from_review() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let a = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        let b = seed_wallpaper(&conn, "/w/b.jpg", "active", 15.0);
+
+        keep_wallpaper(&conn, b).unwrap();
+        let ids: Vec<i64> = get_review(&conn, 50)
+            .unwrap()
+            .iter()
+            .map(|w| w.id)
+            .collect();
+        assert_eq!(ids, vec![a]);
+    }
+
+    #[test]
+    fn rekeeping_a_kept_wallpaper_is_a_no_op_success() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        keep_wallpaper(&conn, id).unwrap();
+
+        keep_wallpaper(&conn, id).unwrap();
+        assert_eq!(status_of(&conn, id), "kept");
+    }
+
+    #[test]
+    fn keeping_unknown_id_returns_not_found_and_changes_nothing() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        let err = keep_wallpaper(&conn, 9999).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::NotFound(_)));
+        assert_eq!(status_of(&conn, id), "active");
     }
 }
