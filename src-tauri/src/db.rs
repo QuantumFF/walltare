@@ -154,15 +154,29 @@ pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusql
 }
 
 pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<(), crate::error::AppError> {
-    let updated = conn.execute(
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                crate::error::AppError::NotFound(format!("no wallpaper with id {id}"))
+            }
+            other => other.into(),
+        })?;
+
+    if status == "rejected" {
+        return Err(crate::error::AppError::InvalidTransition(format!(
+            "cannot keep rejected wallpaper with id {id}"
+        )));
+    }
+
+    conn.execute(
         "UPDATE wallpapers SET status = 'kept' WHERE id = ?1",
         rusqlite::params![id],
     )?;
-    if updated == 0 {
-        return Err(crate::error::AppError::NotFound(format!(
-            "no wallpaper with id {id}"
-        )));
-    }
     Ok(())
 }
 
@@ -318,6 +332,25 @@ mod tests {
         let err = keep_wallpaper(&conn, 9999).unwrap_err();
         assert!(matches!(err, crate::error::AppError::NotFound(_)));
         assert_eq!(status_of(&conn, id), "active");
+    }
+
+    #[test]
+    fn keeping_a_rejected_wallpaper_returns_invalid_transition_and_changes_nothing() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "rejected", 25.0);
+        let (_, original_path) = row_status_and_path(&conn, id);
+
+        let err = keep_wallpaper(&conn, id).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::AppError::InvalidTransition(ref m) if m.contains(&id.to_string())
+        ));
+
+        assert_eq!(
+            row_status_and_path(&conn, id),
+            ("rejected".into(), original_path)
+        );
     }
 
     #[test]
