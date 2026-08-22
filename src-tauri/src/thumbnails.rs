@@ -112,6 +112,22 @@ pub fn resolve(
     })
 }
 
+pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM thumbnails WHERE wallpaper_id = ?1",
+        [wallpaper_id],
+    )?;
+    for size in [Size::Small, Size::Medium, Size::Full] {
+        let cache_path = cache_dir.join(format!("{wallpaper_id}_{}.jpg", size.label()));
+        match std::fs::remove_file(&cache_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
 fn cached_thumbnail(
     conn: &Connection,
     cache_path: &Path,
@@ -362,6 +378,8 @@ mod tests {
         let err = resolve(&conn, tmp.path(), id, Size::Small).unwrap_err();
 
         assert!(matches!(err, AppError::NotFound(_)));
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["kind"], "not_found");
     }
 
     #[test]
@@ -384,6 +402,8 @@ mod tests {
         let (conn, tmp) = setup();
         let id = seed_wallpaper(&conn, tmp.path(), "r.png", &solid(300, 150, [7, 7, 7, 255]));
         resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        let cache_file = tmp.path().join(format!("{id}_small.jpg"));
+        let old_bytes = std::fs::read(&cache_file).unwrap();
         solid(600, 450, [8, 8, 8, 255])
             .save_with_format(tmp.path().join("r.png"), image::ImageFormat::Png)
             .unwrap();
@@ -406,6 +426,33 @@ mod tests {
             thumbnail_row(&conn, id, "small").unwrap().2,
             source_mtime(&tmp.path().join("r.png")).unwrap()
         );
+        let new_bytes = std::fs::read(&cache_file).unwrap();
+        assert_ne!(old_bytes, new_bytes);
+        let cached_img = image::load_from_memory(&new_bytes).unwrap();
+        assert_eq!((cached_img.width(), cached_img.height()), (400, 300));
+    }
+
+    #[test]
+    fn purge_removes_rows_and_cache_files_across_sizes() {
+        let (conn, tmp) = setup();
+        let id = seed_wallpaper(&conn, tmp.path(), "p.png", &solid(2400, 1200, [3, 3, 3, 255]));
+        resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
+
+        purge(&conn, tmp.path(), id).unwrap();
+
+        assert_eq!(thumbnail_row(&conn, id, "small"), None);
+        assert_eq!(thumbnail_row(&conn, id, "medium"), None);
+        assert!(!tmp.path().join(format!("{id}_small.jpg")).exists());
+        assert!(!tmp.path().join(format!("{id}_medium.jpg")).exists());
+        assert!(!tmp.path().join(format!("{id}_full.jpg")).exists());
+    }
+
+    #[test]
+    fn purge_is_idempotent_for_unknown_wallpaper() {
+        let (conn, tmp) = setup();
+
+        purge(&conn, tmp.path(), 12345).unwrap();
     }
 
     #[test]
