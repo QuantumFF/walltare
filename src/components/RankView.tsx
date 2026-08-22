@@ -107,15 +107,18 @@ export function RankView() {
 
         const outcome = await client.vote(winner.id, loser.id);
 
-        // Headline updates from the response alone; its next_pair fills the
-        // now-empty prefetch slot.
+        // Headline updates from the response alone. With an empty prefetch
+        // slot, next_pair becomes the current pair and the slot is refilled
+        // with a fresh pair so the two never show the same Comparison twice.
         setStats(outcome.stats);
-        if (!prefetched) {
+        if (prefetched) {
+          setNextPair(outcome.next_pair);
+          nextPairRef.current = outcome.next_pair;
+        } else {
           setCurrentPair(outcome.next_pair);
           currentPairRef.current = outcome.next_pair;
+          void prefetchNextPair();
         }
-        setNextPair(outcome.next_pair);
-        nextPairRef.current = outcome.next_pair;
         preloadPair(outcome.next_pair);
       } catch (error) {
         console.error("Failed to submit vote:", error);
@@ -124,7 +127,7 @@ export function RankView() {
         busyRef.current = false;
       }
     },
-    [],
+    [prefetchNextPair],
   );
 
   const handleSkip = useCallback(async () => {
@@ -211,7 +214,7 @@ export function RankView() {
                 <span className="font-medium text-foreground">
                   {stats?.participated_count}
                 </span>{" "}
-                / {stats?.total_wallpapers} Rated
+                / {stats?.total_wallpapers} Participated
               </span>
               <span>
                 <span className="font-medium text-foreground">

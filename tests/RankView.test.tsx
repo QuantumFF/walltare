@@ -117,7 +117,7 @@ test("loads a pair, prefetches the next, and shows the progress headline", async
   expect(leftSrc()).toContain("/1?");
   expect(rightSrc()).toContain("/2?");
   expect(screen.getByText("37.5%")).toBeDefined();
-  expect(screen.getByText(/\/ 10 Rated/)).toBeDefined();
+  expect(screen.getByText(/\/ 10 Participated/)).toBeDefined();
   expect(screen.getByText(/Comparisons/)).toBeDefined();
 });
 
@@ -168,6 +168,50 @@ test("voting swaps in the prefetched pair and updates stats from the response al
     expect(rightSrc()).toContain("/6?");
   }, SWAP_TIMEOUT);
   expect(screen.getByText(/Comparisons/)).toBeDefined();
+});
+
+test("a vote arriving on an empty prefetch slot promotes next_pair without duplicating it", async () => {
+  countedCommand("get_stats", () => stats());
+  // The initial prefetch never lands, so the slot is empty at vote time;
+  // the post-vote refill serves a distinct pair.
+  let getPairCalls = 0;
+  mockCommand("get_pair", () => {
+    getPairCalls += 1;
+    if (getPairCalls === 1) return [wallpaper(1), wallpaper(2)];
+    if (getPairCalls === 2) return new Promise(() => {}); // prefetch never lands
+    return [wallpaper(5), wallpaper(6)];
+  });
+  mockVote(() => ({
+    next_pair: [wallpaper(7), wallpaper(8)],
+    stats: stats(),
+  }));
+
+  await renderRankView();
+  expect(leftSrc()).toContain("/1?");
+
+  await act(async () => {
+    fireEvent.click(screen.getByAltText("Left Wallpaper"));
+  });
+
+  // next_pair becomes the current pair...
+  await waitFor(() => {
+    expect(leftSrc()).toContain("/7?");
+    expect(rightSrc()).toContain("/8?");
+  }, SWAP_TIMEOUT);
+  expect(votes.length).toBe(1);
+
+  // ...and the prefetch slot is refilled with a fresh pair, not a copy.
+  await waitFor(() => {
+    expect(getPairCalls).toBeGreaterThanOrEqual(3);
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByAltText("Left Wallpaper"));
+  });
+  await waitFor(() => {
+    expect(leftSrc()).toContain("/5?");
+    expect(rightSrc()).toContain("/6?");
+  }, SWAP_TIMEOUT);
+  expect(votes[1]).toEqual([7, 8]);
 });
 
 test("arrow keys register the matching Comparison", async () => {
