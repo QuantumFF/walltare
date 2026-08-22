@@ -1,11 +1,16 @@
 mod db;
 mod error;
+pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod scanner;
+#[allow(dead_code)]
+mod thumbnails;
+mod voting;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Serialize;
+use tauri::http::{StatusCode, Uri};
 use tauri::{AppHandle, Emitter, Manager};
 
 const SCAN_CHUNK_SIZE: usize = 256;
@@ -22,6 +27,38 @@ struct ScanComplete {
 }
 
 pub struct Db(pub Mutex<rusqlite::Connection>);
+
+pub struct CacheDir(pub PathBuf);
+
+fn lock_conn(
+    state: tauri::State<'_, Db>,
+) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, error::AppError> {
+    let db = state.inner();
+    db.0.lock()
+        .map_err(|_| error::AppError::Db("database lock poisoned".to_string()))
+}
+
+#[tauri::command]
+fn get_pair(state: tauri::State<'_, Db>) -> Result<[voting::Wallpaper; 2], error::AppError> {
+    let conn = lock_conn(state)?;
+    voting::get_pair(&conn, &mut voting::SystemRng::new())
+}
+
+#[tauri::command]
+fn vote(
+    state: tauri::State<'_, Db>,
+    winner_id: i64,
+    loser_id: i64,
+) -> Result<voting::VoteOutcome, error::AppError> {
+    let conn = lock_conn(state)?;
+    voting::vote(&conn, winner_id, loser_id, &mut voting::SystemRng::new())
+}
+
+#[tauri::command]
+fn get_stats(state: tauri::State<'_, Db>) -> Result<voting::Stats, error::AppError> {
+    let conn = lock_conn(state)?;
+    voting::get_stats(&conn)
+}
 
 #[tauri::command]
 fn start_scan(path: PathBuf, app: AppHandle) -> Result<(), error::AppError> {
@@ -79,6 +116,57 @@ fn move_wallpaper(
     db::move_wallpaper(&conn, id, &destination_folder)
 }
 
+fn resolve_image(app: &AppHandle, uri: &Uri) -> Result<Vec<u8>, error::AppError> {
+    let segments: Vec<&str> = uri.path().trim_start_matches('/').split('/').collect();
+    let ["image", id] = segments.as_slice() else {
+        return Err(error::AppError::BadRequest(format!(
+            "unexpected path {:?}",
+            uri.path()
+        )));
+    };
+    let wallpaper_id: i64 = id
+        .parse()
+        .map_err(|_| error::AppError::BadRequest(format!("malformed wallpaper id {id:?}")))?;
+    let size = uri
+        .query()
+        .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("size=")))
+        .and_then(thumbnails::Size::parse)
+        .ok_or_else(|| {
+            error::AppError::BadRequest(format!("missing or unknown size in {:?}", uri.query()))
+        })?;
+    let db = app.state::<Db>();
+    let conn =
+        db.0.lock()
+            .map_err(|_| error::AppError::Db("database lock poisoned".into()))?;
+    let cache_dir = app.state::<CacheDir>();
+    Ok(thumbnails::resolve(&conn, &cache_dir.0, wallpaper_id, size)?.bytes)
+}
+
+fn image_response(status: StatusCode, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(status)
+        .header(tauri::http::header::CONTENT_TYPE, "image/jpeg")
+        .header(
+            tauri::http::header::CACHE_CONTROL,
+            "max-age=31536000, immutable",
+        )
+        .body(body)
+        .unwrap()
+}
+
+fn error_response(e: &error::AppError) -> tauri::http::Response<Vec<u8>> {
+    let status = match e {
+        error::AppError::InvalidPath(_) | error::AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+        error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    tauri::http::Response::builder()
+        .status(status)
+        .header(tauri::http::header::CONTENT_TYPE, "application/json")
+        .body(serde_json::to_vec(e).unwrap_or_default())
+        .unwrap()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -88,11 +176,23 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let conn = db::open(&dir.join("walltare.db"))?;
             db::init_schema(&conn)?;
+            let cache_dir = dir.join("thumbnails");
+            std::fs::create_dir_all(&cache_dir)?;
+            app.manage(CacheDir(cache_dir));
             app.manage(Db(Mutex::new(conn)));
             Ok(())
         })
+        .register_uri_scheme_protocol("wallpaper", |ctx, request| {
+            match resolve_image(ctx.app_handle(), request.uri()) {
+                Ok(bytes) => image_response(StatusCode::OK, bytes),
+                Err(e) => error_response(&e),
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             start_scan,
+            get_pair,
+            vote,
+            get_stats,
             get_review,
             keep_wallpaper,
             move_wallpaper
