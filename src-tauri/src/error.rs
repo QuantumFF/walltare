@@ -4,10 +4,13 @@ use serde::Serialize;
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum AppError {
     InvalidPath(String),
+    BadRequest(String),
+    NotFound(String),
     NotEnoughWallpapers(String),
     UnknownWallpaper(String),
     Io(String),
     Db(String),
+    Image(String),
 }
 
 impl From<rusqlite::Error> for AppError {
@@ -26,10 +29,13 @@ impl std::fmt::Display for AppError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (kind, message) = match self {
             AppError::InvalidPath(m) => ("invalid_path", m),
+            AppError::BadRequest(m) => ("bad_request", m),
+            AppError::NotFound(m) => ("not_found", m),
             AppError::NotEnoughWallpapers(m) => ("not_enough_wallpapers", m),
             AppError::UnknownWallpaper(m) => ("unknown_wallpaper", m),
             AppError::Io(m) => ("io", m),
             AppError::Db(m) => ("db", m),
+            AppError::Image(m) => ("image", m),
         };
         write!(f, "{kind}: {message}")
     }
