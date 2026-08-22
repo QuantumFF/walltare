@@ -1,6 +1,8 @@
 mod db;
 mod error;
 mod scanner;
+#[allow(dead_code)]
+mod thumbnails;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
