@@ -2,6 +2,7 @@ mod db;
 mod error;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod scanner;
+mod voting;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -23,6 +24,36 @@ struct ScanComplete {
 }
 
 pub struct Db(pub Mutex<rusqlite::Connection>);
+
+fn lock_conn(
+    state: tauri::State<'_, Db>,
+) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, error::AppError> {
+    let db = state.inner();
+    db.0.lock()
+        .map_err(|_| error::AppError::Db("database lock poisoned".to_string()))
+}
+
+#[tauri::command]
+fn get_pair(state: tauri::State<'_, Db>) -> Result<[voting::Wallpaper; 2], error::AppError> {
+    let conn = lock_conn(state)?;
+    voting::get_pair(&conn, &mut voting::SystemRng::new())
+}
+
+#[tauri::command]
+fn vote(
+    state: tauri::State<'_, Db>,
+    winner_id: i64,
+    loser_id: i64,
+) -> Result<voting::VoteOutcome, error::AppError> {
+    let conn = lock_conn(state)?;
+    voting::vote(&conn, winner_id, loser_id, &mut voting::SystemRng::new())
+}
+
+#[tauri::command]
+fn get_stats(state: tauri::State<'_, Db>) -> Result<voting::Stats, error::AppError> {
+    let conn = lock_conn(state)?;
+    voting::get_stats(&conn)
+}
 
 #[tauri::command]
 fn start_scan(path: PathBuf, app: AppHandle) -> Result<(), error::AppError> {
@@ -61,7 +92,9 @@ pub fn run() {
             app.manage(Db(Mutex::new(conn)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_scan])
+        .invoke_handler(tauri::generate_handler![
+            start_scan, get_pair, vote, get_stats
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

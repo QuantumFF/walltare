@@ -45,14 +45,18 @@ pub fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(DDL)
 }
 
-pub fn insert_new_wallpapers(conn: &Connection, paths: &[PathBuf]) -> Result<usize, rusqlite::Error> {
-    let mut stmt = conn.prepare_cached(
-        "INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)",
-    )?;
+pub fn insert_new_wallpapers(
+    conn: &Connection,
+    paths: &[PathBuf],
+) -> Result<usize, rusqlite::Error> {
+    let mut stmt =
+        conn.prepare_cached("INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)")?;
     let mut added = 0;
     for path in paths {
         added += stmt.execute(rusqlite::params![
-            path.file_name().and_then(|n| n.to_str()).unwrap_or_default(),
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default(),
             path.to_str().expect("walk only yields UTF-8 paths"),
         ])?;
     }
