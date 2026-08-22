@@ -57,6 +57,19 @@ fn get_review(limit: i64, state: tauri::State<Db>) -> Result<Vec<db::Wallpaper>,
     db::get_review(&conn, limit).map_err(Into::into)
 }
 
+#[tauri::command]
+fn move_wallpaper(
+    id: i64,
+    destination_folder: String,
+    state: tauri::State<Db>,
+) -> Result<(), error::AppError> {
+    let conn = state
+        .0
+        .lock()
+        .map_err(|_| error::AppError::Db("database lock poisoned".into()))?;
+    db::move_wallpaper(&conn, id, &destination_folder)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -69,7 +82,11 @@ pub fn run() {
             app.manage(Db(Mutex::new(conn)));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![start_scan, get_review])
+        .invoke_handler(tauri::generate_handler![
+            start_scan,
+            get_review,
+            move_wallpaper
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

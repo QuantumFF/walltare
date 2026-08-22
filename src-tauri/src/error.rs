@@ -6,6 +6,7 @@ pub enum AppError {
     InvalidPath(String),
     Io(String),
     Db(String),
+    NotFound(String),
 }
 
 impl From<rusqlite::Error> for AppError {
@@ -26,6 +27,7 @@ impl std::fmt::Display for AppError {
             AppError::InvalidPath(m) => ("invalid_path", m),
             AppError::Io(m) => ("io", m),
             AppError::Db(m) => ("db", m),
+            AppError::NotFound(m) => ("not_found", m),
         };
         write!(f, "{kind}: {message}")
     }
