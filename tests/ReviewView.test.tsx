@@ -32,7 +32,7 @@ async function openReview() {
     emitEvent("scan-complete", { added_count: 3 });
   });
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /go to review/i }));
+    fireEvent.click(screen.getByRole("button", { name: /stop & review/i }));
   });
 }
 
@@ -43,6 +43,18 @@ afterEach(() => {
 
 beforeEach(() => {
   mockCommand("start_scan", () => null);
+  // RankView mounts in transit to review; give it a minimal pair/stats seam.
+  mockCommand("get_pair", () => [
+    wallpaper(90, "rank-a.jpg", 10),
+    wallpaper(91, "rank-b.jpg", 11),
+  ]);
+  mockCommand("get_stats", () => ({
+    total_wallpapers: 0,
+    total_comparisons: 0,
+    evaluated_count: 0,
+    participated_count: 0,
+    percentage: 0,
+  }));
 });
 
 test("lists lowest-mu active wallpapers ascending with mu badges and small thumbnails", async () => {
