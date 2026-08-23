@@ -83,6 +83,34 @@ test("a card changes no shadow on hover, so a wheel scroll stays smooth", async 
   }
 });
 
+test("the two hover-animated elements declare will-change, so no card promotes mid-scroll", async () => {
+  // Also not a style preference. WebKit builds the composited layer an
+  // animated property needs the first time it is animated, which for these
+  // cards means the first time each one is hovered — and a wheel scroll hovers
+  // every card that passes under the still pointer. Measured in a real
+  // WebKitGTK view, one wheel pass down the grid cost 12 stalls of 50-58ms and
+  // 24 dropped frames on a cold process, then nothing on later passes, because
+  // the layers survive. That is the "lags for a bit then goes back to normal"
+  // report. Declaring will-change moves the promotion to first paint: the same
+  // pass measured 0 stalls three runs out of three, with no measurable cost to
+  // entering the view or to resident memory.
+  //
+  // happy-dom has no compositor, so the frame times cannot be asserted here;
+  // this pins the decision at the only seam that exists. See ADR 0007.
+  await openReview([wallpaper(1), wallpaper(2)]);
+
+  const cards = images().map((img) => img.closest("div.group"));
+  expect(cards).toHaveLength(2);
+  for (const card of cards) {
+    // The image scales on hover; the overlay fades in.
+    expect(card?.querySelector("img")?.className ?? "").toContain(
+      "will-change-transform",
+    );
+    const overlay = card?.querySelector(".absolute.inset-0");
+    expect(overlay?.className ?? "").toContain("will-change-[opacity]");
+  }
+});
+
 test("asks the backend for 50 rows", async () => {
   const limits: unknown[] = [];
   mockCommand("get_review", (args) => {
