@@ -24,6 +24,21 @@ import {
 import { useCallback, useEffect, useState } from "react";
 
 export const REVIEW_LIMIT = 50;
+
+/**
+ * A review card. Carries no hover shadow, deliberately.
+ *
+ * A wheel scroll holds the pointer still while cards stream underneath, so
+ * every card that passes fires `:hover`. Changing `box-shadow` there repaints
+ * outside the card's own bounds, and measured against a real WebKitGTK view it
+ * took the grid from a locked 60fps to 38 with every frame late — which is why
+ * the wheel felt worse than the scrollbar, where the pointer never crosses the
+ * grid. Dropping only the transition still dropped half the frames, so it is
+ * the repaint and not the animation. The overlay fade, the image scale, and
+ * the backdrop blurs all measured free. See ADR 0006.
+ */
+const CARD_CLASS =
+  "group relative aspect-video bg-card rounded-xl overflow-hidden border border-border shadow-sm";
 const DEFAULT_MOVE_PATH = "./rejected";
 const LOAD_FAILED_ERROR = "Failed to load the review list.";
 const KEEP_FAILED_ERROR = "Failed to keep wallpaper. Please try again.";
@@ -171,7 +186,7 @@ export function ReviewView() {
           {wallpapers.map((wallpaper) => (
             <div
               key={wallpaper.id}
-              className="group relative aspect-video bg-card rounded-xl overflow-hidden border border-border shadow-sm hover:shadow-md transition-all"
+              className={CARD_CLASS}
             >
               <img
                 src={wallpaperImageUrl(wallpaper.id, "small")}

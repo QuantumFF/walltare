@@ -28,3 +28,11 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 [dev-dependencies]
 tempfile = "3.27.0"
 
+# `bun tauri dev` builds this crate unoptimized, and an unoptimized `image` is
+# 30x slower: a 150MB PNG took 58s to downscale in a debug build against 2s in
+# release. That is not a debug-build tax anyone should pay, and it made the dev
+# app look broken. Only dependencies are optimized, so walltare's own code stays
+# debuggable and quick to rebuild.
+[profile.dev.package."*"]
+opt-level = 3
+

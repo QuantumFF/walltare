@@ -51,8 +51,25 @@ pub struct VoteOutcome {
 /// without this the left side is systematically the newer wallpaper — feeding
 /// the well-known left-position bias of pairwise comparison straight into the
 /// ratings the app exists to measure.
-pub fn get_pair<R: Rng>(conn: &Connection, rng: &mut R) -> Result<[Wallpaper; 2], AppError> {
-    let pool = eligible_summaries(conn)?;
+///
+/// `exclude` keeps the wallpapers the user is already looking at out of the
+/// draw. Nothing in the selection rule stops a fresh pair reusing one of them,
+/// and against a 120-wallpaper library that happened to 4% of successive
+/// pairs: the pane does not appear to change, so the user re-picks the same
+/// wallpaper and the Comparison is worthless. Ignored when honouring it would
+/// leave fewer than two candidates, so a small library still ranks.
+pub fn get_pair<R: Rng>(
+    conn: &Connection,
+    exclude: &[i64],
+    rng: &mut R,
+) -> Result<[Wallpaper; 2], AppError> {
+    let all = eligible_summaries(conn)?;
+    let narrowed: Vec<ranking::WallpaperSummary> = all
+        .iter()
+        .filter(|w| !exclude.contains(&w.id))
+        .copied()
+        .collect();
+    let pool = if narrowed.len() >= 2 { narrowed } else { all };
     let (first, second) = ranking::select_pair(&pool, rng).ok_or_else(|| {
         AppError::NotEnoughWallpapers(format!(
             "pair selection needs at least two eligible wallpapers, found {}",
@@ -79,6 +96,7 @@ pub fn vote<R: Rng>(
     conn: &Connection,
     winner_id: i64,
     loser_id: i64,
+    exclude: &[i64],
     rng: &mut R,
 ) -> Result<VoteOutcome, AppError> {
     let tx = conn.unchecked_transaction()?;
@@ -114,7 +132,12 @@ pub fn vote<R: Rng>(
     // (`NotEnoughWallpapers`) that says nothing about whether the vote counted.
     // `get_stats` stays fatal: two `SELECT COUNT(*)`s only fail if the database
     // itself is gone, at which point an error is the honest answer.
-    let next_pair = get_pair(conn, rng).ok();
+    //
+    // The two just voted on are always excluded: showing either of them again
+    // straight away is the case the user reads as "nothing happened".
+    let mut skip = vec![winner_id, loser_id];
+    skip.extend_from_slice(exclude);
+    let next_pair = get_pair(conn, &skip, rng).ok();
     let stats = get_stats(conn)?;
     Ok(VoteOutcome { next_pair, stats })
 }
@@ -342,12 +365,12 @@ mod tests {
         let _rejected1 = seed_on(&conn, "rejected", MU, SIGMA, 3);
         let _rejected2 = seed_on(&conn, "rejected", MU, SIGMA, 5);
 
-        match get_pair(&conn, &mut rng()) {
+        match get_pair(&conn, &[], &mut rng()) {
             Err(AppError::NotEnoughWallpapers(_)) => {}
             other => panic!("expected NotEnoughWallpapers, got {other:?}"),
         }
         // An empty library errors too, rather than hanging or panicking.
-        match get_pair(&test_conn(), &mut rng()) {
+        match get_pair(&test_conn(), &[], &mut rng()) {
             Err(AppError::NotEnoughWallpapers(_)) => {}
             other => panic!("expected NotEnoughWallpapers, got {other:?}"),
         }
@@ -355,7 +378,7 @@ mod tests {
         // A Kept wallpaper participates alongside Active ones.
         let kept = seed_on(&conn, "kept", MU, SIGMA, 0);
         for draw in [[0.0], [0.9], [0.4]] {
-            let pair = get_pair(&conn, &mut SeqRng::new(&draw)).unwrap();
+            let pair = get_pair(&conn, &[], &mut SeqRng::new(&draw)).unwrap();
             assert_ne!(pair[0].id, pair[1].id);
             assert!(
                 (pair[0].id == active || pair[0].id == kept)
@@ -366,12 +389,76 @@ mod tests {
     }
 
     #[test]
+    fn an_excluded_wallpaper_stays_out_of_the_draw() {
+        let conn = test_conn();
+        let a = seed_on(&conn, "active", MU, SIGMA, 0);
+        let b = seed_on(&conn, "active", MU, SIGMA, 0);
+        let c = seed_on(&conn, "active", MU, SIGMA, 0);
+        let d = seed_on(&conn, "active", MU, SIGMA, 0);
+
+        // Whatever the draws, neither excluded id can appear.
+        for draw in [[0.0], [0.3], [0.5], [0.7], [0.99]] {
+            let pair = get_pair(&conn, &[a, b], &mut SeqRng::new(&draw)).unwrap();
+            let ids = pair.map(|p| p.id);
+            assert!(
+                !ids.contains(&a) && !ids.contains(&b),
+                "excluded wallpaper appeared in {ids:?}"
+            );
+            assert!(ids.contains(&c) && ids.contains(&d));
+        }
+    }
+
+    #[test]
+    fn an_exclusion_that_would_empty_the_pool_is_ignored_rather_than_erroring() {
+        // A three-wallpaper library must keep ranking: honouring the exclusion
+        // would leave one candidate, and refusing to draw would strand the user
+        // on the pair they just voted on with no way forward.
+        let conn = test_conn();
+        let a = seed_on(&conn, "active", MU, SIGMA, 0);
+        let b = seed_on(&conn, "active", MU, SIGMA, 0);
+        let c = seed_on(&conn, "active", MU, SIGMA, 0);
+
+        let pair = get_pair(&conn, &[a, b], &mut rng()).unwrap();
+        let ids = pair.map(|p| p.id);
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids.contains(&c));
+
+        // Excluding everything falls all the way back to the full pool.
+        let pair = get_pair(&conn, &[a, b, c], &mut rng()).unwrap();
+        assert_ne!(pair[0].id, pair[1].id);
+    }
+
+    #[test]
+    fn a_votes_next_pair_never_holds_either_wallpaper_just_voted_on() {
+        // The symptom this prevents: the panes appear not to change, so the
+        // user votes on the same wallpaper again and the Comparison is noise.
+        let conn = test_conn();
+        let w = seed_on(&conn, "active", MU, SIGMA, 0);
+        let l = seed_on(&conn, "active", MU, SIGMA, 0);
+        let _rest: Vec<i64> = (0..4)
+            .map(|_| seed_on(&conn, "active", MU, SIGMA, 0))
+            .collect();
+
+        for draw in [[0.0], [0.25], [0.5], [0.75], [0.99]] {
+            let outcome = vote(&conn, w, l, &[], &mut SeqRng::new(&draw)).unwrap();
+            let ids = outcome
+                .next_pair
+                .expect("four other wallpapers remain")
+                .map(|p| p.id);
+            assert!(
+                !ids.contains(&w) && !ids.contains(&l),
+                "the pair just voted on came back as {ids:?}"
+            );
+        }
+    }
+
+    #[test]
     fn vote_updates_ratings_bumps_counts_and_inserts_comparison() {
         let conn = test_conn();
         let w = seed_on(&conn, "active", MU, SIGMA, 0);
         let l = seed_on(&conn, "active", MU, SIGMA, 0);
 
-        let outcome = vote(&conn, w, l, &mut rng()).unwrap();
+        let outcome = vote(&conn, w, l, &[], &mut rng()).unwrap();
 
         // python-trueskill vector for (25, 8.333) vs (25, 8.333).
         let (wm, ws, wc) = ratings(&conn, w);
@@ -406,8 +493,8 @@ mod tests {
         let seasoned = seed_on(&conn, "active", MU, SIGMA, 40);
 
         // The shuffle draw is the last value `get_pair` takes from the RNG.
-        let low = get_pair(&conn, &mut SeqRng::new(&[0.0])).unwrap();
-        let high = get_pair(&conn, &mut SeqRng::new(&[0.0, 0.0, 0.99])).unwrap();
+        let low = get_pair(&conn, &[], &mut SeqRng::new(&[0.0])).unwrap();
+        let high = get_pair(&conn, &[], &mut SeqRng::new(&[0.0, 0.0, 0.99])).unwrap();
 
         assert_eq!(low[0].id, fresh, "a low draw keeps selection order");
         assert_eq!(high[0].id, seasoned, "a high draw swaps the slots");
@@ -428,7 +515,7 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            vote(&conn, w, l, &mut rng()),
+            vote(&conn, w, l, &[], &mut rng()),
             Err(AppError::Db(_))
         ));
 
@@ -445,7 +532,7 @@ mod tests {
         let r = seed_on(&conn, "rejected", MU, SIGMA, 2);
 
         for &(winner, loser) in &[(999, a), (a, 999), (r, a), (a, r), (a, a)] {
-            match vote(&conn, winner, loser, &mut rng()) {
+            match vote(&conn, winner, loser, &[], &mut rng()) {
                 Err(AppError::UnknownWallpaper(_)) => {}
                 other => panic!("expected UnknownWallpaper for ({winner}, {loser}), got {other:?}"),
             }

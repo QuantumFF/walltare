@@ -100,8 +100,18 @@ export function wallpaperImageUrl(
 
 export interface Client {
   startScan(path: string): Promise<void>;
-  getPair(): Promise<[Wallpaper, Wallpaper]>;
-  vote(winnerId: number, loserId: number): Promise<VoteOutcome>;
+  /**
+   * `exclude` names wallpapers that must stay out of the draw — the ones
+   * already on screen or queued in the prefetch slot. Honoured only while at
+   * least two candidates remain, so a small library still ranks.
+   */
+  getPair(exclude?: number[]): Promise<[Wallpaper, Wallpaper]>;
+  /** `exclude` applies to the returned `next_pair`; the two voted on are always excluded. */
+  vote(
+    winnerId: number,
+    loserId: number,
+    exclude?: number[],
+  ): Promise<VoteOutcome>;
   getStats(): Promise<Stats>;
   getReview(limit?: number): Promise<Wallpaper[]>;
   keepWallpaper(id: number): Promise<void>;
@@ -118,10 +128,10 @@ async function invokeVoid(name: string, args?: Record<string, unknown>) {
 export const client: Client = {
   startScan: (path) => invokeVoid("start_scan", { path }),
 
-  getPair: () => invoke<[Wallpaper, Wallpaper]>("get_pair"),
+  getPair: (exclude) => invoke<[Wallpaper, Wallpaper]>("get_pair", { exclude }),
 
-  vote: (winnerId, loserId) =>
-    invoke<VoteOutcome>("vote", { winnerId, loserId }),
+  vote: (winnerId, loserId, exclude) =>
+    invoke<VoteOutcome>("vote", { winnerId, loserId, exclude }),
 
   getStats: () => invoke<Stats>("get_stats"),
 

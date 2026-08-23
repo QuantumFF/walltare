@@ -61,6 +61,28 @@ test("renders the rows the backend returned, in the order it returned them", asy
   ]);
 });
 
+test("a card changes no shadow on hover, so a wheel scroll stays smooth", async () => {
+  // Not a style preference. A wheel scroll holds the pointer still while cards
+  // stream under it, so every card that passes fires :hover, and a box-shadow
+  // change there repaints outside the card's own bounds. Measured in a real
+  // WebKitGTK view it took the grid from a locked 60fps to 38 with every frame
+  // late — the wheel felt worse than the scrollbar, which never moves the
+  // pointer across the grid. Removing only the transition still dropped half
+  // the frames, so the repaint is the cost, not the animation.
+  //
+  // happy-dom has no compositor, so the frame times cannot be asserted here;
+  // this pins the decision at the only seam that exists. See ADR 0006.
+  await openReview([wallpaper(1), wallpaper(2)]);
+
+  const cards = images().map((img) => img.closest("div.group"));
+  expect(cards).toHaveLength(2);
+  for (const card of cards) {
+    const classes = card?.className ?? "";
+    expect(classes).toContain("group");
+    expect(classes).not.toMatch(/hover:shadow/);
+  }
+});
+
 test("asks the backend for 50 rows", async () => {
   const limits: unknown[] = [];
   mockCommand("get_review", (args) => {

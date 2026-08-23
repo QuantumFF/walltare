@@ -65,9 +65,26 @@ function serveVote(response: () => unknown): void {
   });
 }
 
+/**
+ * happy-dom never fetches an `<img>`, so stand in for the browser finishing
+ * one. The view refuses a pick until both panes have their image, because a
+ * pick on a pane that is still blank is a Comparison on a wallpaper the user
+ * never saw.
+ */
+async function panesArrive() {
+  for (const side of ["Left", "Right"] as const) {
+    const el = screen.queryByAltText(`${side} Wallpaper`);
+    if (!el) continue;
+    await act(async () => {
+      fireEvent.load(el);
+    });
+  }
+}
+
 async function renderRankView() {
   const rendered = renderInApp(<RankView />);
   await flush();
+  await panesArrive();
   return rendered;
 }
 
@@ -107,11 +124,16 @@ async function pressArrow(key: "ArrowLeft" | "ArrowRight") {
 }
 
 /** Run out the pick-feedback delay that gates the optimistic swap. */
-async function runPickFeedback() {
+async function advancePickFeedback() {
   await act(async () => {
     jest.advanceTimersByTime(PICK_FEEDBACK_MS);
   });
   await flush();
+}
+
+async function runPickFeedback() {
+  await advancePickFeedback();
+  await panesArrive();
 }
 
 test("loads a pair, prefetches the next, and shows the progress headline", async () => {
@@ -175,6 +197,113 @@ test("a pick swaps in the prefetched pair before the backend answers", async () 
   expect(shownIds()).toEqual([5, 6]);
   expect(headline(/Comparisons$/)).toBe("6 Comparisons");
   expect(getPairCalls).toBe(2);
+});
+
+test("a pick is refused until both panes have their wallpaper", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
+
+  renderInApp(<RankView />);
+  await flush();
+
+  // Generating a medium thumbnail off a large source takes seconds, so at
+  // this point both panes are blank. There is nothing to judge yet.
+  await clickPane("Left");
+  await advancePickFeedback();
+  expect(votes).toEqual([]);
+
+  // One arrival is not enough: a pick is a comparison, and half a comparison
+  // is not one.
+  await act(async () => {
+    fireEvent.load(screen.getByAltText("Left Wallpaper"));
+  });
+  await clickPane("Left");
+  await advancePickFeedback();
+  expect(votes).toEqual([]);
+
+  await act(async () => {
+    fireEvent.load(screen.getByAltText("Right Wallpaper"));
+  });
+  await clickPane("Left");
+  await advancePickFeedback();
+  expect(votes).toEqual([[1, 2]]);
+});
+
+test("the pair swapped in by a pick cannot be voted on before it is visible", async () => {
+  // The reported bug: the panes still showed the pair just voted on, so the
+  // user picked again and the progress moved — a permanent Comparison between
+  // two wallpapers they never saw.
+  servePairs(pair(1, 2), pair(3, 4));
+  serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
+
+  await renderRankView();
+  await clickPane("Left");
+  await advancePickFeedback();
+
+  expect(shownIds()).toEqual([3, 4]);
+  await clickPane("Left");
+  await advancePickFeedback();
+  expect(votes).toEqual([[1, 2]]);
+
+  await panesArrive();
+  await clickPane("Left");
+  await advancePickFeedback();
+  expect(votes).toEqual([
+    [1, 2],
+    [3, 4],
+  ]);
+});
+
+test("an image that fails to load unblocks its pane rather than wedging it", async () => {
+  // A missing source file must not strand the user on a pair they can never
+  // get past; the broken pane is visibly broken, which is its own signal.
+  servePairs(pair(1, 2), pair(3, 4));
+  serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
+
+  renderInApp(<RankView />);
+  await flush();
+  await act(async () => {
+    fireEvent.error(screen.getByAltText("Left Wallpaper"));
+    fireEvent.load(screen.getByAltText("Right Wallpaper"));
+  });
+
+  await clickPane("Right");
+  await advancePickFeedback();
+  expect(votes).toEqual([[2, 1]]);
+});
+
+test("a fetch is told which wallpapers are already on screen", async () => {
+  const excludes: unknown[] = [];
+  mockCommand("get_pair", (args) => {
+    excludes.push(args?.exclude);
+    const next = [pair(1, 2), pair(3, 4), pair(5, 6), pair(7, 8)][
+      getPairCalls++
+    ];
+    if (!next) throw new Error(`get_pair called ${getPairCalls} times`);
+    return next;
+  });
+  let votedExclude: unknown;
+  mockCommand("vote", (args) => {
+    votes.push([args?.winnerId as number, args?.loserId as number]);
+    votedExclude = args?.exclude;
+    return { next_pair: pair(11, 12), stats: stats() };
+  });
+
+  await renderRankView();
+  // The first fetch has nothing to avoid; the prefetch behind it does.
+  expect(excludes).toEqual([undefined, [1, 2]]);
+
+  await clickPane("Left");
+  await runPickFeedback();
+  // 3 and 4 are on screen now, and next_pair refills the slot behind them.
+  expect(votedExclude).toEqual([3, 4]);
+
+  await act(async () => {
+    fireEvent.click(skipButton());
+  });
+  await flush();
+  // Skipping a pair means "not these two".
+  expect(excludes[2]).toEqual([3, 4]);
 });
 
 test("arrow keys register the matching Comparison", async () => {
@@ -268,6 +397,7 @@ test("skip replaces the pair and refills the prefetch slot", async () => {
   expect(votes).toEqual([]);
 
   // The pair that was skipped past is gone from the slot too.
+  await panesArrive();
   await clickPane("Left");
   await runPickFeedback();
   expect(shownIds()).toEqual([7, 8]);
@@ -293,6 +423,7 @@ test("a skipped pair never comes back through the prefetch slot", async () => {
 
   // The slot was emptied, so the vote's next_pair becomes the current pair.
   // Were the skipped pair still sitting there, it would be shown again.
+  await panesArrive();
   await clickPane("Left");
   await runPickFeedback();
   expect(shownIds()).toEqual([7, 8]);

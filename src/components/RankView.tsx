@@ -26,6 +26,11 @@ const LOAD_FAILED_ERROR = "Failed to load wallpapers.";
 
 type Side = "left" | "right";
 
+/** The ids in a pair slot, for the exclusion `getPair`/`vote` accept. */
+function idsOf(pair: [Wallpaper, Wallpaper] | null): number[] {
+  return pair ? [pair[0].id, pair[1].id] : [];
+}
+
 /** Warm the browser cache so the swapped-in pair renders without a gap. */
 function preloadPair(pair: [Wallpaper, Wallpaper]): void {
   for (const wallpaper of pair) {
@@ -45,6 +50,18 @@ export function RankView() {
   const [voting, setVoting] = useState<Side | null>(null);
   const [skipping, setSkipping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Image URLs the browser has finished fetching. Generating a medium
+  // thumbnail off a 150MB source takes seconds, and until it lands the pane is
+  // blank — so a pick made before both land is a pick on wallpapers the user
+  // cannot see, and a Comparison is permanent.
+  const [fetched, setFetched] = useState<ReadonlySet<string>>(() => new Set());
+
+  const markFetched = useCallback((src: string) => {
+    setFetched((prev) => (prev.has(src) ? prev : new Set(prev).add(src)));
+  }, []);
+
+  const srcs = currentPair?.map((w) => wallpaperImageUrl(w.id, IMAGE_SIZE));
+  const pairFetched = srcs?.every((src) => fetched.has(src)) ?? false;
 
   // Synchronous re-entry guard so rapid double inputs register one Comparison.
   const busyRef = useRef(false);
@@ -57,7 +74,7 @@ export function RankView() {
   const prefetchNextPair = useCallback(async () => {
     const token = ++prefetchTokenRef.current;
     try {
-      const pair = await client.getPair();
+      const pair = await client.getPair(idsOf(currentPairRef.current));
       if (!mountedRef.current) return;
       if (token !== prefetchTokenRef.current) return; // stale prefetch
       setNextPair(pair);
@@ -109,7 +126,7 @@ export function RankView() {
 
   const handleVote = useCallback(
     async (winner: Wallpaper, loser: Wallpaper, side: Side) => {
-      if (busyRef.current) return;
+      if (busyRef.current || !pairFetched) return;
       busyRef.current = true;
       setVoting(side);
       setError(null);
@@ -132,7 +149,13 @@ export function RankView() {
           nextPairRef.current = null;
         }
 
-        const outcome = await client.vote(winner.id, loser.id);
+        // `next_pair` refills the slot behind whatever is on screen now, so
+        // exclude that too — the backend already excludes the two voted on.
+        const outcome = await client.vote(
+          winner.id,
+          loser.id,
+          idsOf(currentPairRef.current),
+        );
         if (!mountedRef.current) return;
 
         // Headline updates from the response alone. With an empty prefetch
@@ -146,7 +169,9 @@ export function RankView() {
           if (prefetched) {
             void prefetchNextPair();
           } else {
-            const fresh = await client.getPair().catch(() => null);
+            const fresh = await client
+              .getPair([winner.id, loser.id])
+              .catch(() => null);
             if (fresh && mountedRef.current) {
               setCurrentPair(fresh);
               currentPairRef.current = fresh;
@@ -180,7 +205,7 @@ export function RankView() {
         busyRef.current = false;
       }
     },
-    [prefetchNextPair],
+    [pairFetched, prefetchNextPair],
   );
 
   const handleSkip = useCallback(async () => {
@@ -191,7 +216,8 @@ export function RankView() {
 
     try {
       prefetchTokenRef.current += 1;
-      const pair = await client.getPair();
+      // Skipping a pair means "not these two", so they stay out of the draw.
+      const pair = await client.getPair(idsOf(currentPairRef.current));
       if (!mountedRef.current) return;
       setCurrentPair(pair);
       currentPairRef.current = pair;
@@ -257,6 +283,7 @@ export function RankView() {
   }
 
   const [left, right] = currentPair;
+  const [leftSrc, rightSrc] = srcs as [string, string];
 
   return (
     <div className="flex h-full w-full max-w-[1920px] min-h-0 mx-auto flex-1 flex-col p-4">
@@ -319,11 +346,23 @@ export function RankView() {
               }`}
             >
               <div className="absolute inset-0 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+                {/* Keyed on src so a pane swap discards the old element
+                    rather than repainting the previous wallpaper until the
+                    new one arrives — the state in which a pick lands on a
+                    wallpaper the user never saw. */}
                 <img
-                  src={wallpaperImageUrl(left.id, IMAGE_SIZE)}
+                  key={leftSrc}
+                  src={leftSrc}
                   alt="Left Wallpaper"
+                  onLoad={() => markFetched(leftSrc)}
+                  onError={() => markFetched(leftSrc)}
                   className="h-full w-full bg-black/20 object-cover"
                 />
+                {!fetched.has(leftSrc) && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-card">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                )}
                 {/* Hover overlay */}
                 <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/10">
                   <span className="rounded-full bg-background/80 px-4 py-2 text-sm font-medium text-foreground opacity-0 shadow-lg backdrop-blur-sm transition-opacity group-hover:opacity-100">
@@ -361,10 +400,18 @@ export function RankView() {
             >
               <div className="absolute inset-0 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
                 <img
-                  src={wallpaperImageUrl(right.id, IMAGE_SIZE)}
+                  key={rightSrc}
+                  src={rightSrc}
                   alt="Right Wallpaper"
+                  onLoad={() => markFetched(rightSrc)}
+                  onError={() => markFetched(rightSrc)}
                   className="h-full w-full bg-black/20 object-cover"
                 />
+                {!fetched.has(rightSrc) && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-card">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                )}
                 {/* Hover overlay */}
                 <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/10">
                   <span className="rounded-full bg-background/80 px-4 py-2 text-sm font-medium text-foreground opacity-0 shadow-lg backdrop-blur-sm transition-opacity group-hover:opacity-100">

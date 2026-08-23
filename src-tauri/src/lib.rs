@@ -123,9 +123,16 @@ fn lock_conn(state: tauri::State<'_, Db>) -> MutexGuard<'_, rusqlite::Connection
 }
 
 #[tauri::command]
-fn get_pair(state: tauri::State<'_, Db>) -> Result<[voting::Wallpaper; 2], error::AppError> {
+fn get_pair(
+    state: tauri::State<'_, Db>,
+    exclude: Option<Vec<i64>>,
+) -> Result<[voting::Wallpaper; 2], error::AppError> {
     let conn = lock_conn(state);
-    voting::get_pair(&conn, &mut voting::SystemRng::new())
+    voting::get_pair(
+        &conn,
+        &exclude.unwrap_or_default(),
+        &mut voting::SystemRng::new(),
+    )
 }
 
 #[tauri::command]
@@ -133,9 +140,16 @@ fn vote(
     state: tauri::State<'_, Db>,
     winner_id: i64,
     loser_id: i64,
+    exclude: Option<Vec<i64>>,
 ) -> Result<voting::VoteOutcome, error::AppError> {
     let conn = lock_conn(state);
-    voting::vote(&conn, winner_id, loser_id, &mut voting::SystemRng::new())
+    voting::vote(
+        &conn,
+        winner_id,
+        loser_id,
+        &exclude.unwrap_or_default(),
+        &mut voting::SystemRng::new(),
+    )
 }
 
 #[tauri::command]
