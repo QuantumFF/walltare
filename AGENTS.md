@@ -8,9 +8,13 @@ Don't prematurely close an issue. Make sure it makes it on main through a PR or 
 
 ## Domain
 
-Read `CONTEXT.md` before touching domain logic — it defines Wallpaper, Status
+Read `CONTEXT.md` before touching domain logic. It defines Wallpaper, Status
 (Active/Kept/Rejected), Soft reject, Comparison, and Evaluated/Participated.
 Use its vocabulary exactly; don't invent synonyms.
+
+Decisions that already went a particular way, and the reasoning that would
+otherwise get undone, live in `docs/adr/`. Read the ones covering the area
+you're about to change.
 
 ## Reference implementation
 
