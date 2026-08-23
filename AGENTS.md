@@ -23,7 +23,9 @@ The original Python/FastAPI + React app lives at `/home/qdes/repos/rate-wallpape
 
 ## Commands
 
-- Dev run: `bun tauri dev` (native Wayland needs `GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1`)
+- Dev run: `bun tauri dev`, from the graphical session — an SSH shell has no
+  display and GTK panics. Native Wayland needs `GDK_BACKEND=x11
+  WEBKIT_DISABLE_DMABUF_RENDERER=1`, plus `__NV_DISABLE_EXPLICIT_SYNC=1` on NVIDIA.
 - Rust: `cargo test`, `cargo fmt`, `cargo clippy --all-targets` (from `src-tauri/`)
 - Frontend: `bun test`, `bun run typecheck`, `bun run lint` (from the repo root)
 
