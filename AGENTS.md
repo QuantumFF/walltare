@@ -20,7 +20,12 @@ The original Python/FastAPI + React app lives at `/home/qdes/repos/rate-wallpape
 ## Commands
 
 - Dev run: `bun tauri dev` (native Wayland needs `GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1`)
-- Tests / lint: `cargo test`, `cargo fmt`, `cargo clippy --all-targets`
+- Rust: `cargo test`, `cargo fmt`, `cargo clippy --all-targets` (from `src-tauri/`)
+- Frontend: `bun test`, `bun run typecheck`, `bun run lint` (from the repo root)
+
+Run both sides before opening a PR. The frontend tests drive the real components
+against a mocked IPC seam, so a backend DTO change that the TypeScript types
+don't follow shows up there rather than at runtime.
 
 ## Agent skills
 

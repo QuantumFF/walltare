@@ -1,109 +1,221 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { ScanView } from "@/components/ScanView";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import App from "@/App";
-import { wallpaperImageUrl } from "@/lib/client";
-import { emitEvent, mockCommand, resetIpcMocks } from "./ipc-mocks";
+import { expectConsoleError } from "./console-guard";
+import { currentView, flush, renderInApp, stats } from "./fixtures";
+import { emitEvent, mockCommand } from "./ipc-mocks";
 
-afterEach(() => {
-  cleanup();
-  resetIpcMocks();
-});
+let scannedPaths: string[];
+
+const input = () =>
+  screen.getByPlaceholderText("/home/user/wallpapers") as HTMLInputElement;
+const scanButton = () =>
+  screen.getByRole("button", { name: /start ranking|scanning collection/i }) as HTMLButtonElement;
+const progressText = () => screen.queryByText(/scanned,/);
+
+afterEach(cleanup);
 
 beforeEach(() => {
-  mockCommand("start_scan", () => null);
+  scannedPaths = [];
+  mockCommand("start_scan", (args) => {
+    scannedPaths.push(args?.path as string);
+    return null;
+  });
+  // The provider's bootstrap: an empty library is what keeps the user here.
+  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
 });
 
-async function startScan(path = "/tmp/wallpapers") {
-  const input = screen.getByPlaceholderText("/home/user/wallpapers");
+/** Emit a backend event and report how many listeners took it. */
+async function emitInAct(name: string, payload: unknown): Promise<number> {
+  let delivered = 0;
   await act(async () => {
-    fireEvent.change(input, { target: { value: path } });
+    delivered = emitEvent(name, payload);
   });
-  const button = screen.getByRole("button", { name: /start ranking/i });
+  return delivered;
+}
+
+async function typePath(path: string) {
   await act(async () => {
-    fireEvent.click(button);
+    fireEvent.change(input(), { target: { value: path } });
   });
 }
 
-test("imageUrl builds wallpaper scheme urls", () => {
-  expect(wallpaperImageUrl(7)).toBe("wallpaper://image/7?size=full");
-  expect(wallpaperImageUrl(7, "small")).toBe("wallpaper://image/7?size=small");
-  expect(wallpaperImageUrl(42, "medium")).toBe("wallpaper://image/42?size=medium");
-});
+async function startScan(path = "/tmp/wallpapers") {
+  await typePath(path);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /start ranking/i }));
+  });
+}
 
-test("valid scan shows progress then lands on the rank placeholder", async () => {
-  render(<App />);
-  expect(screen.getByPlaceholderText("/home/user/wallpapers")).toBeDefined();
-
+test("a scan reports progress, then lands on rank", async () => {
+  renderInApp(<ScanView />);
   await startScan();
 
-  // Progress feedback while events stream in.
-  await waitFor(() => {
-    expect(screen.getByText(/scanning collection/i)).toBeDefined();
-  });
+  expect(scannedPaths).toEqual(["/tmp/wallpapers"]);
+  expect(scanButton().textContent).toContain("Scanning Collection");
 
   await act(async () => {
-    emitEvent("scan-progress", { scanned: 256, added: 256 });
+    emitEvent("scan-progress", { scanned: 256, added: 12 });
   });
-  expect(screen.getByText(/256 scanned/i)).toBeDefined();
+  expect(progressText()?.textContent).toBe("256 scanned, 12 added");
 
   await act(async () => {
-    emitEvent("scan-complete", { added_count: 256 });
+    emitEvent("scan-complete", { added_count: 12, scanned_count: 256 });
   });
 
-  // Lands on the rank placeholder once wallpapers were added.
-  expect(await screen.findByRole("heading", { name: "Rank" })).toBeDefined();
+  expect(currentView()).toBe("rank");
+  expect(progressText()).toBeNull();
+  expect(scanButton().textContent).toContain("Start Ranking");
+});
+
+test("a rescan that adds nothing still lands on rank", async () => {
+  renderInApp(<ScanView />);
+  await startScan();
+
+  // The common case on every launch after the first: the walk found images,
+  // the library already knew them. Reporting that as "no images" was what
+  // stranded the user on this screen.
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 0, scanned_count: 42 });
+  });
+
+  expect(currentView()).toBe("rank");
   expect(
-    screen.queryByPlaceholderText("/home/user/wallpapers"),
+    screen.queryByText(/No supported images found in that directory\./i),
   ).toBeNull();
 });
 
-test("image-free path shows the existing error copy and stays usable", async () => {
-  render(<App />);
+test("a directory with no images at all is reported, and the view stays usable", async () => {
+  renderInApp(<ScanView />);
   await startScan();
 
   await act(async () => {
-    emitEvent("scan-complete", { added_count: 0 });
+    emitEvent("scan-complete", { added_count: 0, scanned_count: 0 });
   });
 
   expect(
-    await screen.findByText(/No supported images found in that directory\./i),
-  ).toBeDefined();
-  expect(screen.getByPlaceholderText("/home/user/wallpapers")).toBeDefined();
-  const button = screen.getByRole("button", { name: /start ranking/i });
-  expect((button as HTMLButtonElement).disabled).toBe(false);
+    screen.queryByText(/No supported images found in that directory\./i),
+  ).not.toBeNull();
+  expect(currentView()).toBe("scan");
+  expect(progressText()).toBeNull();
+  expect(scanButton().disabled).toBe(false);
+
   // A retry re-runs the command.
   await startScan("/tmp/more");
-  await waitFor(() => {
-    expect(screen.getByText(/scanning collection/i)).toBeDefined();
-  });
+  expect(scannedPaths).toEqual(["/tmp/wallpapers", "/tmp/more"]);
 });
 
-test("invalid path shows the existing error copy and stays usable", async () => {
+test("a scan that fails mid-walk is reported and clears the progress line", async () => {
+  expectConsoleError(/Scan failed: permission denied/);
+  renderInApp(<ScanView />);
+  await startScan();
+
+  await act(async () => {
+    emitEvent("scan-progress", { scanned: 10, added: 10 });
+  });
+  await act(async () => {
+    emitEvent("scan-failed", { message: "permission denied" });
+  });
+
+  expect(
+    screen.queryByText(/Failed to scan directory\. Please check the path\./i),
+  ).not.toBeNull();
+  expect(progressText()).toBeNull();
+  expect(currentView()).toBe("scan");
+  expect(scanButton().disabled).toBe(false);
+});
+
+test("an unreadable path is reported and the view stays usable", async () => {
+  expectConsoleError(/invalid_path/);
   mockCommand("start_scan", (args) =>
     Promise.reject({
       kind: "invalid_path",
       message: `${args?.path} is not a directory`,
     }),
   );
-  render(<App />);
+  renderInApp(<ScanView />);
   await startScan("/definitely/not/a/dir");
+  await flush();
 
   expect(
-    await screen.findByText(
-      /That directory doesn't exist or can't be read\./i,
-    ),
-  ).toBeDefined();
-  expect(screen.getByPlaceholderText("/home/user/wallpapers")).toBeDefined();
+    screen.queryByText(/That directory doesn't exist or can't be read\./i),
+  ).not.toBeNull();
+  expect(scanButton().disabled).toBe(false);
 
-  // Stays usable: fixing the path works.
-  await act(async () => {
-    fireEvent.change(screen.getByPlaceholderText("/home/user/wallpapers"), {
-      target: { value: "/tmp/wallpapers" },
-    });
-  });
+  // Fixing the path works: a fresh scan runs and completes.
+  mockCommand("start_scan", () => null);
   await startScan("/tmp/wallpapers");
   await act(async () => {
-    emitEvent("scan-complete", { added_count: 5 });
+    emitEvent("scan-complete", { added_count: 5, scanned_count: 5 });
   });
-  expect(await screen.findByRole("heading", { name: "Rank" })).toBeDefined();
+  expect(currentView()).toBe("rank");
+});
+
+test("a scan started while one is already running is reported as such", async () => {
+  expectConsoleError(/invalid_transition/);
+  mockCommand("start_scan", () =>
+    Promise.reject({
+      kind: "invalid_transition",
+      message: "a scan is already running",
+    }),
+  );
+  renderInApp(<ScanView />);
+  await startScan();
+  await flush();
+
+  expect(screen.queryByText("A scan is already running.")).not.toBeNull();
+  expect(scanButton().disabled).toBe(false);
+});
+
+test("an empty path cannot start a scan", async () => {
+  renderInApp(<ScanView />);
+
+  expect(scanButton().disabled).toBe(true);
+  // Enter bypasses the disabled button, so the handler guards the path itself.
+  await act(async () => {
+    fireEvent.keyDown(input(), { key: "Enter" });
+  });
+  expect(scannedPaths).toEqual([]);
+});
+
+test("a scan in flight cannot be started a second time", async () => {
+  renderInApp(<ScanView />);
+  await startScan();
+
+  expect(scanButton().disabled).toBe(true);
+  expect(input().disabled).toBe(true);
+  await act(async () => {
+    fireEvent.keyDown(input(), { key: "Enter" });
+  });
+  expect(scannedPaths).toEqual(["/tmp/wallpapers"]);
+});
+
+test("unmounting drops the scan subscriptions", async () => {
+  const { unmount } = renderInApp(<ScanView />);
+  await flush();
+  expect(await emitInAct("scan-progress", { scanned: 1, added: 1 })).toBe(1);
+
+  unmount();
+
+  // A live listener here would also set state on an unmounted component.
+  expect(emitEvent("scan-progress", { scanned: 2, added: 2 })).toBe(0);
+  expect(emitEvent("scan-complete", { added_count: 0, scanned_count: 0 })).toBe(
+    0,
+  );
+  expect(emitEvent("scan-failed", { message: "late" })).toBe(0);
+});
+
+test("unmounting before the subscriptions resolve still drops them", async () => {
+  // No await between render and unmount: `listen` is still pending, so the
+  // effect cleanup has nothing to unsubscribe yet and the resolution, which
+  // lands after the component is gone, has to undo its own work.
+  const { unmount } = renderInApp(<ScanView />);
+  unmount();
+  await flush();
+
+  expect(emitEvent("scan-progress", { scanned: 1, added: 1 })).toBe(0);
+  expect(emitEvent("scan-complete", { added_count: 0, scanned_count: 0 })).toBe(
+    0,
+  );
+  expect(emitEvent("scan-failed", { message: "late" })).toBe(0);
 });

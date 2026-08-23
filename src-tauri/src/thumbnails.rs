@@ -54,12 +54,29 @@ pub struct Thumbnail {
     pub height: u32,
 }
 
-pub fn resolve(
-    conn: &Connection,
-    cache_dir: &Path,
+/// Everything the resolver needs from the database before it can do any work.
+///
+/// Splitting this out lets the caller release the connection lock before
+/// [`fulfill`] decodes and re-encodes the image, which for a 4K source is
+/// hundreds of milliseconds of CPU that would otherwise block every other
+/// command and every other image request.
+pub struct Plan {
     wallpaper_id: i64,
     size: Size,
-) -> Result<Thumbnail, AppError> {
+    source: PathBuf,
+    /// The recorded `(width, height, source_mtime)`, if this size was cached.
+    cached: Option<(u32, u32, i64)>,
+}
+
+/// A resolved thumbnail, plus the mtime to [`record`] when it was regenerated.
+pub struct Resolved {
+    pub thumbnail: Thumbnail,
+    /// `Some` only when freshly generated, meaning the row needs upserting.
+    pub record_mtime: Option<i64>,
+}
+
+/// Phase 1 — the only part that touches the database before the image work.
+pub fn plan(conn: &Connection, wallpaper_id: i64, size: Size) -> Result<Plan, AppError> {
     let source: String = conn
         .query_row(
             "SELECT path FROM wallpapers WHERE id = ?1",
@@ -72,19 +89,56 @@ pub fn resolve(
             }
             other => other.into(),
         })?;
-    let source = PathBuf::from(source);
-    let source_mtime = source_mtime(Path::new(&source))?;
-    let cache_path = cache_dir.join(format!("{wallpaper_id}_{}.jpg", size.label()));
 
-    if let Some(cached) = cached_thumbnail(conn, &cache_path, wallpaper_id, size, source_mtime)? {
-        return Ok(cached);
+    let cached = match conn.query_row(
+        "SELECT width, height, source_mtime FROM thumbnails
+         WHERE wallpaper_id = ?1 AND size = ?2",
+        rusqlite::params![wallpaper_id, size.label()],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u32,
+                row.get::<_, i64>(1)? as u32,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    ) {
+        Ok(row) => Some(row),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(e.into()),
+    };
+
+    Ok(Plan {
+        wallpaper_id,
+        size,
+        source: PathBuf::from(source),
+        cached,
+    })
+}
+
+/// Phase 2 — no database access. Serves the cache file when it is still fresh,
+/// otherwise decodes, downscales and re-encodes the source.
+pub fn fulfill(plan: &Plan, cache_dir: &Path) -> Result<Resolved, AppError> {
+    let source_mtime = source_mtime(&plan.source)?;
+    let cache_path = cache_dir.join(format!("{}_{}.jpg", plan.wallpaper_id, plan.size.label()));
+
+    if let Some((width, height, recorded)) = plan.cached {
+        if recorded == source_mtime && cache_path.exists() {
+            return Ok(Resolved {
+                thumbnail: Thumbnail {
+                    bytes: std::fs::read(&cache_path)?,
+                    width,
+                    height,
+                },
+                record_mtime: None,
+            });
+        }
     }
 
-    let img = ImageReader::open(&source)?
+    let img = ImageReader::open(&plan.source)?
         .with_guessed_format()?
         .decode()
         .map_err(|e| AppError::Image(e.to_string()))?;
-    let img = downscale_if_wider(img, size);
+    let img = downscale_if_wider(img, plan.size);
     let (width, height) = (img.width(), img.height());
     let bytes = encode_jpeg(flatten_to_rgb(img))?;
 
@@ -93,23 +147,53 @@ pub fn resolve(
     std::fs::write(&tmp, &bytes)?;
     std::fs::rename(&tmp, &cache_path)?;
 
-    if size != Size::Full {
-        conn.execute(
-            "INSERT INTO thumbnails (wallpaper_id, size, width, height, source_mtime)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(wallpaper_id, size) DO UPDATE SET
-                width = excluded.width,
-                height = excluded.height,
-                source_mtime = excluded.source_mtime",
-            rusqlite::params![wallpaper_id, size.label(), width, height, source_mtime],
-        )?;
-    }
-
-    Ok(Thumbnail {
-        bytes,
-        width,
-        height,
+    Ok(Resolved {
+        thumbnail: Thumbnail {
+            bytes,
+            width,
+            height,
+        },
+        record_mtime: Some(source_mtime),
     })
+}
+
+/// Phase 3 — records a freshly generated thumbnail. A no-op for a cache hit.
+pub fn record(conn: &Connection, plan: &Plan, resolved: &Resolved) -> Result<(), AppError> {
+    let Some(source_mtime) = resolved.record_mtime else {
+        return Ok(());
+    };
+    conn.execute(
+        "INSERT INTO thumbnails (wallpaper_id, size, width, height, source_mtime)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(wallpaper_id, size) DO UPDATE SET
+            width = excluded.width,
+            height = excluded.height,
+            source_mtime = excluded.source_mtime",
+        rusqlite::params![
+            plan.wallpaper_id,
+            plan.size.label(),
+            resolved.thumbnail.width,
+            resolved.thumbnail.height,
+            source_mtime
+        ],
+    )?;
+    Ok(())
+}
+
+/// The three phases back to back, for callers that already hold the connection
+/// for the whole operation. Production goes through the phases directly so the
+/// lock is released across the decode; this exists for the unit tests.
+#[cfg(test)]
+pub fn resolve(
+    conn: &Connection,
+    cache_dir: &Path,
+    wallpaper_id: i64,
+    size: Size,
+) -> Result<Thumbnail, AppError> {
+    let plan = plan(conn, wallpaper_id, size)?;
+    let resolved = fulfill(&plan, cache_dir)?;
+    record(conn, &plan, &resolved)?;
+    Ok(resolved.thumbnail)
 }
 
 pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(), AppError> {
@@ -126,59 +210,6 @@ pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(
         }
     }
     Ok(())
-}
-
-fn cached_thumbnail(
-    conn: &Connection,
-    cache_path: &Path,
-    wallpaper_id: i64,
-    size: Size,
-    source_mtime: i64,
-) -> Result<Option<Thumbnail>, AppError> {
-    if size == Size::Full {
-        let Ok(md) = std::fs::metadata(cache_path) else {
-            return Ok(None);
-        };
-        let cache_mtime = modified_secs(&md)?;
-        if cache_mtime < source_mtime {
-            return Ok(None);
-        }
-        let (width, height) = ImageReader::open(cache_path)?
-            .with_guessed_format()?
-            .into_dimensions()
-            .map_err(|e| AppError::Image(e.to_string()))?;
-        return Ok(Some(Thumbnail {
-            bytes: std::fs::read(cache_path)?,
-            width,
-            height,
-        }));
-    }
-
-    let row = match conn.query_row(
-        "SELECT width, height, source_mtime FROM thumbnails
-         WHERE wallpaper_id = ?1 AND size = ?2",
-        rusqlite::params![wallpaper_id, size.label()],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        },
-    ) {
-        Ok(row) => row,
-        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    let (width, height, mtime) = row;
-    if mtime != source_mtime || !cache_path.exists() {
-        return Ok(None);
-    }
-    Ok(Some(Thumbnail {
-        bytes: std::fs::read(cache_path)?,
-        width: width as u32,
-        height: height as u32,
-    }))
 }
 
 fn downscale_if_wider(mut img: DynamicImage, size: Size) -> DynamicImage {
@@ -223,15 +254,19 @@ fn encode_jpeg(img: RgbImage) -> Result<Vec<u8>, AppError> {
 fn source_mtime(path: &Path) -> Result<i64, AppError> {
     let md = std::fs::metadata(path)
         .map_err(|_| AppError::NotFound(format!("missing source file {}", path.display())))?;
-    modified_secs(&md)
+    modified_nanos(&md)
 }
 
-fn modified_secs(md: &std::fs::Metadata) -> Result<i64, AppError> {
+/// Nanoseconds since the epoch, not seconds: whole-second resolution misses an
+/// edit made in the same second the thumbnail was written, and that thumbnail
+/// then stays stale forever because the recorded mtime never changes again.
+/// i64 nanoseconds runs out in the year 2262.
+fn modified_nanos(md: &std::fs::Metadata) -> Result<i64, AppError> {
     Ok(md
         .modified()?
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_secs() as i64)
+        .as_nanos() as i64)
 }
 
 #[cfg(test)]
@@ -324,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn full_size_never_downscales_and_bypasses_table() {
+    fn full_size_never_downscales_and_is_invalidated_like_the_others() {
         let (conn, tmp) = setup();
         let id = seed_wallpaper(&conn, tmp.path(), "f.png", &solid(800, 600, [4, 5, 6, 255]));
 
@@ -332,7 +367,30 @@ mod tests {
 
         assert_eq!((thumb.width, thumb.height), (800, 600));
         assert!(tmp.path().join(format!("{id}_full.jpg")).exists());
-        assert_eq!(thumbnail_row(&conn, id, "full"), None);
+        assert_eq!(
+            thumbnail_row(&conn, id, "full"),
+            Some((800, 600, source_mtime(&tmp.path().join("f.png")).unwrap()))
+        );
+    }
+
+    #[test]
+    fn an_edit_within_the_same_second_still_invalidates() {
+        // Whole-second mtimes made this case permanently stale: the recorded
+        // mtime matched, so the old thumbnail was served forever.
+        let (conn, tmp) = setup();
+        let id = seed_wallpaper(&conn, tmp.path(), "s.png", &solid(300, 150, [1, 1, 1, 255]));
+        let first = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+
+        // Both sizes stay under SMALL_MAX_WIDTH so a changed dimension can only
+        // mean the thumbnail was regenerated, never that it was downscaled.
+        solid(350, 120, [2, 2, 2, 255])
+            .save_with_format(tmp.path().join("s.png"), image::ImageFormat::Png)
+            .unwrap();
+
+        let second = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+
+        assert_eq!((first.width, first.height), (300, 150));
+        assert_eq!((second.width, second.height), (350, 120));
     }
 
     #[test]

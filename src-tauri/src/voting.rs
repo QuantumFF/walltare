@@ -38,11 +38,19 @@ pub struct Stats {
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct VoteOutcome {
-    pub next_pair: [Wallpaper; 2],
+    /// `None` when the vote was recorded but the follow-up fetch failed; the
+    /// client re-fetches rather than treating a committed vote as an error.
+    pub next_pair: Option<[Wallpaper; 2]>,
     pub stats: Stats,
 }
 
 /// Picks two eligible wallpapers via the pure pair-selection module.
+///
+/// The two are shuffled before returning. `select_pair` always yields the
+/// least-compared wallpaper first, and the UI renders slot 0 on the left, so
+/// without this the left side is systematically the newer wallpaper — feeding
+/// the well-known left-position bias of pairwise comparison straight into the
+/// ratings the app exists to measure.
 pub fn get_pair<R: Rng>(conn: &Connection, rng: &mut R) -> Result<[Wallpaper; 2], AppError> {
     let pool = eligible_summaries(conn)?;
     let (first, second) = ranking::select_pair(&pool, rng).ok_or_else(|| {
@@ -51,6 +59,11 @@ pub fn get_pair<R: Rng>(conn: &Connection, rng: &mut R) -> Result<[Wallpaper; 2]
             pool.len()
         ))
     })?;
+    let (first, second) = if rng.next_f64() < 0.5 {
+        (first, second)
+    } else {
+        (second, first)
+    };
     Ok([
         fetch_wallpaper(conn, first.id)?,
         fetch_wallpaper(conn, second.id)?,
@@ -96,7 +109,12 @@ pub fn vote<R: Rng>(
     )?;
     tx.commit()?;
 
-    let next_pair = get_pair(conn, rng)?;
+    // The Comparison is durable from here on, so the follow-up pair fetch must
+    // not surface as a failed vote — it has a genuine logical failure mode
+    // (`NotEnoughWallpapers`) that says nothing about whether the vote counted.
+    // `get_stats` stays fatal: two `SELECT COUNT(*)`s only fail if the database
+    // itself is gone, at which point an error is the honest answer.
+    let next_pair = get_pair(conn, rng).ok();
     let stats = get_stats(conn)?;
     Ok(VoteOutcome { next_pair, stats })
 }
@@ -133,9 +151,12 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
 }
 
 fn eligible_summaries(conn: &Connection) -> Result<Vec<ranking::WallpaperSummary>, AppError> {
+    // No ORDER BY: `select_pair` scans for a minimum and indexes by RNG draw,
+    // so row order isn't load-bearing, and sorting the whole library costs a
+    // temp B-tree on every pair fetch.
     let mut stmt = conn.prepare_cached(
         "SELECT id, rating_mu, rating_sigma, comparisons_count
-         FROM wallpapers WHERE status IN ('active', 'kept') ORDER BY id",
+         FROM wallpapers WHERE status IN ('active', 'kept')",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(ranking::WallpaperSummary {
@@ -369,9 +390,29 @@ mod tests {
 
         // With only two eligible wallpapers, the next pair is the same two
         // (in either order).
-        let mut next_ids = outcome.next_pair.map(|p| p.id);
+        let mut next_ids = outcome
+            .next_pair
+            .expect("two eligible wallpapers remain after the vote")
+            .map(|p| p.id);
         next_ids.sort_unstable();
         assert_eq!(next_ids, [l.min(w), l.max(w)]);
+    }
+
+    #[test]
+    fn pair_slot_order_is_randomized_rather_than_least_compared_first() {
+        let conn = test_conn();
+        // `select_pair` always picks `fresh` first: it has the fewest comparisons.
+        let fresh = seed_on(&conn, "active", MU, SIGMA, 0);
+        let seasoned = seed_on(&conn, "active", MU, SIGMA, 40);
+
+        // The shuffle draw is the last value `get_pair` takes from the RNG.
+        let low = get_pair(&conn, &mut SeqRng::new(&[0.0])).unwrap();
+        let high = get_pair(&conn, &mut SeqRng::new(&[0.0, 0.0, 0.99])).unwrap();
+
+        assert_eq!(low[0].id, fresh, "a low draw keeps selection order");
+        assert_eq!(high[0].id, seasoned, "a high draw swaps the slots");
+        assert_eq!(low[1].id, seasoned);
+        assert_eq!(high[1].id, fresh);
     }
 
     #[test]

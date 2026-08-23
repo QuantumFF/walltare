@@ -3,6 +3,7 @@ import { Progress } from "@/components/ui/progress";
 import { useApp } from "@/context/AppContext";
 import {
   client,
+  isAppError,
   wallpaperImageUrl,
   type Stats,
   type Wallpaper,
@@ -18,6 +19,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const PICK_FEEDBACK_MS = 300;
 const IMAGE_SIZE = "medium";
+const VOTE_FAILED_ERROR = "That vote didn't save. Pick again.";
+const NOT_ENOUGH_ERROR =
+  "Ranking needs at least two wallpapers that aren't rejected.";
+const LOAD_FAILED_ERROR = "Failed to load wallpapers.";
 
 type Side = "left" | "right";
 
@@ -39,17 +44,21 @@ export function RankView() {
   const [loading, setLoading] = useState(true);
   const [voting, setVoting] = useState<Side | null>(null);
   const [skipping, setSkipping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Synchronous re-entry guard so rapid double inputs register one Comparison.
   const busyRef = useRef(false);
   const currentPairRef = useRef(currentPair);
   const nextPairRef = useRef(nextPair);
   const prefetchTokenRef = useRef(0);
+  // Prefetches outlive the component; without this they set state after unmount.
+  const mountedRef = useRef(true);
 
   const prefetchNextPair = useCallback(async () => {
     const token = ++prefetchTokenRef.current;
     try {
       const pair = await client.getPair();
+      if (!mountedRef.current) return;
       if (token !== prefetchTokenRef.current) return; // stale prefetch
       setNextPair(pair);
       nextPairRef.current = pair;
@@ -57,6 +66,13 @@ export function RankView() {
     } catch (error) {
       console.error("Failed to prefetch next pair:", error);
     }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -74,9 +90,15 @@ export function RankView() {
         setStats(initialStats);
         setLoading(false);
         void prefetchNextPair();
-      } catch (error) {
-        console.error("Failed to load pair:", error);
-        if (!cancelled) setLoading(false);
+      } catch (err) {
+        console.error("Failed to load pair:", err);
+        if (cancelled) return;
+        setError(
+          isAppError(err) && err.kind === "not_enough_wallpapers"
+            ? NOT_ENOUGH_ERROR
+            : LOAD_FAILED_ERROR,
+        );
+        setLoading(false);
       }
     })();
 
@@ -90,6 +112,11 @@ export function RankView() {
       if (busyRef.current) return;
       busyRef.current = true;
       setVoting(side);
+      setError(null);
+
+      // Kept so a failed vote can put the pair the user was looking at back;
+      // the optimistic swap below has already moved on by then.
+      const votedOn = currentPairRef.current;
 
       try {
         // Visual pick feedback before the swap.
@@ -106,11 +133,29 @@ export function RankView() {
         }
 
         const outcome = await client.vote(winner.id, loser.id);
+        if (!mountedRef.current) return;
 
         // Headline updates from the response alone. With an empty prefetch
         // slot, next_pair becomes the current pair and the slot is refilled
         // with a fresh pair so the two never show the same Comparison twice.
         setStats(outcome.stats);
+        if (!outcome.next_pair) {
+          // The vote counted; only the follow-up fetch didn't. Refill whichever
+          // slot is empty rather than leave the user on a pair they just voted
+          // on — and never report this as a failed vote.
+          if (prefetched) {
+            void prefetchNextPair();
+          } else {
+            const fresh = await client.getPair().catch(() => null);
+            if (fresh && mountedRef.current) {
+              setCurrentPair(fresh);
+              currentPairRef.current = fresh;
+              preloadPair(fresh);
+              void prefetchNextPair();
+            }
+          }
+          return;
+        }
         if (prefetched) {
           setNextPair(outcome.next_pair);
           nextPairRef.current = outcome.next_pair;
@@ -120,8 +165,16 @@ export function RankView() {
           void prefetchNextPair();
         }
         preloadPair(outcome.next_pair);
-      } catch (error) {
-        console.error("Failed to submit vote:", error);
+      } catch (err) {
+        console.error("Failed to submit vote:", err);
+        if (!mountedRef.current) return;
+        // Undo the optimistic swap: the Comparison was never recorded, so
+        // silently advancing would drop the user's choice without telling them.
+        if (votedOn) {
+          setCurrentPair(votedOn);
+          currentPairRef.current = votedOn;
+        }
+        setError(VOTE_FAILED_ERROR);
       } finally {
         setVoting(null);
         busyRef.current = false;
@@ -134,17 +187,25 @@ export function RankView() {
     if (busyRef.current) return;
     busyRef.current = true;
     setSkipping(true);
+    setError(null);
 
     try {
       prefetchTokenRef.current += 1;
       const pair = await client.getPair();
+      if (!mountedRef.current) return;
       setCurrentPair(pair);
       currentPairRef.current = pair;
       setNextPair(null);
       nextPairRef.current = null;
       void prefetchNextPair();
-    } catch (error) {
-      console.error("Failed to fetch a fresh pair:", error);
+    } catch (err) {
+      console.error("Failed to fetch a fresh pair:", err);
+      if (!mountedRef.current) return;
+      setError(
+        isAppError(err) && err.kind === "not_enough_wallpapers"
+          ? NOT_ENOUGH_ERROR
+          : LOAD_FAILED_ERROR,
+      );
     } finally {
       setSkipping(false);
       busyRef.current = false;
@@ -183,8 +244,13 @@ export function RankView() {
     return (
       <>
         <h1 className="sr-only">Rank</h1>
-        <div className="flex flex-1 items-center justify-center text-muted-foreground">
-          Error loading wallpapers.
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
+          <p role="alert">{error ?? LOAD_FAILED_ERROR}</p>
+          {/* Without a way out this screen is a dead end: there is no route
+              back to scan, so the user would have to restart the app. */}
+          <Button variant="outline" onClick={() => setView("review")}>
+            Go to Review
+          </Button>
         </div>
       </>
     );
@@ -196,8 +262,17 @@ export function RankView() {
     <div className="flex h-full w-full max-w-[1920px] min-h-0 mx-auto flex-1 flex-col p-4">
       <h1 className="sr-only">Rank</h1>
 
-
       <div className="flex w-full flex-1 flex-col justify-center gap-4">
+        {error && (
+          <p
+            className="mx-auto text-sm text-destructive"
+            role="alert"
+            aria-live="polite"
+          >
+            {error}
+          </p>
+        )}
+
         {/* Progress headline */}
         <div className="mx-auto w-full max-w-2xl space-y-2">
           <div className="flex items-end justify-between">

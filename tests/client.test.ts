@@ -1,8 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { client } from "@/lib/client";
-import { emitEvent, mockCommand, resetIpcMocks } from "./ipc-mocks";
-
-afterEach(() => resetIpcMocks());
+import { client, wallpaperImageUrl } from "@/lib/client";
+import { describe, expect, test } from "bun:test";
+import { emitEvent, mockCommand } from "./ipc-mocks";
 
 describe("client seam", () => {
   test("startScan forwards the path argument", async () => {
@@ -25,6 +23,17 @@ describe("client seam", () => {
     });
   });
 
+  test("getReview asks for 50 rows unless told otherwise", async () => {
+    const limits: unknown[] = [];
+    mockCommand("get_review", (args) => {
+      limits.push(args?.limit);
+      return [];
+    });
+    await client.getReview();
+    await client.getReview(5);
+    expect(limits).toEqual([50, 5]);
+  });
+
   test("event subscriptions unwrap tauri payloads", async () => {
     const seen: unknown[] = [];
     const unlisten = await client.onScanProgress((payload) =>
@@ -34,5 +43,31 @@ describe("client seam", () => {
     expect(delivered).toBe(1);
     expect(seen).toEqual([{ scanned: 10, added: 3 }]);
     unlisten();
+  });
+
+  test("unlisten stops delivery", async () => {
+    const unlisten = await client.onScanFailed(() => {});
+    expect(emitEvent("scan-failed", { message: "boom" })).toBe(1);
+    unlisten();
+    expect(emitEvent("scan-failed", { message: "boom" })).toBe(0);
+  });
+});
+
+describe("wallpaperImageUrl", () => {
+  // `localhost` is the placeholder authority; `image` has to sit in the path
+  // or the Rust protocol handler rejects the request (see client.ts).
+  test("puts image in the path, behind a localhost authority", () => {
+    expect(wallpaperImageUrl(7)).toBe(
+      "wallpaper://localhost/image/7?size=full",
+    );
+  });
+
+  test("carries the requested thumbnail size", () => {
+    expect(wallpaperImageUrl(7, "small")).toBe(
+      "wallpaper://localhost/image/7?size=small",
+    );
+    expect(wallpaperImageUrl(42, "medium")).toBe(
+      "wallpaper://localhost/image/42?size=medium",
+    );
   });
 });

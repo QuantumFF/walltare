@@ -6,10 +6,29 @@ type EventHandler = (event: { payload: unknown }) => void;
 const commands = new Map<string, (args: CommandArgs) => unknown>();
 const handlers = new Map<string, Set<EventHandler>>();
 
+// A mock body that throws synchronously is a broken test, not a backend
+// failure: every component catches IPC rejections, so a failed `expect()`
+// inside a mock would surface as "Failed to load the review list" and the test
+// would pass. Park those errors here and rethrow after the test body.
+// Deliberate backend failures are written as `Promise.reject(...)` instead.
+const mockFailures: unknown[] = [];
+
 /** Replace every registered command and event listener. */
 export function resetIpcMocks(): void {
   commands.clear();
   handlers.clear();
+  mockFailures.length = 0;
+}
+
+/**
+ * Rethrow whatever a mock body threw synchronously. Registered as a global
+ * `afterEach` in preload.ts so a swallowed assertion can't pass as green.
+ */
+export function flushMockFailures(): void {
+  if (mockFailures.length === 0) return;
+  const [first] = mockFailures;
+  mockFailures.length = 0;
+  throw first;
 }
 
 /** Register (or replace) the mock implementation of a Tauri command. */
@@ -49,6 +68,7 @@ export function registerIpcMocks(): void {
       try {
         return Promise.resolve(impl(args));
       } catch (error) {
+        mockFailures.push(error);
         return Promise.reject(error);
       }
     },

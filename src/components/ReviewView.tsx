@@ -54,29 +54,46 @@ export function ReviewView() {
     void fetchReviewList();
   }, [fetchReviewList]);
 
+  // Puts one card back where it was after a failed action.
+  //
+  // Restoring a whole snapshot of the list would resurrect any *other* card
+  // that was successfully removed while this action was in flight — the
+  // snapshot is captured at render time and goes stale the moment a second
+  // action starts. Re-inserting only the affected card cannot do that.
+  const restoreCard = (index: number, wallpaper: Wallpaper) => {
+    setWallpapers((prev) => {
+      if (prev.some((w) => w.id === wallpaper.id)) return prev;
+      const next = [...prev];
+      next.splice(Math.min(index, next.length), 0, wallpaper);
+      return next;
+    });
+  };
+
   const handleKeep = async (id: number) => {
     // Optimistic removal; restore the card if the persist fails.
-    const previous = wallpapers;
+    const index = wallpapers.findIndex((w) => w.id === id);
+    const removed = wallpapers[index];
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
     setError(null);
     try {
       await client.keepWallpaper(id);
     } catch (err) {
       console.error("Failed to keep wallpaper:", err);
-      setWallpapers(previous);
+      if (removed) restoreCard(index, removed);
       setError(KEEP_FAILED_ERROR);
     }
   };
 
   const handleMove = async (id: number) => {
-    const previous = wallpapers;
+    const index = wallpapers.findIndex((w) => w.id === id);
+    const removed = wallpapers[index];
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
     setError(null);
     try {
       await client.moveWallpaper(id, movePath);
     } catch (err) {
       console.error("Failed to move wallpaper:", err);
-      setWallpapers(previous);
+      if (removed) restoreCard(index, removed);
       setError(MOVE_FAILED_ERROR);
     }
   };

@@ -2,6 +2,12 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::error::AppError;
+
+/// Bumped whenever `DDL` changes in a way an existing database can't reach by
+/// running the (idempotent) DDL again. See `migrate`.
+const SCHEMA_VERSION: i64 = 2;
+
 const DDL: &str = "
 CREATE TABLE IF NOT EXISTS wallpapers (
     id                INTEGER PRIMARY KEY,
@@ -27,7 +33,7 @@ CREATE TABLE IF NOT EXISTS comparisons (
 
 CREATE TABLE IF NOT EXISTS thumbnails (
     wallpaper_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE CASCADE,
-    size         TEXT    NOT NULL CHECK (size IN ('small', 'medium')),
+    size         TEXT    NOT NULL CHECK (size IN ('small', 'medium', 'full')),
     width        INTEGER NOT NULL,
     height       INTEGER NOT NULL,
     source_mtime INTEGER NOT NULL,
@@ -38,51 +44,175 @@ CREATE TABLE IF NOT EXISTS thumbnails (
 pub fn open(db_path: &Path) -> Result<Connection, rusqlite::Error> {
     let conn = Connection::open(db_path)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // The scan writes thousands of rows and every other command reads through
+    // the same single connection; a rollback journal fsyncs per statement.
+    // The result row is ignored on purpose: a filesystem that can't do WAL
+    // reports the mode it kept instead of failing, and running slower beats
+    // refusing to start.
+    conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
     Ok(conn)
 }
 
 pub fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
-    conn.execute_batch(DDL)
+    let fresh = !table_exists(conn, "wallpapers")?;
+    conn.execute_batch(DDL)?;
+    if fresh {
+        // The DDL always creates the current shape, so a new file starts current.
+        set_schema_version(conn, SCHEMA_VERSION)
+    } else {
+        migrate(conn)
+    }
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        rusqlite::params![name],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+}
+
+fn schema_version(conn: &Connection) -> Result<i64, rusqlite::Error> {
+    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+}
+
+fn set_schema_version(conn: &Connection, version: i64) -> Result<(), rusqlite::Error> {
+    // PRAGMA user_version does not accept a bound parameter.
+    conn.execute_batch(&format!("PRAGMA user_version = {version}"))
+}
+
+/// Brings a pre-existing database up to `SCHEMA_VERSION`.
+///
+/// `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already exists,
+/// so any change to an existing table's shape needs an explicit step here.
+fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut version = schema_version(conn)?;
+
+    if version < 2 {
+        // v2 widened the thumbnails CHECK to accept 'full'. The table is a pure
+        // cache keyed by (wallpaper_id, size), so rebuilding it costs one lazy
+        // regeneration per thumbnail rather than a data migration.
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS thumbnails;
+             CREATE TABLE thumbnails (
+                 wallpaper_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE CASCADE,
+                 size         TEXT    NOT NULL CHECK (size IN ('small', 'medium', 'full')),
+                 width        INTEGER NOT NULL,
+                 height       INTEGER NOT NULL,
+                 source_mtime INTEGER NOT NULL,
+                 PRIMARY KEY (wallpaper_id, size)
+             );",
+        )?;
+        version = 2;
+    }
+
+    set_schema_version(conn, version)
 }
 
 pub fn insert_new_wallpapers(
     conn: &Connection,
     paths: &[PathBuf],
 ) -> Result<usize, rusqlite::Error> {
-    let mut stmt =
-        conn.prepare_cached("INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)")?;
+    // One implicit transaction per row means one journal fsync per row; a whole
+    // batch under a single transaction is orders of magnitude faster on disk.
+    let tx = conn.unchecked_transaction()?;
     let mut added = 0;
-    for path in paths {
-        added += stmt.execute(rusqlite::params![
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default(),
-            path.to_str().expect("walk only yields UTF-8 paths"),
-        ])?;
+    {
+        let mut stmt =
+            tx.prepare_cached("INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)")?;
+        for path in paths {
+            let Some(path_str) = path.to_str() else {
+                // `scanner::walk` filters these out; skip rather than panic so a
+                // caller that doesn't can't poison the connection mutex.
+                continue;
+            };
+            added += stmt.execute(rusqlite::params![
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default(),
+                path_str,
+            ])?;
+        }
     }
+    tx.commit()?;
     Ok(added)
 }
 
+/// How many ` (n)` variants to try before giving up on a colliding destination.
+const MAX_COLLISION_SUFFIXES: u32 = 1000;
+
+/// Soft-rejects a wallpaper: moves its file to `destination_folder` and marks
+/// the row Rejected, keeping every Comparison it took part in.
+///
+/// The database write happens first, inside a transaction, and the file move
+/// last. That ordering matters: a `UNIQUE(path)` collision or any other DB
+/// error then aborts before anything on disk has changed, instead of leaving a
+/// moved file behind a row that still points at the old location.
 pub fn move_wallpaper(
     conn: &Connection,
     wallpaper_id: i64,
     destination_folder: &str,
-) -> Result<(), crate::error::AppError> {
-    let (path, filename): (String, String) = conn
+) -> Result<(), AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let (path, filename, status): (String, String, String) = tx
         .query_row(
-            "SELECT path, filename FROM wallpapers WHERE id = ?1",
+            "SELECT path, filename, status FROM wallpapers WHERE id = ?1",
             rusqlite::params![wallpaper_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
-                crate::error::AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
+                AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
             }
             other => other.into(),
         })?;
 
+    if status == "rejected" {
+        // Re-rejecting would move the file again, nesting the destination folder
+        // inside itself (`rejected/rejected/x.jpg`).
+        return Err(AppError::InvalidTransition(format!(
+            "wallpaper {wallpaper_id} is already rejected"
+        )));
+    }
+
     let source = PathBuf::from(&path);
-    let dest_dir = if Path::new(destination_folder).is_absolute() {
+    let dest_dir = resolve_destination_dir(&source, destination_folder)?;
+    if dest_dir.join(&filename) == source {
+        return Err(AppError::InvalidPath(format!(
+            "destination {destination_folder:?} is the folder wallpaper {wallpaper_id} already lives in"
+        )));
+    }
+    let dest_path = unique_destination(&dest_dir, &filename)?;
+
+    let dest_str = dest_path
+        .to_str()
+        .ok_or_else(|| AppError::InvalidPath(dest_path.display().to_string()))?;
+    let dest_name = dest_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::InvalidPath(dest_path.display().to_string()))?;
+
+    tx.execute(
+        "UPDATE wallpapers SET status = 'rejected', path = ?1, filename = ?2 WHERE id = ?3",
+        rusqlite::params![dest_str, dest_name, wallpaper_id],
+    )?;
+
+    // Anything below that fails drops `tx` unread, rolling the row back.
+    move_file(&source, &dest_path)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Resolves `destination_folder` against the wallpaper's own folder when it is
+/// relative, creates it, and canonicalizes the result.
+///
+/// Canonicalizing is what keeps a rejected file rejected: the default `./rejected`
+/// would otherwise be stored verbatim as `/lib/./rejected/x.jpg`, which is a
+/// different string from the `/lib/rejected/x.jpg` a rescan produces, so
+/// `UNIQUE(path)` wouldn't match and the file would come back as a new Active row.
+fn resolve_destination_dir(source: &Path, destination_folder: &str) -> Result<PathBuf, AppError> {
+    let raw = if Path::new(destination_folder).is_absolute() {
         PathBuf::from(destination_folder)
     } else {
         source
@@ -90,31 +220,59 @@ pub fn move_wallpaper(
             .unwrap_or_else(|| Path::new("/"))
             .join(destination_folder)
     };
-    let dest_path = dest_dir.join(&filename);
+    std::fs::create_dir_all(&raw)?;
+    raw.canonicalize().map_err(Into::into)
+}
 
-    std::fs::create_dir_all(&dest_dir)?;
-    match std::fs::rename(&source, &dest_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
-            std::fs::copy(&source, &dest_path)?;
-            std::fs::remove_file(&source)?;
-        }
-        Err(e) => return Err(e.into()),
+/// Picks a filename in `dir` that no file currently occupies.
+///
+/// `fs::rename` overwrites its destination silently, so without this two
+/// wallpapers sharing a basename would destroy one another's file.
+fn unique_destination(dir: &Path, filename: &str) -> Result<PathBuf, AppError> {
+    let candidate = dir.join(filename);
+    if !candidate.exists() {
+        return Ok(candidate);
     }
+    let as_path = Path::new(filename);
+    let stem = as_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(filename);
+    let extension = as_path.extension().and_then(|s| s.to_str());
+    for n in 2..=MAX_COLLISION_SUFFIXES {
+        let name = match extension {
+            Some(extension) => format!("{stem} ({n}).{extension}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate = dir.join(name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Io(format!(
+        "{} already holds {MAX_COLLISION_SUFFIXES} files named like {filename:?}",
+        dir.display()
+    )))
+}
 
-    conn.execute(
-        "UPDATE wallpapers SET status = 'rejected', path = ?1, filename = ?2 WHERE id = ?3",
-        rusqlite::params![
-            dest_path
-                .to_str()
-                .ok_or_else(|| crate::error::AppError::InvalidPath(
-                    dest_path.display().to_string()
-                ))?,
-            &filename,
-            wallpaper_id
-        ],
-    )?;
-    Ok(())
+/// Moves a file, falling back to copy-then-delete across filesystems and
+/// cleaning up after itself so a failure never leaves two copies.
+fn move_file(source: &Path, dest: &Path) -> Result<(), AppError> {
+    match std::fs::rename(source, dest) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            if let Err(e) = std::fs::copy(source, dest) {
+                let _ = std::fs::remove_file(dest);
+                return Err(e.into());
+            }
+            if let Err(e) = std::fs::remove_file(source) {
+                let _ = std::fs::remove_file(dest);
+                return Err(e.into());
+            }
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[derive(Debug, PartialEq, serde::Serialize)]
@@ -153,22 +311,128 @@ pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusql
     rows.collect()
 }
 
-pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<(), crate::error::AppError> {
-    let updated = conn.execute(
+/// Transitions a wallpaper to Kept. Re-keeping a Kept one is a no-op success.
+///
+/// Keeping a Rejected wallpaper is refused: per CONTEXT.md a reject is a
+/// transition, not a flag, so this would silently un-reject a file that no
+/// longer sits where the row says it does.
+pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<(), AppError> {
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("no wallpaper with id {id}"))
+            }
+            other => other.into(),
+        })?;
+
+    if status == "rejected" {
+        return Err(AppError::InvalidTransition(format!(
+            "cannot keep rejected wallpaper with id {id}"
+        )));
+    }
+
+    conn.execute(
         "UPDATE wallpapers SET status = 'kept' WHERE id = ?1",
         rusqlite::params![id],
     )?;
-    if updated == 0 {
-        return Err(crate::error::AppError::NotFound(format!(
-            "no wallpaper with id {id}"
-        )));
-    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The v1 schema, as shipped before the thumbnails CHECK was widened.
+    const DDL_V1: &str = "
+        CREATE TABLE wallpapers (
+            id                INTEGER PRIMARY KEY,
+            filename          TEXT    NOT NULL,
+            path              TEXT    NOT NULL UNIQUE,
+            status            TEXT    NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active', 'kept', 'rejected')),
+            rating_mu         REAL    NOT NULL DEFAULT 25.0,
+            rating_sigma      REAL    NOT NULL DEFAULT 8.333,
+            comparisons_count INTEGER NOT NULL DEFAULT 0,
+            created_at        INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE TABLE comparisons (
+            id        INTEGER PRIMARY KEY,
+            winner_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            loser_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            voted_at  INTEGER NOT NULL
+        );
+        CREATE TABLE thumbnails (
+            wallpaper_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE CASCADE,
+            size         TEXT    NOT NULL CHECK (size IN ('small', 'medium')),
+            width        INTEGER NOT NULL,
+            height       INTEGER NOT NULL,
+            source_mtime INTEGER NOT NULL,
+            PRIMARY KEY (wallpaper_id, size)
+        );
+    ";
+
+    fn record_full_thumbnail(conn: &Connection, wallpaper_id: i64) -> rusqlite::Result<usize> {
+        conn.execute(
+            "INSERT INTO thumbnails (wallpaper_id, size, width, height, source_mtime)
+             VALUES (?1, 'full', 10, 10, 0)",
+            rusqlite::params![wallpaper_id],
+        )
+    }
+
+    #[test]
+    fn a_fresh_database_opens_stamped_at_the_current_schema_version() {
+        // `open` is only reachable in production, so nothing else exercises it.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+        init_schema(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        record_full_thumbnail(&conn, id).unwrap();
+    }
+
+    #[test]
+    fn a_v1_database_is_migrated_rather_than_left_on_the_old_shape() {
+        // `CREATE TABLE IF NOT EXISTS` silently skips an existing table, so
+        // without the migration step a v1 file keeps the narrow CHECK forever
+        // and every 'full' thumbnail insert fails at runtime.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        let conn = open(&db_path).unwrap();
+        conn.execute_batch(DDL_V1).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        assert_eq!(schema_version(&conn).unwrap(), 0);
+        assert!(record_full_thumbnail(&conn, id).is_err());
+
+        init_schema(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        record_full_thumbnail(&conn, id).unwrap();
+        // Wallpapers and their history are untouched; only the cache table is
+        // rebuilt.
+        assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    #[test]
+    fn init_schema_is_idempotent_across_reopens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = open(&db_path).unwrap();
+            init_schema(&conn).unwrap();
+            seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        }
+        let conn = open(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(count_wallpapers(&conn), 1);
+    }
 
     #[test]
     fn insert_new_skips_existing_paths_and_counts_additions() {
@@ -272,6 +536,43 @@ mod tests {
         .unwrap()
     }
 
+    fn filename_of(conn: &Connection, id: i64) -> String {
+        conn.query_row(
+            "SELECT filename FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn id_of(conn: &Connection, path: &str) -> i64 {
+        conn.query_row(
+            "SELECT id FROM wallpapers WHERE path = ?1",
+            rusqlite::params![path],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn count_wallpapers(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM wallpapers", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// `move_wallpaper` stores canonical paths, so expectations built from a
+    /// tempdir have to be canonicalized the same way to compare.
+    fn path_string(path: PathBuf) -> String {
+        let dir = path
+            .parent()
+            .expect("expectation paths always have a parent")
+            .canonicalize()
+            .expect("destination directory exists by the time this is called");
+        dir.join(path.file_name().unwrap())
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
     #[test]
     fn keep_wallpaper_transitions_active_to_kept() {
         let conn = Connection::open_in_memory().unwrap();
@@ -318,6 +619,128 @@ mod tests {
         let err = keep_wallpaper(&conn, 9999).unwrap_err();
         assert!(matches!(err, crate::error::AppError::NotFound(_)));
         assert_eq!(status_of(&conn, id), "active");
+    }
+
+    #[test]
+    fn keeping_a_rejected_wallpaper_returns_invalid_transition_and_changes_nothing() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "rejected", 25.0);
+        let before = row_status_and_path(&conn, id);
+
+        let err = keep_wallpaper(&conn, id).unwrap_err();
+
+        assert!(matches!(
+            err,
+            crate::error::AppError::InvalidTransition(ref m) if m.contains(&id.to_string())
+        ));
+        assert_eq!(row_status_and_path(&conn, id), before);
+    }
+
+    #[test]
+    fn colliding_basenames_are_suffixed_instead_of_overwriting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        let a_dir = tmp.path().join("a");
+        let b_dir = tmp.path().join("b");
+        std::fs::create_dir_all(&a_dir).unwrap();
+        std::fs::create_dir_all(&b_dir).unwrap();
+        std::fs::write(a_dir.join("wall.jpg"), b"AAAA").unwrap();
+        std::fs::write(b_dir.join("wall.jpg"), b"BBBB").unwrap();
+        insert_new_wallpapers(&conn, &[a_dir.join("wall.jpg"), b_dir.join("wall.jpg")]).unwrap();
+        let id_a = id_of(&conn, a_dir.join("wall.jpg").to_str().unwrap());
+        let id_b = id_of(&conn, b_dir.join("wall.jpg").to_str().unwrap());
+
+        let out = dest.path().to_str().unwrap();
+        move_wallpaper(&conn, id_a, out).unwrap();
+        move_wallpaper(&conn, id_b, out).unwrap();
+
+        // Neither file was destroyed and both rows point at what they hold.
+        assert_eq!(
+            std::fs::read(dest.path().join("wall.jpg")).unwrap(),
+            b"AAAA"
+        );
+        assert_eq!(
+            std::fs::read(dest.path().join("wall (2).jpg")).unwrap(),
+            b"BBBB"
+        );
+        assert_eq!(
+            row_status_and_path(&conn, id_a),
+            ("rejected".into(), path_string(dest.path().join("wall.jpg")))
+        );
+        assert_eq!(
+            row_status_and_path(&conn, id_b),
+            (
+                "rejected".into(),
+                path_string(dest.path().join("wall (2).jpg"))
+            )
+        );
+        assert_eq!(filename_of(&conn, id_b), "wall (2).jpg");
+    }
+
+    #[test]
+    fn default_relative_destination_survives_a_rescan() {
+        // `./rejected` is the destination the review UI ships with. Stored
+        // verbatim it would read `/lib/./rejected/x.jpg`, which UNIQUE(path)
+        // can't match against the `/lib/rejected/x.jpg` a rescan produces.
+        let tmp = tempfile::tempdir().unwrap();
+        let library = tmp.path().join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, &library, "ugly.jpg");
+
+        move_wallpaper(&conn, id, "./rejected").unwrap();
+
+        let stored = row_status_and_path(&conn, id).1;
+        assert_eq!(
+            stored,
+            path_string(library.join("rejected").join("ugly.jpg"))
+        );
+
+        let found = crate::scanner::collect_images(std::slice::from_ref(&library));
+        assert_eq!(insert_new_wallpapers(&conn, &found).unwrap(), 0);
+        assert_eq!(count_wallpapers(&conn), 1);
+        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn destination_resolving_to_the_current_folder_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "stay.jpg");
+
+        for destination in ["", ".", "./"] {
+            let err = move_wallpaper(&conn, id, destination).unwrap_err();
+            assert!(
+                matches!(err, crate::error::AppError::InvalidPath(_)),
+                "destination {destination:?} gave {err:?}"
+            );
+        }
+
+        assert!(tmp.path().join("stay.jpg").is_file());
+        assert_eq!(status_of(&conn, id), "active");
+    }
+
+    #[test]
+    fn re_rejecting_a_rejected_wallpaper_is_refused_and_does_not_nest_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let library = tmp.path().join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, &library, "b.png");
+        move_wallpaper(&conn, id, "rejected").unwrap();
+
+        let err = move_wallpaper(&conn, id, "rejected").unwrap_err();
+
+        assert!(matches!(err, crate::error::AppError::InvalidTransition(_)));
+        assert!(library.join("rejected").join("b.png").is_file());
+        assert!(!library.join("rejected").join("rejected").exists());
     }
 
     #[test]

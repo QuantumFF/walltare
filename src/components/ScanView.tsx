@@ -7,6 +7,19 @@ import { useEffect, useState } from "react";
 const INVALID_PATH_ERROR = "That directory doesn't exist or can't be read.";
 const NO_IMAGES_ERROR = "No supported images found in that directory.";
 const SCAN_FAILED_ERROR = "Failed to scan directory. Please check the path.";
+const SCAN_IN_PROGRESS_ERROR = "A scan is already running.";
+
+function scanStartError(err: unknown): string {
+  if (!isAppError(err)) return SCAN_FAILED_ERROR;
+  switch (err.kind) {
+    case "invalid_path":
+      return INVALID_PATH_ERROR;
+    case "invalid_transition":
+      return SCAN_IN_PROGRESS_ERROR;
+    default:
+      return SCAN_FAILED_ERROR;
+  }
+}
 
 export function ScanView() {
   const [path, setPath] = useState("");
@@ -28,14 +41,24 @@ export function ScanView() {
       client.onScanProgress(({ scanned, added }) => {
         setProgress({ scanned, added });
       }),
-      client.onScanComplete(({ added_count }) => {
+      client.onScanComplete(({ added_count, scanned_count }) => {
         setScanning(false);
         setProgress(null);
-        if (added_count > 0) {
+        // Only a walk that turned up nothing at all is an empty directory.
+        // A rescan that adds nothing means the library already has these —
+        // the common case on every launch after the first, and reporting it
+        // as "no images" strands the user on this screen.
+        if (added_count > 0 || scanned_count > 0) {
           setView("rank");
         } else {
           setError(NO_IMAGES_ERROR);
         }
+      }),
+      client.onScanFailed(({ message }) => {
+        setScanning(false);
+        setProgress(null);
+        setError(SCAN_FAILED_ERROR);
+        console.error("Scan failed:", message);
       }),
     ]).then((unlisten) => {
       if (cancelled) {
@@ -63,11 +86,7 @@ export function ScanView() {
     } catch (err) {
       setScanning(false);
       setProgress(null);
-      setError(
-        isAppError(err) && err.kind === "invalid_path"
-          ? INVALID_PATH_ERROR
-          : SCAN_FAILED_ERROR,
-      );
+      setError(scanStartError(err));
       console.error(err);
     }
   };

@@ -1,315 +1,498 @@
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "bun:test";
 import { RankView } from "@/components/RankView";
-import { AppProvider, useApp } from "@/context/AppContext";
-import type { Stats, VoteOutcome, Wallpaper } from "@/lib/client";
-import { mockCommand, resetIpcMocks } from "./ipc-mocks";
+import type { VoteOutcome, Wallpaper } from "@/lib/client";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
+import { expectConsoleError } from "./console-guard";
+import {
+  currentView,
+  deferred,
+  flush,
+  renderInApp,
+  stats,
+  wallpaper,
+} from "./fixtures";
+import { mockCommand } from "./ipc-mocks";
 
-const FEEDBACK_MS = 300;
-const SWAP_TIMEOUT = { timeout: 5000 };
+const PICK_FEEDBACK_MS = 300;
 
-const callCounts = new Map<string, number>();
-
-function countedCommand(name: string, impl: () => unknown): void {
-  callCounts.set(name, 0);
-  mockCommand(name, () => {
-    callCounts.set(name, (callCounts.get(name) ?? 0) + 1);
-    return impl();
-  });
-}
-
-function wallpaper(id: number): Wallpaper {
-  return {
-    id,
-    filename: `wall-${id}.jpg`,
-    path: `/tmp/wallpapers/wall-${id}.jpg`,
-    status: "active",
-    rating_mu: 25,
-    rating_sigma: 8.333,
-    comparisons_count: 0,
-  };
-}
-
-function stats(over: Partial<Stats> = {}): Stats {
-  return {
-    total_wallpapers: 10,
-    total_comparisons: 4,
-    evaluated_count: 2,
-    participated_count: 5,
-    percentage: 50,
-    ...over,
-  };
-}
-
-let pairs: Array<[Wallpaper, Wallpaper]>;
-let pairIndex: number;
+let getPairCalls = 0;
+let getStatsCalls = 0;
 let votes: Array<[number, number]>;
 
-/** Queue of pairs served by the mocked `get_pair`; repeats its last entry. */
-function queuePairs(...queue: Array<[Wallpaper, Wallpaper]>): void {
-  pairs = queue;
-  pairIndex = 0;
-  countedCommand("get_pair", () => {
-    const pair = pairs[Math.min(pairIndex, pairs.length - 1)];
-    pairIndex += 1;
-    return pair;
+afterEach(() => {
+  cleanup();
+  jest.useRealTimers();
+  getPairCalls = 0;
+  getStatsCalls = 0;
+});
+
+beforeEach(() => {
+  // Every vote waits out a pick-feedback delay. Faking the clock keeps this
+  // file fast and removes the timing tolerance that made the optimistic-swap
+  // assertions vacuous. @testing-library can't detect bun's fake timers, so
+  // these tests advance the clock by hand and assert synchronously instead of
+  // going through `waitFor`.
+  jest.useFakeTimers();
+  votes = [];
+  mockCommand("get_stats", () => {
+    getStatsCalls++;
+    return stats();
+  });
+});
+
+function pair(leftId: number, rightId: number): [Wallpaper, Wallpaper] {
+  return [wallpaper(leftId), wallpaper(rightId)];
+}
+
+/** Serve `queue` to successive `get_pair` calls; a call past the end fails the test. */
+function servePairs(...queue: Array<[Wallpaper, Wallpaper]>): void {
+  mockCommand("get_pair", () => {
+    const next = queue[getPairCalls++];
+    if (!next) {
+      throw new Error(
+        `get_pair called ${getPairCalls} times; only ${queue.length} pairs queued`,
+      );
+    }
+    return next;
   });
 }
 
-function mockVote(
-  outcomeFor: (winnerId: number, loserId: number) => VoteOutcome,
-): void {
-  votes = [];
+/** Record every Comparison the view submits and answer with `response()`. */
+function serveVote(response: () => unknown): void {
   mockCommand("vote", (args) => {
-    const vote: [number, number] = [
-      args?.winnerId as number,
-      args?.loserId as number,
-    ];
-    votes.push(vote);
-    return outcomeFor(vote[0], vote[1]);
+    votes.push([args?.winnerId as number, args?.loserId as number]);
+    return response();
   });
 }
 
 async function renderRankView() {
-  render(
-    <AppProvider>
-      <RankView />
-    </AppProvider>,
-  );
-  await screen.findByAltText("Left Wallpaper");
+  const rendered = renderInApp(<RankView />);
+  await flush();
+  return rendered;
 }
 
-/** Waits until both the current and prefetch slots have consumed their pair. */
-async function waitPrefetched() {
-  await waitFor(() => {
-    expect(callCounts.get("get_pair")).toBeGreaterThanOrEqual(2);
+function idOf(alt: string): number {
+  const { src } = screen.getByAltText(alt) as HTMLImageElement;
+  const match = /^wallpaper:\/\/localhost\/image\/(\d+)\?size=medium$/.exec(src);
+  if (!match) throw new Error(`unexpected image src: ${src}`);
+  return Number(match[1]);
+}
+
+/** The wallpaper ids the two panes are showing. */
+function shownIds(): [number, number] {
+  return [idOf("Left Wallpaper"), idOf("Right Wallpaper")];
+}
+
+/** The arrow badge painted over the side the user picked, if any. */
+function pickIndicator(side: "Left" | "Right"): Element | null {
+  const card = screen.getByAltText(`${side} Wallpaper`).closest(".group");
+  return card?.querySelector(`.lucide-arrow-${side.toLowerCase()}`) ?? null;
+}
+
+const skipButton = () =>
+  screen.getByRole("button", { name: /skip pair/i }) as HTMLButtonElement;
+const alertText = () => screen.queryByRole("alert")?.textContent ?? null;
+const headline = (label: RegExp) => screen.getByText(label).textContent;
+
+async function clickPane(side: "Left" | "Right") {
+  await act(async () => {
+    fireEvent.click(screen.getByAltText(`${side} Wallpaper`));
   });
 }
 
-const leftSrc = () =>
-  (screen.getByAltText("Left Wallpaper") as HTMLImageElement).src;
-const rightSrc = () =>
-  (screen.getByAltText("Right Wallpaper") as HTMLImageElement).src;
+async function pressArrow(key: "ArrowLeft" | "ArrowRight") {
+  await act(async () => {
+    fireEvent.keyDown(window, { key });
+  });
+}
 
-afterEach(() => {
-  cleanup();
-  resetIpcMocks();
-});
-
-beforeEach(() => {
-  queuePairs(
-    [wallpaper(1), wallpaper(2)], // current on load
-    [wallpaper(3), wallpaper(4)], // prefetch slot
-  );
-});
+/** Run out the pick-feedback delay that gates the optimistic swap. */
+async function runPickFeedback() {
+  await act(async () => {
+    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
+  });
+  await flush();
+}
 
 test("loads a pair, prefetches the next, and shows the progress headline", async () => {
-  countedCommand("get_stats", () => stats({ percentage: 37.5 }));
+  servePairs(pair(1, 2), pair(3, 4));
+  mockCommand("get_stats", () => stats({ percentage: 37.5 }));
+
   await renderRankView();
 
-  expect(leftSrc()).toContain("/1?");
-  expect(rightSrc()).toContain("/2?");
-  expect(screen.getByText("37.5%")).toBeDefined();
-  expect(screen.getByText(/\/ 10 Participated/)).toBeDefined();
-  expect(screen.getByText(/Comparisons/)).toBeDefined();
+  expect((screen.getByAltText("Left Wallpaper") as HTMLImageElement).src).toBe(
+    "wallpaper://localhost/image/1?size=medium",
+  );
+  expect(shownIds()).toEqual([1, 2]);
+  expect(getPairCalls).toBe(2); // the shown pair, plus the prefetch slot
+  expect(headline(/%$/)).toBe("37.5%");
+  expect(headline(/Participated$/)).toBe("5 / 10 Participated");
+  expect(headline(/Comparisons$/)).toBe("4 Comparisons");
+  expect(alertText()).toBeNull();
 });
 
-test("voting swaps in the prefetched pair and updates stats from the response alone", async () => {
-  countedCommand("get_stats", () => stats());
-  mockVote(() => ({
-    next_pair: [wallpaper(5), wallpaper(6)],
-    stats: stats({
-      percentage: 60,
-      total_comparisons: 5,
-      participated_count: 6,
-    }),
-  }));
+test("a pick swaps in the prefetched pair before the backend answers", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  const inFlight = deferred<VoteOutcome>();
+  let response: unknown = inFlight.promise;
+  serveVote(() => response);
 
   await renderRankView();
-  await waitPrefetched();
+  const statsCallsAtLoad = getStatsCalls;
+
+  await clickPane("Left");
+  expect(votes).toEqual([]); // still inside the feedback window
+  await runPickFeedback();
+
+  // Nothing has resolved `inFlight` yet: the swap is genuinely optimistic.
+  expect(votes).toEqual([[1, 2]]);
+  expect(shownIds()).toEqual([3, 4]);
 
   await act(async () => {
-    fireEvent.click(screen.getByAltText("Left Wallpaper"));
+    inFlight.resolve({
+      next_pair: pair(5, 6),
+      stats: stats({
+        percentage: 60,
+        total_comparisons: 5,
+        participated_count: 6,
+      }),
+    });
   });
-
-  // One Comparison recorded: winner = left, loser = right.
-  await waitFor(() => {
-    expect(votes.length).toBe(1);
-  });
-  expect(votes[0]).toEqual([1, 2]);
-
-  // Optimistic swap into the prefetched pair without a loading gap.
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/3?");
-    expect(rightSrc()).toContain("/4?");
-  }, SWAP_TIMEOUT);
+  await flush();
 
   // Headline refreshed from the VoteOutcome alone.
-  expect(screen.getByText("60.0%")).toBeDefined();
-  expect(callCounts.get("get_stats")).toBe(1); // only the initial load
+  expect(headline(/%$/)).toBe("60.0%");
+  expect(headline(/Participated$/)).toBe("6 / 10 Participated");
+  expect(headline(/Comparisons$/)).toBe("5 Comparisons");
+  expect(getStatsCalls).toBe(statsCallsAtLoad);
 
-  // Returned next_pair fills the prefetch slot for the following vote.
-  await act(async () => {
-    fireEvent.click(screen.getByAltText("Right Wallpaper"));
-  });
-  await waitFor(() => {
-    expect(votes.length).toBe(2);
-  });
-  expect(votes[1]).toEqual([4, 3]);
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/5?");
-    expect(rightSrc()).toContain("/6?");
-  }, SWAP_TIMEOUT);
-  expect(screen.getByText(/Comparisons/)).toBeDefined();
-});
+  // The returned next_pair filled the slot, so the following pick needs no fetch.
+  response = { next_pair: pair(7, 8), stats: stats({ total_comparisons: 6 }) };
+  await clickPane("Right");
+  await runPickFeedback();
 
-test("a vote arriving on an empty prefetch slot promotes next_pair without duplicating it", async () => {
-  countedCommand("get_stats", () => stats());
-  // The initial prefetch never lands, so the slot is empty at vote time;
-  // the post-vote refill serves a distinct pair.
-  let getPairCalls = 0;
-  mockCommand("get_pair", () => {
-    getPairCalls += 1;
-    if (getPairCalls === 1) return [wallpaper(1), wallpaper(2)];
-    if (getPairCalls === 2) return new Promise(() => {}); // prefetch never lands
-    return [wallpaper(5), wallpaper(6)];
-  });
-  mockVote(() => ({
-    next_pair: [wallpaper(7), wallpaper(8)],
-    stats: stats(),
-  }));
-
-  await renderRankView();
-  expect(leftSrc()).toContain("/1?");
-
-  await act(async () => {
-    fireEvent.click(screen.getByAltText("Left Wallpaper"));
-  });
-
-  // next_pair becomes the current pair...
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/7?");
-    expect(rightSrc()).toContain("/8?");
-  }, SWAP_TIMEOUT);
-  expect(votes.length).toBe(1);
-
-  // ...and the prefetch slot is refilled with a fresh pair, not a copy.
-  await waitFor(() => {
-    expect(getPairCalls).toBeGreaterThanOrEqual(3);
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByAltText("Left Wallpaper"));
-  });
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/5?");
-    expect(rightSrc()).toContain("/6?");
-  }, SWAP_TIMEOUT);
-  expect(votes[1]).toEqual([7, 8]);
+  expect(votes[1]).toEqual([4, 3]); // winner = right, loser = left
+  expect(shownIds()).toEqual([5, 6]);
+  expect(headline(/Comparisons$/)).toBe("6 Comparisons");
+  expect(getPairCalls).toBe(2);
 });
 
 test("arrow keys register the matching Comparison", async () => {
-  countedCommand("get_stats", () => stats());
-  mockVote(() => ({
-    next_pair: [wallpaper(7), wallpaper(8)],
-    stats: stats(),
-  }));
+  servePairs(pair(1, 2), pair(3, 4));
+  serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
+
   await renderRankView();
-  await waitPrefetched();
 
-  await act(async () => {
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
-  });
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/3?");
-  }, SWAP_TIMEOUT);
-  expect(votes.length).toBe(1);
+  await pressArrow("ArrowLeft");
+  await runPickFeedback();
   expect(votes[0]).toEqual([1, 2]);
+  expect(shownIds()).toEqual([3, 4]);
 
-  await act(async () => {
-    fireEvent.keyDown(window, { key: "ArrowRight" });
-  });
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/7?");
-    expect(rightSrc()).toContain("/8?");
-  }, SWAP_TIMEOUT);
-  expect(votes.length).toBe(2);
-  expect(votes[1]).toEqual([4, 3]); // winner = right, loser = left
+  await pressArrow("ArrowRight");
+  await runPickFeedback();
+  expect(votes[1]).toEqual([4, 3]);
+  expect(shownIds()).toEqual([7, 8]);
 });
 
-test("rapid double inputs cannot register twice", async () => {
-  countedCommand("get_stats", () => stats());
-  mockVote(() => ({
-    next_pair: [wallpaper(7), wallpaper(8)],
-    stats: stats(),
-  }));
-  await renderRankView();
-  await waitPrefetched();
+test("one Comparison per pick, however fast the input and however slow the vote", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  const inFlight = deferred<VoteOutcome>();
+  serveVote(() => inFlight.promise);
 
-  // Click plus key presses inside the same feedback window.
+  await renderRankView();
+
+  // Same tick: the synchronous guard.
   await act(async () => {
     fireEvent.click(screen.getByAltText("Left Wallpaper"));
     fireEvent.keyDown(window, { key: "ArrowLeft" });
     fireEvent.keyDown(window, { key: "ArrowRight" });
   });
+  await runPickFeedback();
+  expect(votes).toEqual([[1, 2]]);
 
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/3?");
-  }, SWAP_TIMEOUT);
+  // Still guarded across the async window, which spans many ticks.
+  await clickPane("Right");
+  await pressArrow("ArrowLeft");
+  await runPickFeedback();
+  expect(votes).toEqual([[1, 2]]);
 
-  // Let everything settle; no further Comparison may appear.
-  await new Promise((resolve) => setTimeout(resolve, FEEDBACK_MS + 400));
-  expect(votes.length).toBe(1);
-  expect(votes[0]).toEqual([1, 2]);
+  // The guard releases once the vote lands.
+  await act(async () => {
+    inFlight.resolve({ next_pair: pair(7, 8), stats: stats() });
+  });
+  await flush();
+  await clickPane("Left");
+  await runPickFeedback();
+  expect(votes).toEqual([
+    [1, 2],
+    [3, 4],
+  ]);
 });
 
-test("skip fetches a fresh pair without recording a vote", async () => {
-  countedCommand("get_stats", () => stats());
-  mockVote(() => ({
-    next_pair: [wallpaper(9), wallpaper(10)],
-    stats: stats(),
-  }));
-  // Third pair served when skip refetches.
-  queuePairs(
-    [wallpaper(1), wallpaper(2)],
-    [wallpaper(3), wallpaper(4)],
-    [wallpaper(5), wallpaper(6)],
-  );
+test("the picked side is marked and skip is locked until the vote lands", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  const inFlight = deferred<VoteOutcome>();
+  serveVote(() => inFlight.promise);
+
   await renderRankView();
-  await waitPrefetched();
+  expect(skipButton().disabled).toBe(false);
+
+  await clickPane("Left");
+  expect(pickIndicator("Left")).not.toBeNull();
+  expect(pickIndicator("Right")).toBeNull();
+  expect(skipButton().disabled).toBe(true);
+
+  await runPickFeedback();
+  expect(skipButton().disabled).toBe(true); // the vote is still in flight
 
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /skip pair/i }));
+    inFlight.resolve({ next_pair: pair(7, 8), stats: stats() });
+  });
+  await flush();
+  expect(pickIndicator("Left")).toBeNull();
+  expect(skipButton().disabled).toBe(false);
+});
+
+test("skip replaces the pair and refills the prefetch slot", async () => {
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6), pair(7, 8));
+  serveVote(() => ({ next_pair: pair(11, 12), stats: stats() }));
+
+  await renderRankView();
+  await act(async () => {
+    fireEvent.click(skipButton());
+  });
+  await flush();
+
+  expect(shownIds()).toEqual([5, 6]);
+  expect(getPairCalls).toBe(4); // a fresh pair, and a fresh slot behind it
+  expect(votes).toEqual([]);
+
+  // The pair that was skipped past is gone from the slot too.
+  await clickPane("Left");
+  await runPickFeedback();
+  expect(shownIds()).toEqual([7, 8]);
+});
+
+test("a skipped pair never comes back through the prefetch slot", async () => {
+  const held = deferred<[Wallpaper, Wallpaper]>();
+  mockCommand("get_pair", () => {
+    getPairCalls++;
+    if (getPairCalls === 1) return pair(1, 2);
+    if (getPairCalls === 2) return pair(3, 4); // prefetched, then skipped past
+    if (getPairCalls === 3) return pair(5, 6); // the skip's fresh pair
+    return held.promise; // the refill, still in flight
+  });
+  serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
+
+  await renderRankView();
+  await act(async () => {
+    fireEvent.click(skipButton());
+  });
+  await flush();
+  expect(shownIds()).toEqual([5, 6]);
+
+  // The slot was emptied, so the vote's next_pair becomes the current pair.
+  // Were the skipped pair still sitting there, it would be shown again.
+  await clickPane("Left");
+  await runPickFeedback();
+  expect(shownIds()).toEqual([7, 8]);
+});
+
+test("skip is locked while a skip is in flight", async () => {
+  const inFlight = deferred<[Wallpaper, Wallpaper]>();
+  mockCommand("get_pair", () => {
+    getPairCalls++;
+    if (getPairCalls === 1) return pair(1, 2);
+    if (getPairCalls === 2) return pair(3, 4);
+    if (getPairCalls === 3) return inFlight.promise;
+    return pair(9, 10);
   });
 
-  await waitFor(() => {
-    expect(leftSrc()).toContain("/5?");
-    expect(rightSrc()).toContain("/6?");
-  }, SWAP_TIMEOUT);
-  expect(votes.length).toBe(0);
+  await renderRankView();
+  await act(async () => {
+    fireEvent.click(skipButton());
+  });
+  expect(skipButton().disabled).toBe(true);
+
+  await act(async () => {
+    inFlight.resolve(pair(5, 6));
+  });
+  await flush();
+
+  expect(skipButton().disabled).toBe(false);
+  expect(shownIds()).toEqual([5, 6]);
+});
+
+test("a prefetch that lands after a vote cannot overwrite the slot", async () => {
+  const stale = deferred<[Wallpaper, Wallpaper]>();
+  mockCommand("get_pair", () => {
+    getPairCalls++;
+    if (getPairCalls === 1) return pair(1, 2);
+    if (getPairCalls === 2) return stale.promise; // the prefetch that lands late
+    return pair(5, 6); // the post-vote refill
+  });
+  serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
+
+  await renderRankView();
+  await clickPane("Left");
+  await runPickFeedback();
+
+  // Slot was empty at vote time: next_pair became the current pair and the
+  // refill went to the slot.
+  expect(shownIds()).toEqual([7, 8]);
+  expect(getPairCalls).toBe(3);
+
+  await act(async () => {
+    stale.resolve(pair(90, 91));
+  });
+  await flush();
+
+  // The next pick proves the slot still holds the refill, not the stale pair.
+  await clickPane("Left");
+  await runPickFeedback();
+  expect(shownIds()).toEqual([5, 6]);
+});
+
+test("a vote that fails rolls back to the pair the user picked from", async () => {
+  expectConsoleError(/Failed to submit vote/);
+  servePairs(pair(1, 2), pair(3, 4), pair(9, 10));
+  const inFlight = deferred<VoteOutcome>();
+  let response: unknown = inFlight.promise;
+  serveVote(() => response);
+
+  await renderRankView();
+  await clickPane("Left");
+  await runPickFeedback();
+  expect(shownIds()).toEqual([3, 4]); // optimistically swapped
+
+  await act(async () => {
+    inFlight.reject({ kind: "db", message: "disk on fire" });
+  });
+  await flush();
+
+  // The Comparison was never recorded, so advancing would drop the choice.
+  expect(shownIds()).toEqual([1, 2]);
+  expect(alertText()).toBe("That vote didn't save. Pick again.");
+
+  // And the user really can pick again.
+  response = { next_pair: pair(7, 8), stats: stats() };
+  await clickPane("Left");
+  await runPickFeedback();
+  expect(votes).toEqual([
+    [1, 2],
+    [1, 2],
+  ]);
+  expect(alertText()).toBeNull();
+  expect(shownIds()).toEqual([7, 8]);
+});
+
+test("a vote whose follow-up pair is missing re-fetches instead of erroring", async () => {
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6), pair(11, 12));
+  serveVote(() => ({
+    next_pair: null,
+    stats: stats({ total_comparisons: 5 }),
+  }));
+
+  await renderRankView();
+  await clickPane("Left");
+  await runPickFeedback();
+
+  // The Comparison counted; only the follow-up fetch didn't.
+  expect(alertText()).toBeNull();
+  expect(headline(/Comparisons$/)).toBe("5 Comparisons");
+  expect(shownIds()).toEqual([3, 4]);
+  expect(getPairCalls).toBe(3); // the emptied slot was refilled
+
+  await clickPane("Left");
+  await runPickFeedback();
+  expect(shownIds()).toEqual([5, 6]);
+});
+
+test("a vote with an empty slot and no follow-up pair fetches a fresh one", async () => {
+  const held = deferred<[Wallpaper, Wallpaper]>(); // prefetch that never lands
+  mockCommand("get_pair", () => {
+    getPairCalls++;
+    if (getPairCalls === 1) return pair(1, 2);
+    if (getPairCalls === 2) return held.promise;
+    if (getPairCalls === 3) return pair(5, 6);
+    return pair(7, 8);
+  });
+  serveVote(() => ({
+    next_pair: null,
+    stats: stats({ total_comparisons: 9 }),
+  }));
+
+  await renderRankView();
+  await clickPane("Left");
+  await runPickFeedback();
+
+  expect(alertText()).toBeNull();
+  expect(headline(/Comparisons$/)).toBe("9 Comparisons");
+  // Never leave the user on the pair they just voted on.
+  expect(shownIds()).toEqual([5, 6]);
+  expect(getPairCalls).toBe(4); // fresh current pair, plus a fresh slot
+});
+
+test("a library too small to rank says exactly that", async () => {
+  expectConsoleError(/Failed to load pair/);
+  mockCommand("get_pair", () =>
+    Promise.reject({
+      kind: "not_enough_wallpapers",
+      message: "need at least two",
+    }),
+  );
+
+  await renderRankView();
+
+  expect(alertText()).toBe(
+    "Ranking needs at least two wallpapers that aren't rejected.",
+  );
+});
+
+test("a failed load offers a way out of the dead end", async () => {
+  expectConsoleError(/Failed to load pair/);
+  mockCommand("get_pair", () =>
+    Promise.reject({ kind: "db", message: "locked database" }),
+  );
+
+  await renderRankView();
+
+  expect(alertText()).toBe("Failed to load wallpapers.");
+  expect(screen.queryByAltText("Left Wallpaper")).toBeNull();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /go to review/i }));
+  });
+  expect(currentView()).toBe("review");
+});
+
+test("a skip that fails keeps the pair on screen and says so", async () => {
+  expectConsoleError(/Failed to fetch a fresh pair/);
+  mockCommand("get_pair", () => {
+    getPairCalls++;
+    if (getPairCalls === 1) return pair(1, 2);
+    if (getPairCalls === 2) return pair(3, 4);
+    return Promise.reject({ kind: "db", message: "locked database" });
+  });
+
+  await renderRankView();
+  await act(async () => {
+    fireEvent.click(skipButton());
+  });
+  await flush();
+
+  expect(alertText()).toBe("Failed to load wallpapers.");
+  expect(shownIds()).toEqual([1, 2]);
+  expect(skipButton().disabled).toBe(false);
 });
 
 test("Stop & Review navigates to review", async () => {
-  countedCommand("get_stats", () => stats());
-  function ViewProbe() {
-    const { view } = useApp();
-    return <span data-testid="view">{view}</span>;
-  }
-  render(
-    <AppProvider>
-      <ViewProbe />
-      <RankView />
-    </AppProvider>,
-  );
-  await screen.findByAltText("Left Wallpaper");
+  servePairs(pair(1, 2), pair(3, 4));
 
-  fireEvent.click(screen.getByRole("button", { name: /stop & review/i }));
+  await renderRankView();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /stop & review/i }));
+  });
 
-  expect(screen.getByTestId("view").textContent).toBe("review");
+  expect(currentView()).toBe("review");
 });

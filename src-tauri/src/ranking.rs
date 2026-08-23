@@ -79,7 +79,9 @@ pub fn select_pair<'a, R: Rng>(
         let mut chosen = others.len() - 1;
         for (i, weight) in weights.iter().enumerate() {
             r -= weight;
-            if r <= 0.0 {
+            // Strictly less-than: `r <= 0.0` would hand a draw of exactly 0.0 to
+            // candidate 0 even when its weight underflowed to 0.
+            if r < 0.0 {
                 chosen = i;
                 break;
             }
@@ -589,6 +591,21 @@ mod tests {
         let mut rng = SeqRng::new(&[0.0, 0.0]);
         let again = select_pair(&pool, &mut rng).unwrap();
         assert_eq!((first.id, second.id), (again.0.id, again.1.id));
+    }
+
+    #[test]
+    fn a_zero_weight_opponent_is_never_drawn_while_a_positive_one_exists() {
+        // Candidate 1's weight underflows to exactly 0; candidate 3's is ~1.
+        let pool = [
+            summary(1, 100_000.0, SIGMA, 9),
+            summary(2, MU, SIGMA, 3),
+            summary(3, MU, SIGMA, 9),
+        ];
+        // A draw of exactly 0.0 is the boundary case: it must still skip the
+        // zero-weight candidate rather than land on index 0.
+        let (first, second) = select_pair(&pool, &mut SeqRng::new(&[0.0])).unwrap();
+        assert_eq!(first.id, 2);
+        assert_eq!(second.id, 3);
     }
 
     #[test]

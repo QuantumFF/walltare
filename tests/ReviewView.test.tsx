@@ -1,264 +1,372 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import App from "@/App";
-import { REVIEW_LIMIT } from "@/components/ReviewView";
+import { ReviewView } from "@/components/ReviewView";
 import type { Wallpaper } from "@/lib/client";
-import { emitEvent, mockCommand, resetIpcMocks } from "./ipc-mocks";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { expectConsoleError } from "./console-guard";
+import {
+  currentView,
+  deferred,
+  flush,
+  renderInApp,
+  stats,
+  wallpaper,
+} from "./fixtures";
+import { mockCommand } from "./ipc-mocks";
 
-function wallpaper(
-  id: number,
-  filename: string,
-  ratingMu: number,
-): Wallpaper {
-  return {
-    id,
-    filename,
-    path: `/library/${filename}`,
-    status: "active",
-    rating_mu: ratingMu,
-    rating_sigma: 1.0,
-    comparisons_count: 3,
-  };
-}
+const alerts = () => screen.queryAllByRole("alert").map((el) => el.textContent);
+const images = () => screen.getAllByRole("img") as HTMLImageElement[];
 
-/** Scan a directory, then navigate to the review view. */
-async function openReview() {
-  const input = screen.getByPlaceholderText("/home/user/wallpapers");
-  await act(async () => {
-    fireEvent.change(input, { target: { value: "/tmp/wallpapers" } });
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /start ranking/i }));
-    emitEvent("scan-complete", { added_count: 3 });
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /stop & review/i }));
-  });
-}
-
-afterEach(() => {
-  cleanup();
-  resetIpcMocks();
-});
+afterEach(cleanup);
 
 beforeEach(() => {
-  mockCommand("start_scan", () => null);
-  // RankView mounts in transit to review; give it a minimal pair/stats seam.
-  mockCommand("get_pair", () => [
-    wallpaper(90, "rank-a.jpg", 10),
-    wallpaper(91, "rank-b.jpg", 11),
-  ]);
-  mockCommand("get_stats", () => ({
-    total_wallpapers: 0,
-    total_comparisons: 0,
-    evaluated_count: 0,
-    participated_count: 0,
-    percentage: 0,
-  }));
+  // The provider's bootstrap; this view is reached from rank, not from it.
+  mockCommand("get_stats", () => stats());
 });
 
-test("lists lowest-mu active wallpapers ascending with mu badges and small thumbnails", async () => {
-  const list = [
-    wallpaper(3, "lowest.jpg", 8.2),
-    wallpaper(1, "middle.png", 15.5),
-    wallpaper(7, "highest.webp", 25.0),
-  ];
-  mockCommand("get_review", (args) => {
-    expect(args?.limit).toBe(REVIEW_LIMIT);
-    return list;
-  });
+/** Mount the view with the given list already served. */
+async function openReview(list: Wallpaper[]) {
+  mockCommand("get_review", () => list);
+  const rendered = renderInApp(<ReviewView />);
+  await flush();
+  return rendered;
+}
 
-  render(<App />);
-  await openReview();
-
-  expect(screen.getByRole("heading", { name: "Review Low-Rated" })).toBeDefined();
-
-  const images = screen.getAllByRole("img") as HTMLImageElement[];
-  expect(images.map((img) => img.src)).toEqual([
-    "wallpaper://image/3?size=small",
-    "wallpaper://image/1?size=small",
-    "wallpaper://image/7?size=small",
+test("renders the rows the backend returned, in the order it returned them", async () => {
+  // Deliberately not sorted: ordering and the Active-only filter belong to
+  // db.rs (`get_review_returns_active_ordered_by_mu_ascending`). This view is
+  // a bare map, and the test says so.
+  await openReview([
+    wallpaper(3, { filename: "lowest.jpg", rating_mu: 8.24 }),
+    wallpaper(1, { filename: "middle.png", rating_mu: 25.0 }),
+    wallpaper(7, { filename: "highest.webp", rating_mu: 15.55 }),
   ]);
-  expect(images.map((img) => img.alt)).toEqual([
+
+  expect(images().map((img) => img.src)).toEqual([
+    "wallpaper://localhost/image/3?size=small",
+    "wallpaper://localhost/image/1?size=small",
+    "wallpaper://localhost/image/7?size=small",
+  ]);
+  expect(images().map((img) => img.alt)).toEqual([
     "lowest.jpg",
     "middle.png",
     "highest.webp",
   ]);
 
-  // Mu badges, in the same ascending order.
+  // One mu badge per row, rounded to a single decimal.
   const badges = screen.getAllByText(/^\d+\.\d$/);
   expect(badges.map((badge) => badge.textContent)).toEqual([
     "8.2",
-    "15.5",
     "25.0",
+    "15.6",
   ]);
 });
 
-test("keep persists Kept status, removes the card immediately, and survives refresh", async () => {
-  const library = [wallpaper(4, "keeper.jpg", 9.9), wallpaper(5, "stay.jpg", 12.0)];
-  mockCommand("get_review", () =>
-    library.filter((w) => w.status === "active"),
-  );
-  let keptCalls = 0;
-  mockCommand("keep_wallpaper", (args) => {
-    const id = args?.id;
-    expect(id).toBe(4);
-    keptCalls++;
-    const target = library.find((w) => w.id === id);
-    if (target) target.status = "kept";
-    return null;
+test("asks the backend for 50 rows", async () => {
+  const limits: unknown[] = [];
+  mockCommand("get_review", (args) => {
+    limits.push(args?.limit);
+    return [];
   });
 
-  render(<App />);
-  await openReview();
-  expect(screen.getAllByRole("img")).toHaveLength(2);
+  renderInApp(<ReviewView />);
+  await flush();
 
-  fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
+  expect(limits).toEqual([50]);
+});
 
-  // Card vanishes without waiting on a refetch.
-  expect(await screen.findAllByRole("img")).toHaveLength(1);
+test("keep records the decision and removes the card without waiting for a refetch", async () => {
+  const keptIds: unknown[] = [];
+  const pending = deferred<null>();
+  await openReview([
+    wallpaper(4, { filename: "keeper.jpg" }),
+    wallpaper(5, { filename: "stay.jpg" }),
+  ]);
+  mockCommand("keep_wallpaper", (args) => {
+    keptIds.push(args?.id);
+    return pending.promise;
+  });
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
+  });
+
+  // Gone while the command is still in flight.
+  expect(keptIds).toEqual([4]);
   expect(screen.queryByAltText("keeper.jpg")).toBeNull();
-  expect(keptCalls).toBe(1);
+  expect(screen.queryByAltText("stay.jpg")).not.toBeNull();
 
-  // Survives refresh: the backend list no longer contains it.
+  await act(async () => {
+    pending.resolve(null);
+  });
+  expect(alerts()).toEqual([]);
+});
+
+test("refresh renders whatever the backend returns next", async () => {
+  let fetches = 0;
+  const responses = [
+    [wallpaper(4, { filename: "keeper.jpg" })],
+    [wallpaper(9, { filename: "fresh.jpg" })],
+  ];
+  mockCommand("get_review", () => responses[Math.min(fetches++, 1)]);
+
+  renderInApp(<ReviewView />);
+  await flush();
+  expect(fetches).toBe(1);
+  expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
+
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
   });
-  await waitFor(() => {
-    expect(screen.queryByAltText("keeper.jpg")).toBeNull();
-  });
-  expect(screen.getByAltText("stay.jpg")).toBeDefined();
+
+  expect(fetches).toBe(2);
+  expect(images().map((img) => img.alt)).toEqual(["fresh.jpg"]);
 });
 
-test("keep failure surfaces a readable error and keeps the card", async () => {
-  mockCommand("get_review", () => [wallpaper(4, "keeper.jpg", 9.9)]);
+test("a keep that fails puts the card back and says so", async () => {
+  expectConsoleError(/Failed to keep wallpaper/);
+  await openReview([wallpaper(4, { filename: "keeper.jpg" })]);
   mockCommand("keep_wallpaper", () =>
     Promise.reject({ kind: "db", message: "disk on fire" }),
   );
 
-  render(<App />);
-  await openReview();
-  fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
+  });
 
-  expect(await screen.findByText(/failed to keep/i)).toBeDefined();
-  expect(screen.getByAltText("keeper.jpg")).toBeDefined();
+  expect(alerts()).toEqual(["Failed to keep wallpaper. Please try again."]);
+  expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
+});
+
+test("a keep that fails does not resurrect a card kept while it was in flight", async () => {
+  expectConsoleError(/Failed to keep wallpaper/);
+  await openReview([
+    wallpaper(1, { filename: "doomed.jpg" }),
+    wallpaper(2, { filename: "goes-fine.jpg" }),
+    wallpaper(3, { filename: "untouched.jpg" }),
+  ]);
+
+  // The first keep is still in flight when the second one succeeds. Rolling
+  // the first one back by restoring a whole list snapshot would put the
+  // second card back too, undoing a decision that actually persisted.
+  const doomed = deferred<null>();
+  mockCommand("keep_wallpaper", (args) =>
+    args?.id === 1 ? doomed.promise : null,
+  );
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /keep doomed\.jpg/i }));
+  });
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole("button", { name: /keep goes-fine\.jpg/i }),
+    );
+  });
+  await act(async () => {
+    doomed.reject({ kind: "db", message: "disk on fire" });
+    await flush();
+  });
+
+  expect(alerts()).toEqual(["Failed to keep wallpaper. Please try again."]);
+  expect(images().map((img) => img.alt)).toEqual([
+    "doomed.jpg",
+    "untouched.jpg",
+  ]);
+});
+
+test("a move that fails puts the card back and says so", async () => {
+  expectConsoleError(/Failed to move wallpaper/);
+  await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
+  mockCommand("move_wallpaper", () =>
+    Promise.reject({ kind: "io", message: "destination is read-only" }),
+  );
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /move file/i }));
+  });
+
+  expect(alerts()).toEqual([
+    "Failed to move wallpaper. Please check the destination.",
+  ]);
+  expect(screen.queryByAltText("reject-me.jpg")).not.toBeNull();
+});
+
+test("a successful fetch clears the previous failure", async () => {
+  expectConsoleError(/Failed to fetch review list/);
+  let broken = true;
+  mockCommand("get_review", () =>
+    broken
+      ? Promise.reject({ kind: "db", message: "locked database" })
+      : [wallpaper(2, { filename: "a.jpg" })],
+  );
+
+  renderInApp(<ReviewView />);
+  await flush();
+  expect(alerts()).toEqual(["Failed to load the review list."]);
+
+  broken = false;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+  });
+
+  expect(alerts()).toEqual([]);
+  expect(screen.queryByAltText("a.jpg")).not.toBeNull();
+});
+
+test("a successful keep clears the previous failure", async () => {
+  expectConsoleError(/Failed to keep wallpaper/);
+  await openReview([
+    wallpaper(4, { filename: "keeper.jpg" }),
+    wallpaper(5, { filename: "stay.jpg" }),
+  ]);
+  let broken = true;
+  mockCommand("keep_wallpaper", () =>
+    broken ? Promise.reject({ kind: "db", message: "disk on fire" }) : null,
+  );
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
+  });
+  expect(alerts()).toHaveLength(1);
+
+  broken = false;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /keep stay\.jpg/i }));
+  });
+
+  expect(alerts()).toEqual([]);
+  expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
+});
+
+test("the list can't be refetched while a fetch is in flight", async () => {
+  const first = deferred<Wallpaper[]>();
+  const second = deferred<Wallpaper[]>();
+  const responses = [first.promise, second.promise];
+  let fetches = 0;
+  mockCommand("get_review", () => responses[fetches++]);
+
+  const { container } = renderInApp(<ReviewView />);
+
+  // While loading the view is a spinner: there is no control to fire a
+  // second fetch from.
+  expect(container.querySelector(".animate-spin")).not.toBeNull();
+  expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
+
+  await act(async () => {
+    first.resolve([wallpaper(2, { filename: "a.jpg" })]);
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+  });
+
+  expect(fetches).toBe(2);
+  expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
+  expect(screen.queryByAltText("a.jpg")).toBeNull();
+
+  await act(async () => {
+    second.resolve([]);
+  });
+  expect(screen.queryByText(/no wallpapers to review\./i)).not.toBeNull();
+  expect(fetches).toBe(2);
 });
 
 test("move is gated behind a confirm dialog showing filename and destination", async () => {
-  const library = [wallpaper(6, "reject-me.jpg", 7.7)];
-  mockCommand("get_review", () => library.filter((w) => w.status === "active"));
-  let moveArgs: unknown = null;
+  const moveArgs: unknown[] = [];
+  await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
   mockCommand("move_wallpaper", (args) => {
-    moveArgs = args as Record<string, unknown>;
-    const target = library.find((w) => w.id === args?.id);
-    if (target) target.status = "rejected";
+    moveArgs.push(args);
     return null;
   });
 
-  render(<App />);
-  await openReview();
-
   // Cancel path: no command fired.
-  fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
-  expect(await screen.findByText(/move wallpaper\?/i)).toBeDefined();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
+  });
   expect(
-    screen.getByText(/this will move "reject-me\.jpg" to "\.\/rejected"\./i),
-  ).toBeDefined();
-  expect(screen.getAllByText(/\.\/rejected/).length).toBeGreaterThan(0);
+    screen.queryByText(/this will move "reject-me\.jpg" to "\.\/rejected"\./i),
+  ).not.toBeNull();
 
-  fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+  });
   await waitFor(() => {
     expect(screen.queryByText(/move wallpaper\?/i)).toBeNull();
   });
-  expect(moveArgs).toBeNull();
-  expect(screen.getByAltText("reject-me.jpg")).toBeDefined();
+  expect(moveArgs).toEqual([]);
+  expect(screen.queryByAltText("reject-me.jpg")).not.toBeNull();
 
-  // Confirm path: soft-reject runs with the shown destination.
-  fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
-  fireEvent.click(await screen.findByRole("button", { name: /move file/i }));
+  // Confirm path: the soft reject runs with the destination it showed.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /move file/i }));
+  });
 
-  expect(moveArgs).toEqual({ id: 6, destinationFolder: "./rejected" });
-  expect(await screen.findByText(/no wallpapers to review\./i)).toBeDefined();
+  expect(moveArgs).toEqual([{ id: 6, destinationFolder: "./rejected" }]);
   expect(screen.queryByAltText("reject-me.jpg")).toBeNull();
+  expect(screen.queryByText(/no wallpapers to review\./i)).not.toBeNull();
 });
 
-test("destination input defaults to ./rejected and is editable before confirming", async () => {
-  const library = [wallpaper(6, "reject-me.jpg", 7.7)];
-  mockCommand("get_review", () => library.filter((w) => w.status === "active"));
+test("the destination defaults to ./rejected and is editable before confirming", async () => {
   let destination = "";
+  await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
   mockCommand("move_wallpaper", (args) => {
     destination = args?.destinationFolder as string;
     return null;
   });
 
-  render(<App />);
-  await openReview();
-
-  const destinationInput = screen.getByLabelText(/move to:/i) as HTMLInputElement;
+  const destinationInput = screen.getByLabelText(
+    /move to:/i,
+  ) as HTMLInputElement;
   expect(destinationInput.value).toBe("./rejected");
 
-  fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
-  await screen.findByText(/move wallpaper\?/i);
-
-  fireEvent.change(destinationInput, { target: { value: "/mnt/archive/rejected" } });
-  fireEvent.click(screen.getByRole("button", { name: /move file/i }));
-
-  await waitFor(() => {
-    expect(destination).toBe("/mnt/archive/rejected");
-  });
-});
-
-test("refresh re-pulls the list through get_review", async () => {
-  let fetches = 0;
-  let list = [wallpaper(2, "a.jpg", 10.0)];
-  mockCommand("get_review", () => {
-    fetches++;
-    return [...list];
-  });
-
-  render(<App />);
-  await openReview();
-  expect(fetches).toBe(1);
-
-  list = [];
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
   });
-  expect(fetches).toBe(2);
-  expect(await screen.findByText(/no wallpapers to review\./i)).toBeDefined();
+  await act(async () => {
+    fireEvent.change(destinationInput, {
+      target: { value: "/mnt/archive/rejected" },
+    });
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /move file/i }));
+  });
+
+  expect(destination).toBe("/mnt/archive/rejected");
 });
 
-test("empty state offers a way back to ranking", async () => {
-  mockCommand("get_review", () => []);
+test("the empty state offers a way back to ranking", async () => {
+  await openReview([]);
 
-  render(<App />);
-  await openReview();
+  expect(screen.queryByText(/no wallpapers to review\./i)).not.toBeNull();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /return to ranking/i }));
+  });
 
-  expect(await screen.findByText(/no wallpapers to review\./i)).toBeDefined();
-  fireEvent.click(screen.getByRole("button", { name: /return to ranking/i }));
-  expect(screen.getByRole("heading", { name: "Rank" })).toBeDefined();
+  expect(currentView()).toBe("rank");
 });
 
 test("back returns to ranking", async () => {
-  mockCommand("get_review", () => [wallpaper(2, "a.jpg", 10.0)]);
+  await openReview([wallpaper(2, { filename: "a.jpg" })]);
 
-  render(<App />);
-  await openReview();
-  expect(screen.getByAltText("a.jpg")).toBeDefined();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+  });
 
-  fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
-  expect(screen.getByRole("heading", { name: "Rank" })).toBeDefined();
+  expect(currentView()).toBe("rank");
 });
 
-test("load failures surface readably instead of console-only", async () => {
+test("a load failure surfaces readably instead of console-only", async () => {
+  expectConsoleError(/Failed to fetch review list/);
   mockCommand("get_review", () =>
     Promise.reject({ kind: "db", message: "locked database" }),
   );
 
-  render(<App />);
-  await openReview();
+  renderInApp(<ReviewView />);
+  await flush();
 
-  expect(
-    await screen.findByText(/failed to load the review list\./i),
-  ).toBeDefined();
+  expect(alerts()).toEqual(["Failed to load the review list."]);
 });
