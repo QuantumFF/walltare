@@ -35,22 +35,6 @@ bun install
 bun tauri dev
 ```
 
-On native Wayland:
-
-```sh
-GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 bun tauri dev
-```
-
-On NVIDIA, add `__NV_DISABLE_EXPLICIT_SYNC=1`:
-
-```sh
-__NV_DISABLE_EXPLICIT_SYNC=1 GDK_BACKEND=x11 WEBKIT_DISABLE_DMABUF_RENDERER=1 bun tauri dev
-```
-
-Run it from the graphical session. An SSH shell has no `DISPLAY` or
-`WAYLAND_DISPLAY`, so GTK cannot open a display and Tauri panics with
-`Failed to initialize GTK` before any of the above matters.
-
 The database and the thumbnail cache live under the app data directory
 (`~/.local/share/com.quantumff.walltare` on Linux). Deleting the thumbnail
 cache is safe; it regenerates. Deleting the database throws away your votes.
