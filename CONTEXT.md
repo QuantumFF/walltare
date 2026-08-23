@@ -38,6 +38,31 @@ Which of the two the user sees on the left carries no meaning. The pair is
 presented in random order so that the habit of picking the left one does not
 become part of the rating.
 
+## Eligible
+
+A wallpaper the voting pool draws from: Active or Kept. Rejected wallpapers are
+not eligible. Every progress fraction is measured against the eligible pool, not
+against the whole library.
+
+## Round
+
+One pass over the eligible pool. Round 4 means every eligible wallpaper has been
+in at least three comparisons and the app is working through the fourth.
+
+A Round is derived from the comparison counts, never stored, so it moves in
+whichever direction the truth does: rejecting the least-compared wallpaper
+advances it, and scanning in unseen files sends it back. Progress within a Round
+is the share of the eligible pool that has already had its comparison for that
+Round. See [ADR 0008](docs/adr/0008-round-is-derived.md).
+
 ## Evaluated / Participated
 
-Two distinct progress notions. **Participated**: has been in at least one comparison. **Evaluated**: its rating is confident enough (low σ) to trust. The progress headline currently uses participated only; which one should headline is an open question.
+Two distinct progress notions. **Participated**: has been in at least one
+comparison. **Evaluated**: its rating is confident enough to trust, meaning σ
+below 4.0, roughly half the starting uncertainty.
+
+Both are counted over the eligible pool. Participated is Round progress at
+Round 1, and is pinned to the size of the pool from Round 2 onwards, so the
+headline reports it per-Round rather than as a total. Evaluated headlines
+alongside it as the confidence signal: the two answer different questions and
+the app shows both.

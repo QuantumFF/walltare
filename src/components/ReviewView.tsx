@@ -36,6 +36,13 @@ export const REVIEW_LIMIT = 50;
  * grid. Dropping only the transition still dropped half the frames, so it is
  * the repaint and not the animation. The overlay fade, the image scale, and
  * the backdrop blurs all measured free. See ADR 0006.
+ *
+ * The image and the overlay declare `will-change` for the one property each
+ * animates, which is why the fade and the scale stay affordable. Without it
+ * WebKit builds those two composited layers the first time a card is hovered,
+ * and that lands mid-gesture: one ~50-95ms stall per card, scaling with the
+ * card's pixel area, until every card on screen has been passed over once.
+ * See ADR 0007.
  */
 const CARD_CLASS =
   "group relative aspect-video bg-card rounded-xl overflow-hidden border border-border shadow-sm";
@@ -191,7 +198,7 @@ export function ReviewView() {
               <img
                 src={wallpaperImageUrl(wallpaper.id, "small")}
                 alt={wallpaper.filename}
-                className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105"
+                className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105 will-change-transform"
               />
 
               {/* Rating Badge */}
@@ -205,7 +212,7 @@ export function ReviewView() {
               </div>
 
               {/* Hover Actions Overlay */}
-              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
+              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity will-change-[opacity] flex flex-col items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
                 <p className="text-white text-xs font-medium truncate w-full text-center px-2 mb-2">
                   {wallpaper.filename}
                 </p>
