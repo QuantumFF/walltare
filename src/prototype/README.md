@@ -25,13 +25,15 @@ The bar at the bottom is the harness, not the design. It is deliberately ugly.
 | control | what it does |
 | --- | --- |
 | `alt+←` / `alt+→` | previous / next variant. Alt because the lightbox under test claims the bare arrows |
+| `alt+↑` / `alt+↓` | previous / next tab housing, variant A only |
 | `h` | hide the bar. It sits over variant A's caption bar |
+| tabs | the five housings for A's tab group, below |
 | page | rank, review, library, settings |
 | state | ready, loading, empty |
 | dark / light | both themes, since the rank surround is fixed dark in both |
 
 Every control is a URL parameter, so a link is a state:
-`?variant=B&page=library&theme=light&state=ready&open=6`. `open=<n>` opens the
+`?variant=A&page=library&theme=light&header=island&open=6`. `open=<n>` opens the
 lightbox on the nth row of whatever list is showing.
 
 Inside the app: click a card to open the lightbox, `←` `→` to move, `Esc` to
@@ -60,6 +62,33 @@ wall. Sortable columns, a thumbnail chip, always-visible actions, a fixed row
 height that makes virtualisation arithmetic trivial. Worst of the three for
 judging pictures, best for finding a file. Settings is a fourth tab.
 
+## The five tab housings (variant A)
+
+A won, so the second round is one axis inside it: what houses the three tabs in
+the middle of the chrome. Same tabs, same place, same 48px row in all five, so
+the only variable is how hard the group asserts itself against the brand on its
+left and the gear on its right.
+
+![the five housings, dark](shots/montage-dark.png)
+
+![the five housings, light](shots/montage-light.png)
+
+| `header=` | what it is |
+| --- | --- |
+| `underline` | no container. The chrome's own bottom edge is the indicator, so the tabs read as a document's sections rather than as a control |
+| `segmented` | sunk into the bar, active tab a raised chip. One control, not three links |
+| `island` | its own surface, border and shadow, lifted off the bar. Most assertive, and the active tab inverts |
+| `boxed` | three separate outlined boxes, no shared container. Loudest per tab, quietest as a group |
+| `sliding` | one pill with a single indicator that animates between fixed-width tabs. The only housing where switching pages moves something |
+
+Two things to weigh while flipping:
+
+- In dark, `segmented`'s active chip is darker than its own container, so it
+  reads as pressed in rather than raised. `island` and `boxed` invert instead
+  and stay consistent between themes.
+- In light, `sliding`'s white indicator on a light grey track is the weakest
+  active state of the five. It is the one that needs a colour if it wins.
+
 ## The data
 
 `library.json` is the live 120-wallpaper library, exported as-is: the real Score
@@ -71,12 +100,17 @@ would never render).
 
 ## What the reaction has to settle
 
-1. Does the header carry tabs, the Round headline, and pre-generation without
-   getting crowded? A's answer is a second bar, B's is chips, C's is a text
-   line.
-2. Grid or list for the library page. C exists to make that a choice rather
-   than an assumption.
-3. Hover overlay or inspector panel for the card's actions. This decides how the
-   keyboard fog patch gets closed.
-4. Caption bar, side rail, or minimal chrome for the lightbox.
-5. Where Settings sits: page, sheet, or tab.
+Round one picked A. What is left:
+
+1. Which of the five tab housings.
+2. Hover overlay or something else for the card's actions. A uses the overlay,
+   which leaves the map's keyboard-reachability fog patch open; B's inspector
+   panel is the shape that closes it structurally, and bits of it could be
+   grafted onto A.
+3. The pre-generation seam. A 2px line at 34% width across a 1500px chrome
+   reads as a stray rule under the brand rather than as progress, in every
+   housing and both themes. It is the most likely thing in A to be mistaken for
+   a mistake.
+4. Whether the lightbox caption bar earns a full-width bar, or wants B's side
+   rail.
+5. Where Settings sits: page (A), sheet (B), or tab (C).

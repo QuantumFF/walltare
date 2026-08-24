@@ -25,7 +25,13 @@ import {
   type ProtoWallpaper,
   type Status,
 } from "../fixtures";
-import { useLightboxKeys, useToast, type DataState, type Page } from "../harness";
+import {
+  useLightboxKeys,
+  useToast,
+  type DataState,
+  type Header,
+  type Page,
+} from "../harness";
 import {
   Check,
   ChevronLeft,
@@ -77,14 +83,156 @@ function ScoreBadge({ w, size = "sm" }: { w: ProtoWallpaper; size?: "sm" | "lg" 
   );
 }
 
+/**
+ * The housings. Five containers for the same three tabs in the same place, so
+ * the only thing being judged is how much the group asserts itself against the
+ * brand on its left and the gear on its right.
+ *
+ * The tab row stays 48px tall in all five: changing the chrome's height per
+ * housing would confound the comparison with a size difference.
+ */
+function HeaderTabs({
+  page,
+  onPage,
+  header,
+}: {
+  page: Page;
+  onPage: (page: Page) => void;
+  header: Header;
+}) {
+  const active = TABS.findIndex((tab) => tab.key === page);
+
+  if (header === "underline") {
+    // Nothing houses them. The chrome's own bottom edge is the indicator, which
+    // ties the tabs to the bar and reads as a document, not a control.
+    return (
+      <nav className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
+        {TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => onPage(tab.key)}
+            className={[
+              "relative h-12 px-4 text-sm transition-colors",
+              page === tab.key
+                ? "font-medium text-foreground after:absolute after:inset-x-3 after:bottom-0 after:h-[2px] after:bg-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+    );
+  }
+
+  if (header === "segmented") {
+    // Sunk into the bar. The active tab is a raised chip, the group reads as
+    // one control rather than three links.
+    return (
+      <nav className="absolute left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-lg bg-secondary p-0.5 shadow-inner ring-1 ring-border/70">
+        {TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => onPage(tab.key)}
+            className={[
+              "rounded-md px-4 py-1.5 text-sm transition-colors",
+              page === tab.key
+                ? "bg-background font-medium text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+    );
+  }
+
+  if (header === "island") {
+    // Lifted off the bar entirely: its own surface, its own border, its own
+    // shadow. Most assertive of the five, and the only one where the active
+    // tab inverts.
+    return (
+      <nav className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-full border border-border bg-card p-1 shadow-md">
+        {TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => onPage(tab.key)}
+            className={[
+              "rounded-full px-4 py-1.5 text-sm transition-colors",
+              page === tab.key
+                ? "bg-foreground font-medium text-background"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            ].join(" ")}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+    );
+  }
+
+  if (header === "boxed") {
+    // No shared container at all. Three separate outlined boxes, which is the
+    // loudest option per-tab and the quietest as a group.
+    return (
+      <nav className="absolute left-1/2 flex -translate-x-1/2 items-center gap-2">
+        {TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => onPage(tab.key)}
+            className={[
+              "rounded-md border px-4 py-1.5 text-sm transition-colors",
+              page === tab.key
+                ? "border-foreground bg-foreground font-medium text-background"
+                : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground",
+            ].join(" ")}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+    );
+  }
+
+  // sliding: one pill with a single indicator that moves between fixed-width
+  // tabs. The only housing where switching pages is animated, which is either
+  // the point or the objection.
+  return (
+    <nav className="absolute left-1/2 flex -translate-x-1/2 items-center rounded-full bg-secondary p-1">
+      <span
+        aria-hidden
+        className="absolute top-1 bottom-1 left-1 w-[6rem] rounded-full bg-background shadow-sm transition-transform duration-200 ease-out"
+        style={{ transform: `translateX(${Math.max(active, 0) * 6}rem)` }}
+      />
+      {TABS.map((tab) => (
+        <button
+          key={tab.key}
+          onClick={() => onPage(tab.key)}
+          className={[
+            "relative w-[6rem] py-1.5 text-center text-sm transition-colors",
+            page === tab.key
+              ? "font-medium text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          ].join(" ")}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
 function Chrome({
   page,
   onPage,
   context,
+  header,
 }: {
   page: Page;
   onPage: (page: Page) => void;
   context: React.ReactNode;
+  header: Header;
 }) {
   const pregenPercent = Math.round((PREGEN.done / PREGEN.total) * 100);
 
@@ -96,22 +244,7 @@ function Chrome({
           walltare
         </div>
 
-        <nav className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => onPage(tab.key)}
-              className={[
-                "relative h-12 px-4 text-sm transition-colors",
-                page === tab.key
-                  ? "font-medium text-foreground after:absolute after:inset-x-3 after:bottom-0 after:h-[2px] after:bg-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              ].join(" ")}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+        <HeaderTabs page={page} onPage={onPage} header={header} />
 
         <button
           onClick={() => onPage("settings")}
@@ -306,8 +439,10 @@ function Lightbox({
   const next = useCallback(() => onIndex((index + 1) % list.length), [index, list.length, onIndex]);
   useLightboxKeys(true, { onPrev: prev, onNext: next, onClose });
 
+  // Opaque, not 97%: at 97% the chrome's tabs ghosted through the top of the
+  // preview, which is both a distraction and a lie about what is clickable.
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-neutral-950/97">
+    <div className="fixed inset-0 z-50 flex flex-col bg-neutral-950">
       <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
         <img
           key={w.id}
@@ -558,12 +693,14 @@ export function ToolbarShell({
   data,
   open,
   onOpenChange: setOpen,
+  header,
 }: {
   page: Page;
   onPage: (page: Page) => void;
   data: DataState;
   open: number | null;
   onOpenChange: (index: number | null) => void;
+  header: Header;
 }) {
   const [filter, setFilter] = useState<Status | "all">("all");
   const [sort, setSort] = useState("score-desc");
@@ -623,7 +760,7 @@ export function ToolbarShell({
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <Chrome page={page} onPage={onPage} context={context} />
+      <Chrome page={page} onPage={onPage} context={context} header={header} />
 
       <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {page === "rank" && <RankPage data={data} />}

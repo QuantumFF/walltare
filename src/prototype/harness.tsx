@@ -24,11 +24,28 @@ export type DataState = (typeof DATA_STATES)[number];
 export const THEMES = ["light", "dark"] as const;
 export type Theme = (typeof THEMES)[number];
 
+/**
+ * Housings for the tab group in the middle of variant A's chrome. A second
+ * axis inside the winning variant, not a fourth variant: the shell is settled
+ * and only the container the tabs sit in is still open.
+ */
+export const HEADERS = ["underline", "segmented", "island", "boxed", "sliding"] as const;
+export type Header = (typeof HEADERS)[number];
+
+export const HEADER_NAMES: Record<Header, string> = {
+  underline: "bare tabs, active underlined",
+  segmented: "inset segmented control",
+  island: "floating island",
+  boxed: "outlined boxes",
+  sliding: "one pill, sliding indicator",
+};
+
 interface ProtoState {
   variant: VariantKey;
   page: Page;
   data: DataState;
   theme: Theme;
+  header: Header;
   /** Index into the current list to open the lightbox on, so it is linkable. */
   open: number | null;
 }
@@ -45,6 +62,7 @@ function read(): ProtoState {
     page: one("page", PAGES, "library"),
     data: one("state", DATA_STATES, "ready"),
     theme: one("theme", THEMES, "dark"),
+    header: one("header", HEADERS, "underline"),
     open: q.has("open") && Number.isInteger(open) && open >= 0 ? open : null,
   };
 }
@@ -71,6 +89,7 @@ export function useProtoState() {
         page: merged.page,
         state: merged.data,
         theme: merged.theme,
+        header: merged.header,
       });
       if (merged.open !== null) q.set("open", String(merged.open));
       window.history.replaceState(null, "", `?${q}`);
@@ -153,6 +172,14 @@ export function PrototypeBar({
     [state.variant, patch],
   );
 
+  const stepHeader = useCallback(
+    (delta: number) => {
+      const index = HEADERS.indexOf(state.header);
+      patch({ header: HEADERS[(index + delta + HEADERS.length) % HEADERS.length] });
+    },
+    [state.header, patch],
+  );
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -166,12 +193,14 @@ export function PrototypeBar({
       if (!event.altKey) return;
       if (event.key === "ArrowLeft") step(-1);
       else if (event.key === "ArrowRight") step(1);
+      else if (event.key === "ArrowUp") stepHeader(-1);
+      else if (event.key === "ArrowDown") stepHeader(1);
       else return;
       event.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step]);
+  }, [step, stepHeader]);
 
   if (hidden) {
     return (
@@ -205,6 +234,23 @@ export function PrototypeBar({
       </button>
 
       <span className="mx-1 h-4 w-px bg-white/25" />
+
+      {state.variant === "A" && (
+        <label className="flex items-center gap-1">
+          <span className="opacity-60">tabs</span>
+          <select
+            value={state.header}
+            onChange={(e) => patch({ header: e.target.value as Header })}
+            className={SELECT_CLASS}
+          >
+            {HEADERS.map((header) => (
+              <option key={header} value={header} className="text-black">
+                {header} — {HEADER_NAMES[header]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <label className="flex items-center gap-1">
         <span className="opacity-60">page</span>
@@ -251,7 +297,9 @@ export function PrototypeBar({
         h
       </button>
 
-      <span className="ml-0.5 opacity-40">alt+←/→</span>
+      <span className="ml-0.5 opacity-40">
+        alt+←/→{state.variant === "A" ? " ↑/↓" : ""}
+      </span>
     </div>
   );
 }
