@@ -35,6 +35,9 @@ absolute destination, which has no `.` segment to normalize.
 
 1. Read the row. Refuse if it is already Rejected (see ADR 0001).
 2. Resolve the destination directory, create it, and canonicalize it.
+   [ADR 0011](0011-written-paths.md) puts expansion of `~` and environment
+   variables at the front of this step, so the directory is created only after
+   the written path has resolved.
 3. Refuse if the destination resolves to the folder the wallpaper is in.
 4. Pick a destination filename no file currently holds.
 5. `UPDATE` the row to Rejected with the new path.
