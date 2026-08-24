@@ -25,19 +25,39 @@ Every wallpaper is exactly one of:
 
 Statuses are mutually exclusive; "keep" and "reject" are transitions, not parallel flags.
 
-Active becomes Kept or Rejected. Kept becomes Rejected. Rejected is terminal:
-nothing transitions out of it, because the file has left the library. Asking
-for any other transition is an error, not a no-op. See
-[ADR 0001](docs/adr/0001-status-transitions.md).
+Active becomes Kept or Rejected. Kept becomes Rejected or, by undoing the keep,
+Active again. Rejected becomes Active again by a Restore. Asking for any other
+transition is an error, not a no-op. A wallpaper rejected before Restore existed
+has no Origin to go back to, so for those rows Rejected stays terminal. See
+[ADR 0009](docs/adr/0009-reject-is-reversible.md).
 
 ## Soft reject
 
 Rejecting a wallpaper by moving its file to a destination folder without erasing its history: the row survives as `rejected`, preserving every comparison it took part in.
 
 The destination is a folder, absolute or relative to the wallpaper's own
-folder. A wallpaper is soft-rejected exactly once, and the move never
-overwrites a file already sitting in the destination. See
-[ADR 0003](docs/adr/0003-soft-reject-write-ordering.md).
+folder, and the move never overwrites a file already sitting in it. The reject
+records the wallpaper's Origin so a Restore can put it back, so a wallpaper can
+be rejected and restored as often as the user changes their mind. See
+[ADR 0003](docs/adr/0003-soft-reject-write-ordering.md) and
+[ADR 0009](docs/adr/0009-reject-is-reversible.md).
+
+## Restore
+
+Undoing a soft reject: the file moves back to its Origin and the wallpaper
+becomes Active, whichever status it held before the reject. Restoring clears the
+Origin, so the next reject records a fresh one.
+
+A Restore lands on Active rather than on the previous status because Kept is a
+judgement about a rating, and changing your mind about a reject is not that
+judgement. A wallpaper with no Origin cannot be restored.
+
+## Origin
+
+Where a wallpaper's file sat before its current soft reject. Recorded by the
+reject and cleared by the Restore, so only a currently-rejected wallpaper has
+one. A wallpaper rejected before Restore existed has none either, because
+nothing recorded it at the time.
 
 ## Comparison
 

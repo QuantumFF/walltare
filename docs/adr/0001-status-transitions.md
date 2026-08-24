@@ -1,8 +1,13 @@
 # ADR 0001: Which Status transitions are legal
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 0009](0009-reject-is-reversible.md)
 **Ticket:** [#24](https://github.com/QuantumFF/walltare/issues/24)
 **Date:** 2026-08-23
+
+ADR 0009 restates the whole transition table. Rejected is no longer terminal,
+and Kept can go back to Active. The reasoning below still explains why the
+guards exist and why `InvalidTransition` is its own error, so read it for that
+and take the table from 0009.
 
 ## Context
 
