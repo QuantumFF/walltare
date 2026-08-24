@@ -157,6 +157,14 @@ which the mtime check already covers. Whether a restore should trigger
 pre-generation belongs to
 [#42](https://github.com/QuantumFF/walltare/issues/42).
 
+**Amended by [ADR 0012](0012-thumbnail-pre-generation.md).** The purge goes,
+for reasons this ADR is half of: a reversible Rejected plus a library page that
+shows rejected rows makes throwing the cache away a cost paid twice. `path`
+follows the file and the move preserves its mtime, so a rejected wallpaper's
+thumbnails stay valid. A restore therefore triggers no pre-generation, and the
+paragraph above holds only for rows rejected before ADR 0012 shipped, which are
+the same rows that have no Origin and cannot be restored anyway.
+
 The reject confirm dialog in Review goes away. Confirm-then-act and
 act-then-undo answer the same problem, and running both costs two interruptions
 per reject.
