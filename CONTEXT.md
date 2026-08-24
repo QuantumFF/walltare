@@ -6,6 +6,15 @@ Glossary for walltare. Terms only; no implementation.
 
 A single image file known to the app. Identified by its absolute path; one wallpaper per file.
 
+## Library root
+
+The folder a scan walks to find wallpapers, including everything beneath it.
+One folder, chosen by the user.
+
+The Library root is a stated preference, not a fact about the library. It can
+point somewhere that no longer exists, and the wallpapers an earlier scan found
+stay in the library regardless of where it points now.
+
 ## Status
 
 Every wallpaper is exactly one of:
