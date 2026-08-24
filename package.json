@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prototype": "vite --port 5273 --strictPort --open /prototype.html",
     "build": "tsc && vite build",
     "lint": "eslint .",
     "test": "bun test",
