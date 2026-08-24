@@ -81,6 +81,24 @@ Which of the two the user sees on the left carries no meaning. The pair is
 presented in random order so that the habit of picking the left one does not
 become part of the rating.
 
+## Score
+
+A wallpaper's standing among the others: the μ of its rating. Every wallpaper
+starts at the same Score and moves from there with each Comparison it takes
+part in.
+
+A Score is comparable only within one library, because it is a position among
+these wallpapers and nothing else. A wallpaper that has been in no Comparison
+has no Score yet; the number it starts on is the app's ignorance, not a
+judgement of the image.
+
+A Rejected wallpaper sits out of voting, so its Score stops moving and stays
+the last thing the app knew about it.
+
+Score answers how good. Evaluated answers how sure. Review lists the lowest
+Scores, so the wallpaper the app is least confident about is not thereby the
+wallpaper it likes least. See [ADR 0013](docs/adr/0013-review-orders-by-mu.md).
+
 ## Eligible
 
 A wallpaper the voting pool draws from: Active or Kept. Rejected wallpapers are
@@ -102,7 +120,8 @@ Round. See [ADR 0008](docs/adr/0008-round-is-derived.md).
 
 Two distinct progress notions. **Participated**: has been in at least one
 comparison. **Evaluated**: its rating is confident enough to trust, meaning σ
-below 4.0, roughly half the starting uncertainty.
+below 4.0, roughly half the starting uncertainty. Evaluated is a late signal: it
+takes around seven comparisons to reach, so a young library has none.
 
 Both are counted over the eligible pool. Participated is Round progress at
 Round 1, and is pinned to the size of the pool from Round 2 onwards, so the
