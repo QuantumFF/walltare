@@ -25,19 +25,36 @@ export const THEMES = ["light", "dark"] as const;
 export type Theme = (typeof THEMES)[number];
 
 /**
- * Housings for the tab group in the middle of variant A's chrome. A second
- * axis inside the winning variant, not a fourth variant: the shell is settled
- * and only the container the tabs sit in is still open.
+ * Housings for the tab group in the middle of variant A's chrome.
+ *
+ * Settled: `underline` won. The other four stay switchable because the branch
+ * is throwaway and they cost one dropdown, but they are no longer the question.
  */
 export const HEADERS = ["underline", "segmented", "island", "boxed", "sliding"] as const;
 export type Header = (typeof HEADERS)[number];
 
 export const HEADER_NAMES: Record<Header, string> = {
-  underline: "bare tabs, active underlined",
+  underline: "bare tabs, active underlined (chosen)",
   segmented: "inset segmented control",
   island: "floating island",
   boxed: "outlined boxes",
   sliding: "one pill, sliding indicator",
+};
+
+/**
+ * Housings for Keep / Reject / Restore inside variant A's lightbox. The live
+ * question: where those buttons sit while a wallpaper is being previewed, and
+ * what contains them.
+ */
+export const ACTIONS = ["bar", "top", "dock", "rail", "inline"] as const;
+export type ActionHousing = (typeof ACTIONS)[number];
+
+export const ACTION_NAMES: Record<ActionHousing, string> = {
+  bar: "right end of the bottom caption bar",
+  top: "centred in a top bar",
+  dock: "floating dock over the image",
+  rail: "vertical rail on the right edge",
+  inline: "under the image, at the image's width",
 };
 
 interface ProtoState {
@@ -46,6 +63,7 @@ interface ProtoState {
   data: DataState;
   theme: Theme;
   header: Header;
+  actions: ActionHousing;
   /** Index into the current list to open the lightbox on, so it is linkable. */
   open: number | null;
 }
@@ -63,6 +81,7 @@ function read(): ProtoState {
     data: one("state", DATA_STATES, "ready"),
     theme: one("theme", THEMES, "dark"),
     header: one("header", HEADERS, "underline"),
+    actions: one("actions", ACTIONS, "bar"),
     open: q.has("open") && Number.isInteger(open) && open >= 0 ? open : null,
   };
 }
@@ -90,6 +109,7 @@ export function useProtoState() {
         state: merged.data,
         theme: merged.theme,
         header: merged.header,
+        actions: merged.actions,
       });
       if (merged.open !== null) q.set("open", String(merged.open));
       window.history.replaceState(null, "", `?${q}`);
@@ -162,7 +182,10 @@ export function PrototypeBar({
   state: ProtoState;
   patch: (next: Partial<ProtoState>) => void;
 }) {
-  const [hidden, setHidden] = useState(false);
+  // `?bar=off` starts hidden, for a screenshot or a clean first look.
+  const [hidden, setHidden] = useState(
+    () => new URLSearchParams(window.location.search).get("bar") === "off",
+  );
 
   const step = useCallback(
     (delta: number) => {
@@ -172,12 +195,14 @@ export function PrototypeBar({
     [state.variant, patch],
   );
 
-  const stepHeader = useCallback(
+  // Alt+↑/↓ drives whichever axis is live. That is the action housing now; the
+  // tab housing is settled and keeps only its dropdown.
+  const stepActions = useCallback(
     (delta: number) => {
-      const index = HEADERS.indexOf(state.header);
-      patch({ header: HEADERS[(index + delta + HEADERS.length) % HEADERS.length] });
+      const index = ACTIONS.indexOf(state.actions);
+      patch({ actions: ACTIONS[(index + delta + ACTIONS.length) % ACTIONS.length] });
     },
-    [state.header, patch],
+    [state.actions, patch],
   );
 
   useEffect(() => {
@@ -193,14 +218,14 @@ export function PrototypeBar({
       if (!event.altKey) return;
       if (event.key === "ArrowLeft") step(-1);
       else if (event.key === "ArrowRight") step(1);
-      else if (event.key === "ArrowUp") stepHeader(-1);
-      else if (event.key === "ArrowDown") stepHeader(1);
+      else if (event.key === "ArrowUp") stepActions(-1);
+      else if (event.key === "ArrowDown") stepActions(1);
       else return;
       event.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, stepHeader]);
+  }, [step, stepActions]);
 
   if (hidden) {
     return (
@@ -236,20 +261,37 @@ export function PrototypeBar({
       <span className="mx-1 h-4 w-px bg-white/25" />
 
       {state.variant === "A" && (
-        <label className="flex items-center gap-1">
-          <span className="opacity-60">tabs</span>
-          <select
-            value={state.header}
-            onChange={(e) => patch({ header: e.target.value as Header })}
-            className={SELECT_CLASS}
-          >
-            {HEADERS.map((header) => (
-              <option key={header} value={header} className="text-black">
-                {header} — {HEADER_NAMES[header]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <>
+          <label className="flex items-center gap-1">
+            <span className="opacity-60">actions</span>
+            <select
+              value={state.actions}
+              onChange={(e) => patch({ actions: e.target.value as ActionHousing })}
+              className={`${SELECT_CLASS} ring-1 ring-amber-300/60`}
+            >
+              {ACTIONS.map((housing) => (
+                <option key={housing} value={housing} className="text-black">
+                  {housing} — {ACTION_NAMES[housing]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1">
+            <span className="opacity-60">tabs</span>
+            <select
+              value={state.header}
+              onChange={(e) => patch({ header: e.target.value as Header })}
+              className={SELECT_CLASS}
+            >
+              {HEADERS.map((header) => (
+                <option key={header} value={header} className="text-black">
+                  {header} — {HEADER_NAMES[header]}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
       )}
 
       <label className="flex items-center gap-1">

@@ -26,7 +26,9 @@ function Prototype() {
 
   return (
     <>
-      {state.variant === "A" && <ToolbarShell {...props} header={state.header} />}
+      {state.variant === "A" && (
+        <ToolbarShell {...props} header={state.header} actions={state.actions} />
+      )}
       {state.variant === "B" && <InspectorShell {...props} />}
       {state.variant === "C" && <ListShell {...props} />}
       <PrototypeBar state={state} patch={patch} />

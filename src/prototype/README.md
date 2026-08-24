@@ -25,9 +25,10 @@ The bar at the bottom is the harness, not the design. It is deliberately ugly.
 | control | what it does |
 | --- | --- |
 | `alt+←` / `alt+→` | previous / next variant. Alt because the lightbox under test claims the bare arrows |
-| `alt+↑` / `alt+↓` | previous / next tab housing, variant A only |
-| `h` | hide the bar. It sits over variant A's caption bar |
-| tabs | the five housings for A's tab group, below |
+| `alt+↑` / `alt+↓` | previous / next action housing, variant A only |
+| `h` | hide the bar. It sits over variant A's caption bar. `?bar=off` starts it hidden |
+| actions | the five housings for Keep / Reject / Restore in the lightbox, below |
+| tabs | the five housings for A's tab group. Settled: `underline` |
 | page | rank, review, library, settings |
 | state | ready, loading, empty |
 | dark / light | both themes, since the rank surround is fixed dark in both |
@@ -62,12 +63,36 @@ wall. Sortable columns, a thumbnail chip, always-visible actions, a fixed row
 height that makes virtualisation arithmetic trivial. Worst of the three for
 judging pictures, best for finding a file. Settings is a fourth tab.
 
+## The five action housings (variant A's lightbox)
+
+The live question: where Keep / Reject / Restore sit while a wallpaper is being
+previewed, and what contains them. Open the lightbox and cycle with `alt+↑` /
+`alt+↓`, or link one: `?variant=A&actions=dock&open=6`.
+
+Identity (badge, filename, status, path) and the read-out (Score, comparison
+count, position, keys) stay in the same place in all five. Only the buttons move.
+
+![the five action housings](shots/actions-dark.jpg)
+
+| `actions=` | what it is |
+| --- | --- |
+| `bar` | right end of the bottom caption bar. What round one shipped: the decision is a corner of an information bar |
+| `top` | its own bar above the image, buttons centred, close pushed right. The decision reads as the screen's title rather than its footer |
+| `dock` | a floating pill over the image, centred, holding nothing but the decision. How a phone gallery does it |
+| `rail` | a vertical column on the right edge, below the close button. Icon over label, and the bottom bar stays purely informational |
+| `inline` | under the image, at the image's width rather than the window's, so the controls belong to the picture |
+
+`inline` needs a live look rather than a screenshot: its row width is measured
+off the rendered image, and headless Chrome resizes the viewport after the
+measurement lands, so a captured frame shows the row one layout stale. In a real
+browser the observer fires on resize and it tracks.
+
 ## The five tab housings (variant A)
 
-A won, so the second round is one axis inside it: what houses the three tabs in
-the middle of the chrome. Same tabs, same place, same 48px row in all five, so
-the only variable is how hard the group asserts itself against the brand on its
-left and the gear on its right.
+Settled: `underline`. Kept switchable because the branch is throwaway and they
+cost one dropdown. Same tabs, same place, same 48px row in all five, so the only
+variable was how hard the group asserts itself against the brand on its left and
+the gear on its right.
 
 ![the five housings, dark](shots/montage-dark.png)
 
@@ -100,9 +125,9 @@ would never render).
 
 ## What the reaction has to settle
 
-Round one picked A. What is left:
+Round one picked A. Round two picked `underline` for the tabs. What is left:
 
-1. Which of the five tab housings.
+1. Which of the five action housings in the lightbox.
 2. Hover overlay or something else for the card's actions. A uses the overlay,
    which leaves the map's keyboard-reachability fog patch open; B's inspector
    panel is the shape that closes it structurally, and bits of it could be

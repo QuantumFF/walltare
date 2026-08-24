@@ -28,6 +28,7 @@ import {
 import {
   useLightboxKeys,
   useToast,
+  type ActionHousing,
   type DataState,
   type Header,
   type Page,
@@ -44,7 +45,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const TABS: Array<{ key: Page; label: string }> = [
   { key: "rank", label: "Rank" },
@@ -418,18 +419,92 @@ function Card({
   );
 }
 
+/**
+ * Keep / Reject, or Restore, at one of three sizes.
+ *
+ * `md` is the caption-bar size the first round shipped. `lg` is for the
+ * housings that make the actions the point rather than a corner of a bar, and
+ * `rail` stacks label under icon for the vertical column.
+ */
+function Actions({
+  w,
+  onAction,
+  size,
+}: {
+  w: ProtoWallpaper;
+  onAction: (verb: string) => void;
+  size: "md" | "lg" | "rail";
+}) {
+  const shape =
+    size === "rail"
+      ? "flex w-16 flex-col items-center gap-1 rounded-lg px-2 py-2.5 text-[11px]"
+      : size === "lg"
+        ? "flex items-center gap-2 rounded-lg px-5 py-2.5 text-sm"
+        : "flex items-center gap-1.5 rounded-md px-3 py-2 text-xs";
+  const icon = size === "md" ? "h-3.5 w-3.5" : "h-5 w-5";
+  const neutral = "bg-white/15 text-white hover:bg-white/25";
+  const danger = "bg-destructive text-white hover:brightness-110";
+
+  if (w.status === "rejected") {
+    return (
+      <button
+        disabled={!w.origin_path}
+        title={
+          w.origin_path
+            ? `Restore to ${w.origin_path}`
+            : "Rejected before restore existed, so there is no origin to go back to"
+        }
+        onClick={() => onAction("Restored")}
+        className={`${shape} ${neutral} disabled:opacity-40`}
+      >
+        <RotateCcw className={icon} />
+        Restore
+      </button>
+    );
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => onAction(w.status === "kept" ? "Returned to voting" : "Kept")}
+        className={`${shape} ${neutral}`}
+      >
+        {w.status === "kept" ? <Undo2 className={icon} /> : <Check className={icon} />}
+        {w.status === "kept" ? "Un-keep" : "Keep"}
+      </button>
+      <button onClick={() => onAction("Rejected")} className={`${shape} ${danger}`}>
+        <FolderInput className={icon} />
+        Reject
+      </button>
+    </>
+  );
+}
+
+/**
+ * Variant A's lightbox, with the action housing as a parameter.
+ *
+ * Identity (badge, filename, status, path) and the read-out (Score, comparison
+ * count, position, keys) stay put across all five. The only thing that moves is
+ * where Keep / Reject / Restore live and what contains them, which is the whole
+ * question.
+ *
+ * Opaque backdrop, not 97%: at 97% the chrome's tabs ghosted through the top of
+ * the preview, which is both a distraction and a lie about what is clickable.
+ */
 function Lightbox({
   list,
   index,
   onIndex,
   onClose,
   onAction,
+  housing,
 }: {
   list: ProtoWallpaper[];
   index: number;
   onIndex: (next: number) => void;
   onClose: () => void;
   onAction: (verb: string) => void;
+  housing: ActionHousing;
 }) {
   const w = list[index];
   const prev = useCallback(
@@ -439,96 +514,169 @@ function Lightbox({
   const next = useCallback(() => onIndex((index + 1) % list.length), [index, list.length, onIndex]);
   useLightboxKeys(true, { onPrev: prev, onNext: next, onClose });
 
-  // Opaque, not 97%: at 97% the chrome's tabs ghosted through the top of the
-  // preview, which is both a distraction and a lie about what is clickable.
+  // For `inline` only: the painted width of the picture. See the comment on the
+  // inline branch below for why this is measured rather than expressed in CSS.
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [loaded, setLoaded] = useState(0);
+  const [pictureWidth, setPictureWidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    const node = imageRef.current;
+    if (!node || housing !== "inline") return;
+    const measure = () => {
+      const width = node.getBoundingClientRect().width;
+      setPictureWidth(width > 0 ? width : null);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [housing, w.id, loaded]);
+
+  const identity = (
+    <div className="min-w-0 flex-1">
+      <div className="flex items-center gap-2">
+        <ScoreBadge w={w} size="lg" />
+        <span className="truncate text-sm font-medium text-white">{w.filename}</span>
+        <span className="shrink-0 rounded border border-white/20 px-1.5 py-0.5 text-[11px] text-white/70">
+          {statusLabel(w.status)}
+        </span>
+      </div>
+      <p className="mt-1 truncate font-mono text-[11px] text-white/50">{w.path}</p>
+    </div>
+  );
+
+  const readout = (
+    <div className="shrink-0 text-right text-[11px] text-white/50 tabular-nums">
+      <div>
+        Score {scoreLabel(w)} · {w.comparisons_count} comparisons
+      </div>
+      <div>
+        {index + 1} / {list.length} · ← → navigate · Esc close
+      </div>
+    </div>
+  );
+
+  const image = (className: string, ref?: React.Ref<HTMLImageElement>) => (
+    <img
+      ref={ref}
+      key={w.id}
+      src={largeSrc(w.id)}
+      alt={w.filename}
+      onLoad={() => setLoaded((n) => n + 1)}
+      className={className}
+    />
+  );
+
+  const arrows = (
+    <>
+      <button
+        onClick={prev}
+        aria-label="Previous"
+        className="absolute left-2 rounded-full bg-white/10 p-3 text-white hover:bg-white/20"
+      >
+        <ChevronLeft className="h-6 w-6" />
+      </button>
+      <button
+        onClick={next}
+        aria-label="Next"
+        className="absolute right-2 rounded-full bg-white/10 p-3 text-white hover:bg-white/20"
+      >
+        <ChevronRight className="h-6 w-6" />
+      </button>
+    </>
+  );
+
+  const close = (
+    <button
+      onClick={onClose}
+      aria-label="Close"
+      className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+    >
+      <X className="h-5 w-5" />
+    </button>
+  );
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-neutral-950">
-      <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
-        <img
-          key={w.id}
-          src={largeSrc(w.id)}
-          alt={w.filename}
-          className="max-h-full max-w-full object-contain"
-        />
+      {/* top: the actions get their own bar above the image, centred, with
+          close pushed to the right end. The decision reads as the title of the
+          screen rather than as a footer control. */}
+      {housing === "top" && (
+        <div className="relative flex h-16 shrink-0 items-center justify-center border-b border-white/10 bg-black/60 px-4">
+          <div className="flex gap-2">
+            <Actions w={w} onAction={onAction} size="lg" />
+          </div>
+          <div className="absolute right-4">{close}</div>
+        </div>
+      )}
 
-        <button
-          onClick={prev}
-          aria-label="Previous"
-          className="absolute left-2 rounded-full bg-white/10 p-3 text-white hover:bg-white/20"
-        >
-          <ChevronLeft className="h-6 w-6" />
-        </button>
-        <button
-          onClick={next}
-          aria-label="Next"
-          className="absolute right-2 rounded-full bg-white/10 p-3 text-white hover:bg-white/20"
-        >
-          <ChevronRight className="h-6 w-6" />
-        </button>
-        <button
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute top-2 right-2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
-        >
-          <X className="h-5 w-5" />
-        </button>
+      <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
+        {housing === "inline" ? (
+          // inline: the actions belong to the picture, not to the window, so the
+          // row under them is the picture's width, not the window's.
+          //
+          // CSS cannot shrink-wrap a letterboxed image: during intrinsic sizing
+          // the image contributes its natural width, so a column around it goes
+          // full width and the row goes with it. So the width is measured off
+          // the image, whose `max-w`/`max-h` box is exactly the painted picture.
+          //
+          // The row is absolutely positioned so it cannot affect the layout it
+          // is being measured against. That is what stops the two chasing each
+          // other; an in-flow row made the measurement settle short.
+          <div className="relative flex h-full w-full items-center justify-center pb-14">
+            {image("max-h-full max-w-full object-contain", imageRef)}
+            <div
+              className="absolute bottom-0 left-1/2 flex h-11 -translate-x-1/2 items-center gap-4 overflow-hidden"
+              style={{ width: pictureWidth ?? "100%" }}
+            >
+              {identity}
+              {readout}
+              <div className="flex shrink-0 gap-2">
+                <Actions w={w} onAction={onAction} size="md" />
+              </div>
+            </div>
+          </div>
+        ) : (
+          image("max-h-full max-w-full object-contain")
+        )}
+
+        {arrows}
+        {housing !== "top" && <div className="absolute top-2 right-2">{close}</div>}
+
+        {/* dock: a floating pill over the image, centred, holding nothing but
+            the decision. Closest to how a phone gallery does it. */}
+        {housing === "dock" && (
+          <div className="absolute bottom-6 left-1/2 flex -translate-x-1/2 gap-1 rounded-full bg-black/70 p-1.5 shadow-2xl ring-1 ring-white/15 backdrop-blur-md">
+            <Actions w={w} onAction={onAction} size="lg" />
+          </div>
+        )}
+
+        {/* rail: a vertical column pinned to the right edge, below the close
+            button and clear of the navigation arrows' vertical centre. Leaves
+            the bottom bar purely informational. */}
+        {housing === "rail" && (
+          <div className="absolute top-16 right-4 flex flex-col gap-1 rounded-xl bg-black/70 p-1.5 ring-1 ring-white/15 backdrop-blur-md">
+            <Actions w={w} onAction={onAction} size="rail" />
+          </div>
+        )}
       </div>
 
-      {/* One caption bar carries everything: identity on the left, actions on
-          the right, keys underneath. */}
-      <div className="shrink-0 border-t border-white/10 bg-black/60 px-6 py-3">
-        <div className="flex items-center gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <ScoreBadge w={w} size="lg" />
-              <span className="truncate text-sm font-medium text-white">{w.filename}</span>
-              <span className="shrink-0 rounded border border-white/20 px-1.5 py-0.5 text-[11px] text-white/70">
-                {statusLabel(w.status)}
-              </span>
-            </div>
-            <p className="mt-1 truncate font-mono text-[11px] text-white/50">{w.path}</p>
-          </div>
-
-          <div className="shrink-0 text-right text-[11px] text-white/50 tabular-nums">
-            <div>
-              Score {scoreLabel(w)} · {w.comparisons_count} comparisons
-            </div>
-            <div>
-              {index + 1} / {list.length} · ← → navigate · Esc close
-            </div>
-          </div>
-
-          <div className="flex shrink-0 gap-2">
-            {w.status === "rejected" ? (
-              <button
-                disabled={!w.origin_path}
-                onClick={() => onAction("Restored")}
-                className="flex items-center gap-1.5 rounded-md bg-white/15 px-3 py-2 text-xs text-white hover:bg-white/25 disabled:opacity-40"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Restore
-              </button>
-            ) : (
-              <>
-                <button
-                  onClick={() => onAction("Kept")}
-                  className="flex items-center gap-1.5 rounded-md bg-white/15 px-3 py-2 text-xs text-white hover:bg-white/25"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  Keep
-                </button>
-                <button
-                  onClick={() => onAction("Rejected")}
-                  className="flex items-center gap-1.5 rounded-md bg-destructive px-3 py-2 text-xs text-white"
-                >
-                  <FolderInput className="h-3.5 w-3.5" />
-                  Reject
-                </button>
-              </>
+      {/* The caption bar. It carries the actions only in `bar`; the other four
+          leave it as a read-out. */}
+      {housing !== "inline" && (
+        <div className="shrink-0 border-t border-white/10 bg-black/60 px-6 py-3">
+          <div className="flex items-center gap-4">
+            {identity}
+            {readout}
+            {housing === "bar" && (
+              <div className="flex shrink-0 gap-2">
+                <Actions w={w} onAction={onAction} size="md" />
+              </div>
             )}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -694,6 +842,7 @@ export function ToolbarShell({
   open,
   onOpenChange: setOpen,
   header,
+  actions,
 }: {
   page: Page;
   onPage: (page: Page) => void;
@@ -701,6 +850,7 @@ export function ToolbarShell({
   open: number | null;
   onOpenChange: (index: number | null) => void;
   header: Header;
+  actions: ActionHousing;
 }) {
   const [filter, setFilter] = useState<Status | "all">("all");
   const [sort, setSort] = useState("score-desc");
@@ -787,6 +937,7 @@ export function ToolbarShell({
           onIndex={setOpen}
           onClose={() => setOpen(null)}
           onAction={act}
+          housing={actions}
         />
       )}
 
