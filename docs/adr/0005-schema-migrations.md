@@ -38,6 +38,14 @@ Every future change to an existing table needs a step in `migrate` as well as
 an edit to the DDL. The DDL describes the current shape for new databases;
 `migrate` gets old ones there.
 
+A brand-new table is the exception, and it is worth stating because the wording
+above invites the opposite reading. `init_schema` runs the whole DDL before it
+branches, so `CREATE TABLE IF NOT EXISTS` creates a table that no database has
+yet, old files included. Adding one needs no step in `migrate` and no version
+bump. Only a change to a table that already exists does, because that is the
+case `IF NOT EXISTS` skips. See
+[ADR 0010](0010-settings-store.md), which adds a table this way.
+
 `SCHEMA_VERSION` is currently 2. Step 2 drops and recreates `thumbnails` with
 the wider `CHECK`.
 
