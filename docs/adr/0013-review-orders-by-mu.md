@@ -60,8 +60,9 @@ is how the user reads how much the Score is worth.
 
 The badge is one component with identical rules wherever it renders: review
 cards, library cards, and the lightbox caption. The library page offers a sort
-by Score. Placement, card design, and the library page's *default* ordering
-belong to [#44](https://github.com/QuantumFF/walltare/issues/44) and
+by Score; its orderings and its default are
+[ADR 0014](0014-library-page-ordering.md)'s. Placement and card design belong to
+[#44](https://github.com/QuantumFF/walltare/issues/44) and
 [#46](https://github.com/QuantumFF/walltare/issues/46).
 
 `rating_sigma` and `comparisons_count` are already on the `Wallpaper` DTO, so
@@ -107,9 +108,18 @@ comparisons per wallpaper, so it contains no Evaluated wallpaper at all and the
 solid state will not appear until roughly Round 8. Evaluated is a late signal
 by construction; the badge reports that rather than softening it.
 
-**45 of the live library's 120 wallpapers read `Unrated` today.** On the review
-list this is invisible, since μ = 25.0 sorts nowhere near the bottom. On the
-library page it is a third of the grid.
+**45 of the live library's 120 wallpapers read `Unrated` today.** On the
+library page that is a third of the grid.
+
+They are not invisible on the review list either, which this ADR originally
+claimed on the assumption that μ = 25.0 sorts nowhere near the bottom. Measured:
+only 38 Active rows sit below 25.0, so slots 39 to 50 come out of the 45-row tie
+at exactly 25.0, and 12 of the 50 review cards read `Unrated`. The ordering is
+still right, since the alternative was ranking those 45 by a starting value, but
+the review list does show unrated wallpapers and it picks which ones by nothing
+at all. [ADR 0014](0014-library-page-ordering.md) answers this for the library
+page with an unrated tail group and an `id` tiebreak, and records that whether
+`get_review` adopts either is still open.
 
 **A Rejected wallpaper's Score freezes.** It sits out of voting, so its μ stops
 moving while the rest of the pool keeps going, and months later the number is a
