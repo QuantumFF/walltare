@@ -171,7 +171,10 @@ takes that shape for stats and extends to this.
 successfully. Those differ after a failed scan, and the Settings field is
 labelled as the former.
 
-Whether a configured `library_root` changes which view the app boots into is
-left to [#45](https://github.com/QuantumFF/walltare/issues/45). Where the
+Whether a configured `library_root` changes which view the app boots into was
+left to [#45](https://github.com/QuantumFF/walltare/issues/45), and
+[ADR 0015](0015-navigation-shell.md) answers no: the boot rule reads what the
+library contains, because a configured root proves only that the user typed
+something. Where the
 reject destination is edited, now that two views can reject, is left to the
 ticket that settles the library card.

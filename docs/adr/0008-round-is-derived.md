@@ -129,7 +129,9 @@ ranking-quality question and is not settled here.
 
 A library that is entirely Rejected still passes the boot gate and lands on the
 rank view, where pair selection fails. That is untouched by this ADR and belongs
-to the navigation shell.
+to the navigation shell. [ADR 0015](0015-navigation-shell.md) settles it: the
+boot gate reads `eligible_count >= 2`, which is what `get_pair` actually needs,
+and a library with fewer opens on the library page instead.
 
 The removals are mechanical but wide: `voting.rs:31-37` and its tests at `:475`,
 `:556` and `:577`; `client.ts:21-27`; `RankView.tsx:311`, `:317` and `:329`;
