@@ -1,4 +1,4 @@
-# ADR 0015: The library page fetches every row and mounts a window of cards
+# ADR 0016: The library page fetches every row and mounts a window of cards
 
 **Status:** Accepted
 **Ticket:** [#46](https://github.com/QuantumFF/walltare/issues/46)

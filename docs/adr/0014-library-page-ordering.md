@@ -47,7 +47,7 @@ each name to exactly one clause and owns every part of it. A frontend that
 supplies a sort key concatenates it into SQL, and the pagination that #46 picks
 needs the backend to know the key anyway.
 
-> **[ADR 0015](0015-library-page-scale.md), 2026-08-25.** #46 picked no
+> **[ADR 0016](0016-library-page-scale.md), 2026-08-25.** #46 picked no
 > pagination. `list_wallpapers` returns every matching row, so the second half
 > of that sentence no longer applies. The decision stands on the injection
 > ground by itself. The `id` tiebreak below survives for a different reason than
@@ -140,7 +140,7 @@ rows this is not worth an index; if it becomes one, the index is on
 ways: the Unrated tail, and the `id` tiebreak. ADR 0013 froze `get_review`
 verbatim, so if #46 folds Review into this page it has to decide which of the
 two orderings Review then gets. This ADR does not decide that.
-([ADR 0015](0015-library-page-scale.md) declined to fold them, so the question
+([ADR 0016](0016-library-page-scale.md) declined to fold them, so the question
 does not arise: Review keeps its own page and `get_review` is untouched.)
 
 **ADR 0013's claim that Unrated is invisible on the review list is wrong**, and
