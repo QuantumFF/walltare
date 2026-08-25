@@ -59,6 +59,12 @@ hundred microseconds per 420ms of work.
 
 The queue is the eligible pool ordered by `comparisons_count ASC, id ASC`.
 
+> **Amended by [ADR 0015](0015-library-page-scale.md), 2026-08-25.** The queue is
+> the whole `wallpapers` table ordered by
+> `status = 'rejected' ASC, comparisons_count ASC, id ASC`, so rejects form a
+> tail group behind the eligible pool. See the amendment at the end of this
+> section.
+
 The competing rule was `rating_mu ASC`, which matches what Review shows. It
 loses because `select_pair` draws its *first* wallpaper from the least-compared
 ties, and its second by a Gaussian weight over the whole pool. Only the first
@@ -211,6 +217,28 @@ this ships had their thumbnails purged and will not be pre-generated, because
 generating files the user has already thrown out is the wrong default. They
 regenerate on demand, once each, and then stay cached, since nothing purges any
 more.
+
+### Amendment: rejects are a tail group, not an exclusion
+
+**[ADR 0015](0015-library-page-scale.md), 2026-08-25.** The paragraph above is
+reversed. The work list is every row in `wallpapers`, ordered by
+`status = 'rejected' ASC, comparisons_count ASC, id ASC`.
+
+The library page that ADR 0015 specifies defaults to a filter of All, so half of
+its default view is a status this pass never queued. The gap is narrow. A
+wallpaper rejected from Review has a low Score, which takes comparisons, which
+means the pass reached it long ago, and the purge is already gone. But a reject
+straight from the library page on a freshly scanned library escapes it, and that
+path is new.
+
+`move_wallpaper` updates `path` and `filename`, so a Rejected row points at the
+file in its new folder and pre-generates with no special handling. The tail runs
+last, so the eligible pool pays nothing, and a Restore moves a row up the queue
+on the next pass.
+
+The justification widens with it. "Ahead of the pair that will need them" becomes
+"ahead of any view that can show them", and the cost is 414KB per rejected
+wallpaper on a cache that already has no cap and no eviction.
 
 ## Alternatives rejected
 

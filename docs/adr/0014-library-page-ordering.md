@@ -47,6 +47,13 @@ each name to exactly one clause and owns every part of it. A frontend that
 supplies a sort key concatenates it into SQL, and the pagination that #46 picks
 needs the backend to know the key anyway.
 
+> **[ADR 0015](0015-library-page-scale.md), 2026-08-25.** #46 picked no
+> pagination. `list_wallpapers` returns every matching row, so the second half
+> of that sentence no longer applies. The decision stands on the injection
+> ground by itself. The `id` tiebreak below survives for a different reason than
+> the one given: not to stop a card duplicating across pages, but to stop the
+> 101-row tie reshuffling under the user after every vote.
+
 **Unrated is a tail group in both Score directions.** The leading
 `comparisons_count = 0` term evaluates to 0 for a rated wallpaper and 1 for an
 unrated one, and it does not flip with the direction. A wallpaper with no Score
@@ -133,6 +140,8 @@ rows this is not worth an index; if it becomes one, the index is on
 ways: the Unrated tail, and the `id` tiebreak. ADR 0013 froze `get_review`
 verbatim, so if #46 folds Review into this page it has to decide which of the
 two orderings Review then gets. This ADR does not decide that.
+([ADR 0015](0015-library-page-scale.md) declined to fold them, so the question
+does not arise: Review keeps its own page and `get_review` is untouched.)
 
 **ADR 0013's claim that Unrated is invisible on the review list is wrong**, and
 is corrected there. Only 38 Active rows sit below μ = 25.0, so slots 39 to 50 of
