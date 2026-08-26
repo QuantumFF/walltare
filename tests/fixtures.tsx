@@ -45,6 +45,24 @@ export function settings(over: Partial<Settings> = {}): Settings {
   };
 }
 
+/** happy-dom keeps the media-query answers on the window rather than in the DOM. */
+interface DeviceWindow {
+  happyDOM: { settings: { device: { prefersColorScheme: "light" | "dark" } } };
+}
+
+/**
+ * Say whether the desktop underneath is light or dark, which is what
+ * `matchMedia("(prefers-color-scheme: dark)")` then answers. happy-dom serves
+ * the query from its own device settings, so this arranges the real media query
+ * instead of standing a stub in front of it.
+ *
+ * It outlives the test that set it; reset it wherever it is used.
+ */
+export function desktopColorScheme(scheme: "light" | "dark"): void {
+  const { device } = (window as unknown as DeviceWindow).happyDOM.settings;
+  device.prefersColorScheme = scheme;
+}
+
 /** Reports the current view so a test can assert navigation without the target view mounting. */
 export function ViewProbe() {
   const { view } = useApp();

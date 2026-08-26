@@ -56,6 +56,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // The palette is a class on the document element, because index.css keys both
+  // the tokens and the `dark:` variant off one there. Nothing is written before
+  // the gate settles: until then the `prefers-color-scheme` branch in index.css
+  // is what paints, and it already answers what `system` would.
+  //
+  // `system` is resolved once, here. Repainting when the desktop flips
+  // mid-session needs a `matchMedia` listener, which arrives with the control
+  // that makes the choice.
+  useEffect(() => {
+    if (!booted) return;
+    const dark =
+      settings.theme === "dark" ||
+      (settings.theme === "system" &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+    // `light` is set and not merely absent: the media branch in index.css needs
+    // something to lose to when the choice is Light on a dark desktop.
+    document.documentElement.classList.toggle("dark", dark);
+    document.documentElement.classList.toggle("light", !dark);
+  }, [booted, settings.theme]);
+
   // Nothing paints until both reads have settled, so a screen that reads a
   // setting never renders once against the defaults and again against the
   // stored choice. The palette in index.css covers the gap.
