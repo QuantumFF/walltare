@@ -84,7 +84,7 @@ the count is bounded by `REVIEW_LIMIT` and the elements are on screen anyway;
 the measurements above are what license it. If the grid ever grows to hundreds
 of cards, or gets virtualised, re-measure rather than assuming this still holds.
 
-[ADR 0015](0015-library-page-scale.md) virtualises the library grid and honours
+[ADR 0016](0016-library-page-scale.md) virtualises the library grid and honours
 that sentence by not extending the licence: its card animates no property and
 declares no `will-change`, so this ADR stays scoped to Review. The measurement
 that would settle whether it could have been extended is written up unrun, under

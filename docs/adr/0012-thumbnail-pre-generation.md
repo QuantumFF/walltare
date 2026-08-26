@@ -59,7 +59,7 @@ hundred microseconds per 420ms of work.
 
 The queue is the eligible pool ordered by `comparisons_count ASC, id ASC`.
 
-> **Amended by [ADR 0015](0015-library-page-scale.md), 2026-08-25.** The queue is
+> **Amended by [ADR 0016](0016-library-page-scale.md), 2026-08-25.** The queue is
 > the whole `wallpapers` table ordered by
 > `status = 'rejected' ASC, comparisons_count ASC, id ASC`, so rejects form a
 > tail group behind the eligible pool. See the amendment at the end of this
@@ -220,11 +220,11 @@ more.
 
 ### Amendment: rejects are a tail group, not an exclusion
 
-**[ADR 0015](0015-library-page-scale.md), 2026-08-25.** The paragraph above is
+**[ADR 0016](0016-library-page-scale.md), 2026-08-25.** The paragraph above is
 reversed. The work list is every row in `wallpapers`, ordered by
 `status = 'rejected' ASC, comparisons_count ASC, id ASC`.
 
-The library page that ADR 0015 specifies defaults to a filter of All, so half of
+The library page that ADR 0016 specifies defaults to a filter of All, so half of
 its default view is a status this pass never queued. The gap is narrow. A
 wallpaper rejected from Review has a low Score, which takes comparisons, which
 means the pass reached it long ago, and the purge is already gone. But a reject
