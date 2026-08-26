@@ -151,7 +151,7 @@ ellipsis and carries the full string in `title`. Every toast here is
 | action | title | description | Undo |
 | --- | --- | --- | --- |
 | Keep | `Kept <filename>` | none | yes |
-| Reject | `Rejected <filename>` | the final path, only if `unique_destination` renamed it | yes |
+| Reject | `Rejected <filename>` | the final path, if renamed or if the destination is relative | yes |
 | Restore | `Restored <filename>` | the final path, always | no |
 | Un-keep | `<filename> is Active again` | none | no |
 | `FileMissing` | `Couldn't restore <filename>` | the backend message | no |
@@ -160,10 +160,28 @@ ellipsis and carries the full string in `title`. Every toast here is
 The asymmetry in the path line is deliberate. Both directions can rename,
 because `unique_destination` suffixes ` (n)` outbound under
 [ADR 0003](0003-soft-reject-write-ordering.md) and inbound under ADR 0009. But
-a reject's destination is sitting in the field the user typed it into, so
-repeating it on every reject is noise during a fast review pass, and a rename is
-the one case where it has something to say. A restore's Origin appears nowhere
-on screen, and ADR 0009 asks for the final path by name.
+a reject's destination is already on screen, so repeating it on every reject is
+noise during a fast review pass, and a rename is one of the two cases where it
+has something to say. A restore's Origin appears nowhere on screen, and ADR 0009
+asks for the final path by name.
+
+**Amended by [ADR 0018](0018-reject-destination-is-edited-in-settings.md).**
+This section originally read "sitting in the field the user typed it into", and
+ADR 0018 deletes that field: `reject_destination` is edited only in Settings,
+and the two rejecting pages carry a read-out of it on their second bar. That
+keeps the destination on screen, so the reasoning survives with one hole in it.
+When the destination is relative it names a rule rather than a place, and under
+[ADR 0011](0011-written-paths.md) a nested library then has one `rejected/`
+folder per source folder, with nothing on screen saying which one took the file.
+So the second condition above: name the final path when the file was renamed or
+when the destination resolved relative, which is "name the path whenever the bar
+could not". The frontend already computes that boolean for the read-out's own
+clause.
+
+ADR 0018 also settles where the path comes from, which this ADR asks for
+without saying. `move_wallpaper` returns the final absolute path;
+`restore_wallpaper` owes the same, from
+[#39](https://github.com/QuantumFF/walltare/issues/39).
 
 The origin-less legacy cohort never reaches a toast. ADR 0009 disables that
 control on the library row with the reason on it, so the refusal is read before
