@@ -13,7 +13,8 @@ persist because there is no theme control.
 
 The UI/UX overhaul needs all four to persist. It moves scan behind a "Library
 folder" field in Settings, gives the library page its own reject, and adds a
-three-state theme. A setting that resets on every launch is worse than no
+three-state theme. ([ADR 0020](0020-settings-page.md) relabels that field
+**Library root**, matching the glossary term this document predates.) A setting that resets on every launch is worse than no
 setting, because the user has to re-make the choice and re-discover where it
 lives.
 
@@ -62,6 +63,14 @@ means the default:
 
 Reset to default is `DELETE FROM settings WHERE key = ?`, and adding a key
 later is a match arm rather than a data migration.
+
+> **Amended by [ADR 0020](0020-settings-page.md), 2026-08-26.** `set_setting`
+> performs that delete itself when the value equals the default, so no command
+> and no UI control exists for a reset. Typing `./rejected` back into the field
+> would otherwise write a row identical to the default and break the property
+> this section rests on. `get_settings` already fills gaps from
+> `Settings::default()`, so absent and default-valued read the same to every
+> caller.
 
 `review_limit` is deliberately not a key. Nobody has asked to change 50, and
 the library page may retire the review list's limit entirely.

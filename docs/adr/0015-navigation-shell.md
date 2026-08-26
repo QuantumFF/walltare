@@ -54,6 +54,15 @@ page over sheet, and a page has no back. So the gear records the current view as
 a `returnTo` and Settings closes to it. While Settings is up no tab is
 underlined and the gear takes the active treatment.
 
+> **Amended by [ADR 0020](0020-settings-page.md), 2026-08-26.** The navigation
+> call carries an optional field key beside `returnTo`, typed as
+> `keyof Settings`, which focuses that input on arrival. ADR 0018's
+> `change in Settings` control needed it. Three things close the page: Escape,
+> the gear again, or clicking a tab. Escape belongs to the Settings page rather
+> than to the shell handler below, which is suppressed while focus is in a text
+> field, and this page is mostly text fields. With no `returnTo`, meaning boot
+> landed the user here, Escape does nothing and the tabs are the way out.
+
 One rule covers the other layered surface: changing destination closes the
 lightbox, so a preview never outlives the list it was walking.
 
@@ -249,3 +258,10 @@ both halves are gone.
 **`ScanView.tsx` stops being a view.** Its `scanStartError` switch, its progress
 state and its event subscriptions split between the Settings page
 ([#58](https://github.com/QuantumFF/walltare/issues/58)) and the shell.
+
+[ADR 0020](0020-settings-page.md) deletes the file rather than emptying it, and
+splits the switch by reading what each kind carries: `InvalidPath`'s message is a
+bare path, so its frontend sentence survives, while `SCAN_IN_PROGRESS_ERROR`
+dies because the backend already says that sentence and `NO_IMAGES_ERROR` moves
+to [#59](https://github.com/QuantumFF/walltare/issues/59) with the event it
+arrives on.

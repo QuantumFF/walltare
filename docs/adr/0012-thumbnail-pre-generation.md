@@ -190,7 +190,17 @@ eviction policy would fight pre-generation directly, generating and evicting
 the same files.
 
 Settings gets a cache size readout and a "Clear thumbnail cache" button, over a
-`get_cache_size` command and the `clear_cache` above. 830MB of invisible data
+`get_cache_size` command and the `clear_cache` above.
+
+> **Amended by [ADR 0020](0020-settings-page.md), 2026-08-26.**
+> `get_cache_size` returns `CacheSize { bytes: u64, files: u64 }`, read on mount,
+> on `pregen-complete` and after a clear, never per progress event. Clearing
+> confirms through the `alert-dialog` component with the size in the sentence,
+> because act-then-undo has nothing to undo here and a misclick costs minutes of
+> decoding. **Generate now becomes Cancel while a pass runs**, which is where
+> `cancel_pregen` lives: this ADR added the command and gave it no home, and
+> [#59](https://github.com/QuantumFF/walltare/issues/59) owns reporting rather
+> than control. 830MB of invisible data
 under `app_data` deserves a visible number and a way out. Clearing cancels any
 running pass, empties the cache directory, runs `DELETE FROM thumbnails`, and
 does not restart. `thumbnails::purge` stays the single-wallpaper case.

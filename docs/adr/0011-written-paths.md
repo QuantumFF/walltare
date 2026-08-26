@@ -165,6 +165,18 @@ shows where it actually points.
 It does not check whether the directory exists. ADR 0010's "folder not found"
 note belongs to whoever builds the settings panel.
 
+> **Amended by [ADR 0020](0020-settings-page.md), 2026-08-26.** The command
+> returns `Expanded { resolved: String, exists: bool }`, where `exists` is
+> `is_dir()` on the expanded path. The settings panel could not answer "folder
+> not found" from anything else, and a second command would mean two IPC calls
+> per edit of one string. `paths::expand` and `expand_with` stay pure and stay
+> testable against a fixed map; the command stats after they return. ADR 0018's
+> read-out on the two second bars calls the same command and ignores `exists`.
+>
+> The reject destination field gets no resolved path when the result is
+> relative, because there is nothing to resolve it against in Settings. It
+> prints "Relative, so one rejected folder beside each wallpaper." instead.
+
 ## Alternatives rejected
 
 **`shellexpand`.** Does this, and brings `dirs` with it. Its undefined-variable
