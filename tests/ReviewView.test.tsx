@@ -328,9 +328,12 @@ test("the list can't be refetched while a fetch is in flight", async () => {
 test("move is gated behind a confirm dialog showing filename and destination", async () => {
   const moveArgs: unknown[] = [];
   await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
+  // The command answers with the path the file landed at; Review has nowhere to
+  // report it yet, and a card that leaves the list either way is what this test
+  // is about.
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
-    return null;
+    return "/library/rejected/reject-me.jpg";
   });
 
   // Cancel path: no command fired.
@@ -368,7 +371,7 @@ test("the destination defaults to ./rejected and is editable before confirming",
   await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
   mockCommand("move_wallpaper", (args) => {
     destination = args?.destinationFolder as string;
-    return null;
+    return `${destination}/reject-me.jpg`;
   });
 
   const destinationInput = screen.getByLabelText(

@@ -185,7 +185,13 @@ export interface Client {
   ): Promise<Settings>;
   getReview(limit?: number): Promise<Wallpaper[]>;
   keepWallpaper(id: number): Promise<void>;
-  moveWallpaper(id: number, destinationFolder: string): Promise<void>;
+  /**
+   * Soft-rejects a wallpaper into `destinationFolder`, a Written path the
+   * backend expands. Resolves with the absolute path the file landed at: a
+   * collision suffixes the basename, so comparing it against the wallpaper's
+   * `filename` is how a caller tells a rename from a plain move.
+   */
+  moveWallpaper(id: number, destinationFolder: string): Promise<string>;
   onScanProgress(handler: (payload: ScanProgress) => void): Promise<() => void>;
   onScanComplete(handler: (payload: ScanComplete) => void): Promise<() => void>;
   onScanFailed(handler: (payload: ScanFailed) => void): Promise<() => void>;
@@ -220,7 +226,7 @@ export const client: Client = {
   keepWallpaper: (id) => invokeVoid("keep_wallpaper", { id }),
 
   moveWallpaper: (id, destinationFolder) =>
-    invokeVoid("move_wallpaper", { id, destinationFolder }),
+    invoke<string>("move_wallpaper", { id, destinationFolder }),
 
   // `listen` returns Promise<UnlistenFn>, not Promise<() => void>; UnlistenFn
   // is a branded type that isn't nominally assignable, so cast to the plain

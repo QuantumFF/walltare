@@ -152,6 +152,33 @@ describe("client seam", () => {
     ]);
   });
 
+  test("moveWallpaper sends the id and the destination and resolves with where the file landed", async () => {
+    let received: Record<string, unknown> | undefined;
+    mockCommand("move_wallpaper", (args) => {
+      received = args;
+      return "/bin/walls/dawn.jpg";
+    });
+
+    const landed = await client.moveWallpaper(3, "/bin/walls");
+
+    // Snake-case command, camel-case arguments: the Rust signature is
+    // `move_wallpaper(id: i64, destination_folder: String)`.
+    expect(received).toEqual({ id: 3, destinationFolder: "/bin/walls" });
+    expect(landed).toBe("/bin/walls/dawn.jpg");
+  });
+
+  test("moveWallpaper resolves with the suffixed path a collision produced", async () => {
+    // The seam returns a path, not a folder plus the filename it went in with:
+    // a destination that already holds `dawn.jpg` suffixes the basename, and a
+    // caller rebuilding the path from its own `wallpaper.filename` would name a
+    // file that is not there.
+    mockCommand("move_wallpaper", () => "/bin/walls/dawn (2).jpg");
+
+    expect(await client.moveWallpaper(3, "/bin/walls")).toBe(
+      "/bin/walls/dawn (2).jpg",
+    );
+  });
+
   test("event subscriptions unwrap tauri payloads", async () => {
     const seen: unknown[] = [];
     const unlisten = await client.onScanProgress((payload) =>

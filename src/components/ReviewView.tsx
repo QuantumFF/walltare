@@ -112,6 +112,9 @@ export function ReviewView() {
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
     setError(null);
     try {
+      // The path the file landed at goes unread here. Review has a confirm
+      // dialog rather than a toast, so it has nowhere to report a rename yet;
+      // that arrives with the reject toast when Review is rebuilt.
       await client.moveWallpaper(id, movePath);
     } catch (err) {
       console.error("Failed to move wallpaper:", err);

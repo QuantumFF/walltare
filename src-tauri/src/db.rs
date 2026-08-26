@@ -164,8 +164,14 @@ pub fn insert_new_wallpapers(
 /// How many ` (n)` variants to try before giving up on a colliding destination.
 const MAX_COLLISION_SUFFIXES: u32 = 1000;
 
-/// Soft-rejects a wallpaper: moves its file to `destination_folder` and marks
-/// the row Rejected, keeping every Comparison it took part in.
+/// Soft-rejects a wallpaper: moves its file to `destination_folder`, marks the
+/// row Rejected, records the Origin, and answers with the absolute path the
+/// file ended up at.
+///
+/// The returned path is not the destination folder joined with the old
+/// filename: a collision suffixes the basename, so `wall.jpg` can land as
+/// `wall (2).jpg`, and only the caller that is told so can say where the file
+/// went.
 ///
 /// The database write happens first, inside a transaction, and the file move
 /// last. That ordering matters: a `UNIQUE(path)` collision or any other DB
@@ -175,7 +181,7 @@ pub fn move_wallpaper(
     conn: &Connection,
     wallpaper_id: i64,
     destination_folder: &str,
-) -> Result<(), AppError> {
+) -> Result<String, AppError> {
     let tx = conn.unchecked_transaction()?;
     let (path, filename, status): (String, String, String) = tx
         .query_row(
@@ -215,15 +221,21 @@ pub fn move_wallpaper(
         .and_then(|n| n.to_str())
         .ok_or_else(|| AppError::InvalidPath(dest_path.display().to_string()))?;
 
+    // `origin_path = path` records where the file is coming from. SQLite
+    // evaluates every right-hand side against the pre-update row, so this reads
+    // the old path in the same statement that overwrites it — no second read,
+    // and no window where the Origin is half written.
     tx.execute(
-        "UPDATE wallpapers SET status = 'rejected', path = ?1, filename = ?2 WHERE id = ?3",
+        "UPDATE wallpapers
+         SET status = 'rejected', path = ?1, filename = ?2, origin_path = path
+         WHERE id = ?3",
         rusqlite::params![dest_str, dest_name, wallpaper_id],
     )?;
 
     // Anything below that fails drops `tx` unread, rolling the row back.
     move_file(&source, &dest_path)?;
     tx.commit()?;
-    Ok(())
+    Ok(dest_str.to_string())
 }
 
 /// Expands `destination_folder`, resolves it against the wallpaper's own folder
@@ -714,6 +726,27 @@ mod tests {
         conn.last_insert_rowid()
     }
 
+    /// A wallpaper whose file is a real image, for the tests that put a
+    /// thumbnail behind it. `seed_real_wallpaper`'s empty file has an mtime,
+    /// which is all a move cares about, but nothing can decode it.
+    fn seed_image_wallpaper(conn: &Connection, dir: &Path, name: &str) -> i64 {
+        let path = dir.join(name);
+        image::RgbImage::from_pixel(8, 4, image::Rgb([7, 90, 200]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        insert_new_wallpapers(conn, &[path]).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn count_thumbnails(conn: &Connection, wallpaper_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM thumbnails WHERE wallpaper_id = ?1",
+            rusqlite::params![wallpaper_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
     fn add_comparison(conn: &Connection, winner_id: i64, loser_id: i64) {
         conn.execute(
             "INSERT INTO comparisons (winner_id, loser_id, voted_at) VALUES (?1, ?2, unixepoch())",
@@ -850,8 +883,15 @@ mod tests {
         let id_b = id_of(&conn, b_dir.join("wall.jpg").to_str().unwrap());
 
         let out = dest.path().to_str().unwrap();
-        move_wallpaper(&conn, id_a, out).unwrap();
-        move_wallpaper(&conn, id_b, out).unwrap();
+        let landed_a = move_wallpaper(&conn, id_a, out).unwrap();
+        let landed_b = move_wallpaper(&conn, id_b, out).unwrap();
+
+        // Each reject answers with the path its file is actually at, suffix and
+        // all, which is the only way a caller can tell the curator that their
+        // `wall.jpg` is now `wall (2).jpg`.
+        assert_eq!(landed_a, path_string(dest.path().join("wall.jpg")));
+        assert_eq!(landed_b, path_string(dest.path().join("wall (2).jpg")));
+        assert!(PathBuf::from(&landed_b).is_file());
 
         // Neither file was destroyed and both rows point at what they hold.
         assert_eq!(
@@ -978,6 +1018,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let id = seed_real_wallpaper(&conn, &library, "b.png");
+        let origin = library.join("b.png").to_str().unwrap().to_string();
         move_wallpaper(&conn, id, "rejected").unwrap();
 
         let err = move_wallpaper(&conn, id, "rejected").unwrap_err();
@@ -985,6 +1026,10 @@ mod tests {
         assert!(matches!(err, crate::error::AppError::InvalidTransition(_)));
         assert!(library.join("rejected").join("b.png").is_file());
         assert!(!library.join("rejected").join("rejected").exists());
+        // The refusal left the first reject's Origin alone. A second one would
+        // have overwritten it with the reject folder, which is the one place a
+        // Restore must never send a file back to.
+        assert_eq!(origin_path_of(&conn, id), Some(origin));
     }
 
     #[test]
@@ -996,8 +1041,9 @@ mod tests {
         let id = seed_real_wallpaper(&conn, tmp.path(), "a.jpg");
 
         let dest_dir = dest.path().join("out");
-        move_wallpaper(&conn, id, dest_dir.to_str().unwrap()).unwrap();
+        let landed = move_wallpaper(&conn, id, dest_dir.to_str().unwrap()).unwrap();
 
+        assert_eq!(PathBuf::from(&landed), dest_dir.join("a.jpg"));
         assert!(dest_dir.join("a.jpg").is_file());
         assert!(!tmp.path().join("a.jpg").exists());
         let (status, path) = row_status_and_path(&conn, id);
@@ -1005,6 +1051,87 @@ mod tests {
         assert_eq!(PathBuf::from(&path), dest_dir.join("a.jpg"));
 
         assert!(get_review(&conn, 50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_reject_records_where_the_file_came_from() {
+        // The Origin is the file's own pre-reject path, not the folder it sat
+        // in: a Restore has to put `wall.jpg` back as `wall.jpg`, and the row's
+        // own `filename` has moved on to whatever the destination gave it.
+        //
+        // Nothing reads `origin_path` back through a DTO yet, so the row is
+        // queried directly.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let library = tmp.path().join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let id = seed_real_wallpaper(&conn, &library, "dawn.jpg");
+        let origin = library.join("dawn.jpg").to_str().unwrap().to_string();
+
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(origin_path_of(&conn, id), Some(origin));
+        // And the row still describes where the file went.
+        assert_eq!(
+            row_status_and_path(&conn, id),
+            ("rejected".into(), path_string(dest.path().join("dawn.jpg")))
+        );
+        assert_eq!(filename_of(&conn, id), "dawn.jpg");
+    }
+
+    #[test]
+    fn a_colliding_reject_records_the_origin_the_file_actually_left() {
+        // The reject writes `path` and `origin_path` in one statement. If the
+        // Origin were read back after the write instead of alongside it, this
+        // is the case that would record the suffixed destination as the place
+        // the file came from.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        std::fs::write(dest.path().join("wall.jpg"), b"OCCUPIED").unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "wall.jpg");
+        let origin = tmp.path().join("wall.jpg").to_str().unwrap().to_string();
+
+        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(landed, path_string(dest.path().join("wall (2).jpg")));
+        assert_eq!(origin_path_of(&conn, id), Some(origin));
+    }
+
+    #[test]
+    fn a_reject_keeps_the_thumbnails_the_wallpaper_already_had() {
+        // The reject used to purge them, which was right while Rejected was
+        // terminal and absent from every view. It is not any more: the library
+        // page lists Rejected wallpapers and a Restore brings them back, and
+        // the row's `path` follows the file while the move preserves its mtime,
+        // so the cache stays valid and resolves exactly as before (ADR 0012).
+        // Purging would spend a decode per rejected card to reproduce bytes it
+        // had just deleted, so restoring the symmetry with the purge is the
+        // change this test exists to stop.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_image_wallpaper(&conn, tmp.path(), "cached.png");
+        crate::thumbnails::resolve(&conn, cache.path(), id, crate::thumbnails::Size::Small)
+            .unwrap();
+        let cache_file = cache.path().join(format!("{id}_small.jpg"));
+        assert!(cache_file.is_file());
+
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(count_thumbnails(&conn, id), 1);
+        assert!(cache_file.is_file());
+
+        // And the moved row still resolves to that same file: `record_mtime` is
+        // `None` only on a cache hit, so this is a decode that did not happen.
+        let plan = crate::thumbnails::plan(&conn, id, crate::thumbnails::Size::Small).unwrap();
+        let resolved = crate::thumbnails::fulfill(&plan, cache.path()).unwrap();
+        assert!(resolved.record_mtime.is_none());
     }
 
     #[test]
@@ -1109,6 +1236,9 @@ mod tests {
         assert!(matches!(err, crate::error::AppError::Io(_)));
 
         assert_eq!(row_status_and_path(&conn, id).0, "active");
+        // The rollback takes the Origin with it: a wallpaper that is not
+        // Rejected must not read as one a Restore could move.
+        assert_eq!(origin_path_of(&conn, id), None);
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM comparisons", [], |row| row.get(0))
             .unwrap();

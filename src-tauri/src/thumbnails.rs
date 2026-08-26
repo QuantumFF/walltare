@@ -272,6 +272,15 @@ pub fn resolve(
     Ok(resolved.thumbnail)
 }
 
+/// Throws away one wallpaper's cached thumbnails, rows and files both.
+///
+/// Nothing in production calls this, which is why the `dead_code` allow is
+/// here: the soft reject used to, and stopped, because a Rejected wallpaper is
+/// now shown in the library page and can be restored, so its cache is worth
+/// keeping (ADR 0012). The function stays because it is the single-wallpaper
+/// case of the cache clearing that ADR 0012 gives Settings, and deleting it
+/// would mean writing it again a ticket later.
+#[allow(dead_code)]
 pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(), AppError> {
     conn.execute(
         "DELETE FROM thumbnails WHERE wallpaper_id = ?1",

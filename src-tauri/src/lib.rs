@@ -317,21 +317,22 @@ fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppErro
     db::keep_wallpaper(&conn, id)
 }
 
+/// Soft-rejects a wallpaper and answers with the absolute path its file landed
+/// at, which a collision may have suffixed.
+///
+/// The thumbnails stay. A Rejected wallpaper used to be out of voting, out of
+/// review and out of reach, so its cache was dead weight; now the library page
+/// shows it and a Restore brings it back, while the row's `path` follows the
+/// file and the move preserves its mtime, so the cache stays valid and
+/// resolves exactly as before (ADR 0012).
 #[tauri::command]
 fn move_wallpaper(
     id: i64,
     destination_folder: String,
     state: tauri::State<Db>,
-    cache_dir: tauri::State<CacheDir>,
-) -> Result<(), error::AppError> {
+) -> Result<String, error::AppError> {
     let conn = lock_conn(state);
-    db::move_wallpaper(&conn, id, &destination_folder)?;
-    // A Rejected wallpaper is out of both voting and review, so its cached
-    // thumbnails are dead weight. Best-effort: the reject itself already stuck.
-    if let Err(e) = thumbnails::purge(&conn, &cache_dir.0, id) {
-        eprintln!("failed to purge thumbnails for wallpaper {id}: {e}");
-    }
-    Ok(())
+    db::move_wallpaper(&conn, id, &destination_folder)
 }
 
 /// Parses `wallpaper://localhost/image/{id}?size={size}`.
