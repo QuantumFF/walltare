@@ -6,6 +6,7 @@ mod scanner;
 mod settings;
 mod thumbnails;
 mod voting;
+mod window_state;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -405,6 +406,7 @@ fn error_response(e: &error::AppError) -> tauri::http::Response<Vec<u8>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(window_state::plugin())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
