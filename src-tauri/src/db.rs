@@ -220,7 +220,32 @@ pub fn move_wallpaper(
 /// It is also what stops `~/pics` and `$HOME/pics` becoming two spellings of one
 /// folder.
 fn resolve_destination_dir(source: &Path, destination_folder: &str) -> Result<PathBuf, AppError> {
-    let expanded = crate::paths::expand(destination_folder)?;
+    create_destination_dir(source, crate::paths::expand(destination_folder)?)
+}
+
+/// [`resolve_destination_dir`] with the environment passed in, for the tests.
+///
+/// Same reason as [`crate::paths::expand_with`]: the `~` case needs a known
+/// `HOME`, and a test that read the real one would create its scratch directory
+/// inside the developer's actual home folder, where a killed run would leave it.
+/// The only difference from the real path is where the variable's value comes
+/// from, so the ordering this function exists to guarantee is the ordering under
+/// test.
+#[cfg(test)]
+fn resolve_destination_dir_with(
+    source: &Path,
+    destination_folder: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<PathBuf, AppError> {
+    create_destination_dir(
+        source,
+        crate::paths::expand_with(destination_folder, lookup)?,
+    )
+}
+
+/// Everything after expansion: resolve a relative destination against the
+/// wallpaper's own folder, create it, canonicalize.
+fn create_destination_dir(source: &Path, expanded: PathBuf) -> Result<PathBuf, AppError> {
     let raw = if expanded.is_absolute() {
         expanded
     } else {
@@ -717,36 +742,28 @@ mod tests {
     }
 
     #[test]
-    fn a_tilde_prefixed_destination_lands_in_the_home_folder() {
+    fn a_tilde_destination_is_expanded_before_the_directory_is_created() {
         // The bug this kills: `~/rejected` used to create a directory literally
         // named `~` inside the wallpaper's own folder, move the file into it,
         // and store that as the wallpaper's path, with nothing erroring.
         //
-        // The destination is a tempdir inside the home folder, so the real one
-        // is left as it was. This reads HOME and never writes it, so it cannot
-        // race the rest of the crate.
-        let home = std::env::var("HOME").expect("a desktop app's tests run with HOME set");
-        let scratch = tempfile::tempdir_in(&home).unwrap();
-        let scratch_name = scratch
-            .path()
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap()
-            .to_string();
-        let tmp = tempfile::tempdir().unwrap();
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        let id = seed_real_wallpaper(&conn, tmp.path(), "tilde.jpg");
+        // `HOME` is a stand-in home folder rather than the real one, so nothing
+        // here reads or writes the process environment.
+        let home = tempfile::tempdir().unwrap();
+        let wallpaper_dir = tempfile::tempdir().unwrap();
+        let source = wallpaper_dir.path().join("tilde.jpg");
 
-        move_wallpaper(&conn, id, &format!("~/{scratch_name}/rejected")).unwrap();
+        let home_value = home.path().to_str().unwrap().to_string();
+        let resolved = resolve_destination_dir_with(&source, "~/rejected", |name| {
+            (name == "HOME").then(|| home_value.clone())
+        })
+        .unwrap();
 
-        let landed = scratch.path().join("rejected").join("tilde.jpg");
-        assert!(landed.is_file());
-        assert!(!tmp.path().join("~").exists());
         assert_eq!(
-            row_status_and_path(&conn, id),
-            ("rejected".into(), path_string(landed))
+            resolved,
+            home.path().join("rejected").canonicalize().unwrap()
         );
+        assert!(!wallpaper_dir.path().join("~").exists());
     }
 
     #[test]
