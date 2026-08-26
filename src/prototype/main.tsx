@@ -9,6 +9,7 @@
 import "@/index.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { useBackgroundWork } from "./backgroundWork";
 import { PrototypeBar, useProtoState } from "./harness";
 import { InspectorShell } from "./variants/InspectorShell";
 import { ListShell } from "./variants/ListShell";
@@ -16,6 +17,7 @@ import { ToolbarShell } from "./variants/ToolbarShell";
 
 function Prototype() {
   const [state, patch] = useProtoState();
+  const { work, start, stop, paused, setPaused } = useBackgroundWork();
   const props = {
     page: state.page,
     onPage: (page: typeof state.page) => patch({ page, open: null }),
@@ -27,11 +29,21 @@ function Prototype() {
   return (
     <>
       {state.variant === "A" && (
-        <ToolbarShell {...props} header={state.header} actions={state.actions} />
+        <ToolbarShell
+          {...props}
+          header={state.header}
+          actions={state.actions}
+          progress={state.progress}
+          work={work}
+        />
       )}
       {state.variant === "B" && <InspectorShell {...props} />}
       {state.variant === "C" && <ListShell {...props} />}
-      <PrototypeBar state={state} patch={patch} />
+      <PrototypeBar
+        state={state}
+        patch={patch}
+        work={{ running: work.running, paused, setPaused, start, stop }}
+      />
     </>
   );
 }

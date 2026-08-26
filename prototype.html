@@ -5,6 +5,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>walltare prototype — shell, library, lightbox</title>
+    <style>
+      /* The scan half of the two-phase bar has no denominator on the wire, so
+         it can only sweep. Issue #59. */
+      @keyframes proto-sweep {
+        from {
+          transform: translateX(-100%);
+        }
+        to {
+          transform: translateX(300%);
+        }
+      }
+      .proto-sweep {
+        animation: proto-sweep 1.1s ease-in-out infinite;
+      }
+    </style>
   </head>
 
   <body>

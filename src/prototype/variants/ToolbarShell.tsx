@@ -32,7 +32,15 @@ import {
   type DataState,
   type Header,
   type Page,
+  type ProgressHousing,
 } from "../harness";
+import { IDLE, type WorkState } from "../backgroundWork";
+import {
+  ProgressChip,
+  ProgressSeam,
+  ProgressStrip,
+  ProgressToast,
+} from "./ToolbarProgress";
 import {
   Check,
   ChevronLeft,
@@ -59,8 +67,6 @@ const FILTERS: Array<{ key: Status | "all"; label: string }> = [
   { key: "kept", label: "Kept" },
   { key: "rejected", label: "Rejected" },
 ];
-
-const PREGEN = { done: 412, total: 1204 };
 
 function ScoreBadge({ w, size = "sm" }: { w: ProtoWallpaper; size?: "sm" | "lg" }) {
   const solid = isEvaluated(w);
@@ -229,14 +235,20 @@ function Chrome({
   onPage,
   context,
   header,
+  progress,
+  work,
+  onCancel,
+  onDismiss,
 }: {
   page: Page;
   onPage: (page: Page) => void;
   context: React.ReactNode;
   header: Header;
+  progress: ProgressHousing;
+  work: WorkState;
+  onCancel: () => void;
+  onDismiss: () => void;
 }) {
-  const pregenPercent = Math.round((PREGEN.done / PREGEN.total) * 100);
-
   return (
     <header className="sticky top-0 z-30 shrink-0 border-b border-border bg-background/95 backdrop-blur">
       <div className="relative flex h-12 items-center px-4">
@@ -247,30 +259,34 @@ function Chrome({
 
         <HeaderTabs page={page} onPage={onPage} header={header} />
 
-        <button
-          onClick={() => onPage("settings")}
-          aria-label="Settings"
-          className={[
-            "ml-auto rounded-md p-2 transition-colors hover:bg-accent",
-            page === "settings" ? "bg-accent text-foreground" : "text-muted-foreground",
-          ].join(" ")}
-        >
-          <SettingsIcon className="h-4 w-4" />
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          {progress === "chip" && (
+            <ProgressChip work={work} onSettings={() => onPage("settings")} />
+          )}
+          <button
+            onClick={() => onPage("settings")}
+            aria-label="Settings"
+            className={[
+              "rounded-md p-2 transition-colors hover:bg-accent",
+              page === "settings" ? "bg-accent text-foreground" : "text-muted-foreground",
+            ].join(" ")}
+          >
+            <SettingsIcon className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
-      {/* Pre-generation: a 2px seam across the whole chrome, plus a word in the
-          context bar. It is background work and never blocks a page. */}
-      <div className="h-[2px] w-full bg-transparent">
-        <div
-          className="h-full bg-foreground/40 transition-[width] duration-300"
-          style={{ width: `${pregenPercent}%` }}
-        />
-      </div>
+      {/* Round one's seam. The 2px line stays in the layout at zero width in
+          every housing, so the chrome's height does not depend on the axis. */}
+      {progress === "seam" ? <ProgressSeam work={work} /> : <div className="h-[2px] w-full" />}
 
       <div className="flex h-11 items-center gap-3 border-t border-border/60 px-4 text-sm">
         {context}
       </div>
+
+      {progress === "strip" && (
+        <ProgressStrip work={work} onCancel={onCancel} onDismiss={onDismiss} />
+      )}
     </header>
   );
 }
@@ -322,7 +338,7 @@ function LibraryContext({
       </label>
 
       <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-        {count} shown · thumbnails {PREGEN.done}/{PREGEN.total}
+        {count} shown
       </span>
     </>
   );
@@ -767,11 +783,18 @@ function RankPage({ data }: { data: DataState }) {
   );
 }
 
-function SettingsPage() {
+// ADR 0020 settled this page after round one shipped the placeholder. The
+// headings, the cache number and the two buttons below follow it, because the
+// `quiet` housing's whole answer is "the numbers are already in here" and that
+// is only judgeable against the page ADR 0020 actually describes.
+function SettingsPage({ work }: { work: WorkState }) {
+  const scanning = work.phase === "walking" || work.phase === "inserting";
+  const passing = work.phase === "pregen";
+
   return (
     <div className="mx-auto w-full max-w-2xl space-y-8 p-8">
       <section className="space-y-2">
-        <h2 className="text-sm font-medium">Library folder</h2>
+        <h2 className="text-sm font-medium">Library root</h2>
         <div className="flex gap-2">
           <input
             defaultValue="~/Wallpapers"
@@ -779,6 +802,14 @@ function SettingsPage() {
           />
           <button className="rounded-md border border-border px-3 py-2 text-sm hover:bg-accent">
             Browse
+          </button>
+          <button
+            disabled={scanning}
+            className="rounded-md border border-border px-3 py-2 text-sm tabular-nums hover:bg-accent disabled:opacity-60"
+          >
+            {scanning
+              ? `Scanning… ${work.scanned.toLocaleString()} scanned, ${work.added.toLocaleString()} added`
+              : "Rescan"}
           </button>
         </div>
         <p className="font-mono text-xs text-muted-foreground">/home/qdes/Wallpapers</p>
@@ -816,10 +847,15 @@ function SettingsPage() {
 
       <section className="space-y-2">
         <h2 className="text-sm font-medium">Thumbnails</h2>
-        <p className="text-xs text-muted-foreground">830 MB cached · 240 of 1204 pending</p>
+        <p className="text-xs text-muted-foreground tabular-nums">
+          48 MB cached ·{" "}
+          {passing
+            ? `${work.done.toLocaleString()} of ${work.total.toLocaleString()} generated`
+            : "172 files"}
+        </p>
         <div className="flex gap-2">
           <button className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent">
-            Generate now
+            {passing ? "Cancel" : "Generate now"}
           </button>
           <button className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-accent">
             Clear cache
@@ -843,6 +879,8 @@ export function ToolbarShell({
   onOpenChange: setOpen,
   header,
   actions,
+  progress,
+  work,
 }: {
   page: Page;
   onPage: (page: Page) => void;
@@ -851,10 +889,21 @@ export function ToolbarShell({
   onOpenChange: (index: number | null) => void;
   header: Header;
   actions: ActionHousing;
+  progress: ProgressHousing;
+  work: WorkState;
 }) {
   const [filter, setFilter] = useState<Status | "all">("all");
   const [sort, setSort] = useState("score-desc");
   const { toast, show, dismiss } = useToast();
+
+  // Dismissing a report should hold for the rest of that run and not for the
+  // next one, so the flag resets whenever a new run starts from idle.
+  const [dismissed, setDismissed] = useState(false);
+  const idle = work.phase === "idle";
+  useEffect(() => {
+    if (idle) setDismissed(false);
+  }, [idle]);
+  const reporting = !dismissed && !idle;
 
   const list = useMemo(() => {
     if (page === "review") return REVIEW_LIST;
@@ -868,6 +917,19 @@ export function ToolbarShell({
   }, [page, filter, sort]);
 
   const act = (verb: string) => show(`${verb}.`, verb === "Rejected" ? () => dismiss() : undefined);
+
+  // A scan that adds 412 unseen files drags the Round floor to zero, so the
+  // headline goes backwards while the report explains why. ADR 0008 put the
+  // explanation on the scan-complete path precisely because the headline
+  // cannot carry it, and that pairing is only judgeable if the headline moves.
+  const added = work.outcome?.kind === "added" ? work.outcome : null;
+  const round = added
+    ? {
+        round: added.roundTo,
+        percent: Math.round((STATS.eligible_count / (STATS.eligible_count + added.added)) * 100),
+        eligible: STATS.eligible_count + added.added,
+      }
+    : { round: STATS.round, percent: ROUND_PERCENT, eligible: STATS.eligible_count };
 
   const context =
     page === "library" ? (
@@ -894,13 +956,13 @@ export function ToolbarShell({
           title={ROUND_EXPLAINER}
           className="cursor-help text-sm font-medium underline decoration-dotted underline-offset-4"
         >
-          Round {STATS.round} · {ROUND_PERCENT}%
+          Round {round.round} · {round.percent}%
         </span>
         <div className="h-1.5 w-40 overflow-hidden rounded-full bg-secondary">
-          <div className="h-full bg-foreground" style={{ width: `${ROUND_PERCENT}%` }} />
+          <div className="h-full bg-foreground" style={{ width: `${round.percent}%` }} />
         </div>
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-          {STATS.evaluated_count} / {STATS.eligible_count} Evaluated ·{" "}
+          {STATS.evaluated_count} / {round.eligible} Evaluated ·{" "}
           {STATS.total_comparisons} comparisons
         </span>
       </>
@@ -910,11 +972,20 @@ export function ToolbarShell({
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
-      <Chrome page={page} onPage={onPage} context={context} header={header} />
+      <Chrome
+        page={page}
+        onPage={onPage}
+        context={context}
+        header={header}
+        progress={progress}
+        work={reporting ? work : IDLE}
+        onCancel={() => setDismissed(true)}
+        onDismiss={() => setDismissed(true)}
+      />
 
       <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {page === "rank" && <RankPage data={data} />}
-        {page === "settings" && <SettingsPage />}
+        {page === "settings" && <SettingsPage work={work} />}
         {(page === "library" || page === "review") && (
           <GridBody
             list={list}
@@ -941,16 +1012,38 @@ export function ToolbarShell({
         />
       )}
 
-      {toast && (
-        <div className="fixed bottom-20 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-border bg-card px-4 py-2.5 text-sm shadow-lg">
-          <span>{toast.message}</span>
-          {toast.undo && (
-            <button onClick={toast.undo} className="font-medium underline">
-              Undo
-            </button>
-          )}
-        </div>
-      )}
+      {/* ADR 0017's slot: fixed top-right, clear of the 48px chrome row, above
+          the lightbox's opaque backdrop. One slot, newest wins — so a Keep
+          landing mid-pass wipes whatever the two toast housings put here, and
+          that collision is half of what they are being judged on. */}
+      <div className="pointer-events-none fixed top-14 right-4 z-[60] flex flex-col items-end gap-2">
+        {toast ? (
+          <div className="pointer-events-auto flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-2.5 text-sm shadow-lg">
+            <span>{toast.message}</span>
+            {toast.undo && (
+              <button onClick={toast.undo} className="font-medium underline">
+                Undo
+              </button>
+            )}
+          </div>
+        ) : (
+          reporting &&
+          // `toast` holds the slot for the whole pass. `seam` and `quiet` only
+          // take it for the ending, which is what leaves them differing in one
+          // thing: whether the ambient line during the pass was worth having.
+          (progress === "toast" || work.outcome !== null) &&
+          progress !== "chip" &&
+          progress !== "strip" && (
+            <div className="pointer-events-auto">
+              <ProgressToast
+                work={work}
+                onCancel={() => setDismissed(true)}
+                onDismiss={() => setDismissed(true)}
+              />
+            </div>
+          )
+        )}
+      </div>
     </div>
   );
 }

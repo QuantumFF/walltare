@@ -5,6 +5,7 @@
 // lightbox, which is the whole point of running three.
 
 import { useCallback, useEffect, useState } from "react";
+import { RUN_NAMES, RUNS, type RunKind } from "./backgroundWork";
 
 export const VARIANTS = ["A", "B", "C"] as const;
 export type VariantKey = (typeof VARIANTS)[number];
@@ -57,6 +58,23 @@ export const ACTION_NAMES: Record<ActionHousing, string> = {
   inline: "under the image, at the image's width",
 };
 
+/**
+ * Housings for background work in variant A: a scan, the pre-generation pass
+ * behind it, and what scan-complete has to say. The live question for
+ * [#59](https://github.com/QuantumFF/walltare/issues/59). `seam` is what round
+ * one shipped and is kept as the baseline to beat.
+ */
+export const PROGRESS = ["seam", "chip", "strip", "toast", "quiet"] as const;
+export type ProgressHousing = (typeof PROGRESS)[number];
+
+export const PROGRESS_NAMES: Record<ProgressHousing, string> = {
+  seam: "2px seam across the chrome (round one)",
+  chip: "a chip beside the gear",
+  strip: "a transient row under the chrome",
+  toast: "a pinned toast in ADR 0017's slot",
+  quiet: "nothing while it runs; only the ending",
+};
+
 interface ProtoState {
   variant: VariantKey;
   page: Page;
@@ -64,6 +82,7 @@ interface ProtoState {
   theme: Theme;
   header: Header;
   actions: ActionHousing;
+  progress: ProgressHousing;
   /** Index into the current list to open the lightbox on, so it is linkable. */
   open: number | null;
 }
@@ -81,7 +100,8 @@ function read(): ProtoState {
     data: one("state", DATA_STATES, "ready"),
     theme: one("theme", THEMES, "dark"),
     header: one("header", HEADERS, "underline"),
-    actions: one("actions", ACTIONS, "bar"),
+    actions: one("actions", ACTIONS, "inline"),
+    progress: one("progress", PROGRESS, "seam"),
     open: q.has("open") && Number.isInteger(open) && open >= 0 ? open : null,
   };
 }
@@ -110,6 +130,7 @@ export function useProtoState() {
         theme: merged.theme,
         header: merged.header,
         actions: merged.actions,
+        progress: merged.progress,
       });
       if (merged.open !== null) q.set("open", String(merged.open));
       window.history.replaceState(null, "", `?${q}`);
@@ -178,10 +199,20 @@ const SELECT_CLASS =
 export function PrototypeBar({
   state,
   patch,
+  work,
 }: {
   state: ProtoState;
   patch: (next: Partial<ProtoState>) => void;
+  /** The background-work timeline, so the bar can start and stop one. */
+  work: {
+    running: boolean;
+    paused: boolean;
+    setPaused: (paused: boolean) => void;
+    start: (kind: RunKind) => void;
+    stop: () => void;
+  };
 }) {
+  const [runKind, setRunKind] = useState<RunKind>("rescan");
   // `?bar=off` starts hidden, for a screenshot or a clean first look.
   const [hidden, setHidden] = useState(
     () => new URLSearchParams(window.location.search).get("bar") === "off",
@@ -195,14 +226,14 @@ export function PrototypeBar({
     [state.variant, patch],
   );
 
-  // Alt+↑/↓ drives whichever axis is live. That is the action housing now; the
-  // tab housing is settled and keeps only its dropdown.
-  const stepActions = useCallback(
+  // Alt+↑/↓ drives whichever axis is live. That is the progress housing now.
+  // The tab and action housings are settled and keep only their dropdowns.
+  const stepProgress = useCallback(
     (delta: number) => {
-      const index = ACTIONS.indexOf(state.actions);
-      patch({ actions: ACTIONS[(index + delta + ACTIONS.length) % ACTIONS.length] });
+      const index = PROGRESS.indexOf(state.progress);
+      patch({ progress: PROGRESS[(index + delta + PROGRESS.length) % PROGRESS.length] });
     },
-    [state.actions, patch],
+    [state.progress, patch],
   );
 
   useEffect(() => {
@@ -215,17 +246,23 @@ export function PrototypeBar({
         setHidden((v) => !v);
         return;
       }
+      // `r` reruns the selected timeline, so a housing can be watched again
+      // without reaching for the bar mid-run.
+      if (!event.altKey && event.key === "r") {
+        work.start(runKind);
+        return;
+      }
       if (!event.altKey) return;
       if (event.key === "ArrowLeft") step(-1);
       else if (event.key === "ArrowRight") step(1);
-      else if (event.key === "ArrowUp") stepActions(-1);
-      else if (event.key === "ArrowDown") stepActions(1);
+      else if (event.key === "ArrowUp") stepProgress(-1);
+      else if (event.key === "ArrowDown") stepProgress(1);
       else return;
       event.preventDefault();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [step, stepActions]);
+  }, [step, stepProgress, work, runKind]);
 
   if (hidden) {
     return (
@@ -263,11 +300,58 @@ export function PrototypeBar({
       {state.variant === "A" && (
         <>
           <label className="flex items-center gap-1">
+            <span className="opacity-60">progress</span>
+            <select
+              value={state.progress}
+              onChange={(e) => patch({ progress: e.target.value as ProgressHousing })}
+              className={`${SELECT_CLASS} ring-1 ring-amber-300/60`}
+            >
+              {PROGRESS.map((housing) => (
+                <option key={housing} value={housing} className="text-black">
+                  {housing} — {PROGRESS_NAMES[housing]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1">
+            <span className="opacity-60">run</span>
+            <select
+              value={runKind}
+              onChange={(e) => setRunKind(e.target.value as RunKind)}
+              className={`${SELECT_CLASS} ring-1 ring-amber-300/60`}
+            >
+              {RUNS.map((kind) => (
+                <option key={kind} value={kind} className="text-black">
+                  {RUN_NAMES[kind]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            onClick={() => (work.running ? work.stop() : work.start(runKind))}
+            className="rounded-md border border-amber-300/60 bg-amber-300/20 px-2 py-1 hover:bg-amber-300/30"
+            title="Run the selected timeline (r)"
+          >
+            {work.running ? "stop" : "run"}
+          </button>
+
+          {work.running && (
+            <button
+              onClick={() => work.setPaused(!work.paused)}
+              className="rounded-md border border-white/20 bg-white/10 px-2 py-1 hover:bg-white/20"
+            >
+              {work.paused ? "resume" : "hold"}
+            </button>
+          )}
+
+          <label className="flex items-center gap-1">
             <span className="opacity-60">actions</span>
             <select
               value={state.actions}
               onChange={(e) => patch({ actions: e.target.value as ActionHousing })}
-              className={`${SELECT_CLASS} ring-1 ring-amber-300/60`}
+              className={SELECT_CLASS}
             >
               {ACTIONS.map((housing) => (
                 <option key={housing} value={housing} className="text-black">
@@ -340,7 +424,7 @@ export function PrototypeBar({
       </button>
 
       <span className="ml-0.5 opacity-40">
-        alt+←/→{state.variant === "A" ? " ↑/↓" : ""}
+        alt+←/→{state.variant === "A" ? " ↑/↓ · r" : ""}
       </span>
     </div>
   );

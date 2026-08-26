@@ -1,6 +1,7 @@
 # Prototype: the shell, the library grid, and the lightbox
 
-Throwaway. For [#44](https://github.com/QuantumFF/walltare/issues/44), on the
+Throwaway. For [#44](https://github.com/QuantumFF/walltare/issues/44) and now
+[#59](https://github.com/QuantumFF/walltare/issues/59), on the
 `prototype/shell-library-lightbox` branch, and it is not going to main.
 
 Three variants of the whole surface, switchable in the browser. No IPC and no
@@ -25,9 +26,12 @@ The bar at the bottom is the harness, not the design. It is deliberately ugly.
 | control | what it does |
 | --- | --- |
 | `alt+←` / `alt+→` | previous / next variant. Alt because the lightbox under test claims the bare arrows |
-| `alt+↑` / `alt+↓` | previous / next action housing, variant A only |
+| `alt+↑` / `alt+↓` | previous / next progress housing, variant A only. The live axis |
+| `r` | rerun the selected timeline |
 | `h` | hide the bar. It sits over variant A's caption bar. `?bar=off` starts it hidden |
-| actions | the five housings for Keep / Reject / Restore in the lightbox, below |
+| progress | the five housings for background work, below. The live question |
+| run / hold | start, stop and freeze a background-work timeline |
+| actions | the five housings for Keep / Reject / Restore in the lightbox. Settled: `inline` |
 | tabs | the five housings for A's tab group. Settled: `underline` |
 | page | rank, review, library, settings |
 | state | ready, loading, empty |
@@ -35,7 +39,9 @@ The bar at the bottom is the harness, not the design. It is deliberately ugly.
 
 Every control is a URL parameter, so a link is a state:
 `?variant=A&page=library&theme=light&header=island&open=6`. `open=<n>` opens the
-lightbox on the nth row of whatever list is showing.
+lightbox on the nth row of whatever list is showing. `?run=rescan` starts a
+timeline on load and `?at=4500` freezes it that many milliseconds in, so a
+moment mid-pass is linkable and screenshottable.
 
 Inside the app: click a card to open the lightbox, `←` `→` to move, `Esc` to
 close. Variant B also walks the grid with arrow keys and opens on `Enter`.
@@ -65,9 +71,10 @@ judging pictures, best for finding a file. Settings is a fourth tab.
 
 ## The five action housings (variant A's lightbox)
 
-The live question: where Keep / Reject / Restore sit while a wallpaper is being
-previewed, and what contains them. Open the lightbox and cycle with `alt+↑` /
-`alt+↓`, or link one: `?variant=A&actions=dock&open=6`.
+Round two's question, settled: `inline` won, and ADR 0019 built on it. Where
+Keep / Reject / Restore sit while a wallpaper is being previewed, and what
+contains them. The dropdown stays; the keys moved to round three's axis. Link
+one: `?variant=A&actions=dock&open=6`.
 
 Identity (badge, filename, status, path) and the read-out (Score, comparison
 count, position, keys) stay in the same place in all five. Only the buttons move.
@@ -114,6 +121,77 @@ Two things to weigh while flipping:
 - In light, `sliding`'s white indicator on a light grey track is the weakest
   active state of the five. It is the one that needs a colour if it wins.
 
+## The five background-work housings (variant A)
+
+Round three, for [#59](https://github.com/QuantumFF/walltare/issues/59). The
+live question: where a scan, the pre-generation pass behind it, and whatever
+scan-complete has to say show up in a shell whose chrome is one fixed 48px row.
+
+Pick a `run`, press run, and flip housings with `alt+↑` / `alt+↓` while it
+plays. One second is one minute of the real pass, so the launch pass's 1,204
+thumbnails take 8.4 seconds here and about 8.4 minutes on the machine.
+
+![the five housings, mid-pass](shots/progress-dark.png)
+
+| `progress=` | what it is | where the ending goes |
+| --- | --- | --- |
+| `seam` | round one's 2px line across the chrome | the toast slot |
+| `chip` | a bordered chip left of the gear: `Scanning`, then `Thumbnails 49%`. Click lands on Settings, where ADR 0020 put Cancel | the chip itself, then it goes |
+| `strip` | the last row of the header, under the page's own bar: sentence, bar, Cancel, dismiss | the strip holds it, then retracts |
+| `toast` | a pinned toast in ADR 0017's slot, top right | the same toast |
+| `quiet` | nothing at all while it runs. The numbers are in Settings, where ADR 0020 already put them | the toast slot |
+
+`seam` and `quiet` differ in exactly one thing, so the pair asks whether the
+ambient line during the pass was worth anything. `chip` and `strip` differ in
+whether the report gets a sentence. `toast` is the one that answers the
+ticket's own question about an eight-second surface reporting fourteen minutes
+of work: ADR 0017 already ships `duration: Infinity` for errors, so pinning it
+costs nothing, and what it actually costs is the slot. Keep something during a
+pass and watch the Keep toast wipe the report.
+
+Four timelines, all built from the real event payloads:
+
+| `run=` | what it plays |
+| --- | --- |
+| `launch` | the every-launch pass: 1,204 thumbnails, no scan |
+| `rescan` | walk, insert, 412 new files, their thumbnails, then a Round drop from 4 to 1 |
+| `nothing-new` | 2,000 files scanned, nothing new, and so no pass at all and no event |
+| `no-images` | the folder holds no images. `NO_IMAGES_ERROR`, which ADR 0015 handed to this ticket |
+
+### Three things read off the code before building this
+
+They are in `backgroundWork.ts` as comments, and each one narrows the answer.
+
+- **The walk is silent.** `scanner::collect_images` runs to completion before
+  the first event (`lib.rs:178`), so however long a directory tree takes,
+  nothing is emitted. The `walking` segment shows what that looks like.
+- **The scan half has no denominator.** `scan-progress` carries
+  `{scanned, added}` and no total. ADR 0012 asks for "one bar with two phases",
+  and phase one can only ever sweep. Every housing here sweeps during the scan
+  and fills during pre-generation, which is the honest reading, and it is worth
+  deciding whether one surface should change meaning that way at all.
+- **The scan's own progress is nearly instantaneous anyway.** The loop that
+  emits is chunked at `SCAN_CHUNK_SIZE = 256` inserts, so the live
+  120-wallpaper library produces exactly one `scan-progress` event, at 100%,
+  and 5,000 wallpapers produce twenty. The visible half of the two-phase bar is
+  the cheap half.
+
+### What the seam does in light
+
+The 2px seam and the active tab's underline sit on the same horizontal rule, so
+in light theme at some widths the seam reads as the underline getting longer.
+That is on top of round one's complaint rather than instead of it.
+
+### One option deliberately not on the axis
+
+A strip in the page-owned second bar, which the ticket lists. It is left off
+because the second bar belongs to a page and this work belongs to none of them:
+Rank's bar is already full with the Round headline, Review's holds ADR 0018's
+destination read-out, and putting the same pass report in all three is three
+implementations of one shell-level fact. `chip` is the nearest thing on the
+axis, moved up into the chrome where it can be written once. Say so if that
+reasoning is wrong and it goes back on.
+
 ## The data
 
 `library.json` is the live 120-wallpaper library, exported as-is: the real Score
@@ -125,17 +203,20 @@ would never render).
 
 ## What the reaction has to settle
 
-Round one picked A. Round two picked `underline` for the tabs. What is left:
+Round one picked A. Round two picked `underline` for the tabs and `inline` for
+the lightbox actions, and ADR 0019 settled the card's affordance and ADR 0020
+the Settings page. Round three is background work, and what it has to settle:
 
-1. Which of the five action housings in the lightbox.
-2. Hover overlay or something else for the card's actions. A uses the overlay,
-   which leaves the map's keyboard-reachability fog patch open; B's inspector
-   panel is the shape that closes it structurally, and bits of it could be
-   grafted onto A.
-3. The pre-generation seam. A 2px line at 34% width across a 1500px chrome
-   reads as a stray rule under the brand rather than as progress, in every
-   housing and both themes. It is the most likely thing in A to be mistaken for
-   a mistake.
-4. Whether the lightbox caption bar earns a full-width bar, or wants B's side
-   rail.
-5. Where Settings sits: page (A), sheet (B), or tab (C).
+1. Which of the five housings, or which parts of which.
+2. Whether the report is visible on every page or only where it is relevant.
+   All five here are shell-level, which is the assumption worth attacking:
+   ADR 0012 gave pre-generation its own thread precisely so the tail would not
+   matter, and a report nobody needs to act on may not need to be everywhere.
+3. Whether `240 of 1,204` is a number anyone wants. `chip` says a percentage,
+   `strip` and `toast` say the count, `quiet` says neither.
+4. Whether the scan and the pass share one surface at all, given that the scan
+   half cannot have a percentage and is over in one event on a real library.
+5. Whether the ending needs the toast slot. `chip` and `strip` keep it out of
+   there and pay for it by having nowhere to put "Back to Round 1" except a
+   tooltip. Flip to Rank during a `rescan` to watch the headline drop to
+   Round 1 and see whether the housing explains it.
