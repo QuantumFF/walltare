@@ -159,15 +159,17 @@ fn get_stats(state: tauri::State<'_, Db>) -> Result<voting::Stats, error::AppErr
     voting::get_stats(&conn)
 }
 
+/// Starts a scan of `path`, a Written path.
+///
+/// The parameter is a `String` rather than a `PathBuf` because a `PathBuf`
+/// holding `~/pics` is a template, not a path: `is_dir()` on the unexpanded
+/// string fails. The command's argument name is unchanged, and the frontend was
+/// already sending a string.
 #[tauri::command]
-fn start_scan(path: PathBuf, app: AppHandle) -> Result<(), error::AppError> {
-    if !path.is_dir() {
-        return Err(error::AppError::InvalidPath(path.display().to_string()));
-    }
-    // Canonical roots keep stored paths comparable: a library scanned as
-    // `/home/me/./pics` must produce the same strings as one scanned as
-    // `/home/me/pics`, or `UNIQUE(path)` sees two different wallpapers.
-    let root = path.canonicalize().unwrap_or(path);
+fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
+    // Before the guard below, so a malformed path costs the user nothing and
+    // leaves no scan running.
+    let root = scan_root(&path)?;
 
     if app.state::<ScanRunning>().0.swap(true, Ordering::SeqCst) {
         return Err(error::AppError::InvalidTransition(
@@ -213,6 +215,71 @@ fn start_scan(path: PathBuf, app: AppHandle) -> Result<(), error::AppError> {
         }
     });
     Ok(())
+}
+
+/// Expands a Written path, checks it is a directory, then canonicalizes it.
+///
+/// That order is the whole point. Expanding first is what makes `~/pics` and
+/// `$XDG_PICTURES_DIR/walls` scannable at all, and canonicalizing last is what
+/// keeps `~/pics`, `$HOME/pics` and `/home/me/./pics` from reaching three
+/// libraries: stored paths are compared as strings, so `UNIQUE(path)` would see
+/// the same file three times.
+fn scan_root(path: &str) -> Result<PathBuf, error::AppError> {
+    canonical_scan_root(paths::expand(path)?)
+}
+
+/// [`scan_root`] with the environment passed in, for the tests.
+///
+/// Same reason as [`paths::expand_with`]: the `~` case needs a known `HOME`, and
+/// cargo runs tests as threads in one process, so mutating the environment would
+/// race every other test in the crate. `db`'s tests reach
+/// `resolve_destination_dir_with` for the same reason.
+#[cfg(test)]
+fn scan_root_with(
+    path: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<PathBuf, error::AppError> {
+    canonical_scan_root(paths::expand_with(path, lookup)?)
+}
+
+/// Everything after expansion: the directory check, then canonicalization.
+fn canonical_scan_root(expanded: PathBuf) -> Result<PathBuf, error::AppError> {
+    if !expanded.is_dir() {
+        return Err(error::AppError::InvalidPath(expanded.display().to_string()));
+    }
+    // A hard error rather than a fallback to the un-canonicalized path. The
+    // check above has already passed, so this only fires in exotic cases, and
+    // storing the un-canonicalized string there is exactly the duplicate library
+    // the canonicalization exists to prevent.
+    expanded
+        .canonicalize()
+        .map_err(|_| error::AppError::InvalidPath(expanded.display().to_string()))
+}
+
+/// Where a Written path points, and whether a folder is there.
+///
+/// `exists` is `is_dir()`, so a file at that path reads as nothing there:
+/// pointing a Library root at a JPEG is a typo rather than a state that deserves
+/// its own sentence.
+#[derive(Debug, Serialize)]
+struct Expanded {
+    resolved: String,
+    exists: bool,
+}
+
+/// Answers what a Written path resolves to, so a curator reads their typo before
+/// a file moves rather than after fifty of them have.
+///
+/// Creates nothing. [`paths::expand`] stays pure and this stats after it returns,
+/// which is why there is no second `directory_exists` command: it would mean two
+/// IPC round trips per edit of one string.
+#[tauri::command]
+fn expand_path(input: String) -> Result<Expanded, error::AppError> {
+    let expanded = paths::expand(&input)?;
+    Ok(Expanded {
+        resolved: expanded.display().to_string(),
+        exists: expanded.is_dir(),
+    })
 }
 
 #[tauri::command]
@@ -344,6 +411,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_scan,
+            expand_path,
             get_pair,
             vote,
             get_stats,
@@ -415,5 +483,119 @@ mod tests {
             parse("wallpaper://localhost/image/1?v=2&size=small").unwrap(),
             (1, Size::Small)
         );
+    }
+
+    #[test]
+    fn a_scan_root_is_canonicalized_so_one_library_keeps_one_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let pics = dir.path().join("pics");
+        std::fs::create_dir(&pics).unwrap();
+
+        let written = format!("{}/./pics", dir.path().display());
+        assert_eq!(scan_root(&written).unwrap(), pics.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn a_written_scan_root_expands_before_it_is_checked() {
+        // `~/pics` is a template rather than a path, so `is_dir()` on the
+        // unexpanded string fails — the reason the parameter is a `String`.
+        //
+        // `HOME` is a stand-in home folder rather than the real one, so nothing
+        // here reads the process environment.
+        let home = tempfile::tempdir().unwrap();
+        let pics = home.path().join("pics");
+        std::fs::create_dir(&pics).unwrap();
+
+        let home_value = home.path().to_str().unwrap().to_string();
+        let root = scan_root_with("~/pics", |name| {
+            (name == "HOME").then(|| home_value.clone())
+        })
+        .unwrap();
+
+        assert_eq!(root, pics.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn a_relative_scan_root_still_resolves_against_the_working_directory() {
+        // What keeps `./test-wallpapers` working in development. `src` is this
+        // crate's own source folder, and cargo runs tests from the crate root.
+        let expected = std::env::current_dir().unwrap().join("src");
+        assert_eq!(
+            scan_root("./src").unwrap(),
+            expected.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_scan_root_naming_an_unset_variable_fails_with_the_variable_in_it() {
+        // The message reaches the user verbatim, so it is the assertion.
+        let err = scan_root("$WALLTARE_NO_SUCH_VARIABLE/pics").unwrap_err();
+        assert!(
+            matches!(err, error::AppError::InvalidPathSyntax(ref m)
+                if m == "unknown environment variable WALLTARE_NO_SUCH_VARIABLE"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_scan_root_that_is_not_a_directory_is_an_invalid_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.jpg");
+        std::fs::write(&file, b"").unwrap();
+
+        for input in [file, dir.path().join("nope")] {
+            let written = input.display().to_string();
+            let err = scan_root(&written).unwrap_err();
+            assert!(
+                matches!(err, error::AppError::InvalidPath(_)),
+                "{written} gave {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn expand_path_answers_where_a_written_path_points_and_what_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = dir.path().display().to_string();
+
+        let expanded = expand_path(written.clone()).unwrap();
+        // Unlike a scan root, the preview does not canonicalize: the user is
+        // reading the path they typed, resolved, not a rewrite of it.
+        assert_eq!(expanded.resolved, written);
+        assert!(expanded.exists);
+    }
+
+    #[test]
+    fn expand_path_reads_a_file_as_nothing_there_and_creates_nothing() {
+        // Pointing a Library root at a JPEG is a typo rather than a state that
+        // deserves its own sentence. The preview also runs while the user types,
+        // so it must not create the folder it is describing.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.jpg");
+        std::fs::write(&file, b"").unwrap();
+        let missing = dir.path().join("nope");
+
+        assert!(!expand_path(file.display().to_string()).unwrap().exists);
+        assert!(!expand_path(missing.display().to_string()).unwrap().exists);
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn expand_path_refuses_a_malformed_input_rather_than_resolving_it() {
+        let err = expand_path("$WALLTARE_NO_SUCH_VARIABLE/pics".to_string()).unwrap_err();
+        assert!(
+            matches!(err, error::AppError::InvalidPathSyntax(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn expanded_crosses_the_ipc_with_the_fields_client_ts_expects() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = dir.path().display().to_string();
+
+        let json = serde_json::to_value(expand_path(written.clone()).unwrap()).unwrap();
+        assert_eq!(json["resolved"], written);
+        assert_eq!(json["exists"], true);
     }
 }

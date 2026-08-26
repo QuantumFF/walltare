@@ -14,6 +14,10 @@ function scanStartError(err: unknown): string {
   switch (err.kind) {
     case "invalid_path":
       return INVALID_PATH_ERROR;
+    // The only kind rendered verbatim. Its message names the variable the user
+    // mistyped, which no canned string here can do.
+    case "invalid_path_syntax":
+      return err.message;
     case "invalid_transition":
       return SCAN_IN_PROGRESS_ERROR;
     default:

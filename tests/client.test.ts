@@ -23,6 +23,31 @@ describe("client seam", () => {
     });
   });
 
+  test("expandPath forwards the input argument", async () => {
+    let receivedInput: string | undefined;
+    mockCommand("expand_path", (args) => {
+      receivedInput = args?.input as string;
+      return { resolved: "/home/me/pics", exists: true };
+    });
+    const expanded = await client.expandPath("~/pics");
+    expect(receivedInput).toBe("~/pics");
+    expect(expanded).toEqual({ resolved: "/home/me/pics", exists: true });
+  });
+
+  test("expandPath surfaces a syntax error untouched", async () => {
+    // The message names the variable, so nothing may rewrite it on the way up.
+    mockCommand("expand_path", () =>
+      Promise.reject({
+        kind: "invalid_path_syntax",
+        message: "unknown environment variable HOEM",
+      }),
+    );
+    expect(client.expandPath("$HOEM/pics")).rejects.toEqual({
+      kind: "invalid_path_syntax",
+      message: "unknown environment variable HOEM",
+    });
+  });
+
   test("getReview asks for 50 rows unless told otherwise", async () => {
     const limits: unknown[] = [];
     mockCommand("get_review", (args) => {
