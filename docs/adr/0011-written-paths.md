@@ -66,6 +66,16 @@ field in a GUI is not a transcript.
 Staying literal is safe, but it fails as "that directory doesn't exist", which
 sends the user looking at their filesystem instead of at their typo.
 
+> **Amended by [#81](https://github.com/QuantumFF/walltare/issues/81),
+> 2026-08-26.** A variable that is set to an empty string counts as unset. This
+> section only specified the unset case, and a review of the implementation found
+> that `HOME=""` reached the outcome above by the other route: `~/rejected`
+> expands to `/rejected`, which is absolute, so the reject path creates it at the
+> root of the disk. What matters is that a variable resolved to nothing, not
+> whether the shell would call it set, so both get the same error and the same
+> copy. Naming the empty case separately would mean two more user-facing strings
+> for a distinction the curator cannot act on differently.
+
 ### What relative means, which differs per caller
 
 A soft reject destination that is not absolute stays relative to the

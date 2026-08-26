@@ -23,15 +23,25 @@ pub fn expand(input: &str) -> Result<PathBuf, AppError> {
 /// known value for some rows and unset for another, and cargo runs tests as
 /// threads in one process, so mutating the environment would race every other
 /// test in the crate. It also stops `~` being a special case, since it becomes
-/// a lookup of `HOME` like any other variable.
-fn expand_with(input: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<PathBuf, AppError> {
+/// a lookup of `HOME` like any other variable. `db`'s tests reach it through
+/// `resolve_destination_dir_with` for the same reason.
+///
+/// A variable set to an empty string counts as absent, because expanding it to
+/// nothing is what produces the path this whole module exists to refuse: `~` on
+/// an empty `HOME` would leave `/rejected`, which is absolute, so the reject
+/// path would create it at the root of the disk.
+pub(crate) fn expand_with(
+    input: &str,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<PathBuf, AppError> {
+    let set = |name: &str| lookup(name).filter(|value| !value.is_empty());
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
 
     // Only a leading `~` is the home folder. Past the first character it is an
     // ordinary filename character, as in `backup~1`.
     if rest == "~" || rest.starts_with("~/") {
-        let home = lookup("HOME").ok_or_else(|| {
+        let home = set("HOME").ok_or_else(|| {
             AppError::InvalidPathSyntax("cannot expand ~ because HOME is not set".to_string())
         })?;
         out.push_str(&home);
@@ -46,7 +56,7 @@ fn expand_with(input: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<P
                 // Naming a variable that is not set is an error, not an empty
                 // string: `$HOEM/rejected` must not become `/rejected` and get
                 // created at the root of the filesystem.
-                let value = lookup(name).ok_or_else(|| {
+                let value = set(name).ok_or_else(|| {
                     AppError::InvalidPathSyntax(format!("unknown environment variable {name}"))
                 })?;
                 out.push_str(&value);
@@ -107,6 +117,12 @@ mod tests {
 
     fn nothing_set(_: &str) -> Option<String> {
         None
+    }
+
+    /// Everything is set, and set to nothing. A shell would expand these to an
+    /// empty string; this module refuses them instead.
+    fn set_but_empty(_: &str) -> Option<String> {
+        Some(String::new())
     }
 
     fn expanded(input: &str) -> PathBuf {
@@ -193,10 +209,25 @@ mod tests {
     }
 
     #[test]
-    fn an_unset_variable_expands_to_nothing_at_all_rather_than_to_an_empty_string() {
-        // `$HOEM/rejected` becoming `/rejected` is what a shell does, and on the
-        // reject path it would create `/rejected` and move wallpapers into it.
-        assert!(expand_with("$HOEM/rejected", env).is_err());
+    fn a_variable_set_to_an_empty_string_is_refused_like_an_unset_one() {
+        // The dangerous case, and the reason this is an error rather than a
+        // shell-style empty expansion. `~/rejected` on an empty `HOME` leaves
+        // `/rejected`, which is absolute, so the reject path would create it at
+        // the root of the disk and move wallpapers into it. A variable that
+        // resolves to nothing gives the app nothing to work with either way, so
+        // it reads as absent and gets the same copy.
+        assert_eq!(
+            syntax_error("~/rejected", set_but_empty),
+            "cannot expand ~ because HOME is not set"
+        );
+        assert_eq!(
+            syntax_error("$PICS/rejected", set_but_empty),
+            "unknown environment variable PICS"
+        );
+        assert_eq!(
+            syntax_error("${PICS}/rejected", set_but_empty),
+            "unknown environment variable PICS"
+        );
     }
 
     #[test]
