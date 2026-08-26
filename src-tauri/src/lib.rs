@@ -1,5 +1,6 @@
 mod db;
 mod error;
+mod paths;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod scanner;
 mod thumbnails;

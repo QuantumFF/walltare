@@ -6,6 +6,13 @@ pub enum AppError {
     NotFound(String),
     InvalidTransition(String),
     InvalidPath(String),
+    /// A Written path the app cannot read: an unset variable, or a `~` with no
+    /// `HOME` behind it. `InvalidPath` keeps meaning the string is well formed
+    /// and leads nowhere useful.
+    ///
+    /// Its message is user-facing copy, because the frontend renders it verbatim
+    /// to name the variable the user mistyped.
+    InvalidPathSyntax(String),
     BadRequest(String),
     NotEnoughWallpapers(String),
     UnknownWallpaper(String),
@@ -32,6 +39,7 @@ impl std::fmt::Display for AppError {
             AppError::NotFound(m) => ("not_found", m),
             AppError::InvalidTransition(m) => ("invalid_transition", m),
             AppError::InvalidPath(m) => ("invalid_path", m),
+            AppError::InvalidPathSyntax(m) => ("invalid_path_syntax", m),
             AppError::BadRequest(m) => ("bad_request", m),
             AppError::NotEnoughWallpapers(m) => ("not_enough_wallpapers", m),
             AppError::UnknownWallpaper(m) => ("unknown_wallpaper", m),
