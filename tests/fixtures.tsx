@@ -1,5 +1,5 @@
 import { AppProvider, useApp } from "@/context/AppContext";
-import type { Stats, Wallpaper } from "@/lib/client";
+import type { Settings, Stats, Wallpaper } from "@/lib/client";
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 
@@ -27,6 +27,42 @@ export function stats(over: Partial<Stats> = {}): Stats {
   };
 }
 
+/**
+ * An empty settings table read back, which is what most tests want: the
+ * provider gates on `get_settings`, so every test that mocks `get_stats` needs
+ * this beside it or nothing renders at all.
+ *
+ * The values are spelled out rather than taken from `DEFAULT_SETTINGS`, so what
+ * a test arranged is readable here and does not move under it when the app's
+ * defaults do.
+ */
+export function settings(over: Partial<Settings> = {}): Settings {
+  return {
+    theme: "system",
+    library_root: "",
+    reject_destination: "./rejected",
+    ...over,
+  };
+}
+
+/** happy-dom keeps the media-query answers on the window rather than in the DOM. */
+interface DeviceWindow {
+  happyDOM: { settings: { device: { prefersColorScheme: "light" | "dark" } } };
+}
+
+/**
+ * Say whether the desktop underneath is light or dark, which is what
+ * `matchMedia("(prefers-color-scheme: dark)")` then answers. happy-dom serves
+ * the query from its own device settings, so this arranges the real media query
+ * instead of standing a stub in front of it.
+ *
+ * It outlives the test that set it; reset it wherever it is used.
+ */
+export function desktopColorScheme(scheme: "light" | "dark"): void {
+  const { device } = (window as unknown as DeviceWindow).happyDOM.settings;
+  device.prefersColorScheme = scheme;
+}
+
 /** Reports the current view so a test can assert navigation without the target view mounting. */
 export function ViewProbe() {
   const { view } = useApp();
@@ -37,14 +73,22 @@ export function currentView(): string | null {
   return screen.getByTestId("view").textContent;
 }
 
-/** Render one view inside the real provider, with a probe for navigation. */
-export function renderInApp(ui: ReactNode) {
-  return render(
+/**
+ * Render one view inside the real provider, with a probe for navigation.
+ *
+ * Awaits the provider's boot gate, so `ui` is mounted by the time this returns.
+ * A command the test deliberately left pending stays pending: only the two boot
+ * reads are waited on here.
+ */
+export async function renderInApp(ui: ReactNode) {
+  const rendered = render(
     <AppProvider>
       <ViewProbe />
       {ui}
     </AppProvider>,
   );
+  await flush();
+  return rendered;
 }
 
 export interface Deferred<T> {

@@ -2,7 +2,7 @@ import { ScanView } from "@/components/ScanView";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import { currentView, flush, renderInApp, stats } from "./fixtures";
+import { currentView, flush, renderInApp, settings, stats } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 let scannedPaths: string[];
@@ -21,8 +21,10 @@ beforeEach(() => {
     scannedPaths.push(args?.path as string);
     return null;
   });
-  // The provider's bootstrap: an empty library is what keeps the user here.
+  // The provider's boot gate: an empty library is what keeps the user here, and
+  // the settings read has to land before anything renders at all.
   mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_settings", () => settings());
 });
 
 /** Emit a backend event and report how many listeners took it. */
@@ -48,7 +50,7 @@ async function startScan(path = "/tmp/wallpapers") {
 }
 
 test("a scan reports progress, then lands on rank", async () => {
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan();
 
   expect(scannedPaths).toEqual(["/tmp/wallpapers"]);
@@ -69,7 +71,7 @@ test("a scan reports progress, then lands on rank", async () => {
 });
 
 test("a rescan that adds nothing still lands on rank", async () => {
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan();
 
   // The common case on every launch after the first: the walk found images,
@@ -86,7 +88,7 @@ test("a rescan that adds nothing still lands on rank", async () => {
 });
 
 test("a directory with no images at all is reported, and the view stays usable", async () => {
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan();
 
   await act(async () => {
@@ -107,7 +109,7 @@ test("a directory with no images at all is reported, and the view stays usable",
 
 test("a scan that fails mid-walk is reported and clears the progress line", async () => {
   expectConsoleError(/Scan failed: permission denied/);
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan();
 
   await act(async () => {
@@ -133,7 +135,7 @@ test("an unreadable path is reported and the view stays usable", async () => {
       message: `${args?.path} is not a directory`,
     }),
   );
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan("/definitely/not/a/dir");
   await flush();
 
@@ -162,7 +164,7 @@ test("a mistyped variable in the path is reported by name", async () => {
       message: "unknown environment variable HOEM",
     }),
   );
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan("$HOEM/pics");
   await flush();
 
@@ -183,7 +185,7 @@ test("a scan started while one is already running is reported as such", async ()
       message: "a scan is already running",
     }),
   );
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan();
   await flush();
 
@@ -192,7 +194,7 @@ test("a scan started while one is already running is reported as such", async ()
 });
 
 test("an empty path cannot start a scan", async () => {
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
 
   expect(scanButton().disabled).toBe(true);
   // Enter bypasses the disabled button, so the handler guards the path itself.
@@ -203,7 +205,7 @@ test("an empty path cannot start a scan", async () => {
 });
 
 test("a scan in flight cannot be started a second time", async () => {
-  renderInApp(<ScanView />);
+  await renderInApp(<ScanView />);
   await startScan();
 
   expect(scanButton().disabled).toBe(true);
@@ -215,7 +217,7 @@ test("a scan in flight cannot be started a second time", async () => {
 });
 
 test("unmounting drops the scan subscriptions", async () => {
-  const { unmount } = renderInApp(<ScanView />);
+  const { unmount } = await renderInApp(<ScanView />);
   await flush();
   expect(await emitInAct("scan-progress", { scanned: 1, added: 1 })).toBe(1);
 
@@ -233,7 +235,7 @@ test("unmounting before the subscriptions resolve still drops them", async () =>
   // No await between render and unmount: `listen` is still pending, so the
   // effect cleanup has nothing to unsubscribe yet and the resolution, which
   // lands after the component is gone, has to undo its own work.
-  const { unmount } = renderInApp(<ScanView />);
+  const { unmount } = await renderInApp(<ScanView />);
   unmount();
   await flush();
 

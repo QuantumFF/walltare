@@ -8,6 +8,7 @@ import {
   deferred,
   flush,
   renderInApp,
+  settings,
   stats,
   wallpaper,
 } from "./fixtures";
@@ -38,6 +39,8 @@ beforeEach(() => {
     getStatsCalls++;
     return stats();
   });
+  // The other half of the provider's boot gate; without it nothing renders.
+  mockCommand("get_settings", () => settings());
 });
 
 function pair(leftId: number, rightId: number): [Wallpaper, Wallpaper] {
@@ -82,7 +85,7 @@ async function panesArrive() {
 }
 
 async function renderRankView() {
-  const rendered = renderInApp(<RankView />);
+  const rendered = await renderInApp(<RankView />);
   await flush();
   await panesArrive();
   return rendered;
@@ -203,7 +206,7 @@ test("a pick is refused until both panes have their wallpaper", async () => {
   servePairs(pair(1, 2), pair(3, 4));
   serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
 
-  renderInApp(<RankView />);
+  await renderInApp(<RankView />);
   await flush();
 
   // Generating a medium thumbnail off a large source takes seconds, so at
@@ -260,7 +263,7 @@ test("an image that fails to load unblocks its pane rather than wedging it", asy
   servePairs(pair(1, 2), pair(3, 4));
   serveVote(() => ({ next_pair: pair(7, 8), stats: stats() }));
 
-  renderInApp(<RankView />);
+  await renderInApp(<RankView />);
   await flush();
   await act(async () => {
     fireEvent.error(screen.getByAltText("Left Wallpaper"));

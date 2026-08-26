@@ -6,6 +6,10 @@ use crate::error::AppError;
 
 /// Bumped whenever `DDL` changes in a way an existing database can't reach by
 /// running the (idempotent) DDL again. See `migrate`.
+///
+/// Adding a whole table is not such a change: `init_schema` runs the DDL before
+/// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
+/// why `settings` arrived without a bump.
 const SCHEMA_VERSION: i64 = 2;
 
 const DDL: &str = "
@@ -38,6 +42,11 @@ CREATE TABLE IF NOT EXISTS thumbnails (
     height       INTEGER NOT NULL,
     source_mtime INTEGER NOT NULL,
     PRIMARY KEY (wallpaper_id, size)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 ";
 
@@ -450,6 +459,44 @@ mod tests {
         // Wallpapers and their history are untouched; only the cache table is
         // rebuilt.
         assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    #[test]
+    fn a_database_created_before_the_settings_table_gains_it_without_a_version_bump() {
+        // The property the settings table rests on: it needs no migration step
+        // because the DDL runs before `init_schema` branches. Dropping it from a
+        // current database is how an older file looks — v2 in every other
+        // respect, since nothing else about v2 changed when it arrived.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        let conn = open(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+        seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        conn.execute_batch("DROP TABLE settings").unwrap();
+        assert!(!table_exists(&conn, "settings").unwrap());
+
+        init_schema(&conn).unwrap();
+
+        assert!(table_exists(&conn, "settings").unwrap());
+        assert_eq!(SCHEMA_VERSION, 2);
+        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    #[test]
+    fn a_v1_database_gains_the_settings_table_alongside_its_migration() {
+        // The oldest file anyone can be holding. The migration step and the new
+        // table are independent, and this is what says so.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL_V1).unwrap();
+
+        init_schema(&conn).unwrap();
+
+        assert!(table_exists(&conn, "settings").unwrap());
+        assert_eq!(
+            crate::settings::get(&conn).unwrap(),
+            crate::settings::Settings::default()
+        );
     }
 
     #[test]

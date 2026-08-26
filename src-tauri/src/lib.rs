@@ -3,8 +3,10 @@ mod error;
 mod paths;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod scanner;
+mod settings;
 mod thumbnails;
 mod voting;
+mod window_state;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -283,6 +285,27 @@ fn expand_path(input: String) -> Result<Expanded, error::AppError> {
 }
 
 #[tauri::command]
+fn get_settings(state: tauri::State<Db>) -> Result<settings::Settings, error::AppError> {
+    let conn = lock_conn(state);
+    settings::get(&conn)
+}
+
+/// Writes one setting and returns every setting, so a stale read cannot survive
+/// a write.
+///
+/// The value crosses as a `String` because that is what the column holds;
+/// `client.ts` keys the call on `keyof Settings` so callers stay typed.
+#[tauri::command]
+fn set_setting(
+    key: String,
+    value: String,
+    state: tauri::State<Db>,
+) -> Result<settings::Settings, error::AppError> {
+    let conn = lock_conn(state);
+    settings::set(&conn, &key, &value)
+}
+
+#[tauri::command]
 fn get_review(limit: i64, state: tauri::State<Db>) -> Result<Vec<db::Wallpaper>, error::AppError> {
     let conn = lock_conn(state);
     db::get_review(&conn, limit).map_err(Into::into)
@@ -383,6 +406,7 @@ fn error_response(e: &error::AppError) -> tauri::http::Response<Vec<u8>> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(window_state::plugin())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
@@ -417,7 +441,9 @@ pub fn run() {
             get_stats,
             get_review,
             keep_wallpaper,
-            move_wallpaper
+            move_wallpaper,
+            get_settings,
+            set_setting
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,6 +1,24 @@
 import { client, wallpaperImageUrl } from "@/lib/client";
+import type { Settings, Theme } from "@/lib/client";
 import { describe, expect, test } from "bun:test";
 import { emitEvent, mockCommand } from "./ipc-mocks";
+
+/** A settings table with something in every key, so a default can't stand in. */
+const stored: Settings = {
+  theme: "dark",
+  library_root: "~/pics",
+  reject_destination: "/bin/walls",
+};
+
+/** Serve `set_setting` and keep the arguments it was handed. */
+function captureSetSetting(): { args?: Record<string, unknown> } {
+  const captured: { args?: Record<string, unknown> } = {};
+  mockCommand("set_setting", (args) => {
+    captured.args = args;
+    return stored;
+  });
+  return captured;
+}
 
 describe("client seam", () => {
   test("startScan forwards the path argument", async () => {
@@ -45,6 +63,62 @@ describe("client seam", () => {
     expect(client.expandPath("$HOEM/pics")).rejects.toEqual({
       kind: "invalid_path_syntax",
       message: "unknown environment variable HOEM",
+    });
+  });
+
+  test("getSettings hands back the struct the backend sent", async () => {
+    mockCommand("get_settings", () => stored);
+    expect(await client.getSettings()).toEqual(stored);
+  });
+
+  test("setSetting sends the key and the value under the names set_setting expects", async () => {
+    const received = captureSetSetting();
+    await client.setSetting("theme", "dark");
+    // Snake-case command, `key` and `value` arguments: the Rust signature is
+    // `set_setting(key: String, value: String)`.
+    expect(received.args).toEqual({ key: "theme", value: "dark" });
+  });
+
+  test("setSetting hands over a plain string, stringified once", async () => {
+    // The seam is the only module that builds an IPC payload, so this is the
+    // one place a setting becomes a string. A caller that stringified as well
+    // would send `"\"~/pics\""`, and the backend would store the quotes.
+    const received = captureSetSetting();
+    await client.setSetting("library_root", "~/pics");
+    expect(received.args?.value).toBe("~/pics");
+    expect(typeof received.args?.value).toBe("string");
+  });
+
+  test("setSetting sends an empty value as an empty string", async () => {
+    // Clearing the library root is how a curator writes it back to its default,
+    // which the backend answers by deleting the row. A stringify that turned ""
+    // into anything else would make that unreachable.
+    const received = captureSetSetting();
+    await client.setSetting("library_root", "");
+    expect(received.args).toEqual({ key: "library_root", value: "" });
+  });
+
+  test("setSetting resolves with every setting, not just the one written", async () => {
+    // A stale read cannot survive a write, so nothing reassembles state from a
+    // patch.
+    mockCommand("set_setting", () => ({ ...stored, theme: "light" }));
+    expect(await client.setSetting("theme", "light")).toEqual({
+      theme: "light",
+      library_root: "~/pics",
+      reject_destination: "/bin/walls",
+    });
+  });
+
+  test("setSetting surfaces a refused write untouched", async () => {
+    mockCommand("set_setting", () =>
+      Promise.reject({
+        kind: "bad_request",
+        message: '"solarized" is not a theme; expected system, light or dark',
+      }),
+    );
+    expect(client.setSetting("theme", "solarized" as Theme)).rejects.toEqual({
+      kind: "bad_request",
+      message: '"solarized" is not a theme; expected system, light or dark',
     });
   });
 
