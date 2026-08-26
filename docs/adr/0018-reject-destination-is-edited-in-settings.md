@@ -160,6 +160,12 @@ machinery already exists.
 This hands [#58](https://github.com/QuantumFF/walltare/issues/58) a requirement:
 the Settings page needs a focus target per field, not only a grouping.
 
+> **Answered by [ADR 0020](0020-settings-page.md), 2026-08-26.** The navigation
+> call carries a `keyof Settings` beside `returnTo`, so the mechanism is general
+> and the first-run block reuses it. The page focuses the input without
+> selecting its text, since a field that writes on blur should not be one
+> keystroke from empty.
+
 ### Nothing already rejected is stranded
 
 `restore_wallpaper` reads `origin_path` off the row under ADR 0009, never
