@@ -128,7 +128,7 @@ the last child of the shell root, carrying the highest z-index in the app.
 
 The z-index is the part worth writing down. Keep and reject fire from inside
 the lightbox, whose backdrop is opaque because at 97% the tabs ghosted through
-the preview ([#44](https://github.com/QuantumFF/walltare/issues/44)), and Radix
+the lightbox ([#44](https://github.com/QuantumFF/walltare/issues/44)), and Radix
 does not portal the viewport: it renders where you put it. "Mount it in the
 shell" on its own produces a toast nobody can see during the exact flow this
 ADR exists for.
@@ -136,6 +136,18 @@ ADR exists for.
 The offset clears the chrome row's gear. It leaves the toast overlaying each
 page's second bar, which holds a filter row and a destination field, neither of
 which anyone reads while a toast is up.
+
+> **Amended by [ADR 0022](0022-lightbox-shares-the-selection.md), 2026-08-26.**
+> The z-index is necessary and not sufficient, for a reason this ADR had the
+> first half of. A *modal* layer over the viewport also runs
+> `hideOthers(content)` from `aria-hidden`, which marks every sibling on the way
+> up as `aria-hidden="true"`, and because the viewport is not portalled it is one
+> of those siblings. So the toast would paint on top and still be out of the
+> accessibility tree, live region included. Radix's own `FocusScope` trap then
+> takes back the focus the F8 hotkey moved, since the hotkey is bound on
+> `document` and fires regardless. ADR 0022 makes the lightbox a **non-modal**
+> Dialog with `inert` on the view container behind it for the same containment,
+> and anything modal that ever covers this app owes the same check.
 
 ### Keyboard
 

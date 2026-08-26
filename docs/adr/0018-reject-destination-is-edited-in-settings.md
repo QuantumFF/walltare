@@ -122,15 +122,21 @@ the frontend holds `wallpaper.filename` and compares basenames.
 `restore_wallpaper` owes the same return for the same reason, which belongs to
 [#39](https://github.com/QuantumFF/walltare/issues/39).
 
-### The preview shows nothing
+### The lightbox shows nothing
 
 The lightbox backdrop is opaque, settled in
 [#44](https://github.com/QuantumFF/walltare/issues/44) because at 97% the tabs
-ghosted through, so the second bar's line is invisible while the preview is
-open. It stays invisible. The preview is about the wallpaper, its action housing
+ghosted through, so the second bar's line is invisible while the lightbox is
+open. It stays invisible. The lightbox is about the wallpaper, its action housing
 was won by staying attached to the picture, and its read-out block is already
 carrying Score, comparison count, position and keys. Reporting where a file
 would go is the toast's job, which is what the next section changes.
+
+> This section and one line in Alternatives originally said "preview".
+> [ADR 0022](0022-lightbox-shares-the-selection.md) settled the name: the image
+> surface is the lightbox, and "preview" belongs to
+> [ADR 0011](0011-written-paths.md)'s resolved-path read-out, which this same
+> file uses two sections above.
 
 ### ADR 0017's reject toast, amended
 
@@ -213,7 +219,7 @@ prints a folder the bar named two inches away, on every reject of a fast pass.
 The conditional is one expression over a boolean that already exists.
 
 **Copy that varies by which surface the reject came from**, so only a reject
-fired inside the preview names its path. Honest about the opaque backdrop, and
+fired inside the lightbox names its path. Honest about the opaque backdrop, and
 it adds a caller argument to a primitive ADR 0017 built to be called from
 anywhere.
 

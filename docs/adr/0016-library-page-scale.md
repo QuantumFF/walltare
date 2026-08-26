@@ -120,6 +120,14 @@ scheme at all. If it does not, this header buys nothing and the fallback is a
 frontend-side `Map<id, blob>` bounded to a few hundred entries. See "If the grid
 ever janks" below.
 
+> [ADR 0022](0022-lightbox-shares-the-selection.md) adds two dependents on that
+> unverified header. Stepping backwards through the lightbox assumes the
+> previous `medium` is still cached, and the lightbox's first frame paints the
+> card's `small` scaled up on the assumption that it costs no request. Neither
+> breaks if the assumption is wrong: the placeholder re-requests a 31KB `small`
+> and a step back re-reads a `medium`. Both get slower, and the `Map<id, blob>`
+> fallback above would serve all three callers.
+
 ### A library card asks for `small`
 
 400px, the same size a review card asks for. In the default 1280x800 window a
