@@ -204,21 +204,30 @@ pub fn move_wallpaper(
     Ok(())
 }
 
-/// Resolves `destination_folder` against the wallpaper's own folder when it is
-/// relative, creates it, and canonicalizes the result.
+/// Expands `destination_folder`, resolves it against the wallpaper's own folder
+/// when it is relative, creates it, and canonicalizes the result.
+///
+/// Expansion goes first so that the directory is created only after the Written
+/// path has resolved: `~/rejected` used to produce a folder literally named `~`
+/// beside the wallpaper, and `$HOEM/rejected` must not create anything at all.
+/// Creating the destination on demand stays, because `./rejected` has to come
+/// from somewhere on the first reject.
 ///
 /// Canonicalizing is what keeps a rejected file rejected: the default `./rejected`
 /// would otherwise be stored verbatim as `/lib/./rejected/x.jpg`, which is a
 /// different string from the `/lib/rejected/x.jpg` a rescan produces, so
 /// `UNIQUE(path)` wouldn't match and the file would come back as a new Active row.
+/// It is also what stops `~/pics` and `$HOME/pics` becoming two spellings of one
+/// folder.
 fn resolve_destination_dir(source: &Path, destination_folder: &str) -> Result<PathBuf, AppError> {
-    let raw = if Path::new(destination_folder).is_absolute() {
-        PathBuf::from(destination_folder)
+    let expanded = crate::paths::expand(destination_folder)?;
+    let raw = if expanded.is_absolute() {
+        expanded
     } else {
         source
             .parent()
             .unwrap_or_else(|| Path::new("/"))
-            .join(destination_folder)
+            .join(expanded)
     };
     std::fs::create_dir_all(&raw)?;
     raw.canonicalize().map_err(Into::into)
@@ -705,6 +714,63 @@ mod tests {
         assert_eq!(insert_new_wallpapers(&conn, &found).unwrap(), 0);
         assert_eq!(count_wallpapers(&conn), 1);
         assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn a_tilde_prefixed_destination_lands_in_the_home_folder() {
+        // The bug this kills: `~/rejected` used to create a directory literally
+        // named `~` inside the wallpaper's own folder, move the file into it,
+        // and store that as the wallpaper's path, with nothing erroring.
+        //
+        // The destination is a tempdir inside the home folder, so the real one
+        // is left as it was. This reads HOME and never writes it, so it cannot
+        // race the rest of the crate.
+        let home = std::env::var("HOME").expect("a desktop app's tests run with HOME set");
+        let scratch = tempfile::tempdir_in(&home).unwrap();
+        let scratch_name = scratch
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap()
+            .to_string();
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "tilde.jpg");
+
+        move_wallpaper(&conn, id, &format!("~/{scratch_name}/rejected")).unwrap();
+
+        let landed = scratch.path().join("rejected").join("tilde.jpg");
+        assert!(landed.is_file());
+        assert!(!tmp.path().join("~").exists());
+        assert_eq!(
+            row_status_and_path(&conn, id),
+            ("rejected".into(), path_string(landed))
+        );
+    }
+
+    #[test]
+    fn a_malformed_destination_creates_nothing_on_disk() {
+        // An unset variable must not expand to empty either: `$X/rejected`
+        // becoming `/rejected` would create a folder at the filesystem root and
+        // start moving wallpapers into it.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "safe.jpg");
+        let destination = "$WALLTARE_NO_SUCH_VARIABLE/rejected";
+
+        let err = move_wallpaper(&conn, id, destination).unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::AppError::InvalidPathSyntax(ref m)
+                if m == "unknown environment variable WALLTARE_NO_SUCH_VARIABLE"),
+            "got {err:?}"
+        );
+        assert!(!tmp.path().join("$WALLTARE_NO_SUCH_VARIABLE").exists());
+        assert!(!tmp.path().join("rejected").exists());
+        assert!(tmp.path().join("safe.jpg").is_file());
+        assert_eq!(status_of(&conn, id), "active");
     }
 
     #[test]
