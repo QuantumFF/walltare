@@ -1,6 +1,7 @@
 import { client, wallpaperImageUrl } from "@/lib/client";
 import type { Settings, Theme } from "@/lib/client";
 import { describe, expect, test } from "bun:test";
+import { wallpaper } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 /** A settings table with something in every key, so a default can't stand in. */
@@ -131,6 +132,24 @@ describe("client seam", () => {
     await client.getReview();
     await client.getReview(5);
     expect(limits).toEqual([50, 5]);
+  });
+
+  test("getReview carries a row's Origin through as the backend sent it", async () => {
+    // A null Origin and a path are different answers — one is a reject nothing
+    // can put back, the other is where a Restore puts the file — so nothing in
+    // the seam may fold one into the other.
+    mockCommand("get_review", () => [
+      wallpaper(1),
+      wallpaper(2, {
+        status: "rejected",
+        origin_path: "/library/landscapes/dawn.jpg",
+      }),
+    ]);
+    const review = await client.getReview();
+    expect(review.map((w) => w.origin_path)).toEqual([
+      null,
+      "/library/landscapes/dawn.jpg",
+    ]);
   });
 
   test("event subscriptions unwrap tauri payloads", async () => {

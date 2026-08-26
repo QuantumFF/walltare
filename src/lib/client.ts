@@ -6,7 +6,11 @@ import { listen } from "@tauri-apps/api/event";
 
 export type ThumbnailSize = "small" | "medium" | "full";
 
-/** Mirrors voting::Wallpaper; status is the lowercase DB value (db.rs CHECK constraint) */
+/**
+ * Mirrors voting::Wallpaper and db::Wallpaper, which are the same shape; status
+ * is the lowercase DB value (db.rs CHECK constraint). One interface serving both
+ * is why a field either DTO sends has to be on both of them.
+ */
 export interface Wallpaper {
   id: number;
   filename: string;
@@ -15,6 +19,13 @@ export interface Wallpaper {
   rating_mu: number;
   rating_sigma: number;
   comparisons_count: number;
+  /**
+   * Where the file sat before its current soft reject, so a Restore can put it
+   * back. `null` for anything not currently rejected, and for a wallpaper
+   * rejected before the column existed, which is the cohort that cannot be
+   * restored at all (ADR 0009).
+   */
+  origin_path: string | null;
 }
 
 /** Mirrors voting::Stats */

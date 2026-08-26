@@ -46,8 +46,11 @@ bump. Only a change to a table that already exists does, because that is the
 case `IF NOT EXISTS` skips. See
 [ADR 0010](0010-settings-store.md), which adds a table this way.
 
-`SCHEMA_VERSION` is currently 2. Step 2 drops and recreates `thumbnails` with
-the wider `CHECK`.
+`SCHEMA_VERSION` is currently 3. Step 2 drops and recreates `thumbnails` with
+the wider `CHECK`. Step 3 adds `wallpapers.origin_path`, the column
+[ADR 0009](0009-reject-is-reversible.md) reverses a reject with; it took 3
+rather than the 4 that ADR left open, because the settings store landed as a new
+table and needed no number.
 
 ## Alternatives rejected
 

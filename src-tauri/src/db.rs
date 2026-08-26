@@ -10,7 +10,7 @@ use crate::error::AppError;
 /// Adding a whole table is not such a change: `init_schema` runs the DDL before
 /// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
 /// why `settings` arrived without a bump.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const DDL: &str = "
 CREATE TABLE IF NOT EXISTS wallpapers (
@@ -22,7 +22,11 @@ CREATE TABLE IF NOT EXISTS wallpapers (
     rating_mu         REAL    NOT NULL DEFAULT 25.0,
     rating_sigma      REAL    NOT NULL DEFAULT 8.333,
     comparisons_count INTEGER NOT NULL DEFAULT 0,
-    created_at        INTEGER NOT NULL DEFAULT (unixepoch())
+    created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+    -- Where the file sat before its current soft reject, so a Restore can put
+    -- it back. Last in the list because `ALTER TABLE ADD COLUMN` appends, and a
+    -- migrated database should end up the same shape as a fresh one.
+    origin_path       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallpapers_status_comparisons ON wallpapers (status, comparisons_count);
@@ -114,6 +118,15 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
              );",
         )?;
         version = 2;
+    }
+
+    if version < 3 {
+        // v3 added `wallpapers.origin_path`. Adding a column to a table that
+        // already exists is exactly what the DDL cannot reach, and there is
+        // nothing to backfill: a wallpaper rejected before this shipped has no
+        // Origin, and NULL is what says so.
+        conn.execute_batch("ALTER TABLE wallpapers ADD COLUMN origin_path TEXT;")?;
+        version = 3;
     }
 
     set_schema_version(conn, version)
@@ -327,6 +340,11 @@ pub struct Wallpaper {
     pub rating_mu: f64,
     pub rating_sigma: f64,
     pub comparisons_count: i64,
+    /// Where the file sat before its current soft reject, so a Restore can put
+    /// it back. `None` for anything not currently rejected, and for a wallpaper
+    /// rejected before the column existed — which is the cohort Rejected stays
+    /// terminal for.
+    pub origin_path: Option<String>,
 }
 
 pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusqlite::Error> {
@@ -334,7 +352,7 @@ pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusql
         return Ok(Vec::new());
     }
     let mut stmt = conn.prepare_cached(
-        "SELECT id, filename, path, status, rating_mu, rating_sigma, comparisons_count
+        "SELECT id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path
          FROM wallpapers
          WHERE status = 'active'
          ORDER BY rating_mu ASC
@@ -349,6 +367,7 @@ pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusql
             rating_mu: row.get(4)?,
             rating_sigma: row.get(5)?,
             comparisons_count: row.get(6)?,
+            origin_path: row.get(7)?,
         })
     })?;
     rows.collect()
@@ -419,6 +438,65 @@ mod tests {
         );
     ";
 
+    /// The v2 schema, as the release before `origin_path` shipped it. `settings`
+    /// is in it because that table arrived without a version bump, so a v2 file
+    /// that has been opened once has it.
+    const DDL_V2: &str = "
+        CREATE TABLE wallpapers (
+            id                INTEGER PRIMARY KEY,
+            filename          TEXT    NOT NULL,
+            path              TEXT    NOT NULL UNIQUE,
+            status            TEXT    NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active', 'kept', 'rejected')),
+            rating_mu         REAL    NOT NULL DEFAULT 25.0,
+            rating_sigma      REAL    NOT NULL DEFAULT 8.333,
+            comparisons_count INTEGER NOT NULL DEFAULT 0,
+            created_at        INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE TABLE comparisons (
+            id        INTEGER PRIMARY KEY,
+            winner_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            loser_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            voted_at  INTEGER NOT NULL
+        );
+        CREATE TABLE thumbnails (
+            wallpaper_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE CASCADE,
+            size         TEXT    NOT NULL CHECK (size IN ('small', 'medium', 'full')),
+            width        INTEGER NOT NULL,
+            height       INTEGER NOT NULL,
+            source_mtime INTEGER NOT NULL,
+            PRIMARY KEY (wallpaper_id, size)
+        );
+        CREATE TABLE settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        PRAGMA user_version = 2;
+    ";
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            rusqlite::params![table, column],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+    }
+
+    fn origin_path_of(conn: &Connection, id: i64) -> Option<String> {
+        conn.query_row(
+            "SELECT origin_path FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    fn count_comparisons(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM comparisons", [], |row| row.get(0))
+            .unwrap()
+    }
+
     fn record_full_thumbnail(conn: &Connection, wallpaper_id: i64) -> rusqlite::Result<usize> {
         conn.execute(
             "INSERT INTO thumbnails (wallpaper_id, size, width, height, source_mtime)
@@ -435,8 +513,40 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 3);
+        assert!(column_exists(&conn, "wallpapers", "origin_path").unwrap());
         let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
         record_full_thumbnail(&conn, id).unwrap();
+        assert_eq!(origin_path_of(&conn, id), None);
+    }
+
+    #[test]
+    fn a_v2_database_gains_the_origin_column_with_nothing_in_it() {
+        // `origin_path` is a column on a table that already exists, which is the
+        // one shape change `CREATE TABLE IF NOT EXISTS` cannot make. Without the
+        // step, a database from the current release opens fine and then fails on
+        // the first `SELECT origin_path`.
+        //
+        // The rows that matter most here are the ones a curator already
+        // rejected: nothing recorded where their files came from, so they come
+        // through with no Origin, and their Comparisons come through untouched.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+        conn.execute_batch(DDL_V2).unwrap();
+        let rejected = seed_wallpaper(&conn, "/w/rejected/old.jpg", "rejected", 11.0);
+        let active = seed_wallpaper(&conn, "/w/keeper.jpg", "active", 25.0);
+        add_comparison(&conn, active, rejected);
+        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert!(!column_exists(&conn, "wallpapers", "origin_path").unwrap());
+
+        init_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "wallpapers", "origin_path").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert_eq!(origin_path_of(&conn, rejected), None);
+        assert_eq!(origin_path_of(&conn, active), None);
+        assert_eq!(count_wallpapers(&conn), 2);
+        assert_eq!(count_comparisons(&conn), 1);
     }
 
     #[test]
@@ -456,6 +566,8 @@ mod tests {
 
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         record_full_thumbnail(&conn, id).unwrap();
+        // Every step runs, not just the first one below the target.
+        assert!(column_exists(&conn, "wallpapers", "origin_path").unwrap());
         // Wallpapers and their history are untouched; only the cache table is
         // rebuilt.
         assert_eq!(count_wallpapers(&conn), 1);
@@ -465,21 +577,23 @@ mod tests {
     fn a_database_created_before_the_settings_table_gains_it_without_a_version_bump() {
         // The property the settings table rests on: it needs no migration step
         // because the DDL runs before `init_schema` branches. Dropping it from a
-        // current database is how an older file looks — v2 in every other
-        // respect, since nothing else about v2 changed when it arrived.
+        // current database is how an older file looks in the only respect this
+        // is about; the version such a file carries is beside the point, which
+        // is the claim.
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("walltare.db");
         let conn = open(&db_path).unwrap();
         init_schema(&conn).unwrap();
         seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        let before = schema_version(&conn).unwrap();
         conn.execute_batch("DROP TABLE settings").unwrap();
         assert!(!table_exists(&conn, "settings").unwrap());
 
         init_schema(&conn).unwrap();
 
         assert!(table_exists(&conn, "settings").unwrap());
-        assert_eq!(SCHEMA_VERSION, 2);
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        // No step ran and no version moved: the table came back out of the DDL.
+        assert_eq!(schema_version(&conn).unwrap(), before);
         assert_eq!(count_wallpapers(&conn), 1);
     }
 
