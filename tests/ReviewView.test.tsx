@@ -8,6 +8,7 @@ import {
   deferred,
   flush,
   renderInApp,
+  settings,
   stats,
   wallpaper,
 } from "./fixtures";
@@ -19,14 +20,16 @@ const images = () => screen.getAllByRole("img") as HTMLImageElement[];
 afterEach(cleanup);
 
 beforeEach(() => {
-  // The provider's bootstrap; this view is reached from rank, not from it.
+  // The provider's boot gate, which holds every render until both land. This
+  // view is reached from rank, not from the bootstrap redirect.
   mockCommand("get_stats", () => stats());
+  mockCommand("get_settings", () => settings());
 });
 
 /** Mount the view with the given list already served. */
 async function openReview(list: Wallpaper[]) {
   mockCommand("get_review", () => list);
-  const rendered = renderInApp(<ReviewView />);
+  const rendered = await renderInApp(<ReviewView />);
   await flush();
   return rendered;
 }
@@ -118,7 +121,7 @@ test("asks the backend for 50 rows", async () => {
     return [];
   });
 
-  renderInApp(<ReviewView />);
+  await renderInApp(<ReviewView />);
   await flush();
 
   expect(limits).toEqual([50]);
@@ -159,7 +162,7 @@ test("refresh renders whatever the backend returns next", async () => {
   ];
   mockCommand("get_review", () => responses[Math.min(fetches++, 1)]);
 
-  renderInApp(<ReviewView />);
+  await renderInApp(<ReviewView />);
   await flush();
   expect(fetches).toBe(1);
   expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
@@ -252,7 +255,7 @@ test("a successful fetch clears the previous failure", async () => {
       : [wallpaper(2, { filename: "a.jpg" })],
   );
 
-  renderInApp(<ReviewView />);
+  await renderInApp(<ReviewView />);
   await flush();
   expect(alerts()).toEqual(["Failed to load the review list."]);
 
@@ -297,7 +300,7 @@ test("the list can't be refetched while a fetch is in flight", async () => {
   let fetches = 0;
   mockCommand("get_review", () => responses[fetches++]);
 
-  const { container } = renderInApp(<ReviewView />);
+  const { container } = await renderInApp(<ReviewView />);
 
   // While loading the view is a spinner: there is no control to fire a
   // second fetch from.
@@ -415,7 +418,7 @@ test("a load failure surfaces readably instead of console-only", async () => {
     Promise.reject({ kind: "db", message: "locked database" }),
   );
 
-  renderInApp(<ReviewView />);
+  await renderInApp(<ReviewView />);
   await flush();
 
   expect(alerts()).toEqual(["Failed to load the review list."]);

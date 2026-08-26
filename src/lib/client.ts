@@ -26,6 +26,33 @@ export interface Stats {
   percentage: number;
 }
 
+/** Mirrors settings::Theme; each string is what `set_setting` accepts back. */
+export type Theme = "system" | "light" | "dark";
+
+/** Mirrors settings::Settings, which fills every gap in the table from its own defaults. */
+export interface Settings {
+  theme: Theme;
+  /**
+   * A Written path, stored exactly as the user typed it, `~` and variables
+   * included (ADR 0011). Empty means nothing has been scanned.
+   */
+  library_root: string;
+  /** A Written path. Relative means one rejected folder beside each wallpaper. */
+  reject_destination: string;
+}
+
+/**
+ * What every key means with no row in the table, mirroring `Settings::default`.
+ *
+ * settings.rs owns the answer; this copy exists only for the boot path, which
+ * has to render something when `get_settings` fails.
+ */
+export const DEFAULT_SETTINGS: Settings = {
+  theme: "system",
+  library_root: "",
+  reject_destination: "./rejected",
+};
+
 /** Mirrors voting::VoteOutcome */
 export interface VoteOutcome {
   /**
@@ -135,6 +162,16 @@ export interface Client {
     exclude?: number[],
   ): Promise<VoteOutcome>;
   getStats(): Promise<Stats>;
+  getSettings(): Promise<Settings>;
+  /**
+   * Writes one setting and answers with all of them, so a stale read cannot
+   * survive a write. Keyed on `keyof Settings` so a caller cannot invent a key
+   * the backend would refuse, or pair a key with the wrong kind of value.
+   */
+  setSetting<K extends keyof Settings>(
+    key: K,
+    value: Settings[K],
+  ): Promise<Settings>;
   getReview(limit?: number): Promise<Wallpaper[]>;
   keepWallpaper(id: number): Promise<void>;
   moveWallpaper(id: number, destinationFolder: string): Promise<void>;
@@ -158,6 +195,14 @@ export const client: Client = {
     invoke<VoteOutcome>("vote", { winnerId, loserId, exclude }),
 
   getStats: () => invoke<Stats>("get_stats"),
+
+  getSettings: () => invoke<Settings>("get_settings"),
+
+  // A value crosses as a string because a string is what the column holds. This
+  // is the only stringify of a setting in the app: callers hand over a typed
+  // value and never build the IPC payload themselves.
+  setSetting: (key, value) =>
+    invoke<Settings>("set_setting", { key, value: String(value) }),
 
   getReview: (limit = 50) => invoke<Wallpaper[]>("get_review", { limit }),
 
