@@ -238,3 +238,10 @@ kind's messages user-facing copy, now visible in the UI.
 Setting a destination that resolves to a wallpaper's own folder still fails per
 reject, with `InvalidPath` from `db.rs:181`, and the bar cannot warn about it:
 whether it collides depends on which wallpaper is being rejected.
+
+**[ADR 0019](0019-library-card-affordance.md) closes the relative-destination
+hole on the library page.** The bar states a rule rather than a place when the
+destination resolves relative, and this ADR handed that to the toast, which only
+speaks about the wallpaper the user just acted on. ADR 0019 puts the containing
+folder on every Rejected card's overlay, read off the row's own `path`, so the
+question is answerable for the whole library and not only for the last reject.

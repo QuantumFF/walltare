@@ -277,6 +277,19 @@ cap and no eviction.
 **The two grids will not look identical on hover**, because the library's card
 animates nothing and Review's still scales and fades. Whoever finds that
 inconsistent should read ADR 0007 before unifying them.
+[ADR 0019](0019-library-card-affordance.md) makes them behave identically on the
+keyboard, which makes the visual split look more accidental than it is.
+
+**[ADR 0019](0019-library-card-affordance.md) reveals the overlay on focus as
+well as hover, and it changes nothing here.** A card that animates no property
+and declares no `will-change` has no composited layer to promote, on either
+trigger, so `group-focus-within` costs nothing and the plan parked under "If the
+grid ever janks" needs no extra variant.
+
+**Virtualisation is what forces ADR 0019's keyboard model.** Mounting a window
+of cards means a DOM tab order reaches about thirty of them and then leaves the
+grid, so the roving selection there is a consequence of this decision rather than
+an independent one.
 
 **`list_wallpapers` holds the whole result in memory twice** during a call, once
 as `Vec<Wallpaper>` and once as serialized JSON. At the ceiling that is about

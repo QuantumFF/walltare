@@ -150,6 +150,21 @@ One handler lives in the shell, suppressed while focus is in a text field and
 while the lightbox is open. The tab bar is an ARIA tablist with roving tabindex,
 so arrow keys work inside the bar and nowhere else.
 
+**Amended by [ADR 0019](0019-library-card-affordance.md).** Two corrections to
+the paragraphs above.
+
+"Arrow keys work inside the bar and nowhere else" was already false and is now
+deliberately false: Rank votes with them and the lightbox walks with them, and
+ADR 0019 gives the library and review grids a roving selection of their own. The
+rule that holds is that the shell handler owns global shortcuts while bare arrows
+belong to whichever element has focus, or to the view when nothing in it does.
+
+Keeping a view mounted under `display: none` keeps its `window` listeners live,
+which this ADR did not follow through on. `RankView.tsx:254` binds `ArrowLeft`
+and `ArrowRight` on `window`, so arrows pressed anywhere in Library or Review
+were voting in a hidden view. Rank's handler gates on the current view. Any
+future view-scoped global listener owes the same gate.
+
 ### The scan subscription moves into the shell
 
 `ScanView` subscribes to the scan events and calls `setView("rank")` on any

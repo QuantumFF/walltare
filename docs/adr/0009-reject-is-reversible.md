@@ -96,6 +96,14 @@ backfill it from. `restore_wallpaper` refuses them, and the library page
 disables the control with the reason on it. Rejected stays terminal for exactly
 that cohort.
 
+**Amended by [ADR 0019](0019-library-card-affordance.md).** "Disables the
+control" is now `aria-disabled`, not `disabled`. A `disabled` button is not
+focusable, and ADR 0019 makes the library grid a roving-tabindex composite
+widget, so the reason would be reachable by mouse only and silent to a screen
+reader. The control stays focusable and stays in the selection, and pressing it
+raises the reason as a pinned error toast. The refusal is still read without a
+round trip, since `origin_path` is on the DTO.
+
 The migration step does not claim a version number in advance. The settings
 store lands in the same epic, also needs one, and both were required to be
 separately mergeable, so whichever merges first takes 3 and the second takes 4.

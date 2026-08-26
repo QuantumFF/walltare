@@ -187,6 +187,14 @@ The origin-less legacy cohort never reaches a toast. ADR 0009 disables that
 control on the library row with the reason on it, so the refusal is read before
 the click rather than after it.
 
+**Amended by [ADR 0019](0019-library-card-affordance.md).** That cohort does
+reach a toast, and it is an error toast. `disabled` becomes `aria-disabled` so
+the control stays focusable under ADR 0019's roving grid, and pressing it raises
+a pinned `Can't restore <filename>` with the reason in the description. The
+description is the frontend's own sentence rather than a backend message, since
+`origin_path` is on the DTO and no call is made, which is the one place this
+table's "the backend message" column does not apply.
+
 ### The keep inverse stays unnamed
 
 `CONTEXT.md` gives the reject inverse a full entry, **Restore**, with its own
@@ -201,6 +209,10 @@ refused when it declined to make `keep_wallpaper` a toggle. The copy names the
 resulting Status instead, which is what actually changed.
 [#57](https://github.com/QuantumFF/walltare/issues/57) needs a label for that
 control and inherits this reasoning rather than the gap.
+
+[ADR 0019](0019-library-card-affordance.md) settled it as **Make Active**, and
+threw out the "Return to voting" that the prototype and #57's own body used: a
+Kept wallpaper already votes, so that label names a change that does not happen.
 
 ## Alternatives rejected
 
