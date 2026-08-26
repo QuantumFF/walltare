@@ -123,9 +123,16 @@ Two things to weigh while flipping:
 
 ## The five background-work housings (variant A)
 
-Round three, for [#59](https://github.com/QuantumFF/walltare/issues/59). The
-live question: where a scan, the pre-generation pass behind it, and whatever
-scan-complete has to say show up in a shell whose chrome is one fixed 48px row.
+Round three, for [#59](https://github.com/QuantumFF/walltare/issues/59). Where
+a scan, the pre-generation pass behind it, and whatever scan-complete has to
+say show up in a shell whose chrome is one fixed 48px row.
+
+**Settled: `toast`**, pinned, on a second slot below ADR 0017's transitions, so
+a keep covers the report for eight seconds and then the report comes back.
+ADR 0021 has the reasoning and the two Radix mechanics it leans on. The other
+four stay switchable, and the two that lost narrowly are worth knowing about:
+`chip` is the only housing a transition never covers, and `strip` is the most
+legible of the five and moves the page every time a pass starts or ends.
 
 Pick a `run`, press run, and flip housings with `alt+↑` / `alt+↓` while it
 plays. One second is one minute of the real pass, so the launch pass's 1,204
@@ -203,20 +210,17 @@ would never render).
 
 ## What the reaction has to settle
 
-Round one picked A. Round two picked `underline` for the tabs and `inline` for
-the lightbox actions, and ADR 0019 settled the card's affordance and ADR 0020
-the Settings page. Round three is background work, and what it has to settle:
+Nothing. Round one picked A, round two `underline` for the tabs and `inline`
+for the lightbox actions, round three `toast` for background work. ADR 0019
+settled the card's affordance, ADR 0020 the Settings page, and ADR 0021 the
+reporting, so this branch is now a record rather than a question.
 
-1. Which of the five housings, or which parts of which.
-2. Whether the report is visible on every page or only where it is relevant.
-   All five here are shell-level, which is the assumption worth attacking:
-   ADR 0012 gave pre-generation its own thread precisely so the tail would not
-   matter, and a report nobody needs to act on may not need to be everywhere.
-3. Whether `240 of 1,204` is a number anyone wants. `chip` says a percentage,
-   `strip` and `toast` say the count, `quiet` says neither.
-4. Whether the scan and the pass share one surface at all, given that the scan
-   half cannot have a percentage and is over in one event on a real library.
-5. Whether the ending needs the toast slot. `chip` and `strip` keep it out of
-   there and pay for it by having nowhere to put "Back to Round 1" except a
-   tooltip. Flip to Rank during a `rescan` to watch the headline drop to
-   Round 1 and see whether the housing explains it.
+What the last round settled, beyond the housing:
+
+- The report shows on every view except the two that already carry the same
+  numbers, Settings and the lightbox.
+- The count stays, `240 of 1,204`, in ADR 0020's own words.
+- Only pre-generation draws a bar. The scan phase is a line that counts up,
+  because `scan-progress` has no total and its visible half is one event.
+- A clean `pregen-complete` says nothing at all. `scan-complete` gets three
+  outcomes, and the one with new files carries ADR 0008's Round message.
