@@ -64,7 +64,7 @@ underlined and the gear takes the active treatment.
 > landed the user here, Escape does nothing and the tabs are the way out.
 
 One rule covers the other layered surface: changing destination closes the
-lightbox, so a preview never outlives the list it was walking.
+lightbox, so it never outlives the list it was walking.
 
 ### Rank, Review and Library stay mounted; Settings does not
 
@@ -158,6 +158,17 @@ and `Ctrl+,` reaches Settings. `?` opens a shortcuts dialog mounted in the shell
 One handler lives in the shell, suppressed while focus is in a text field and
 while the lightbox is open. The tab bar is an ARIA tablist with roving tabindex,
 so arrow keys work inside the bar and nowhere else.
+
+> **Amended by [ADR 0022](0022-lightbox-shares-the-selection.md), 2026-08-26.**
+> The lightbox half of that suppression is deleted; the text-field half stays.
+> None of this handler's bindings collide with the lightbox's `←`, `→`, `K`,
+> `Delete` or `R`, and the one that looks dangerous, `Ctrl+2` swapping the view
+> under an open lightbox, is the behaviour this ADR already specifies two
+> paragraphs up: changing destination closes the lightbox. What the clause
+> actually did was disable [ADR 0017](0017-one-toast-at-a-time.md)'s `Ctrl+Z` in
+> the one place a reject fires from, and disable `?` where the shortcut list is
+> most wanted. Any future layered surface that wants this handler off owes a
+> reason.
 
 **Amended by [ADR 0019](0019-library-card-affordance.md).** Two corrections to
 the paragraphs above.

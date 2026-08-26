@@ -68,10 +68,10 @@ stands unchanged. Review's card still animates, but a keyboard selection moves
 one card at a time under a deliberate keypress, which is not the streaming wheel
 gesture [ADR 0007](0007-review-card-layer-promotion.md) measured.
 
-### The selection acts with direct keys, and Enter opens the preview
+### The selection acts with direct keys, and Enter opens the lightbox
 
 On the selected card: `K` keeps, `Delete` rejects, `R` restores, `Enter` and
-`Space` open the preview. Each key does nothing when the card's status does not
+`Space` open the lightbox. Each key does nothing when the card's status does not
 offer that action.
 
 The keys hang off the grid container's own `keydown`, so they fire only while
@@ -118,9 +118,9 @@ occupies that slot. [ADR 0014](0014-library-page-ordering.md)'s `id` tiebreak
 already stops the live library's 101-row μ tie reshuffling under a vote, so the
 id lookup succeeds almost always and the fallback is for the delete case.
 
-### A touchscreen goes through the preview
+### A touchscreen goes through the lightbox
 
-Nothing is built for it. A hover-less pointer taps the card, the preview opens,
+Nothing is built for it. A hover-less pointer taps the card, the lightbox opens,
 and [#60](https://github.com/QuantumFF/walltare/issues/60)'s Keep, Reject and
 Restore are the touch path. One extra tap per action.
 
@@ -132,6 +132,13 @@ explain.
 
 Written down here so the next reader takes it as a decision rather than an
 oversight.
+
+> **Amended by [ADR 0022](0022-lightbox-shares-the-selection.md), 2026-08-26.**
+> That tap is now built rather than promised, and the mouse path this ADR left
+> unstated goes with it: clicking anywhere on the card that is not a button
+> opens the lightbox. The cell is the target, since this ADR made the card a
+> `gridcell`, and the overlay's buttons stop propagation. So the hover-less
+> pointer and the mouse reach the lightbox by the same route.
 
 ### A Rejected card keeps its dimming
 
@@ -217,12 +224,12 @@ is unreachable however long the user holds the key.
 **The buttons in the tab order and the card out of it.** Same defect, two thirds
 of the tab stops.
 
-**The preview as the only keyboard path**, arrow to a card, `Enter`, act, `Escape`.
-Zero new bindings and zero new decisions, since #60 already owns the preview's
+**The lightbox as the only keyboard path**, arrow to a card, `Enter`, act, `Escape`.
+Zero new bindings and zero new decisions, since #60 already owns the lightbox's
 action set, and it was close. ADR 0016 makes Review and Library share this card,
 and Review is a fifty-row worklist that exists to be swept. Four keystrokes per
 wallpaper against two, fifty times, is the case that pays for the direct keys.
-`Enter` still opens the preview, so this path exists as well.
+`Enter` still opens the lightbox, so this path exists as well.
 
 **`R` for both Reject and Restore.** Never ambiguous on a given card and still a
 trap on a mixed-status grid. See above.

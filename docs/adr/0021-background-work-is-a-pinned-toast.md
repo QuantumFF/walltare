@@ -190,7 +190,7 @@ The report is shell-level and shows on every view, with two exceptions where it
 is suppressed outright rather than merely covered.
 
 **While the lightbox is open.** Its backdrop is opaque, and a full-screen
-preview is the one place the app asks for the whole window. ADR 0017 gave the
+lightbox is the one place the app asks for the whole window. ADR 0017 gave the
 toast the highest z-index in the app so that a keep or reject fired from inside
 the lightbox is visible, and that reasoning is about confirming the user's own
 click. It does not extend to a report about work they did not start.
