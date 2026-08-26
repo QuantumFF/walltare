@@ -119,6 +119,15 @@ whole mitigation: there are no round-transition events, no toast, and no
 completion state. For the scan case the honest place to say it is the
 scan-complete path, not the headline.
 
+> **Housed by [ADR 0021](0021-background-work-is-a-pinned-toast.md),
+> 2026-08-26.** That message is an eight-second toast on the scan-complete
+> path, `412 wallpapers added` over
+> `Back to Round 1. The new wallpapers have no comparisons yet.` The second
+> line appears only when the Round actually moved backwards, which the frontend
+> reads by comparing the `Stats` it holds against the one it refetches on
+> `library-scanned`. "No toast" above stays true of round transitions during
+> voting, which is where it was aimed.
+
 The denominator on screen changes from `total_wallpapers` to `eligible_count`,
 so once rejects exist the totals the user is used to seeing get smaller. That is
 the correction, and it will read as a regression to anyone who does not know.
