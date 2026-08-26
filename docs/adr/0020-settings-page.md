@@ -192,6 +192,16 @@ walk per wallpaper to move a number by 400KB. It refreshes on mount, on
 `pregen-complete`, and after a clear, and the `of 1,204` clause carries the
 movement in between.
 
+> **Amended by [ADR 0021](0021-background-work-is-a-pinned-toast.md),
+> 2026-08-26.** Two things this section left implicit. The pass report that #59
+> settled is **suppressed while Settings is showing**, because the Scan button
+> and the Thumbnails line above already carry both counters and three copies of
+> one number on one screen is not emphasis. And the report's one action
+> navigates here, which its focus key cannot describe: the key is typed
+> `keyof Settings` and Thumbnails is not a settings key, so that call carries
+> no focus key and opens the page with Thumbnails fourth of four. Recorded
+> rather than fixed; widening the key is a change nothing else asks for yet.
+
 **Generate now becomes Cancel while a pass runs.** So this section is where
 cancellation lives, and #59 owns only the reporting. ADR 0012 added
 `cancel_pregen` and left it homeless, and pre-generation is running on most

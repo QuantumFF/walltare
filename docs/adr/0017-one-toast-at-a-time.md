@@ -111,6 +111,15 @@ Pre-generation is progress and belongs in a bar, not an event. Scan-complete is
 genuinely toast-shaped and #59 may take this surface for it; this ADR does not
 claim it either way.
 
+> **Overturned by [ADR 0021](0021-background-work-is-a-pinned-toast.md),
+> 2026-08-26.** Background work is on this surface, on a second slot below the
+> one above: the shell renders `transient ?? background`, so one toast is still
+> ever mounted and the replacement rule is untouched. Half the reasoning
+> survives, in that progress does belong in a bar; the bar now sits inside a
+> pinned toast. What this ADR could not have known is that the scan phase
+> cannot have a bar at all, `scan-progress` carrying no total, so the phase
+> that needed words is the one a bar would have served worst.
+
 ### Placement
 
 Fixed to the top-right, offset by the 48px chrome row plus the gap, rendered as
@@ -236,6 +245,10 @@ operation reached the disk.
 error the user is ignoring, at the cost of the one-toast rule that every caller
 is written against, and it reintroduces the stacking ADR 0009 rejected by a
 side door.
+
+> ADR 0021 adds a second slot and this paragraph still holds. That slot carries
+> something with no end state and no click behind it, and it is invisible
+> whenever anything else has something to say. An unread error is neither.
 
 **Bottom-right.** The web convention, and equally free: ADR 0012's
 pre-generation bar sits under the brand at the top and Review's action row sits

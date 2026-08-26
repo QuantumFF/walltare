@@ -174,6 +174,18 @@ phases, because two bars for one click is worse than one bar that admits it has
 two parts. Where that area sits in the shell depends on the nav shell and stays
 with [#45](https://github.com/QuantumFF/walltare/issues/45).
 
+> **Amended by [ADR 0021](0021-background-work-is-a-pinned-toast.md),
+> 2026-08-26.** The area is a pinned toast in
+> [ADR 0017](0017-one-toast-at-a-time.md)'s viewport, on a slot below the
+> transitions, and the two phases stay joined as one report that changes what
+> it says. **Only pre-generation draws a bar.** `scan-progress` carries no
+> total, `collect_images` finishes before the first event so the walk is
+> silent, and the emitting loop is chunked at 256 inserts, so the live
+> 120-wallpaper library fires one `scan-progress` at 100%. The scan phase is a
+> line that counts up. The joined presentation this paragraph asks for happens
+> across two layers rather than in one bar: `scan-complete` covers the report
+> for eight seconds while pre-generation starts underneath it.
+
 A missing or undecodable source increments `failed` and the pass continues.
 There is no per-item event and no `pregen-failed`: the only whole-run failure
 is the database being gone, which is already fatal everywhere else.
