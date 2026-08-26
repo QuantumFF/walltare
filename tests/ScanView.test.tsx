@@ -151,6 +151,30 @@ test("an unreadable path is reported and the view stays usable", async () => {
   expect(currentView()).toBe("rank");
 });
 
+test("a mistyped variable in the path is reported by name", async () => {
+  // The one error kind whose backend message reaches the user verbatim: no
+  // canned string can name the variable, which is what sends the user to their
+  // typo instead of to their filesystem.
+  expectConsoleError(/invalid_path_syntax/);
+  mockCommand("start_scan", () =>
+    Promise.reject({
+      kind: "invalid_path_syntax",
+      message: "unknown environment variable HOEM",
+    }),
+  );
+  renderInApp(<ScanView />);
+  await startScan("$HOEM/pics");
+  await flush();
+
+  expect(
+    screen.queryByText("unknown environment variable HOEM"),
+  ).not.toBeNull();
+  expect(
+    screen.queryByText(/Failed to scan directory\. Please check the path\./i),
+  ).toBeNull();
+  expect(scanButton().disabled).toBe(false);
+});
+
 test("a scan started while one is already running is reported as such", async () => {
   expectConsoleError(/invalid_transition/);
   mockCommand("start_scan", () =>

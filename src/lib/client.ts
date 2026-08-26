@@ -54,11 +54,26 @@ export interface ScanFailed {
   message: string;
 }
 
+/**
+ * Mirrors lib.rs Expanded: where a Written path points, and whether a folder is
+ * there. `exists` is `is_dir()`, so a file at that path reads as `false`.
+ */
+export interface Expanded {
+  resolved: string;
+  exists: boolean;
+}
+
 /** Tagged `{ kind, message }` union mirroring error::AppError (serde snake_case) */
 export type AppErrorKind =
   | "not_found"
   | "invalid_transition"
   | "invalid_path"
+  /**
+   * A malformed Written path: an unset variable, or a `~` with no `HOME` behind
+   * it. The one kind whose `message` is rendered verbatim, because it names the
+   * variable the user mistyped and no canned string can.
+   */
+  | "invalid_path_syntax"
   | "bad_request"
   | "not_enough_wallpapers"
   | "unknown_wallpaper"
@@ -99,7 +114,14 @@ export function wallpaperImageUrl(
 }
 
 export interface Client {
+  /** `path` is a Written path; the backend expands it. */
   startScan(path: string): Promise<void>;
+  /**
+   * Resolves a Written path without touching it: no folder is created, and
+   * nothing is stored. Rejects with `invalid_path_syntax` when the input is
+   * malformed, so there is no resolved path to show.
+   */
+  expandPath(input: string): Promise<Expanded>;
   /**
    * `exclude` names wallpapers that must stay out of the draw — the ones
    * already on screen or queued in the prefetch slot. Honoured only while at
@@ -127,6 +149,8 @@ async function invokeVoid(name: string, args?: Record<string, unknown>) {
 
 export const client: Client = {
   startScan: (path) => invokeVoid("start_scan", { path }),
+
+  expandPath: (input) => invoke<Expanded>("expand_path", { input }),
 
   getPair: (exclude) => invoke<[Wallpaper, Wallpaper]>("get_pair", { exclude }),
 
