@@ -178,3 +178,12 @@ library contains, because a configured root proves only that the user typed
 something. Where the
 reject destination is edited, now that two views can reject, is left to the
 ticket that settles the library card.
+
+**Answered by [ADR 0018](0018-reject-destination-is-edited-in-settings.md)**,
+which took it as its own ticket
+([#51](https://github.com/QuantumFF/walltare/issues/51)) rather than the library
+card's. Settings owns the only editor. The field leaves Review, both rejecting
+pages carry a read-only line naming the current destination, and there is no
+per-reject override. `move_wallpaper` keeps its explicit `destination_folder`
+argument for the reason `start_scan` keeps its `path`, and it gains a `String`
+return so the toast can name where the file landed.
