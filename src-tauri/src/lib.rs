@@ -317,6 +317,17 @@ fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppErro
     db::keep_wallpaper(&conn, id)
 }
 
+/// Undoes a Keep, putting the wallpaper back into review.
+///
+/// Nothing on disk moves, so there is nothing to answer with. A Rejected
+/// wallpaper is refused: its file sits in the reject folder, and `restore_wallpaper`
+/// is what brings it back.
+#[tauri::command]
+fn unkeep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppError> {
+    let conn = lock_conn(state);
+    db::unkeep_wallpaper(&conn, id)
+}
+
 /// Soft-rejects a wallpaper and answers with the absolute path its file landed
 /// at, which a collision may have suffixed.
 ///
@@ -458,6 +469,7 @@ pub fn run() {
             get_stats,
             get_review,
             keep_wallpaper,
+            unkeep_wallpaper,
             move_wallpaper,
             restore_wallpaper,
             get_settings,

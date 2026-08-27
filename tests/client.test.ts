@@ -179,6 +179,36 @@ describe("client seam", () => {
     );
   });
 
+  test("unkeepWallpaper sends the id and resolves with nothing", async () => {
+    let received: Record<string, unknown> | undefined;
+    mockCommand("unkeep_wallpaper", (args) => {
+      received = args;
+      return null;
+    });
+
+    // Snake-case command, one argument: the Rust signature is
+    // `unkeep_wallpaper(id: i64)`. Nothing on disk moves, so unlike a Restore
+    // there is no landing path to hand back.
+    expect(await client.unkeepWallpaper(3)).toBeUndefined();
+    expect(received).toEqual({ id: 3 });
+  });
+
+  test("unkeepWallpaper surfaces a refused transition untouched", async () => {
+    // A Rejected wallpaper is the refusal: its file is in the reject folder, so
+    // `restoreWallpaper` is the call that brings it back, and the seam must not
+    // dress the reason up as a success.
+    mockCommand("unkeep_wallpaper", () =>
+      Promise.reject({
+        kind: "invalid_transition",
+        message: "wallpaper 4 is rejected, so a Restore is what brings it back",
+      }),
+    );
+    expect(client.unkeepWallpaper(4)).rejects.toEqual({
+      kind: "invalid_transition",
+      message: "wallpaper 4 is rejected, so a Restore is what brings it back",
+    });
+  });
+
   test("restoreWallpaper sends the id and resolves with where the file landed back", async () => {
     let received: Record<string, unknown> | undefined;
     mockCommand("restore_wallpaper", (args) => {

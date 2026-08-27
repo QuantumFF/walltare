@@ -193,6 +193,16 @@ export interface Client {
   getReview(limit?: number): Promise<Wallpaper[]>;
   keepWallpaper(id: number): Promise<void>;
   /**
+   * Undoes a Keep: the wallpaper lands on Active and comes back into review.
+   * Nothing on disk moves, so there is no path to resolve with. Calling it on an
+   * Active wallpaper succeeds and leaves it Active, so a double click is not an
+   * error — which is also why `keepWallpaper` is not a toggle (ADR 0009).
+   *
+   * Rejects with `invalid_transition` for a Rejected wallpaper: its file is in
+   * the reject folder, and `restoreWallpaper` is what moves it back.
+   */
+  unkeepWallpaper(id: number): Promise<void>;
+  /**
    * Soft-rejects a wallpaper into `destinationFolder`, a Written path the
    * backend expands. Resolves with the absolute path the file landed at: a
    * collision suffixes the basename, so comparing it against the wallpaper's
@@ -243,6 +253,8 @@ export const client: Client = {
   getReview: (limit = 50) => invoke<Wallpaper[]>("get_review", { limit }),
 
   keepWallpaper: (id) => invokeVoid("keep_wallpaper", { id }),
+
+  unkeepWallpaper: (id) => invokeVoid("unkeep_wallpaper", { id }),
 
   moveWallpaper: (id, destinationFolder) =>
     invoke<string>("move_wallpaper", { id, destinationFolder }),

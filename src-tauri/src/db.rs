@@ -512,6 +512,45 @@ pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Transitions a wallpaper to Active, undoing a Keep. Un-keeping an Active one
+/// is a no-op success, for the same reason re-keeping a Kept one is: a double
+/// click on a button is not an error.
+///
+/// [`keep_wallpaper`] stays a one-way transition rather than becoming a toggle,
+/// which is what makes that idempotence worth having: a toggle would turn the
+/// same double click into a keep followed by an un-keep (ADR 0009).
+///
+/// Un-keeping a Rejected wallpaper is refused. Its file sits in the reject
+/// folder, and moving it back is what a Restore does; succeeding here would
+/// leave an Active row pointing inside the reject folder, still carrying the
+/// Origin the Restore was going to spend.
+pub fn unkeep_wallpaper(conn: &Connection, id: i64) -> Result<(), AppError> {
+    let status: String = conn
+        .query_row(
+            "SELECT status FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("no wallpaper with id {id}"))
+            }
+            other => other.into(),
+        })?;
+
+    if status == "rejected" {
+        return Err(AppError::InvalidTransition(format!(
+            "wallpaper {id} is rejected, so a Restore is what brings it back"
+        )));
+    }
+
+    conn.execute(
+        "UPDATE wallpapers SET status = 'active' WHERE id = ?1",
+        rusqlite::params![id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -961,6 +1000,101 @@ mod tests {
     }
 
     #[test]
+    fn unkeep_wallpaper_transitions_kept_to_active_and_hands_it_back_to_review() {
+        // The mis-click this exists for: Keep takes a wallpaper out of review,
+        // and until now nothing put it back.
+        //
+        // Only review changes. A Kept wallpaper is Eligible already, so it never
+        // left the voting pool and there is no return to it to assert.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let kept = seed_wallpaper(&conn, "/w/kept.jpg", "active", 15.0);
+        let other = seed_wallpaper(&conn, "/w/other.jpg", "active", 25.0);
+        keep_wallpaper(&conn, kept).unwrap();
+        assert_eq!(review_ids(&conn), vec![other]);
+
+        unkeep_wallpaper(&conn, kept).unwrap();
+
+        assert_eq!(status_of(&conn, kept), "active");
+        // Back in review, and in its place by Score rather than appended.
+        assert_eq!(review_ids(&conn), vec![kept, other]);
+    }
+
+    fn review_ids(conn: &Connection) -> Vec<i64> {
+        get_review(conn, 50).unwrap().iter().map(|w| w.id).collect()
+    }
+
+    #[test]
+    fn unkeeping_an_active_wallpaper_is_a_no_op_success() {
+        // Same reason re-keeping a Kept one succeeds: a double click on a button
+        // is not an error. It is also why `keep_wallpaper` is not a toggle — that
+        // would read the second click as an un-keep (ADR 0009).
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        unkeep_wallpaper(&conn, id).unwrap();
+        assert_eq!(status_of(&conn, id), "active");
+
+        // And twice over, from Kept, which is the double click itself.
+        keep_wallpaper(&conn, id).unwrap();
+        unkeep_wallpaper(&conn, id).unwrap();
+        unkeep_wallpaper(&conn, id).unwrap();
+        assert_eq!(status_of(&conn, id), "active");
+    }
+
+    #[test]
+    fn unkeeping_a_rejected_wallpaper_returns_invalid_transition_and_changes_nothing() {
+        // Not a no-op success either: the file is in the reject folder, so an
+        // Active row would point at a path outside the library, and the Origin
+        // that a Restore needs would still be sitting on it. Kept, then
+        // Rejected, is the route a curator actually gets here by.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "regretted.jpg");
+        keep_wallpaper(&conn, id).unwrap();
+        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let before = row_status_and_path(&conn, id);
+
+        let err = unkeep_wallpaper(&conn, id).unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::AppError::InvalidTransition(ref m)
+                if m.contains(&id.to_string())),
+            "got {err:?}"
+        );
+        assert_eq!(row_status_and_path(&conn, id), before);
+        assert_eq!(
+            origin_path_of(&conn, id),
+            Some(origin.to_str().unwrap().to_string())
+        );
+        assert!(PathBuf::from(&rejected_at).is_file());
+        assert!(!origin.exists());
+
+        // And the transition it was asking for is still available under the
+        // command that moves the file with it.
+        assert_eq!(PathBuf::from(restore_wallpaper(&conn, id).unwrap()), origin);
+    }
+
+    #[test]
+    fn unkeeping_an_unknown_id_returns_not_found_and_changes_nothing() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        keep_wallpaper(&conn, id).unwrap();
+
+        let err = unkeep_wallpaper(&conn, 9999).unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::AppError::NotFound(_)),
+            "{err:?}"
+        );
+        assert_eq!(status_of(&conn, id), "kept");
+    }
+
+    #[test]
     fn colliding_basenames_are_suffixed_instead_of_overwriting() {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
@@ -1146,6 +1280,31 @@ mod tests {
         assert_eq!(PathBuf::from(&path), dest_dir.join("a.jpg"));
 
         assert!(get_review(&conn, 50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn move_wallpaper_rejects_a_kept_wallpaper_the_same_way_it_rejects_an_active_one() {
+        // Kept to Rejected is a legal transition in its own right, and the only
+        // one that has to reach past the guard that refuses a Rejected wallpaper.
+        // A curator who kept a wallpaper and later changed their mind gets the
+        // file moved and the Origin recorded, exactly as from Active.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "kept-then-cut.jpg");
+        keep_wallpaper(&conn, id).unwrap();
+
+        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(landed, path_string(dest.path().join("kept-then-cut.jpg")));
+        assert!(PathBuf::from(&landed).is_file());
+        assert!(!origin.exists());
+        assert_eq!(row_status_and_path(&conn, id), ("rejected".into(), landed));
+        assert_eq!(
+            origin_path_of(&conn, id),
+            Some(origin.to_str().unwrap().to_string())
+        );
     }
 
     #[test]
