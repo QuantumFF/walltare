@@ -238,6 +238,101 @@ pub fn move_wallpaper(
     Ok(dest_str.to_string())
 }
 
+/// Restores a soft-rejected wallpaper: moves its file back to the Origin the
+/// reject recorded, lands the row on Active with the Origin cleared, and answers
+/// with the absolute path the file ended up at.
+///
+/// A Restore always lands on Active, never on whatever Status the wallpaper held
+/// before the reject. Kept is the curator's judgement about a rating, and
+/// changing their mind about a reject is not that judgement (ADR 0009).
+///
+/// A wallpaper that is not Rejected is refused rather than treated as a no-op:
+/// there is no file to move and no Origin to read, so succeeding quietly would
+/// hide either a stale id or a control the UI left enabled. So is one rejected
+/// before the Origin was recorded — nothing can say where its file came from,
+/// which is the cohort Rejected stays terminal for.
+///
+/// The ordering is [`move_wallpaper`]'s, run backwards: the row is written
+/// inside a transaction and the file moves last, so a `UNIQUE(path)` collision
+/// or any other database error aborts while the disk is still untouched, and
+/// dropping the transaction rolls the row back.
+pub fn restore_wallpaper(conn: &Connection, wallpaper_id: i64) -> Result<String, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let (path, status, origin_path): (String, String, Option<String>) = tx
+        .query_row(
+            "SELECT path, status, origin_path FROM wallpapers WHERE id = ?1",
+            rusqlite::params![wallpaper_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
+            }
+            other => other.into(),
+        })?;
+
+    if status != "rejected" {
+        return Err(AppError::InvalidTransition(format!(
+            "wallpaper {wallpaper_id} is {status}, so there is no reject to undo"
+        )));
+    }
+    let Some(origin) = origin_path else {
+        return Err(AppError::InvalidTransition(format!(
+            "wallpaper {wallpaper_id} was rejected before its Origin was recorded, so there is nowhere to put it back"
+        )));
+    };
+
+    let source = PathBuf::from(&path);
+    if !source.is_file() {
+        // Not what makes this safe — the write ordering below does that. It is
+        // here so a curator who emptied the reject folder by hand reads a
+        // sentence about the reject folder instead of whatever `rename` says.
+        return Err(AppError::FileMissing(path));
+    }
+
+    // The Origin is the file's own pre-reject path, so the folder to put it back
+    // in is that path's parent and the name to put it back under is its
+    // basename. Neither is re-canonicalized: the Origin is the string the row
+    // itself held before the reject, so it has already survived a rescan
+    // comparison, and resolving it again could only move it.
+    let origin = PathBuf::from(origin);
+    let origin_dir = origin
+        .parent()
+        .ok_or_else(|| AppError::InvalidPath(origin.display().to_string()))?;
+    let origin_name = origin
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::InvalidPath(origin.display().to_string()))?;
+
+    // The Origin folder may be gone: the rejected file may have been the last
+    // thing in it, or the curator may have tidied up since.
+    std::fs::create_dir_all(origin_dir)?;
+    let dest_path = unique_destination(origin_dir, origin_name)?;
+
+    let dest_str = dest_path
+        .to_str()
+        .ok_or_else(|| AppError::InvalidPath(dest_path.display().to_string()))?;
+    let dest_name = dest_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| AppError::InvalidPath(dest_path.display().to_string()))?;
+
+    // Clearing the Origin is part of the same statement that spends it, so no
+    // row ever claims Active and an Origin at once, and the next reject records
+    // a fresh one.
+    tx.execute(
+        "UPDATE wallpapers
+         SET status = 'active', path = ?1, filename = ?2, origin_path = NULL
+         WHERE id = ?3",
+        rusqlite::params![dest_str, dest_name, wallpaper_id],
+    )?;
+
+    // Anything below that fails drops `tx` unread, rolling the row back.
+    move_file(&source, &dest_path)?;
+    tx.commit()?;
+    Ok(dest_str.to_string())
+}
+
 /// Expands `destination_folder`, resolves it against the wallpaper's own folder
 /// when it is relative, creates it, and canonicalizes the result.
 ///
@@ -1253,5 +1348,297 @@ mod tests {
 
         let err = move_wallpaper(&conn, 1234, tmp.path().to_str().unwrap()).unwrap_err();
         assert!(matches!(err, crate::error::AppError::NotFound(_)));
+    }
+
+    fn rating_of(conn: &Connection, id: i64) -> (f64, i64) {
+        conn.query_row(
+            "SELECT rating_mu, comparisons_count FROM wallpapers WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// A library folder holding one wallpaper, and the Origin string a reject of
+    /// it records. Every restore test starts here.
+    fn seed_for_restore(conn: &Connection, root: &Path, name: &str) -> (i64, PathBuf) {
+        let library = root.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let id = seed_real_wallpaper(conn, &library, name);
+        (id, library.join(name))
+    }
+
+    #[test]
+    fn a_restore_puts_the_file_back_where_the_reject_took_it_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "dawn.jpg");
+        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        assert!(PathBuf::from(&rejected_at).is_file());
+
+        let landed = restore_wallpaper(&conn, id).unwrap();
+
+        // The filesystem first: the row saying Active means nothing if the file
+        // is still sitting in the reject folder.
+        assert_eq!(PathBuf::from(&landed), origin);
+        assert!(origin.is_file());
+        assert!(!PathBuf::from(&rejected_at).exists());
+        assert_eq!(
+            row_status_and_path(&conn, id),
+            ("active".into(), origin.to_str().unwrap().to_string())
+        );
+        assert_eq!(filename_of(&conn, id), "dawn.jpg");
+        // The Origin is spent, so nothing reads the restored wallpaper as one a
+        // Restore could move again.
+        assert_eq!(origin_path_of(&conn, id), None);
+        // And it is back in the pool the curator draws from.
+        assert_eq!(
+            get_review(&conn, 50)
+                .unwrap()
+                .iter()
+                .map(|w| w.id)
+                .collect::<Vec<_>>(),
+            vec![id]
+        );
+    }
+
+    #[test]
+    fn a_restore_lands_on_active_even_when_the_wallpaper_was_kept() {
+        // Kept is the curator's judgement about a rating; changing their mind
+        // about a reject is not that judgement, so a Restore hands the wallpaper
+        // back to Review rather than to Kept (ADR 0009).
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "keeper.jpg");
+        keep_wallpaper(&conn, id).unwrap();
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        restore_wallpaper(&conn, id).unwrap();
+
+        assert_eq!(status_of(&conn, id), "active");
+        assert!(origin.is_file());
+    }
+
+    #[test]
+    fn rejecting_again_after_a_restore_records_a_fresh_origin() {
+        // The cycle the whole feature is for: a curator may change their mind as
+        // often as they like, and each reject records where the file left from
+        // this time rather than reusing a spent Origin.
+        let tmp = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "twice.jpg");
+        let origin_string = origin.to_str().unwrap().to_string();
+
+        move_wallpaper(&conn, id, first.path().to_str().unwrap()).unwrap();
+        assert_eq!(origin_path_of(&conn, id), Some(origin_string.clone()));
+        restore_wallpaper(&conn, id).unwrap();
+        let landed = move_wallpaper(&conn, id, second.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(landed, path_string(second.path().join("twice.jpg")));
+        assert!(PathBuf::from(&landed).is_file());
+        assert!(!origin.exists());
+        // Recorded afresh from where the file actually was, which is the library
+        // folder the Restore put it back in.
+        assert_eq!(origin_path_of(&conn, id), Some(origin_string));
+        assert_eq!(status_of(&conn, id), "rejected");
+
+        // And the second reject reverses as readily as the first.
+        assert_eq!(PathBuf::from(restore_wallpaper(&conn, id).unwrap()), origin);
+        assert!(origin.is_file());
+        assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    #[test]
+    fn a_restored_wallpaper_keeps_its_comparisons_and_its_score() {
+        // A change of mind about a reject is not a reason to forget how the
+        // wallpaper did in the comparisons it took part in.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, _) = seed_for_restore(&conn, tmp.path(), "rated.jpg");
+        let other = seed_real_wallpaper(&conn, tmp.path(), "other.jpg");
+        add_comparison(&conn, other, id);
+        conn.execute(
+            "UPDATE wallpapers SET rating_mu = 11.5, comparisons_count = 1 WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        restore_wallpaper(&conn, id).unwrap();
+
+        assert_eq!(rating_of(&conn, id), (11.5, 1));
+        assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn a_restore_recreates_an_origin_folder_that_is_gone() {
+        // The rejected file may have been the last thing in its folder, or the
+        // curator may have tidied up since.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "lonely.jpg");
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let origin_dir = origin.parent().unwrap().to_path_buf();
+        std::fs::remove_dir_all(&origin_dir).unwrap();
+        assert!(!origin_dir.exists());
+
+        let landed = restore_wallpaper(&conn, id).unwrap();
+
+        assert_eq!(PathBuf::from(&landed), origin);
+        assert!(origin.is_file());
+        assert_eq!(status_of(&conn, id), "active");
+    }
+
+    #[test]
+    fn a_restore_into_an_occupied_origin_lands_beside_what_is_there() {
+        // Something else took the name while the wallpaper was away: a bare file
+        // the curator dropped in, or a rescan that picked one up as its own row.
+        // Overwriting it would destroy a file to undo a click, and refusing
+        // would make the curator rename files by hand to finish the operation.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "wall.jpg");
+        std::fs::write(&origin, b"REJECTED").unwrap();
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        std::fs::write(&origin, b"SQUATTER").unwrap();
+
+        let landed = restore_wallpaper(&conn, id).unwrap();
+
+        let suffixed = origin.parent().unwrap().join("wall (2).jpg");
+        assert_eq!(PathBuf::from(&landed), suffixed);
+        // The returned path is the one the file is actually at, and the file
+        // that was already there kept its name and its bytes.
+        assert_eq!(std::fs::read(&suffixed).unwrap(), b"REJECTED");
+        assert_eq!(std::fs::read(&origin).unwrap(), b"SQUATTER");
+        assert_eq!(
+            row_status_and_path(&conn, id),
+            ("active".into(), suffixed.to_str().unwrap().to_string())
+        );
+        assert_eq!(filename_of(&conn, id), "wall (2).jpg");
+    }
+
+    #[test]
+    fn restoring_a_wallpaper_whose_file_is_gone_says_so_and_leaves_it_rejected() {
+        // Emptying the reject folder by hand is the point of having one, so this
+        // is ordinary rather than exceptional, and it reads as its own kind
+        // instead of as whatever `rename` would have said.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "vanished.jpg");
+        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let before = row_status_and_path(&conn, id);
+        std::fs::remove_file(&rejected_at).unwrap();
+
+        let err = restore_wallpaper(&conn, id).unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::AppError::FileMissing(ref m) if m == &rejected_at),
+            "got {err:?}"
+        );
+        assert_eq!(row_status_and_path(&conn, id), before);
+        assert_eq!(
+            origin_path_of(&conn, id),
+            Some(origin.to_str().unwrap().to_string())
+        );
+        // Nothing was created at the Origin on the way to refusing.
+        assert!(!origin.exists());
+    }
+
+    #[test]
+    fn restoring_a_row_with_no_origin_is_refused_and_changes_nothing() {
+        // The cohort rejected before the Origin column existed. There is nothing
+        // to backfill it from, so Rejected stays terminal for exactly these
+        // rows, and they refuse with a reason rather than guessing a folder.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/rejected/legacy.jpg", "rejected", 9.0);
+        let before = row_status_and_path(&conn, id);
+
+        let err = restore_wallpaper(&conn, id).unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::AppError::InvalidTransition(ref m)
+                if m.contains(&id.to_string())),
+            "got {err:?}"
+        );
+        assert_eq!(row_status_and_path(&conn, id), before);
+        assert_eq!(origin_path_of(&conn, id), None);
+    }
+
+    #[test]
+    fn restoring_a_wallpaper_that_is_not_rejected_is_refused_and_changes_nothing() {
+        // Not a no-op success: there is no file to move and no Origin to read,
+        // so succeeding quietly would hide a stale id or a control the UI left
+        // enabled.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let active = seed_real_wallpaper(&conn, tmp.path(), "active.jpg");
+        let kept = seed_real_wallpaper(&conn, tmp.path(), "kept.jpg");
+        keep_wallpaper(&conn, kept).unwrap();
+
+        for (id, status) in [(active, "active"), (kept, "kept")] {
+            let before = row_status_and_path(&conn, id);
+            let err = restore_wallpaper(&conn, id).unwrap_err();
+            assert!(
+                matches!(err, crate::error::AppError::InvalidTransition(_)),
+                "a {status} wallpaper gave {err:?}"
+            );
+            assert_eq!(row_status_and_path(&conn, id), before);
+            assert_eq!(status_of(&conn, id), status);
+        }
+
+        assert!(tmp.path().join("active.jpg").is_file());
+        assert!(tmp.path().join("kept.jpg").is_file());
+    }
+
+    #[test]
+    fn restoring_an_unknown_id_returns_not_found() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        let err = restore_wallpaper(&conn, 4321).unwrap_err();
+        assert!(
+            matches!(err, crate::error::AppError::NotFound(_)),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_restored_file_is_where_a_rescan_expects_to_find_it() {
+        // The path a Restore writes has to be the string a scan of the library
+        // produces, or `UNIQUE(path)` misses and the restored file comes back a
+        // second time as its own Active row. The reject's own destination is
+        // canonicalized for this reason (ADR 0003); the Origin needs no second
+        // pass, because it is the string the row already held.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let library = tmp.path().join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let id = seed_real_wallpaper(&conn, &library, "rescanned.jpg");
+        move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        restore_wallpaper(&conn, id).unwrap();
+
+        let found = crate::scanner::collect_images(std::slice::from_ref(&library));
+        assert_eq!(found.len(), 1);
+        assert_eq!(insert_new_wallpapers(&conn, &found).unwrap(), 0);
+        assert_eq!(count_wallpapers(&conn), 1);
     }
 }

@@ -335,6 +335,18 @@ fn move_wallpaper(
     db::move_wallpaper(&conn, id, &destination_folder)
 }
 
+/// Undoes a soft reject and answers with the absolute path the file landed back
+/// at, which a collision at the Origin may have suffixed.
+///
+/// No pre-generation follows. A wallpaper rejected since the purge went still
+/// has its cache, and one rejected before that has no Origin and cannot be
+/// restored at all (ADR 0012).
+#[tauri::command]
+fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<String, error::AppError> {
+    let conn = lock_conn(state);
+    db::restore_wallpaper(&conn, id)
+}
+
 /// Parses `wallpaper://localhost/image/{id}?size={size}`.
 ///
 /// The `image` segment has to sit in the *path*. A custom-scheme URL parses as
@@ -392,7 +404,11 @@ fn image_response(status: StatusCode, body: Vec<u8>) -> tauri::http::Response<Ve
 fn error_response(e: &error::AppError) -> tauri::http::Response<Vec<u8>> {
     let status = match e {
         error::AppError::InvalidPath(_) | error::AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-        error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
+        // `FileMissing` is a 404 for the same reason `NotFound` is: the thing
+        // asked for is not there. The protocol handler cannot raise it — only a
+        // Restore checks a source file before moving it — but a variant with no
+        // arm here would fall through to a 500 the moment one does.
+        error::AppError::NotFound(_) | error::AppError::FileMissing(_) => StatusCode::NOT_FOUND,
         error::AppError::InvalidTransition(_) => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -443,6 +459,7 @@ pub fn run() {
             get_review,
             keep_wallpaper,
             move_wallpaper,
+            restore_wallpaper,
             get_settings,
             set_setting
         ])

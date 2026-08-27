@@ -112,6 +112,13 @@ export type AppErrorKind =
    * variable the user mistyped and no canned string can.
    */
   | "invalid_path_syntax"
+  /**
+   * A file the library still points at is not on disk any more, so the move
+   * that was asked for has nothing to move. Ordinary rather than exceptional:
+   * emptying the reject folder by hand is the point of having one, and this is
+   * the kind that lets a caller say so instead of showing an errno string.
+   */
+  | "file_missing"
   | "bad_request"
   | "not_enough_wallpapers"
   | "unknown_wallpaper"
@@ -192,6 +199,18 @@ export interface Client {
    * `filename` is how a caller tells a rename from a plain move.
    */
   moveWallpaper(id: number, destinationFolder: string): Promise<string>;
+  /**
+   * Undoes a soft reject: the file goes back to its Origin and the wallpaper
+   * lands on Active, whatever Status it held before the reject. Resolves with
+   * the absolute path the file landed back at, which a collision at the Origin
+   * may have suffixed.
+   *
+   * Rejects with `invalid_transition` for a wallpaper that is not Rejected and
+   * for one rejected before its Origin was recorded — `origin_path` is `null`
+   * on the row, so a caller can tell that second case before it asks — and with
+   * `file_missing` when the file has left the reject folder.
+   */
+  restoreWallpaper(id: number): Promise<string>;
   onScanProgress(handler: (payload: ScanProgress) => void): Promise<() => void>;
   onScanComplete(handler: (payload: ScanComplete) => void): Promise<() => void>;
   onScanFailed(handler: (payload: ScanFailed) => void): Promise<() => void>;
@@ -227,6 +246,8 @@ export const client: Client = {
 
   moveWallpaper: (id, destinationFolder) =>
     invoke<string>("move_wallpaper", { id, destinationFolder }),
+
+  restoreWallpaper: (id) => invoke<string>("restore_wallpaper", { id }),
 
   // `listen` returns Promise<UnlistenFn>, not Promise<() => void>; UnlistenFn
   // is a branded type that isn't nominally assignable, so cast to the plain

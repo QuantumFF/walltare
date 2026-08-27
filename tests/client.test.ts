@@ -179,6 +179,57 @@ describe("client seam", () => {
     );
   });
 
+  test("restoreWallpaper sends the id and resolves with where the file landed back", async () => {
+    let received: Record<string, unknown> | undefined;
+    mockCommand("restore_wallpaper", (args) => {
+      received = args;
+      return "/library/landscapes/dawn.jpg";
+    });
+
+    const landed = await client.restoreWallpaper(3);
+
+    // Snake-case command, one argument: the Rust signature is
+    // `restore_wallpaper(id: i64)`. The Origin comes off the row, so no caller
+    // gets to say where the file goes back to.
+    expect(received).toEqual({ id: 3 });
+    expect(landed).toBe("/library/landscapes/dawn.jpg");
+  });
+
+  test("restoreWallpaper resolves with the suffixed path a collision at the Origin produced", async () => {
+    // Something took the name while the wallpaper was away, so the path the
+    // file is at is not the Origin the row advertised. A caller reporting the
+    // Origin instead would name a file that is not the restored one.
+    mockCommand("restore_wallpaper", () => "/library/dawn (2).jpg");
+
+    expect(await client.restoreWallpaper(3)).toBe("/library/dawn (2).jpg");
+  });
+
+  test("restoreWallpaper surfaces a refusal untouched", async () => {
+    // Two refusals the caller has to tell apart: a reject whose file has left
+    // the folder, and a reject from before the Origin was recorded.
+    mockCommand("restore_wallpaper", () =>
+      Promise.reject({
+        kind: "file_missing",
+        message: "/bin/walls/dawn.jpg",
+      }),
+    );
+    expect(client.restoreWallpaper(3)).rejects.toEqual({
+      kind: "file_missing",
+      message: "/bin/walls/dawn.jpg",
+    });
+
+    mockCommand("restore_wallpaper", () =>
+      Promise.reject({
+        kind: "invalid_transition",
+        message: "wallpaper 4 is active, so there is no reject to undo",
+      }),
+    );
+    expect(client.restoreWallpaper(4)).rejects.toEqual({
+      kind: "invalid_transition",
+      message: "wallpaper 4 is active, so there is no reject to undo",
+    });
+  });
+
   test("event subscriptions unwrap tauri payloads", async () => {
     const seen: unknown[] = [];
     const unlisten = await client.onScanProgress((payload) =>

@@ -13,6 +13,14 @@ pub enum AppError {
     /// Its message is user-facing copy, because the frontend renders it verbatim
     /// to name the variable the user mistyped.
     InvalidPathSyntax(String),
+    /// A file the database still points at is not on disk any more, so the
+    /// operation that would have moved it has nothing to move.
+    ///
+    /// Distinct from `Io` because it is ordinary rather than exceptional:
+    /// emptying the reject folder by hand is the point of having one, and the
+    /// curator who did it deserves a sentence about the reject folder rather
+    /// than an errno string.
+    FileMissing(String),
     BadRequest(String),
     NotEnoughWallpapers(String),
     UnknownWallpaper(String),
@@ -40,6 +48,7 @@ impl std::fmt::Display for AppError {
             AppError::InvalidTransition(m) => ("invalid_transition", m),
             AppError::InvalidPath(m) => ("invalid_path", m),
             AppError::InvalidPathSyntax(m) => ("invalid_path_syntax", m),
+            AppError::FileMissing(m) => ("file_missing", m),
             AppError::BadRequest(m) => ("bad_request", m),
             AppError::NotEnoughWallpapers(m) => ("not_enough_wallpapers", m),
             AppError::UnknownWallpaper(m) => ("unknown_wallpaper", m),
