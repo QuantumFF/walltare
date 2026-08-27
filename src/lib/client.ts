@@ -6,7 +6,11 @@ import { listen } from "@tauri-apps/api/event";
 
 export type ThumbnailSize = "small" | "medium" | "full";
 
-/** Mirrors voting::Wallpaper; status is the lowercase DB value (db.rs CHECK constraint) */
+/**
+ * Mirrors voting::Wallpaper and db::Wallpaper, which are the same shape; status
+ * is the lowercase DB value (db.rs CHECK constraint). One interface serving both
+ * is why a field either DTO sends has to be on both of them.
+ */
 export interface Wallpaper {
   id: number;
   filename: string;
@@ -15,6 +19,13 @@ export interface Wallpaper {
   rating_mu: number;
   rating_sigma: number;
   comparisons_count: number;
+  /**
+   * Where the file sat before its current soft reject, so a Restore can put it
+   * back. `null` for anything not currently rejected, and for a wallpaper
+   * rejected before the column existed, which is the cohort that cannot be
+   * restored at all (ADR 0009).
+   */
+  origin_path: string | null;
 }
 
 /** Mirrors voting::Stats */
@@ -101,6 +112,13 @@ export type AppErrorKind =
    * variable the user mistyped and no canned string can.
    */
   | "invalid_path_syntax"
+  /**
+   * A file the library still points at is not on disk any more, so the move
+   * that was asked for has nothing to move. Ordinary rather than exceptional:
+   * emptying the reject folder by hand is the point of having one, and this is
+   * the kind that lets a caller say so instead of showing an errno string.
+   */
+  | "file_missing"
   | "bad_request"
   | "not_enough_wallpapers"
   | "unknown_wallpaper"
@@ -174,7 +192,35 @@ export interface Client {
   ): Promise<Settings>;
   getReview(limit?: number): Promise<Wallpaper[]>;
   keepWallpaper(id: number): Promise<void>;
-  moveWallpaper(id: number, destinationFolder: string): Promise<void>;
+  /**
+   * Undoes a Keep: the wallpaper lands on Active and comes back into review.
+   * Nothing on disk moves, so there is no path to resolve with. Calling it on an
+   * Active wallpaper succeeds and leaves it Active, so a double click is not an
+   * error — which is also why `keepWallpaper` is not a toggle (ADR 0009).
+   *
+   * Rejects with `invalid_transition` for a Rejected wallpaper: its file is in
+   * the reject folder, and `restoreWallpaper` is what moves it back.
+   */
+  unkeepWallpaper(id: number): Promise<void>;
+  /**
+   * Soft-rejects a wallpaper into `destinationFolder`, a Written path the
+   * backend expands. Resolves with the absolute path the file landed at: a
+   * collision suffixes the basename, so comparing it against the wallpaper's
+   * `filename` is how a caller tells a rename from a plain move.
+   */
+  moveWallpaper(id: number, destinationFolder: string): Promise<string>;
+  /**
+   * Undoes a soft reject: the file goes back to its Origin and the wallpaper
+   * lands on Active, whatever Status it held before the reject. Resolves with
+   * the absolute path the file landed back at, which a collision at the Origin
+   * may have suffixed.
+   *
+   * Rejects with `invalid_transition` for a wallpaper that is not Rejected and
+   * for one rejected before its Origin was recorded — `origin_path` is `null`
+   * on the row, so a caller can tell that second case before it asks — and with
+   * `file_missing` when the file has left the reject folder.
+   */
+  restoreWallpaper(id: number): Promise<string>;
   onScanProgress(handler: (payload: ScanProgress) => void): Promise<() => void>;
   onScanComplete(handler: (payload: ScanComplete) => void): Promise<() => void>;
   onScanFailed(handler: (payload: ScanFailed) => void): Promise<() => void>;
@@ -208,8 +254,12 @@ export const client: Client = {
 
   keepWallpaper: (id) => invokeVoid("keep_wallpaper", { id }),
 
+  unkeepWallpaper: (id) => invokeVoid("unkeep_wallpaper", { id }),
+
   moveWallpaper: (id, destinationFolder) =>
-    invokeVoid("move_wallpaper", { id, destinationFolder }),
+    invoke<string>("move_wallpaper", { id, destinationFolder }),
+
+  restoreWallpaper: (id) => invoke<string>("restore_wallpaper", { id }),
 
   // `listen` returns Promise<UnlistenFn>, not Promise<() => void>; UnlistenFn
   // is a branded type that isn't nominally assignable, so cast to the plain

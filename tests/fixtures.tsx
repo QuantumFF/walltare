@@ -12,6 +12,7 @@ export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper 
     rating_mu: 25,
     rating_sigma: 8.333,
     comparisons_count: 0,
+    origin_path: null,
     ...over,
   };
 }

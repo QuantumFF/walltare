@@ -22,6 +22,12 @@ pub struct Wallpaper {
     pub rating_mu: f64,
     pub rating_sigma: f64,
     pub comparisons_count: u32,
+    /// Always `None` on a pair: only a Rejected wallpaper has an Origin, and a
+    /// pair only ever holds an eligible one. It rides along because `client.ts`
+    /// has a single `Wallpaper` interface serving this DTO and `db::Wallpaper`,
+    /// so leaving it off here would make the field a lie on half the values
+    /// arriving under that type.
+    pub origin_path: Option<String>,
 }
 
 /// Progress snapshot, mirroring rate-wallpaper's `/progress` semantics:
@@ -221,7 +227,7 @@ fn fetch_summary(conn: &Connection, id: i64) -> Result<ranking::WallpaperSummary
 
 fn fetch_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppError> {
     conn.query_row(
-        "SELECT id, filename, path, status, rating_mu, rating_sigma, comparisons_count
+        "SELECT id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path
          FROM wallpapers WHERE id = ?1",
         [id],
         |row| {
@@ -233,6 +239,7 @@ fn fetch_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppError> {
                 rating_mu: row.get(4)?,
                 rating_sigma: row.get(5)?,
                 comparisons_count: count_u32(row.get::<_, i64>(6)?),
+                origin_path: row.get(7)?,
             })
         },
     )

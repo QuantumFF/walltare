@@ -317,21 +317,45 @@ fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppErro
     db::keep_wallpaper(&conn, id)
 }
 
+/// Undoes a Keep, putting the wallpaper back into review.
+///
+/// Nothing on disk moves, so there is nothing to answer with. A Rejected
+/// wallpaper is refused: its file sits in the reject folder, and `restore_wallpaper`
+/// is what brings it back.
+#[tauri::command]
+fn unkeep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppError> {
+    let conn = lock_conn(state);
+    db::unkeep_wallpaper(&conn, id)
+}
+
+/// Soft-rejects a wallpaper and answers with the absolute path its file landed
+/// at, which a collision may have suffixed.
+///
+/// The thumbnails stay. A Rejected wallpaper used to be out of voting, out of
+/// review and out of reach, so its cache was dead weight; now the library page
+/// shows it and a Restore brings it back, while the row's `path` follows the
+/// file and the move preserves its mtime, so the cache stays valid and
+/// resolves exactly as before (ADR 0012).
 #[tauri::command]
 fn move_wallpaper(
     id: i64,
     destination_folder: String,
     state: tauri::State<Db>,
-    cache_dir: tauri::State<CacheDir>,
-) -> Result<(), error::AppError> {
+) -> Result<String, error::AppError> {
     let conn = lock_conn(state);
-    db::move_wallpaper(&conn, id, &destination_folder)?;
-    // A Rejected wallpaper is out of both voting and review, so its cached
-    // thumbnails are dead weight. Best-effort: the reject itself already stuck.
-    if let Err(e) = thumbnails::purge(&conn, &cache_dir.0, id) {
-        eprintln!("failed to purge thumbnails for wallpaper {id}: {e}");
-    }
-    Ok(())
+    db::move_wallpaper(&conn, id, &destination_folder)
+}
+
+/// Undoes a soft reject and answers with the absolute path the file landed back
+/// at, which a collision at the Origin may have suffixed.
+///
+/// No pre-generation follows. A wallpaper rejected since the purge went still
+/// has its cache, and one rejected before that has no Origin and cannot be
+/// restored at all (ADR 0012).
+#[tauri::command]
+fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<String, error::AppError> {
+    let conn = lock_conn(state);
+    db::restore_wallpaper(&conn, id)
 }
 
 /// Parses `wallpaper://localhost/image/{id}?size={size}`.
@@ -391,7 +415,11 @@ fn image_response(status: StatusCode, body: Vec<u8>) -> tauri::http::Response<Ve
 fn error_response(e: &error::AppError) -> tauri::http::Response<Vec<u8>> {
     let status = match e {
         error::AppError::InvalidPath(_) | error::AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-        error::AppError::NotFound(_) => StatusCode::NOT_FOUND,
+        // `FileMissing` is a 404 for the same reason `NotFound` is: the thing
+        // asked for is not there. The protocol handler cannot raise it — only a
+        // Restore checks a source file before moving it — but a variant with no
+        // arm here would fall through to a 500 the moment one does.
+        error::AppError::NotFound(_) | error::AppError::FileMissing(_) => StatusCode::NOT_FOUND,
         error::AppError::InvalidTransition(_) => StatusCode::CONFLICT,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
@@ -441,7 +469,9 @@ pub fn run() {
             get_stats,
             get_review,
             keep_wallpaper,
+            unkeep_wallpaper,
             move_wallpaper,
+            restore_wallpaper,
             get_settings,
             set_setting
         ])

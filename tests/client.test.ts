@@ -1,6 +1,7 @@
 import { client, wallpaperImageUrl } from "@/lib/client";
 import type { Settings, Theme } from "@/lib/client";
 import { describe, expect, test } from "bun:test";
+import { wallpaper } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 /** A settings table with something in every key, so a default can't stand in. */
@@ -131,6 +132,132 @@ describe("client seam", () => {
     await client.getReview();
     await client.getReview(5);
     expect(limits).toEqual([50, 5]);
+  });
+
+  test("getReview carries a row's Origin through as the backend sent it", async () => {
+    // A null Origin and a path are different answers — one is a reject nothing
+    // can put back, the other is where a Restore puts the file — so nothing in
+    // the seam may fold one into the other.
+    mockCommand("get_review", () => [
+      wallpaper(1),
+      wallpaper(2, {
+        status: "rejected",
+        origin_path: "/library/landscapes/dawn.jpg",
+      }),
+    ]);
+    const review = await client.getReview();
+    expect(review.map((w) => w.origin_path)).toEqual([
+      null,
+      "/library/landscapes/dawn.jpg",
+    ]);
+  });
+
+  test("moveWallpaper sends the id and the destination and resolves with where the file landed", async () => {
+    let received: Record<string, unknown> | undefined;
+    mockCommand("move_wallpaper", (args) => {
+      received = args;
+      return "/bin/walls/dawn.jpg";
+    });
+
+    const landed = await client.moveWallpaper(3, "/bin/walls");
+
+    // Snake-case command, camel-case arguments: the Rust signature is
+    // `move_wallpaper(id: i64, destination_folder: String)`.
+    expect(received).toEqual({ id: 3, destinationFolder: "/bin/walls" });
+    expect(landed).toBe("/bin/walls/dawn.jpg");
+  });
+
+  test("moveWallpaper resolves with the suffixed path a collision produced", async () => {
+    // The seam returns a path, not a folder plus the filename it went in with:
+    // a destination that already holds `dawn.jpg` suffixes the basename, and a
+    // caller rebuilding the path from its own `wallpaper.filename` would name a
+    // file that is not there.
+    mockCommand("move_wallpaper", () => "/bin/walls/dawn (2).jpg");
+
+    expect(await client.moveWallpaper(3, "/bin/walls")).toBe(
+      "/bin/walls/dawn (2).jpg",
+    );
+  });
+
+  test("unkeepWallpaper sends the id and resolves with nothing", async () => {
+    let received: Record<string, unknown> | undefined;
+    mockCommand("unkeep_wallpaper", (args) => {
+      received = args;
+      return null;
+    });
+
+    // Snake-case command, one argument: the Rust signature is
+    // `unkeep_wallpaper(id: i64)`. Nothing on disk moves, so unlike a Restore
+    // there is no landing path to hand back.
+    expect(await client.unkeepWallpaper(3)).toBeUndefined();
+    expect(received).toEqual({ id: 3 });
+  });
+
+  test("unkeepWallpaper surfaces a refused transition untouched", async () => {
+    // A Rejected wallpaper is the refusal: its file is in the reject folder, so
+    // `restoreWallpaper` is the call that brings it back, and the seam must not
+    // dress the reason up as a success.
+    mockCommand("unkeep_wallpaper", () =>
+      Promise.reject({
+        kind: "invalid_transition",
+        message: "wallpaper 4 is rejected, so a Restore is what brings it back",
+      }),
+    );
+    expect(client.unkeepWallpaper(4)).rejects.toEqual({
+      kind: "invalid_transition",
+      message: "wallpaper 4 is rejected, so a Restore is what brings it back",
+    });
+  });
+
+  test("restoreWallpaper sends the id and resolves with where the file landed back", async () => {
+    let received: Record<string, unknown> | undefined;
+    mockCommand("restore_wallpaper", (args) => {
+      received = args;
+      return "/library/landscapes/dawn.jpg";
+    });
+
+    const landed = await client.restoreWallpaper(3);
+
+    // Snake-case command, one argument: the Rust signature is
+    // `restore_wallpaper(id: i64)`. The Origin comes off the row, so no caller
+    // gets to say where the file goes back to.
+    expect(received).toEqual({ id: 3 });
+    expect(landed).toBe("/library/landscapes/dawn.jpg");
+  });
+
+  test("restoreWallpaper resolves with the suffixed path a collision at the Origin produced", async () => {
+    // Something took the name while the wallpaper was away, so the path the
+    // file is at is not the Origin the row advertised. A caller reporting the
+    // Origin instead would name a file that is not the restored one.
+    mockCommand("restore_wallpaper", () => "/library/dawn (2).jpg");
+
+    expect(await client.restoreWallpaper(3)).toBe("/library/dawn (2).jpg");
+  });
+
+  test("restoreWallpaper surfaces a refusal untouched", async () => {
+    // Two refusals the caller has to tell apart: a reject whose file has left
+    // the folder, and a reject from before the Origin was recorded.
+    mockCommand("restore_wallpaper", () =>
+      Promise.reject({
+        kind: "file_missing",
+        message: "/bin/walls/dawn.jpg",
+      }),
+    );
+    expect(client.restoreWallpaper(3)).rejects.toEqual({
+      kind: "file_missing",
+      message: "/bin/walls/dawn.jpg",
+    });
+
+    mockCommand("restore_wallpaper", () =>
+      Promise.reject({
+        kind: "invalid_transition",
+        message: "wallpaper 4 is active, so there is no reject to undo",
+      }),
+    );
+    expect(client.restoreWallpaper(4)).rejects.toEqual({
+      kind: "invalid_transition",
+      message: "wallpaper 4 is active, so there is no reject to undo",
+    });
   });
 
   test("event subscriptions unwrap tauri payloads", async () => {
