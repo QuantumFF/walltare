@@ -1,11 +1,63 @@
 import { client, DEFAULT_SETTINGS, type Settings } from "@/lib/client";
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 
-export type View = "scan" | "rank" | "review";
+/**
+ * The four destinations, and the whole of the app's navigation.
+ *
+ * There is no router. This app has no URL bar to synchronise, no window-chrome
+ * back button, one level of nesting and a bundle too small to split — and a
+ * router unmounts a route by default, which is the one thing the shell exists
+ * to prevent (ADR 0015).
+ */
+export type View = "rank" | "review" | "library" | "settings";
+
+/**
+ * Where boot lands, until #110 implements ADR 0015's rule: one `get_stats` and
+ * four outcomes, two of which dress Settings differently and neither of which
+ * is expressible from the single `total_wallpapers` read below.
+ *
+ * Settings hosts the scan screen for now, so an empty library still has a way
+ * to fill itself. That is what the deleted `scan` view was for.
+ */
+const INITIAL_VIEW: View = "settings";
+
+/** Where a navigation came from, and what it wants looked at on arrival. */
+export interface NavigationOptions {
+  /**
+   * The view Settings closes back to. Settings is a page rather than a sheet,
+   * so it has no back of its own: the gear records where the curator was and
+   * Settings returns there, which is what stops opening it being a detour
+   * (ADR 0015).
+   */
+  returnTo?: View;
+  /**
+   * A Settings field to focus on arrival, so a control elsewhere can send the
+   * curator to the exact input it was talking about. Keyed on `keyof Settings`
+   * for the same reason `setSetting` is: a caller cannot name a field that is
+   * not there (ADR 0020).
+   */
+  focus?: keyof Settings;
+}
+
+interface Navigation {
+  view: View;
+  returnTo: View | null;
+  focus: keyof Settings | null;
+}
 
 interface AppContextType {
   view: View;
-  setView: (view: View) => void;
+  /** Where the current view closes back to; `null` when boot landed here. */
+  returnTo: View | null;
+  /** The field this navigation asked Settings to focus; `null` when none did. */
+  focus: keyof Settings | null;
+  setView: (view: View, options?: NavigationOptions) => void;
   /** What the curator chose, complete: an unread key holds its default. */
   settings: Settings;
 }
@@ -13,9 +65,25 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [view, setView] = useState<View>("scan");
+  const [navigation, setNavigation] = useState<Navigation>({
+    view: INITIAL_VIEW,
+    returnTo: null,
+    focus: null,
+  });
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [booted, setBooted] = useState(false);
+
+  // A navigation replaces the whole record rather than merging into it. A
+  // `returnTo` left standing from an earlier hop would close Settings to a view
+  // the curator never came from, and a `focus` left standing would pull the
+  // caret into a field nobody asked about.
+  const setView = useCallback((view: View, options?: NavigationOptions) => {
+    setNavigation({
+      view,
+      returnTo: options?.returnTo ?? null,
+      focus: options?.focus ?? null,
+    });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,12 +108,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       if (stored) setSettings(stored);
 
-      // A library survives across launches, but the scan view is the only entry
-      // point and a rescan of an already-scanned folder adds nothing — which
-      // ScanView reports as "no images found". Without this bootstrap the user
-      // is locked out of their own library on every launch after the first.
+      // A library survives across launches, so a curator who has already
+      // scanned lands on Rank rather than on the page offering to scan again.
+      // Without this they are locked out of their own library every launch
+      // after the first, because a rescan of an already-scanned folder adds
+      // nothing — which the scan screen reports as "no images found".
+      //
+      // #110 replaces it with ADR 0015's rule, which reads `eligible_count`
+      // too and can tell an empty library from a wholly Rejected one.
       if (stats && stats.total_wallpapers > 0) {
-        setView((current) => (current === "scan" ? "rank" : current));
+        setNavigation((current) =>
+          current.view === INITIAL_VIEW ? { ...current, view: "rank" } : current,
+        );
       }
 
       setBooted(true);
@@ -62,10 +136,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // (ADR 0012). So it starts once the gate above has settled, and again after
   // every scan, which is what gets freshly scanned files warmed first.
   //
-  // ScanView listens to `scan-complete` as well, for its own reporting. This is
-  // a second listener rather than a call from there because that event is what
-  // moves the user off the scan view, so the component that would make the call
-  // unmounts as it fires. Nothing renders progress yet (#59).
+  // ScanView listens to `scan-complete` as well, for its own reporting, and
+  // this stays a second listener rather than a call from there because that
+  // event still navigates and so unmounts the component that would make the
+  // call. #110 moves the whole subscription up into the shell, where a scan
+  // that finishes on some other page still reaches all three things hanging off
+  // it. Nothing renders progress yet (#112).
   useEffect(() => {
     if (!booted) return;
     let cancelled = false;
@@ -121,7 +197,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   if (!booted) return null;
 
   return (
-    <AppContext.Provider value={{ view, setView, settings }}>
+    <AppContext.Provider
+      value={{
+        view: navigation.view,
+        returnTo: navigation.returnTo,
+        focus: navigation.focus,
+        setView,
+        settings,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

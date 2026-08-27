@@ -9,6 +9,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { PageBar } from "@/components/PageBar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -123,41 +124,34 @@ export function ReviewView() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col h-full max-w-[1920px] mx-auto p-6 gap-8 animate-in fade-in duration-500">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-border pb-6">
-        <div className="space-y-1">
-          <h2 className="text-2xl font-light tracking-tight">
-            Review Low-Rated
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Decide what to do with your lowest ranked wallpapers.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          <div className="flex items-center gap-2 bg-secondary/50 p-1 rounded-lg border border-border">
-            <span className="text-xs font-medium px-2 text-muted-foreground">
+  // The destination line, in the bar this page owns below the chrome. The
+  // chrome's tab already names the page, so what was a 2xl heading and a
+  // subtitle is the sentence that actually carries information: what Review
+  // lists, and where a reject lands (ADR 0015). It renders while the list is
+  // still loading too, so the page's height does not move under the curator.
+  //
+  // ADR 0018 replaces the field with a read-out of the stored destination and a
+  // route into Settings, in the issue that reworks this whole view.
+  const header = (
+    <>
+      <h1 className="sr-only">Review</h1>
+      <PageBar>
+        <span className="font-medium">Lowest Scores first</span>
+        <div className="ml-auto flex items-center gap-3">
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary/50 p-1">
+            <span className="px-2 text-xs font-medium text-muted-foreground">
               Move to:
             </span>
             <Input
               aria-label="Move to:"
               value={movePath}
               onChange={(e) => setMovePath(e.target.value)}
-              className="h-8 w-40 bg-background border-none shadow-none focus-visible:ring-0"
+              className="h-7 w-40 border-none bg-background shadow-none focus-visible:ring-0"
             />
           </div>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => void fetchReviewList()}
             className="gap-2"
             disabled={loading}
@@ -167,6 +161,7 @@ export function ReviewView() {
           </Button>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => setView("rank")}
             className="gap-2"
           >
@@ -174,101 +169,124 @@ export function ReviewView() {
             Back
           </Button>
         </div>
-      </div>
+      </PageBar>
+    </>
+  );
 
-      {error && (
-        <p className="text-sm text-destructive" role="alert" aria-live="polite">
-          {error}
-        </p>
-      )}
-
-      {/* Content */}
-      {wallpapers.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
-          <Check className="h-12 w-12 opacity-20" />
-          <p>No wallpapers to review.</p>
-          <Button variant="link" onClick={() => setView("rank")}>
-            Return to Ranking
-          </Button>
+  if (loading) {
+    return (
+      <>
+        {header}
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
-      ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-8">
-          {wallpapers.map((wallpaper) => (
-            <div
-              key={wallpaper.id}
-              className={CARD_CLASS}
-            >
-              <img
-                src={wallpaperImageUrl(wallpaper.id, "small")}
-                alt={wallpaper.filename}
-                className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105 will-change-transform"
-              />
+      </>
+    );
+  }
 
-              {/* Rating Badge */}
-              <div className="absolute top-2 right-2">
-                <Badge
-                  variant="secondary"
-                  className="bg-black/60 backdrop-blur-md text-white border-none"
-                >
-                  {wallpaper.rating_mu.toFixed(1)}
-                </Badge>
-              </div>
+  return (
+    <>
+      {header}
 
-              {/* Hover Actions Overlay */}
-              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity will-change-[opacity] flex flex-col items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
-                <p className="text-white text-xs font-medium truncate w-full text-center px-2 mb-2">
-                  {wallpaper.filename}
-                </p>
-                <div className="flex gap-2 w-full max-w-[200px]">
-                  <Button
+      <div className="mx-auto flex h-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
+        {error && (
+          <p
+            className="text-sm text-destructive"
+            role="alert"
+            aria-live="polite"
+          >
+            {error}
+          </p>
+        )}
+
+        {/* Content */}
+        {wallpapers.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
+            <Check className="h-12 w-12 opacity-20" />
+            <p>No wallpapers to review.</p>
+            <Button variant="link" onClick={() => setView("rank")}>
+              Return to Ranking
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-8">
+            {wallpapers.map((wallpaper) => (
+              <div
+                key={wallpaper.id}
+                className={CARD_CLASS}
+              >
+                <img
+                  src={wallpaperImageUrl(wallpaper.id, "small")}
+                  alt={wallpaper.filename}
+                  className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105 will-change-transform"
+                />
+
+                {/* Rating Badge */}
+                <div className="absolute top-2 right-2">
+                  <Badge
                     variant="secondary"
-                    size="sm"
-                    className="flex-1 bg-white/10 hover:bg-white/20 text-white border-none"
-                    aria-label={`Keep ${wallpaper.filename}`}
-                    onClick={() => void handleKeep(wallpaper.id)}
+                    className="bg-black/60 backdrop-blur-md text-white border-none"
                   >
-                    <Check className="mr-2 h-3 w-3" />
-                    Keep
-                  </Button>
+                    {wallpaper.rating_mu.toFixed(1)}
+                  </Badge>
+                </div>
 
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        className="flex-1"
-                        aria-label={`Move ${wallpaper.filename}`}
-                      >
-                        <FolderInput className="mr-2 h-3 w-3" />
-                        Move
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Move Wallpaper?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This will move "{wallpaper.filename}" to "{movePath}".
-                          It will be soft-rejected: out of voting and review,
-                          its history preserved.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                          onClick={() => void handleMove(wallpaper.id)}
-                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                {/* Hover Actions Overlay */}
+                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity will-change-[opacity] flex flex-col items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
+                  <p className="text-white text-xs font-medium truncate w-full text-center px-2 mb-2">
+                    {wallpaper.filename}
+                  </p>
+                  <div className="flex gap-2 w-full max-w-[200px]">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="flex-1 bg-white/10 hover:bg-white/20 text-white border-none"
+                      aria-label={`Keep ${wallpaper.filename}`}
+                      onClick={() => void handleKeep(wallpaper.id)}
+                    >
+                      <Check className="mr-2 h-3 w-3" />
+                      Keep
+                    </Button>
+
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="flex-1"
+                          aria-label={`Move ${wallpaper.filename}`}
                         >
-                          Move File
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
+                          <FolderInput className="mr-2 h-3 w-3" />
+                          Move
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Move Wallpaper?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will move "{wallpaper.filename}" to "{movePath}".
+                            It will be soft-rejected: out of voting and review,
+                            its history preserved.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => void handleMove(wallpaper.id)}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Move File
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

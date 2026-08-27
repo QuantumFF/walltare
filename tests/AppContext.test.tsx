@@ -1,7 +1,7 @@
 import App from "@/App";
 import { AppProvider, useApp } from "@/context/AppContext";
 import type { Settings, Stats } from "@/lib/client";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -17,6 +17,11 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 /** How many times the provider has asked for a pre-generation pass. */
 let pregenStarts = 0;
 
+/**
+ * The scan screen's path field, which Settings hosts until #77 replaces it.
+ * Present only while Settings is up, because Settings is the one view the shell
+ * unmounts.
+ */
 const scanInput = () => screen.queryByPlaceholderText("/home/user/wallpapers");
 
 /** The palette classes index.css keys off, in the order light-then-dark. */
@@ -38,6 +43,29 @@ function probedSettings(): Settings {
   const json = screen.getByTestId("settings").textContent ?? "";
   return JSON.parse(json) as Settings;
 }
+
+/** Reports a whole navigation, and offers the two calls that make one. */
+function NavigationProbe() {
+  const { view, returnTo, focus, setView } = useApp();
+  return (
+    <>
+      <span data-testid="navigation">{`${view}|${returnTo}|${focus}`}</span>
+      <button
+        onClick={() =>
+          setView("settings", {
+            returnTo: "library",
+            focus: "reject_destination",
+          })
+        }
+      >
+        deep link
+      </button>
+      <button onClick={() => setView("rank")}>plain</button>
+    </>
+  );
+}
+
+const probedNavigation = () => screen.getByTestId("navigation").textContent;
 
 afterEach(cleanup);
 
@@ -61,19 +89,19 @@ beforeEach(() => {
   });
 });
 
-test("a library that already has wallpapers opens on rank, not scan", async () => {
+test("a library that already has wallpapers opens on rank", async () => {
   mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
 
   render(<App />);
   await flush();
 
-  // Nothing else navigates here: the scan screen is the only entry point, so
-  // without the bootstrap every launch after the first strands the user on it.
+  // Without the bootstrap every launch after the first lands on the page that
+  // offers to scan a folder already scanned.
   expect(screen.queryByAltText("Left Wallpaper")).not.toBeNull();
   expect(scanInput()).toBeNull();
 });
 
-test("an empty library stays on scan", async () => {
+test("an empty library opens on settings, where the scan screen is", async () => {
   mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
 
   render(<App />);
@@ -83,7 +111,7 @@ test("an empty library stays on scan", async () => {
   expect(screen.queryByAltText("Left Wallpaper")).toBeNull();
 });
 
-test("a stats lookup that fails leaves the user on scan", async () => {
+test("a stats lookup that fails leaves the user on settings", async () => {
   mockCommand("get_stats", () =>
     Promise.reject({ kind: "db", message: "locked database" }),
   );
@@ -150,6 +178,33 @@ test("the stored settings are readable from useApp", async () => {
     library_root: "~/pics",
     reject_destination: "/bin/walls",
   });
+});
+
+test("a navigation carries where it came from and the field to focus", async () => {
+  // The shape ADR 0020 needs: a control anywhere in the app can send the
+  // curator to one Settings field and have the page close back to where they
+  // were. The field key is `keyof Settings`, so a caller cannot name one that
+  // is not there.
+  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+
+  render(
+    <AppProvider>
+      <NavigationProbe />
+    </AppProvider>,
+  );
+  await flush();
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /deep link/i }));
+  });
+  expect(probedNavigation()).toBe("settings|library|reject_destination");
+
+  // A plain navigation replaces the whole record. A `returnTo` left standing
+  // would close Settings to a view the curator never came from.
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /plain/i }));
+  });
+  expect(probedNavigation()).toBe("rank|null|null");
 });
 
 test("a settings read that fails still starts the app, on the defaults", async () => {

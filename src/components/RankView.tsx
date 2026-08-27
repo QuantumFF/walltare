@@ -1,3 +1,4 @@
+import { PageBar } from "@/components/PageBar";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useApp } from "@/context/AppContext";
@@ -62,7 +63,7 @@ function preloadPair(pair: [Wallpaper, Wallpaper]): void {
 }
 
 export function RankView() {
-  const { setView } = useApp();
+  const { view, setView } = useApp();
   const [currentPair, setCurrentPair] = useState<[Wallpaper, Wallpaper] | null>(
     null,
   );
@@ -261,10 +262,24 @@ export function RankView() {
   }, [prefetchNextPair]);
 
   // Keyboard shortcuts mirror the click targets: ← picks left, → picks right.
+  //
+  // The listener is on `window` and the shell keeps this view mounted under
+  // `display: none`, which keeps the listener live. So it is bound only while
+  // Rank is the view being shown: without that gate, every arrow pressed in
+  // Library or Review would record a permanent Comparison between two
+  // wallpapers the curator was not even looking at (ADR 0015, as amended by
+  // ADR 0019). Any future view-scoped global listener owes the same gate.
+  //
+  // `defaultPrevented` is the other half of the same rule. Bare arrows belong to
+  // whichever element has focus — the chrome's tablist walks with them, and the
+  // lightbox will — and to the view only when nothing in it does. An element
+  // that has already answered the key marks it, and this fallback stands down.
   useEffect(() => {
+    if (view !== "rank") return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       const pair = currentPairRef.current;
-      if (!pair || busyRef.current) return;
+      if (!pair || busyRef.current || event.defaultPrevented) return;
 
       if (event.key === "ArrowLeft") {
         void handleVote(pair[0], pair[1], "left");
@@ -275,12 +290,55 @@ export function RankView() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleVote]);
+  }, [handleVote, view]);
+
+  const percent = roundPercent(stats);
+  const explanation = roundExplanation(stats);
+
+  // The Round headline, in the bar this page owns below the chrome. It renders
+  // in every state, including while the first pair is still loading, so that the
+  // page's own height never depends on what the backend has answered yet.
+  const header = (
+    <>
+      <h1 className="sr-only">Rank</h1>
+      <PageBar>
+        <span className="font-medium" aria-live="polite">
+          <span
+            tabIndex={0}
+            title={explanation}
+            aria-describedby={ROUND_EXPLANATION_ID}
+            className="rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            Round {stats?.round ?? 1}
+          </span>{" "}
+          · {percent}%
+        </span>
+        <span id={ROUND_EXPLANATION_ID} className="sr-only">
+          {explanation}
+        </span>
+        <Progress value={percent} className="h-1.5 w-40" />
+        <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+          <span aria-live="polite">
+            <span className="font-medium text-foreground">
+              {stats?.evaluated_count ?? 0}
+            </span>{" "}
+            / {stats?.eligible_count ?? 0} Evaluated
+          </span>
+          <span>
+            <span className="font-medium text-foreground">
+              {stats?.total_comparisons}
+            </span>{" "}
+            Comparisons
+          </span>
+        </div>
+      </PageBar>
+    </>
+  );
 
   if (loading) {
     return (
       <>
-        <h1 className="sr-only">Rank</h1>
+        {header}
         <div className="flex flex-1 items-center justify-center">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
@@ -291,11 +349,12 @@ export function RankView() {
   if (!currentPair) {
     return (
       <>
-        <h1 className="sr-only">Rank</h1>
+        {header}
         <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
           <p role="alert">{error ?? LOAD_FAILED_ERROR}</p>
-          {/* Without a way out this screen is a dead end: there is no route
-              back to scan, so the user would have to restart the app. */}
+          {/* The chrome's tabs are the way out of this now, so this button is a
+              second one rather than the only one. It stays because the sentence
+              above it names Review as the fix. */}
           <Button variant="outline" onClick={() => setView("review")}>
             Go to Review
           </Button>
@@ -306,14 +365,12 @@ export function RankView() {
 
   const [left, right] = currentPair;
   const [leftSrc, rightSrc] = srcs as [string, string];
-  const percent = roundPercent(stats);
-  const explanation = roundExplanation(stats);
 
   return (
-    <div className="flex h-full w-full max-w-[1920px] min-h-0 mx-auto flex-1 flex-col p-4">
-      <h1 className="sr-only">Rank</h1>
+    <>
+      {header}
 
-      <div className="flex w-full flex-1 flex-col justify-center gap-4">
+      <div className="mx-auto flex w-full max-w-[1920px] min-h-0 flex-1 flex-col justify-center gap-4 p-4">
         {error && (
           <p
             className="mx-auto text-sm text-destructive"
@@ -323,46 +380,6 @@ export function RankView() {
             {error}
           </p>
         )}
-
-        {/* Progress headline */}
-        <div className="mx-auto w-full max-w-2xl space-y-2">
-          <div className="flex items-end justify-between">
-            <div className="flex flex-col">
-              <span className="text-xs font-medium tracking-wider text-muted-foreground uppercase">
-                Progress
-              </span>
-              <span className="text-2xl font-bold" aria-live="polite">
-                <span
-                  tabIndex={0}
-                  title={explanation}
-                  aria-describedby={ROUND_EXPLANATION_ID}
-                  className="rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                >
-                  Round {stats?.round ?? 1}
-                </span>{" "}
-                · {percent}%
-              </span>
-              <span id={ROUND_EXPLANATION_ID} className="sr-only">
-                {explanation}
-              </span>
-            </div>
-            <div className="flex flex-col items-end gap-1 text-xs text-muted-foreground">
-              <span aria-live="polite">
-                <span className="font-medium text-foreground">
-                  {stats?.evaluated_count ?? 0}
-                </span>{" "}
-                / {stats?.eligible_count ?? 0} Evaluated
-              </span>
-              <span>
-                <span className="font-medium text-foreground">
-                  {stats?.total_comparisons}
-                </span>{" "}
-                Comparisons
-              </span>
-            </div>
-          </div>
-          <Progress value={percent} className="h-2" />
-        </div>
 
         {/* Comparison area */}
         <div className="grid grid-cols-2 items-start gap-4 md:gap-8">
@@ -495,6 +512,6 @@ export function RankView() {
           </Button>
         </div>
       </div>
-    </div>
+    </>
   );
 }

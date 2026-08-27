@@ -101,7 +101,9 @@ test("a directory with no images at all is reported, and the view stays usable",
   expect(
     screen.queryByText(/No supported images found in that directory\./i),
   ).not.toBeNull();
-  expect(currentView()).toBe("scan");
+  // Nothing navigated: the scan screen is hosted by Settings now, which is
+  // where an empty library boots to until #110 lands ADR 0015's rule.
+  expect(currentView()).toBe("settings");
   expect(progressText()).toBeNull();
   expect(scanButton().disabled).toBe(false);
 
@@ -126,7 +128,7 @@ test("a scan that fails mid-walk is reported and clears the progress line", asyn
     screen.queryByText(/Failed to scan directory\. Please check the path\./i),
   ).not.toBeNull();
   expect(progressText()).toBeNull();
-  expect(currentView()).toBe("scan");
+  expect(currentView()).toBe("settings");
   expect(scanButton().disabled).toBe(false);
 });
 

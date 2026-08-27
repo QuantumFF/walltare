@@ -16,6 +16,8 @@ import { mockCommand } from "./ipc-mocks";
 
 const alerts = () => screen.queryAllByRole("alert").map((el) => el.textContent);
 const images = () => screen.getAllByRole("img") as HTMLImageElement[];
+const refreshButton = () =>
+  screen.getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
 
 afterEach(cleanup);
 
@@ -304,20 +306,23 @@ test("the list can't be refetched while a fetch is in flight", async () => {
 
   const { container } = await renderInApp(<ReviewView />);
 
-  // While loading the view is a spinner: there is no control to fire a
-  // second fetch from.
+  // While loading the body is a spinner and Refresh is disabled. The control
+  // lives in the bar this page owns below the chrome, which holds its height in
+  // every state, so `disabled` is what keeps a second fetch out rather than the
+  // button being absent.
   expect(container.querySelector(".animate-spin")).not.toBeNull();
-  expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
+  expect(refreshButton().disabled).toBe(true);
 
   await act(async () => {
     first.resolve([wallpaper(2, { filename: "a.jpg" })]);
   });
+  expect(refreshButton().disabled).toBe(false);
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    fireEvent.click(refreshButton());
   });
 
   expect(fetches).toBe(2);
-  expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
+  expect(refreshButton().disabled).toBe(true);
   expect(screen.queryByAltText("a.jpg")).toBeNull();
 
   await act(async () => {
