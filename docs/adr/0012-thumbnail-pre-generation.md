@@ -99,6 +99,11 @@ and N stats: milliseconds, and no image bytes read at all. Its length is also
 the honest total for the progress below, because skipped wallpapers never enter
 it.
 
+> **Amended by [#100](https://github.com/QuantumFF/walltare/issues/100),
+> 2026-08-27.** The query runs over every row rather than over the eligible
+> pool, as the ADR 0016 amendment below requires, and it carries the row's
+> Status as a fifth column so the re-check above has the Status the list saw.
+
 ### The `thumbnails` API this needs
 
 Split by case, so the donor logic keeps earning its place.
