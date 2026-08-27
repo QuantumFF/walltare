@@ -800,13 +800,14 @@ fn image_response(status: StatusCode, body: Vec<u8>) -> tauri::http::Response<Ve
     tauri::http::Response::builder()
         .status(status)
         .header(tauri::http::header::CONTENT_TYPE, "image/jpeg")
-        // Not `immutable`: the URL is keyed on id and size only, so a year-long
-        // cache would outlive the mtime-based invalidation in `thumbnails`.
-        // Revalidation costs a cache-file read, which is what we want anyway.
-        .header(
-            tauri::http::header::CACHE_CONTROL,
-            "max-age=0, must-revalidate",
-        )
+        // Five minutes is measured against the only thing that invalidates a
+        // thumbnail: the source file's mtime changing when someone edits a
+        // wallpaper in place. That is rare enough that being five minutes stale
+        // about it costs less than a versioning scheme.
+        //
+        // Not `immutable`: the URL is keyed on id and size only, so nothing in
+        // it would change once the source file did.
+        .header(tauri::http::header::CACHE_CONTROL, "max-age=300")
         .body(body)
         .unwrap()
 }
@@ -944,6 +945,21 @@ mod tests {
         assert_eq!(
             parse("wallpaper://localhost/image/1?v=2&size=small").unwrap(),
             (1, Size::Small)
+        );
+    }
+
+    #[test]
+    fn a_served_image_stays_cached_for_five_minutes() {
+        // A remounted `<img>` for a wallpaper the user already scrolled past
+        // must not cost another mpsc hop, mutex lock and cache-file read.
+        // Lowering this value puts those back, so it is pinned.
+        let response = image_response(StatusCode::OK, vec![0xff, 0xd8]);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CACHE_CONTROL)
+                .unwrap(),
+            "max-age=300"
         );
     }
 
