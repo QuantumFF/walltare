@@ -14,6 +14,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
+import {
+  useAppEvent,
+  useAppEvents,
+  useRefetchWhenShown,
+} from "@/context/AppEventsContext";
 import { client, wallpaperImageUrl, type Wallpaper } from "@/lib/client";
 import {
   ArrowLeft,
@@ -58,6 +63,7 @@ export function ReviewView() {
   const [error, setError] = useState<string | null>(null);
   const [movePath, setMovePath] = useState(DEFAULT_MOVE_PATH);
   const { setView } = useApp();
+  const { publish } = useAppEvents();
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
@@ -76,6 +82,23 @@ export function ReviewView() {
   useEffect(() => {
     void fetchReviewList();
   }, [fetchReviewList]);
+
+  // The one event this list answers with a fetch rather than with a patch, and
+  // the fetch waits until Review is the view being shown: fifty thumbnail
+  // requests from a hidden page are exactly what ADR 0012's dedicated
+  // pre-generation thread exists to keep off the rank view's next pair.
+  useRefetchWhenShown("review", fetchReviewList);
+
+  // Kept and Rejected never appear in review (CONTEXT.md), so a wallpaper that
+  // changed Status anywhere else leaves the list, and the card is the one thing
+  // that has to move. The other direction is not a patch this view can make: an
+  // event carries an id and not a row, so nothing here knows what a wallpaper
+  // that just became Active looks like or where it belongs in an ordering by
+  // Score. It arrives with the next fetch.
+  useAppEvent((event) => {
+    if (event.type !== "status-changed" || event.status === "active") return;
+    setWallpapers((prev) => prev.filter((w) => w.id !== event.id));
+  });
 
   // Puts one card back where it was after a failed action.
   //
@@ -100,6 +123,10 @@ export function ReviewView() {
     setError(null);
     try {
       await client.keepWallpaper(id);
+      // After the write and not before it: a card removed optimistically comes
+      // back if the write fails, and a Library that had already greyed the row
+      // would be the one place the failure did not reach.
+      publish({ type: "status-changed", id, status: "kept" });
     } catch (err) {
       console.error("Failed to keep wallpaper:", err);
       if (removed) restoreCard(index, removed);
@@ -117,6 +144,7 @@ export function ReviewView() {
       // dialog rather than a toast, so it has nowhere to report a rename yet;
       // that arrives with the reject toast when Review is rebuilt.
       await client.moveWallpaper(id, movePath);
+      publish({ type: "status-changed", id, status: "rejected" });
     } catch (err) {
       console.error("Failed to move wallpaper:", err);
       if (removed) restoreCard(index, removed);

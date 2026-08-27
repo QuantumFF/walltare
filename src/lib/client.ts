@@ -7,6 +7,13 @@ import { listen } from "@tauri-apps/api/event";
 export type ThumbnailSize = "small" | "medium" | "full";
 
 /**
+ * CONTEXT.md's Status, spelled the way the column holds it (the `db.rs` CHECK
+ * constraint): Active, Kept, Rejected, lowercased. Named so that what a Status
+ * travels in — a row, an event payload — says which of the three it is.
+ */
+export type Status = "active" | "kept" | "rejected";
+
+/**
  * Mirrors voting::Wallpaper and db::Wallpaper, which are the same shape; status
  * is the lowercase DB value (db.rs CHECK constraint). One interface serving both
  * is why a field either DTO sends has to be on both of them.
@@ -15,7 +22,7 @@ export interface Wallpaper {
   id: number;
   filename: string;
   path: string;
-  status: "active" | "kept" | "rejected";
+  status: Status;
   rating_mu: number;
   rating_sigma: number;
   comparisons_count: number;

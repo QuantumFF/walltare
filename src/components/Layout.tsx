@@ -4,6 +4,7 @@ import { ReviewView } from "@/components/ReviewView";
 import { SettingsView } from "@/components/SettingsView";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { useApp, type View } from "@/context/AppContext";
+import { useAppEvents } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { client } from "@/lib/client";
 import { cn } from "@/lib/utils";
@@ -234,6 +235,7 @@ function isTextEntry(target: EventTarget | null): boolean {
 
 export function Layout() {
   const { view, setView, rerunBootRuleAfterScan } = useApp();
+  const { publish } = useAppEvents();
 
   // Which destinations have ever been shown. A view enters the tree on its first
   // visit and never leaves it, so this only ever grows.
@@ -268,10 +270,11 @@ export function Layout() {
   // else entirely. That is also why the event no longer navigates: it used to
   // pull them to Rank from whatever they were doing, on every rescan.
   //
-  // Two things hang off it here, and two more arrive later: #111 publishes
-  // `library-scanned` so the mounted views refetch, and #112/#113 turn the
-  // progress and the four endings into ADR 0021's pinned toast. Nothing renders
-  // scan progress from up here yet.
+  // Three things hang off it here, and one more arrives later: #112/#113 turn
+  // the progress and the four endings into ADR 0021's pinned toast. Nothing
+  // renders scan progress from up here yet. #113 also refetches `Stats` on the
+  // event and publishes `stats-changed` with what comes back, which is what
+  // moves Rank's headline to the Round a scan just sent it back to.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -295,8 +298,13 @@ export function Layout() {
 
     startPregen();
     void client
-      .onScanComplete(() => {
+      .onScanComplete((payload) => {
         startPregen();
+        // A scan is the one mutation that changes which rows exist, so this is
+        // the one event of the four that a mounted view answers with a fetch
+        // rather than with a patch. The count rides along because zero of it is
+        // the answer "nothing changed": a scan inserts and never deletes.
+        publish({ type: "library-scanned", added: payload.added_count });
         // The boot rule's one exception, and the only navigation left on this
         // event. It decides for itself whether this scan is the one that filled
         // an empty library.
@@ -314,7 +322,7 @@ export function Layout() {
       cancelled = true;
       unlisten?.();
     };
-  }, [rerunBootRuleAfterScan]);
+  }, [publish, rerunBootRuleAfterScan]);
 
   // One keyboard handler for the whole app, on `window` because the shell is
   // always mounted and there is exactly one of it — the view-scoped gate

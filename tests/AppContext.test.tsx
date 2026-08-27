@@ -103,6 +103,9 @@ beforeEach(() => {
   // The shell starts pre-generation as soon as it mounts, which is as soon as
   // the boot gate settles, so every `<App />` in this file reaches this command.
   mockCommand("start_pregen", () => null);
+  // Library is the second row of the boot table, and it lists its rows on the
+  // first visit — which, for that row, is boot itself.
+  mockCommand("list_wallpapers", () => [wallpaper(1)]);
 });
 
 // ADR 0015's boot table, one test per row. Boot reads what the library holds

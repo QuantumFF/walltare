@@ -1,4 +1,5 @@
 import { AppProvider, useApp } from "@/context/AppContext";
+import { AppEventsProvider } from "@/context/AppEventsContext";
 import type { Settings, Stats, Wallpaper } from "@/lib/client";
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -130,17 +131,25 @@ export function currentView(): string | null {
 }
 
 /**
- * Render one view inside the real provider, with a probe for navigation.
+ * Render one view inside the real providers, with a probe for navigation.
  *
  * Awaits the provider's boot gate, so `ui` is mounted by the time this returns.
  * A command the test deliberately left pending stays pending: only the two boot
  * reads are waited on here.
+ *
+ * The event bus is here because a view publishes to it as soon as the curator
+ * acts — a vote publishes `stats-changed`, a keep publishes `status-changed` —
+ * so a view mounted without it would throw on the first click. Nothing else
+ * subscribes, which is the point: what a shell full of views does with those
+ * events is `Layout.test.tsx` and `freshness.test.tsx`'s to assert.
  */
 export async function renderInApp(ui: ReactNode) {
   const rendered = render(
     <AppProvider>
-      <ViewProbe />
-      {ui}
+      <AppEventsProvider>
+        <ViewProbe />
+        {ui}
+      </AppEventsProvider>
     </AppProvider>,
   );
   await flush();

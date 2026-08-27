@@ -58,6 +58,12 @@ beforeEach(() => {
     getReviewCalls++;
     return [wallpaper(90, { filename: "lowest.jpg" })];
   });
+  // Library fetches its rows on the curator's first visit to it, which is what
+  // the shell's mount-on-first-visit rule defers it to.
+  mockCommand("list_wallpapers", () => [
+    wallpaper(90, { filename: "lowest.jpg" }),
+    wallpaper(91, { filename: "highest.jpg", comparisons_count: 4 }),
+  ]);
   mockCommand("vote", (args) => {
     votes.push([args?.winnerId as number, args?.loserId as number]);
     return { next_pair: [wallpaper(80), wallpaper(81)], stats: stats() };
@@ -309,13 +315,34 @@ test("Rank's Round headline lives in Rank's own bar", async () => {
   expect(chromeRow().textContent).not.toContain("Round");
 });
 
-test("Library shows an empty state that names the way on", async () => {
+test("Library lists what the backend returned, in the bar and the scroll container #79 fills", async () => {
   await openApp();
   await click(tab("Library"));
 
+  // Interim: the grid, the card and the designed controls are #79's. What has
+  // to be here now is the state under them, which is why the rows, the filter
+  // and the ordering are assertable at all.
+  const rows = document.querySelectorAll("[data-wallpaper-id]");
+  expect(Array.from(rows).map((el) => el.textContent)).toEqual([
+    "lowest.jpgUnratedActive",
+    "highest.jpg25.0Active",
+  ]);
   expect(
-    screen.queryByText(/the library page isn't built yet/i),
-  ).not.toBeNull();
+    (screen.getByLabelText("Filter") as HTMLSelectElement).value,
+  ).toBe("all");
+  expect(
+    (screen.getByLabelText("Order by") as HTMLSelectElement).value,
+  ).toBe("score_desc");
+});
+
+test("an empty library says so on the page that would have listed it", async () => {
+  mockCommand("list_wallpapers", () => []);
+  await openApp();
+  await click(tab("Library"));
+
+  // ADR 0015 disables no tab, so every destination owes an empty state that
+  // says why it is empty and where to go instead.
+  expect(screen.queryByText(/nothing here yet/i)).not.toBeNull();
 });
 
 test("a scan still runs end to end from inside Settings, and leaves the curator there", async () => {

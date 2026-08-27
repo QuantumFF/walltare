@@ -2,6 +2,7 @@ import { PageBar } from "@/components/PageBar";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useApp } from "@/context/AppContext";
+import { useAppEvent, useAppEvents } from "@/context/AppEventsContext";
 import {
   client,
   isAppError,
@@ -64,6 +65,7 @@ function preloadPair(pair: [Wallpaper, Wallpaper]): void {
 
 export function RankView() {
   const { view, setView } = useApp();
+  const { publish } = useAppEvents();
   const [currentPair, setCurrentPair] = useState<[Wallpaper, Wallpaper] | null>(
     null,
   );
@@ -179,12 +181,28 @@ export function RankView() {
           loser.id,
           idsOf(currentPairRef.current),
         );
+
+        // Published before the mounted check, and before anything else is done
+        // with the response: the Comparison is recorded and permanent, so both
+        // of these are true whether or not this component is still around to
+        // draw the consequences.
+        //
+        // The two ids and nothing else, because that is all Library can be told
+        // for free — a Comparison answers with the whole `Stats` rather than
+        // with two ratings, and asking the backend for the two rows would put a
+        // query on the path between one pair and the next.
+        publish({ type: "score-changed", ids: [winner.id, loser.id] });
+        // The headline updates through the bus rather than beside it, so there
+        // is one path into it: Rank is the only publisher of this today, and
+        // #113's refetch after a scan is the next one, moving the same headline
+        // back to Round 1 without Rank needing to know a scan happened.
+        publish({ type: "stats-changed", stats: outcome.stats });
+
         if (!mountedRef.current) return;
 
-        // Headline updates from the response alone. With an empty prefetch
-        // slot, next_pair becomes the current pair and the slot is refilled
-        // with a fresh pair so the two never show the same Comparison twice.
-        setStats(outcome.stats);
+        // With an empty prefetch slot, next_pair becomes the current pair and
+        // the slot is refilled with a fresh pair so the two never show the same
+        // Comparison twice.
         if (!outcome.next_pair) {
           // The vote counted; only the follow-up fetch didn't. Refill whichever
           // slot is empty rather than leave the user on a pair they just voted
@@ -228,8 +246,15 @@ export function RankView() {
         busyRef.current = false;
       }
     },
-    [pairFetched, prefetchNextPair],
+    [pairFetched, prefetchNextPair, publish],
   );
+
+  // The headline is a patch, and this is the whole of Rank's interest in what
+  // happens elsewhere: the pair on screen is Rank's own business, and no other
+  // view can change which two wallpapers it is showing.
+  useAppEvent((event) => {
+    if (event.type === "stats-changed") setStats(event.stats);
+  });
 
   const handleSkip = useCallback(async () => {
     if (busyRef.current) return;
