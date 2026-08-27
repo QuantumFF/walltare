@@ -158,6 +158,16 @@ own read, immediately before generating, and skips one that is no longer
 eligible. The work list is a snapshot, and a reject can land in the middle of
 it.
 
+> **Amended by [#101](https://github.com/QuantumFF/walltare/issues/101),
+> 2026-08-27.** The re-check compares the row against the Status the work list
+> saw, not against Eligible. Measured against Eligible it drops the Rejected
+> tail group that the ADR 0016 amendment below added, because every wallpaper in
+> that group is already Rejected when its turn comes, so the library page would
+> pay first-view latency for all of them. The same read carries the row's
+> current `path`, and the pass generates from that rather than from the
+> snapshot's copy, since a reject or a Restore moves the file after the list was
+> built.
+
 ### Progress
 
 `pregen-progress { done, total }`, carrying `total` in every emission so the

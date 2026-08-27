@@ -467,8 +467,8 @@ impl PregenReport for EventReport<'_> {
 struct PregenTally {
     generated: u64,
     failed: u64,
-    /// Wallpapers that stopped being Eligible between the work list and their
-    /// turn. Not reported: the curator who rejected one knows, and a count of
+    /// Wallpapers rejected between the work list and their own turn in it. Not
+    /// reported: the curator who rejected one knows, and a count of
     /// their own rejects tells them nothing about the cache.
     skipped: u64,
 }
@@ -563,13 +563,14 @@ fn generate_one(
     let id = pending.wallpaper_id;
     match pending.missing {
         thumbnails::Missing::Both => {
-            {
+            let source = {
                 let conn = lock(db);
-                if !still_eligible(&conn, id) {
-                    return Ok(Step::Skipped);
+                match still_due(&conn, pending) {
+                    Some(source) => source,
+                    None => return Ok(Step::Skipped),
                 }
-            }
-            let recorded = thumbnails::generate_both(id, &pending.source, cache_dir)?;
+            };
+            let recorded = thumbnails::generate_both(id, &source, cache_dir)?;
             let conn = lock(db);
             for r in recorded {
                 thumbnails::record_one(&conn, id, r.size, r.width, r.height, r.source_mtime)?;
@@ -580,9 +581,10 @@ fn generate_one(
             let plan = {
                 // The same lock the plan's own read takes, which is the point:
                 // the Status the pass acts on and the path it acts on come from
-                // one view of the row.
+                // one view of the row. The path this drops is the one `plan`
+                // reads for itself a line later.
                 let conn = lock(db);
-                if !still_eligible(&conn, id) {
+                if still_due(&conn, pending).is_none() {
                     return Ok(Step::Skipped);
                 }
                 thumbnails::plan(&conn, id, size)?
@@ -594,26 +596,33 @@ fn generate_one(
     }
 }
 
-/// Whether a wallpaper is still Eligible: Active or Kept.
+/// Where a wallpaper's file sits now, or `None` if the pass must leave it alone.
 ///
-/// Re-read immediately before generating, because the work list is a snapshot
-/// and a reject can land in the middle of a pass over it. A row that is no
-/// longer there reads as not Eligible, so it is skipped rather than failed.
+/// Read immediately before generating, under the same lock, because the work
+/// list is a snapshot: a reject can land in the middle of a pass over it, and it
+/// rewrites both the Status and the path.
 ///
-/// It reads the Status rather than comparing it against the snapshot, which is
-/// what #101 asks for, so the Rejected tail group ADR 0016 put at the end of the
-/// work list is skipped too and a rejected wallpaper stays warmed only by the
-/// on-demand path. Telling a reject that landed mid-pass apart from one that was
-/// already Rejected when the list was built needs the snapshot's Status carried
-/// in `Pending`, and nothing carries it yet.
-fn still_eligible(conn: &rusqlite::Connection, wallpaper_id: i64) -> bool {
-    conn.query_row(
-        "SELECT status FROM wallpapers WHERE id = ?1",
-        [wallpaper_id],
-        |row| row.get::<_, String>(0),
-    )
-    .map(|status| status != "rejected")
-    .unwrap_or(false)
+/// The Status is compared against the one the list saw rather than against
+/// Eligible. A wallpaper listed as Rejected is the tail group ADR 0016 put at
+/// the end of the queue so it would be generated last, not dropped, and the
+/// library page defaults to a filter of All. A wallpaper listed as Active or
+/// Kept and Rejected now is the stale snapshot, and is skipped. A row that is no
+/// longer there is skipped too, rather than failed.
+///
+/// The path comes from this read as well, so a file that moved between the list
+/// and its turn is generated where it landed. [`thumbnails::plan`] already
+/// re-reads it for the one-size case.
+fn still_due(conn: &rusqlite::Connection, pending: &thumbnails::Pending) -> Option<PathBuf> {
+    let (status, path) = conn
+        .query_row(
+            "SELECT status, path FROM wallpapers WHERE id = ?1",
+            [pending.wallpaper_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .ok()?;
+    let rejected_since = thumbnails::Status::read(&status) == thumbnails::Status::Rejected
+        && pending.status != thumbnails::Status::Rejected;
+    (!rejected_since).then(|| PathBuf::from(path))
 }
 
 /// Where a Written path points, and whether a folder is there.
@@ -845,7 +854,7 @@ mod tests {
     use super::*;
     use image::{DynamicImage, Rgba, RgbaImage};
     use std::cell::RefCell;
-    use thumbnails::{Missing, Pending, Size};
+    use thumbnails::{Missing, Pending, Size, Status};
 
     fn parse(url: &str) -> Result<(i64, Size), error::AppError> {
         parse_image_request(&url.parse::<Uri>().expect("test urls are well-formed"))
@@ -1066,8 +1075,35 @@ mod tests {
             Pending {
                 wallpaper_id: conn.last_insert_rowid(),
                 source: path,
+                status: Status::Active,
                 missing,
             }
+        }
+
+        /// Rejects a wallpaper, leaving whatever the pass is already holding for
+        /// it alone.
+        fn reject(&self, wallpaper_id: i64) {
+            lock(&self.db)
+                .execute(
+                    "UPDATE wallpapers SET status = 'rejected' WHERE id = ?1",
+                    [wallpaper_id],
+                )
+                .unwrap();
+        }
+
+        /// Moves a wallpaper's file and points its row at where it landed, the
+        /// way `move_wallpaper` and `restore_wallpaper` both do, so the
+        /// [`Pending`] the pass is holding names a file that is no longer there.
+        fn relocate(&self, pending: &Pending, to: &str) -> PathBuf {
+            let moved = self.sources.path().join(to);
+            std::fs::rename(&pending.source, &moved).unwrap();
+            lock(&self.db)
+                .execute(
+                    "UPDATE wallpapers SET path = ?2, filename = ?3 WHERE id = ?1",
+                    rusqlite::params![pending.wallpaper_id, moved.to_str().unwrap(), to],
+                )
+                .unwrap();
+            moved
         }
 
         fn step(&self, pending: &Pending, tally: &mut PregenTally) {
@@ -1205,12 +1241,8 @@ mod tests {
         // a pair of thumbnails is the Status the step re-reads.
         let library = Library::new();
         let pending = library.seed("rejected.png", 800, 400, [1, 2, 3, 255], Missing::Both);
-        lock(&library.db)
-            .execute(
-                "UPDATE wallpapers SET status = 'rejected' WHERE id = ?1",
-                [pending.wallpaper_id],
-            )
-            .unwrap();
+        assert_eq!(pending.status, Status::Active);
+        library.reject(pending.wallpaper_id);
         let mut tally = PregenTally::default();
 
         library.step(&pending, &mut tally);
@@ -1226,6 +1258,65 @@ mod tests {
                 generated: 0,
                 failed: 0,
                 skipped: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_wallpaper_already_rejected_when_it_was_listed_is_generated_by_the_step() {
+        // ADR 0016 made Rejected a tail group rather than an exclusion, ahead of
+        // a library page that defaults to a filter of All. So the re-check
+        // compares the row against the Status the list saw: measured against
+        // Eligible instead, every wallpaper in the tail would be dropped and the
+        // library page would pay first-view latency for all of them.
+        let library = Library::new();
+        let mut pending = library.seed("tail.png", 800, 400, [10, 200, 10, 255], Missing::Both);
+        library.reject(pending.wallpaper_id);
+        // What the work list would hand the pass for it: last, and Rejected.
+        pending.status = Status::Rejected;
+        let mut tally = PregenTally::default();
+
+        library.step(&pending, &mut tally);
+
+        let id = pending.wallpaper_id;
+        assert_eq!(library.row(id, "medium"), Some((800, 400)));
+        assert_eq!(library.row(id, "small"), Some((400, 200)));
+        assert!(library.cache_file(id, "medium").exists());
+        assert!(library.cache_file(id, "small").exists());
+        assert_eq!(
+            tally,
+            PregenTally {
+                generated: 1,
+                failed: 0,
+                skipped: 0
+            }
+        );
+    }
+
+    #[test]
+    fn a_source_that_moved_since_the_work_list_is_generated_from_where_the_row_points_now() {
+        // A reject rewrites `path` and a Restore rewrites it back, so the
+        // snapshot's copy can name a file that has moved out from under it.
+        // Decoding that stale path would count the wallpaper as failed for
+        // having been rejected, which is the tail group's whole cohort.
+        let library = Library::new();
+        let pending = library.seed("moving.png", 800, 400, [30, 30, 200, 255], Missing::Both);
+        library.relocate(&pending, "moved.png");
+        let mut tally = PregenTally::default();
+
+        library.step(&pending, &mut tally);
+
+        let id = pending.wallpaper_id;
+        assert!(!pending.source.exists());
+        assert_eq!(library.row(id, "medium"), Some((800, 400)));
+        assert_eq!(library.row(id, "small"), Some((400, 200)));
+        assert!(library.cache_file(id, "medium").exists());
+        assert_eq!(
+            tally,
+            PregenTally {
+                generated: 1,
+                failed: 0,
+                skipped: 0
             }
         );
     }

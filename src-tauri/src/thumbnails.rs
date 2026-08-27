@@ -395,14 +395,46 @@ pub enum Missing {
     Only(Size),
 }
 
+/// A wallpaper's Status, the three of `CONTEXT.md`.
+///
+/// The work list carries the one it saw so the pass can tell a wallpaper that
+/// was already Rejected when it was listed, which is the tail group ADR 0016
+/// put at the end of the queue, from one rejected since, which is a snapshot
+/// gone stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Active,
+    Kept,
+    Rejected,
+}
+
+impl Status {
+    /// Reads the `status` column.
+    ///
+    /// The schema's `CHECK` constraint allows only these three spellings, so
+    /// anything else is a database this app never wrote. Such a row reads as
+    /// Active, which is how every other Status read in the codebase treats a
+    /// value that is not `rejected`.
+    pub fn read(column: &str) -> Self {
+        match column {
+            "rejected" => Self::Rejected,
+            "kept" => Self::Kept,
+            _ => Self::Active,
+        }
+    }
+}
+
 /// One wallpaper the pre-generation pass would reach, and what it owes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
     pub wallpaper_id: i64,
-    /// Carried through so the pass does not re-read `path` per wallpaper. It is
-    /// a snapshot either way: a reject moves the file and rewrites the row, and
-    /// the pass re-reads the Status under its own lock before generating.
+    /// Where the file sat when the list was built, which is what the freshness
+    /// check `stat`ed. A reject or a Restore rewrites `path`, so the pass
+    /// re-reads the row under its own lock and generates from what it finds
+    /// there rather than from this copy.
     pub source: PathBuf,
+    /// The Status the list saw, for the pass to compare the row against.
+    pub status: Status,
     pub missing: Missing,
 }
 
@@ -423,13 +455,17 @@ pub struct Pending {
 /// anything can aim at. A scan inserts rows at count 0, so freshly scanned
 /// files land at the head.
 ///
+/// Each entry carries the Status it was listed under, because the pass compares
+/// the row against that rather than against Eligible: a Rejected entry is the
+/// tail group and gets generated, one rejected after the fact does not.
+///
 /// The length is the honest total for the pass's progress, because a wallpaper
 /// it would skip never enters the list.
 pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
     let cached = cache_filenames(cache_dir)?;
 
     let mut stmt = conn.prepare(
-        "SELECT w.id, w.path, s.source_mtime, m.source_mtime
+        "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime
          FROM wallpapers w
          LEFT JOIN thumbnails s ON s.wallpaper_id = w.id AND s.size = 'small'
          LEFT JOIN thumbnails m ON m.wallpaper_id = w.id AND m.size = 'medium'
@@ -439,14 +475,15 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, String>(2)?,
             row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
         ))
     })?;
 
     let mut pending = Vec::new();
     for row in rows {
-        let (wallpaper_id, path, small_mtime, medium_mtime) = row?;
+        let (wallpaper_id, path, status, small_mtime, medium_mtime) = row?;
         let source = PathBuf::from(path);
         // A source that is not on disk cannot be stat'd, so no recorded mtime
         // can be said to match it and the wallpaper joins the list. That is
@@ -470,6 +507,7 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
         pending.push(Pending {
             wallpaper_id,
             source,
+            status: Status::read(&status),
             missing,
         });
     }
@@ -1178,6 +1216,7 @@ mod tests {
             vec![Pending {
                 wallpaper_id: id,
                 source: tmp.path().join("cold.png"),
+                status: Status::Active,
                 missing: Missing::Both,
             }]
         );
@@ -1280,17 +1319,25 @@ mod tests {
         rank(&conn, rejected_voted, "rejected", 9);
         rank(&conn, kept, "kept", 3);
 
-        let order: Vec<i64> = work_list(&conn, cache.path())
+        let order: Vec<(i64, Status)> = work_list(&conn, cache.path())
             .unwrap()
             .into_iter()
-            .map(|p| p.wallpaper_id)
+            .map(|p| (p.wallpaper_id, p.status))
             .collect();
 
         // Kept is Eligible, so it sits in the head group with Active; a scan
-        // inserts at count 0, which is where the next pair is drawn from.
+        // inserts at count 0, which is where the next pair is drawn from. Each
+        // entry carries the Status it was listed under, which is what the pass
+        // compares the row against when its turn comes.
         assert_eq!(
             order,
-            vec![scanned, kept, voted, rejected_fresh, rejected_voted]
+            vec![
+                (scanned, Status::Active),
+                (kept, Status::Kept),
+                (voted, Status::Active),
+                (rejected_fresh, Status::Rejected),
+                (rejected_voted, Status::Rejected),
+            ]
         );
     }
 
