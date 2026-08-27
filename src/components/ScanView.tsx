@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { useApp } from "@/context/AppContext";
 import { client, isAppError } from "@/lib/client";
 import { FolderOpen, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -33,10 +32,16 @@ export function ScanView() {
     added: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { setView } = useApp();
 
   // Subscriptions live for the whole view so no completion event can race a
   // scan start.
+  //
+  // What is left here is this screen's own button and its own progress line.
+  // The three things that outlive the screen — pre-generation, the boot rule's
+  // one rerun, and the report of how the scan ended — moved into the shell,
+  // because Settings unmounts the moment the curator navigates away and a scan
+  // takes minutes (ADR 0015). Navigating on completion left with them: it used
+  // to yank the curator to Rank from wherever they were, on every rescan.
   useEffect(() => {
     let cancelled = false;
     const unlistens: Array<() => void> = [];
@@ -45,18 +50,15 @@ export function ScanView() {
       client.onScanProgress(({ scanned, added }) => {
         setProgress({ scanned, added });
       }),
-      client.onScanComplete(({ added_count, scanned_count }) => {
+      client.onScanComplete(({ scanned_count }) => {
         setScanning(false);
         setProgress(null);
-        // Only a walk that turned up nothing at all is an empty directory.
-        // A rescan that adds nothing means the library already has these —
-        // the common case on every launch after the first, and reporting it
-        // as "no images" strands the user on this screen.
-        if (added_count > 0 || scanned_count > 0) {
-          setView("rank");
-        } else {
-          setError(NO_IMAGES_ERROR);
-        }
+        // Only a walk that turned up nothing at all is an empty directory. A
+        // rescan that adds nothing means the library already has these — the
+        // common case on every launch after the first — and it is not worth a
+        // word on this screen. #113 moves this sentence to the toast the event
+        // arrives on, where it can name the folder as written.
+        if (scanned_count === 0) setError(NO_IMAGES_ERROR);
       }),
       client.onScanFailed(({ message }) => {
         setScanning(false);
@@ -76,7 +78,7 @@ export function ScanView() {
       cancelled = true;
       for (const fn of unlistens) fn();
     };
-  }, [setView]);
+  }, []);
 
   const handleScan = async () => {
     if (!path || scanning) return;

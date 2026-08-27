@@ -1,9 +1,16 @@
-import { client, DEFAULT_SETTINGS, type Settings } from "@/lib/client";
+import {
+  client,
+  DEFAULT_SETTINGS,
+  isAppError,
+  type Settings,
+  type Stats,
+} from "@/lib/client";
 import React, {
   createContext,
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -18,14 +25,64 @@ import React, {
 export type View = "rank" | "review" | "library" | "settings";
 
 /**
- * Where boot lands, until #110 implements ADR 0015's rule: one `get_stats` and
- * four outcomes, two of which dress Settings differently and neither of which
- * is expressible from the single `total_wallpapers` read below.
- *
- * Settings hosts the scan screen for now, so an empty library still has a way
- * to fill itself. That is what the deleted `scan` view was for.
+ * What `get_pair` needs before Rank can draw anything (`voting.rs:74`), and so
+ * the count that decides whether Rank is somewhere the curator can act.
  */
-const INITIAL_VIEW: View = "settings";
+const ELIGIBLE_MINIMUM = 2;
+
+/**
+ * Why boot landed on Settings, when it did.
+ *
+ * Both rows of ADR 0015's boot table that open Settings are reached with no
+ * wallpapers to show, and they must not look alike: "you have not scanned yet"
+ * is an invitation and "the database will not open" is a fault, and one screen
+ * serving both tells the second curator they have never used the app.
+ *
+ * `null` on the two rows that land on Rank or Library, and on every navigation
+ * the curator makes afterwards.
+ */
+export type BootNotice =
+  | { kind: "first_run" }
+  /** `message` is the backend's, which is the only account of the fault there is. */
+  | { kind: "unreadable_library"; message: string };
+
+interface BootLanding {
+  view: View;
+  notice: BootNotice | null;
+}
+
+/**
+ * ADR 0015's boot rule: one `get_stats`, four outcomes.
+ *
+ * It reads what the library holds and not `library_root`, because a configured
+ * root proves the curator typed something rather than that a scan ever
+ * succeeded — ADR 0010 is explicit that the field records what was configured,
+ * and ADR 0011's Written paths can point somewhere that no longer exists.
+ * `eligible_count` is what separates the two libraries that both have rows in
+ * them: a wholly Rejected library cannot draw a pair, so sending it to Rank
+ * lands the curator on an error string instead of on the page that can fix it.
+ *
+ * Nothing here is persisted. Where the curator happened to be last is less use
+ * than what their library can currently do (ADR 0015).
+ */
+function bootLanding(stats: Stats | null, error: unknown): BootLanding {
+  if (!stats) {
+    return {
+      view: "settings",
+      notice: {
+        kind: "unreadable_library",
+        message: isAppError(error) ? error.message : String(error),
+      },
+    };
+  }
+  if (stats.total_wallpapers === 0) {
+    return { view: "settings", notice: { kind: "first_run" } };
+  }
+  if (stats.eligible_count >= ELIGIBLE_MINIMUM) {
+    return { view: "rank", notice: null };
+  }
+  return { view: "library", notice: null };
+}
 
 /** Where a navigation came from, and what it wants looked at on arrival. */
 export interface NavigationOptions {
@@ -49,6 +106,13 @@ interface Navigation {
   view: View;
   returnTo: View | null;
   focus: keyof Settings | null;
+  /**
+   * Rides on the navigation record rather than beside it, so it lives exactly as
+   * long as the landing that produced it. A curator who leaves Settings and
+   * opens it again from the gear is not on a first run any more, and a notice
+   * left standing would tell them they were.
+   */
+  notice: BootNotice | null;
 }
 
 interface AppContextType {
@@ -57,21 +121,38 @@ interface AppContextType {
   returnTo: View | null;
   /** The field this navigation asked Settings to focus; `null` when none did. */
   focus: keyof Settings | null;
+  /** Why boot opened Settings, for the page to say so; `null` in every other case. */
+  bootNotice: BootNotice | null;
   setView: (view: View, options?: NavigationOptions) => void;
   /** What the curator chose, complete: an unread key holds its default. */
   settings: Settings;
+  /**
+   * The boot rule's one rerun, called by the shell on every `scan-complete`.
+   *
+   * A no-op unless the library was empty before the scan and is not after,
+   * which is what makes it happen at most once: a first run scans, and the app
+   * moves off the page that asked it to. Every other completion leaves the
+   * curator where they are, because a scan now starts from inside Settings and
+   * finishes minutes later on whatever page they wandered to (ADR 0015).
+   */
+  rerunBootRuleAfterScan: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [navigation, setNavigation] = useState<Navigation>({
-    view: INITIAL_VIEW,
-    returnTo: null,
-    focus: null,
-  });
+  // `null` until the boot read settles, which is the same fact as "nothing has
+  // rendered yet": where the app opens is computed from what the library holds,
+  // so before that answer arrives there is no honest view to show.
+  const [navigation, setNavigation] = useState<Navigation | null>(null);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [booted, setBooted] = useState(false);
+  const booted = navigation !== null;
+
+  // Whether the library was empty the last time anything counted it, which is
+  // the "before the scan" half of the rerun's condition. A ref rather than
+  // state: nothing renders from it, and the scan-complete handler that reads it
+  // is registered once for the life of the shell.
+  const libraryEmpty = useRef(false);
 
   // A navigation replaces the whole record rather than merging into it. A
   // `returnTo` left standing from an earlier hop would close Settings to a view
@@ -82,6 +163,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       view,
       returnTo: options?.returnTo ?? null,
       focus: options?.focus ?? null,
+      notice: null,
     });
   }, []);
 
@@ -89,14 +171,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
 
     void (async () => {
+      // Kept beside the read rather than thrown away with it: the failed row of
+      // the boot table renders the backend's own message, which is the only
+      // account of the fault there is.
+      let statsError: unknown = null;
+
       // One round trip's worth of waiting for both reads. Each catches its own
       // rejection rather than letting `Promise.all` discard the other's answer,
       // because neither failure may stop the app: a library that will not read
-      // just leaves the user on scan, and a preference that will not read must
-      // not lock them out of the app that would let them fix it (ADR 0010).
+      // is a row of the boot table rather than a dead end, and a preference that
+      // will not read must not lock the curator out of the app that would let
+      // them fix it (ADR 0010).
       const [stats, stored] = await Promise.all([
         client.getStats().catch((error: unknown) => {
           console.error("Failed to load library stats:", error);
+          statsError = error;
           return null;
         }),
         client.getSettings().catch((error: unknown) => {
@@ -108,21 +197,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       if (stored) setSettings(stored);
 
-      // A library survives across launches, so a curator who has already
-      // scanned lands on Rank rather than on the page offering to scan again.
-      // Without this they are locked out of their own library every launch
-      // after the first, because a rescan of an already-scanned folder adds
-      // nothing — which the scan screen reports as "no images found".
-      //
-      // #110 replaces it with ADR 0015's rule, which reads `eligible_count`
-      // too and can tell an empty library from a wholly Rejected one.
-      if (stats && stats.total_wallpapers > 0) {
-        setNavigation((current) =>
-          current.view === INITIAL_VIEW ? { ...current, view: "rank" } : current,
-        );
-      }
+      // A read that failed says nothing about whether the library is empty, so
+      // it does not arm the rerun below either.
+      libraryEmpty.current = stats?.total_wallpapers === 0;
 
-      setBooted(true);
+      const landing = bootLanding(stats, statsError);
+      setNavigation({
+        view: landing.view,
+        returnTo: null,
+        focus: null,
+        notice: landing.notice,
+      });
     })();
 
     return () => {
@@ -130,46 +215,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // The frontend owns the trigger for pre-generation, the way it already owns
-  // the scan: spawning the pass from Tauri's `setup()` would start decoding
-  // before the window paints, competing with WebKit for the first frame
-  // (ADR 0012). So it starts once the gate above has settled, and again after
-  // every scan, which is what gets freshly scanned files warmed first.
-  //
-  // ScanView listens to `scan-complete` as well, for its own reporting, and
-  // this stays a second listener rather than a call from there because that
-  // event still navigates and so unmounts the component that would make the
-  // call. #110 moves the whole subscription up into the shell, where a scan
-  // that finishes on some other page still reaches all three things hanging off
-  // it. Nothing renders progress yet (#112).
-  useEffect(() => {
-    if (!booted) return;
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
+  const rerunBootRuleAfterScan = useCallback(() => {
+    if (!libraryEmpty.current) return;
 
-    // A pass that will not start leaves the cache cold and nothing else: the
-    // views it warms for all still generate on demand, so this is logged the
-    // way a failed boot read is and the app carries on.
-    const start = () => {
-      void client.startPregen().catch((error: unknown) => {
-        console.error("Failed to start thumbnail pre-generation:", error);
+    void (async () => {
+      const stats = await client.getStats().catch((error: unknown) => {
+        console.error("Failed to re-read library stats after a scan:", error);
+        return null;
       });
-    };
+      // Neither a failed read nor a scan that added nothing can establish "and
+      // is not after", so both leave the curator on the page that offered to
+      // scan — with the folder they typed still in the field. A later scan of a
+      // better path is still the first one that fills the library, and still
+      // gets the rerun.
+      if (!stats || stats.total_wallpapers === 0) return;
 
-    start();
-    void client.onScanComplete(start).then((off) => {
-      if (cancelled) {
-        off();
-        return;
-      }
-      unlisten = off;
-    });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [booted]);
+      libraryEmpty.current = false;
+      // The rule, not a hardcoded "rank": a first scan that turned up a single
+      // wallpaper has nothing for Rank to compare it against, and lands on
+      // Library for the same reason boot would have.
+      const landing = bootLanding(stats, null);
+      setNavigation({
+        view: landing.view,
+        returnTo: null,
+        focus: null,
+        notice: landing.notice,
+      });
+    })();
+  }, []);
 
   // The palette is a class on the document element, because index.css keys both
   // the tokens and the `dark:` variant off one there. Nothing is written before
@@ -193,8 +266,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Nothing paints until both reads have settled, so a screen that reads a
   // setting never renders once against the defaults and again against the
-  // stored choice. The palette in index.css covers the gap.
-  if (!booted) return null;
+  // stored choice, and no view paints before the boot rule has picked one. The
+  // palette in index.css covers the gap.
+  if (navigation === null) return null;
 
   return (
     <AppContext.Provider
@@ -202,8 +276,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         view: navigation.view,
         returnTo: navigation.returnTo,
         focus: navigation.focus,
+        bootNotice: navigation.notice,
         setView,
         settings,
+        rerunBootRuleAfterScan,
       }}
     >
       {children}

@@ -1,7 +1,19 @@
 import App from "@/App";
+import type { Settings } from "@/lib/client";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { flush, settings, stats, wallpaper } from "./fixtures";
+import { expectConsoleError } from "./console-guard";
+import {
+  deferred,
+  emptyStats,
+  flush,
+  hiddenViews,
+  mountedViews,
+  settings,
+  showingView,
+  stats,
+  wallpaper,
+} from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // The shell owns the navigation, so every test here renders the whole app and
@@ -12,6 +24,7 @@ const PICK_FEEDBACK_MS = 300;
 
 let getPairCalls = 0;
 let getReviewCalls = 0;
+let pregenStarts = 0;
 let scannedPaths: string[];
 let votes: Array<[number, number]>;
 
@@ -23,6 +36,7 @@ afterEach(() => {
 beforeEach(() => {
   getPairCalls = 0;
   getReviewCalls = 0;
+  pregenStarts = 0;
   scannedPaths = [];
   votes = [];
 
@@ -30,7 +44,12 @@ beforeEach(() => {
   // starts where the curator spends their time.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  // The shell starts pre-generation as soon as it mounts, which is as soon as
+  // the boot gate settles, so every render in this file reaches this command.
+  mockCommand("start_pregen", () => {
+    pregenStarts++;
+    return null;
+  });
   mockCommand("get_pair", () => {
     getPairCalls++;
     return [wallpaper(getPairCalls * 2 - 1), wallpaper(getPairCalls * 2)];
@@ -58,35 +77,6 @@ const chromeRow = () =>
   document.querySelector('[data-slot="chrome-row"]') as HTMLElement;
 const scanInput = () => screen.queryByPlaceholderText("/home/user/wallpapers");
 
-/** Every view container in the tree, in the order the shell renders them. */
-function mountedViews(): HTMLElement[] {
-  return Array.from(
-    document.querySelectorAll<HTMLElement>('[data-slot="view"]'),
-  );
-}
-
-/**
- * The one view being shown, by name. Throws if the shell is showing none or
- * more than one, which is the failure a hide-and-show swap can produce and a
- * remount cannot.
- */
-function showingView(): string {
-  const shown = mountedViews().filter((el) => el.style.display !== "none");
-  if (shown.length !== 1) {
-    throw new Error(
-      `${shown.length} views showing, of ${mountedViews().length} mounted`,
-    );
-  }
-  return shown[0].dataset.view ?? "";
-}
-
-/** The names of the views that are in the DOM but hidden. */
-function hiddenViews(): string[] {
-  return mountedViews()
-    .filter((el) => el.style.display === "none")
-    .map((el) => el.dataset.view ?? "");
-}
-
 /** Which tab carries the active treatment, if any. */
 function selectedTab(): string | null {
   const selected = allTabs().find(
@@ -102,9 +92,13 @@ async function click(element: Element) {
   await flush();
 }
 
-async function pressKey(target: Window | Element, key: string) {
+async function pressKey(
+  target: Window | Element,
+  key: string,
+  modifiers: { ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean } = {},
+) {
   await act(async () => {
-    fireEvent.keyDown(target, { key });
+    fireEvent.keyDown(target, { key, ...modifiers });
   });
   await flush();
 }
@@ -324,8 +318,9 @@ test("Library shows an empty state that names the way on", async () => {
   ).not.toBeNull();
 });
 
-test("a scan still runs end to end from inside Settings", async () => {
+test("a scan still runs end to end from inside Settings, and leaves the curator there", async () => {
   await openApp();
+  await click(tab("Review"));
   await click(gear());
 
   const input = scanInput() as HTMLInputElement;
@@ -340,8 +335,229 @@ test("a scan still runs end to end from inside Settings", async () => {
   });
   await flush();
 
-  // ScanView still navigates on completion. #110 moves the subscription into
-  // the shell and takes that navigation away.
+  // The library already had wallpapers, so this is a rescan and it navigates
+  // nowhere: a scan takes minutes and finishes wherever the curator has
+  // wandered to, which used to be Rank whether they liked it or not.
+  expect(showingView()).toBe("settings");
+  expect(screen.getByRole("button", { name: /start ranking/i })).not.toBeNull();
+
+  // And the gear still closes back to where Settings was opened from.
+  await click(gear());
+  expect(showingView()).toBe("review");
+});
+
+test("the shell starts pre-generation after boot and again after every scan", async () => {
+  // The frontend owns the trigger (ADR 0012) and it fires after the boot gate,
+  // so decoding never competes with the first paint. Freshly scanned rows sit
+  // at zero comparisons, which is the head of the pass's queue, so the restart
+  // after a scan is what warms what the app will show next.
+  const held = deferred<Settings>();
+  mockCommand("get_settings", () => held.promise);
+
+  render(<App />);
+  await flush();
+
+  // The shell is what holds the subscription, and the shell does not mount
+  // until the boot reads have settled: that is the gate, spelled out.
+  expect(pregenStarts).toBe(0);
+
+  held.resolve(settings());
+  await flush();
+  expect(pregenStarts).toBe(1);
+
+  for (const added of [4, 0]) {
+    await act(async () => {
+      emitEvent("scan-complete", { added_count: added, scanned_count: 9 });
+    });
+    await flush();
+  }
+  expect(pregenStarts).toBe(3);
+
+  // Switching view does not restart it: the subscription is the shell's, and the
+  // shell is mounted once.
+  await click(tab("Library"));
+  expect(pregenStarts).toBe(3);
+});
+
+test("a pre-generation start that fails leaves the app where it booted", async () => {
+  // Nothing the curator can see depends on the pass: the views it warms all
+  // generate on demand, so a refused start is logged and the boot stands.
+  mockCommand("start_pregen", () =>
+    Promise.reject({ kind: "db", message: "locked database" }),
+  );
+  expectConsoleError(/Failed to start thumbnail pre-generation/);
+
+  await openApp();
+
+  expect(showingView()).toBe("rank");
+});
+
+test("a scan that fills an empty library lands on Rank, once", async () => {
+  // The boot rule's one rerun, and the only navigation left on `scan-complete`.
+  mockCommand("get_stats", () => emptyStats());
+  await openApp();
+  expect(showingView()).toBe("settings");
+
+  mockCommand("get_stats", () => stats());
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 12, scanned_count: 12 });
+  });
+  await flush();
+  expect(showingView()).toBe("rank");
+
+  // Once: the library is not empty any more, so the next scan is a rescan and
+  // leaves the curator reading whatever they went to read.
+  await click(tab("Library"));
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 3, scanned_count: 40 });
+  });
+  await flush();
+  expect(showingView()).toBe("library");
+});
+
+test("a first scan that finds nothing leaves an empty library on Settings", async () => {
+  // Nothing filled, so nothing to rerun the rule about — and the folder the
+  // curator typed is still in the field, ready to be corrected.
+  mockCommand("get_stats", () => emptyStats());
+  await openApp();
+
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 0, scanned_count: 0 });
+  });
+  await flush();
+
+  expect(showingView()).toBe("settings");
+
+  // And the rerun is still armed, because that scan never filled anything.
+  mockCommand("get_stats", () => stats());
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 12, scanned_count: 12 });
+  });
+  await flush();
+  expect(showingView()).toBe("rank");
+});
+
+test("a first scan that turns up a single wallpaper lands on Library", async () => {
+  // The rule reruns rather than a hardcoded "rank": one wallpaper has nothing
+  // to be compared against, and Rank would only have an error string for it.
+  mockCommand("get_stats", () => emptyStats());
+  await openApp();
+
+  mockCommand("get_stats", () =>
+    stats({
+      total_wallpapers: 1,
+      eligible_count: 1,
+      round_participated_count: 0,
+      evaluated_count: 0,
+      total_comparisons: 0,
+    }),
+  );
+  mockCommand("list_wallpapers", () => [wallpaper(1)]);
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 1, scanned_count: 1 });
+  });
+  await flush();
+
+  expect(showingView()).toBe("library");
+});
+
+test("Ctrl+1, Ctrl+2 and Ctrl+3 reach Rank, Review and Library", async () => {
+  await openApp();
+
+  await pressKey(window, "2", { ctrlKey: true });
+  expect(showingView()).toBe("review");
+  expect(selectedTab()).toBe("Review");
+
+  await pressKey(window, "3", { ctrlKey: true });
+  expect(showingView()).toBe("library");
+
+  await pressKey(window, "1", { ctrlKey: true });
+  expect(showingView()).toBe("rank");
+
+  // The digit alone is not a shortcut: bare keys belong to the view, and Rank
+  // is about to want them.
+  await pressKey(window, "3");
+  expect(showingView()).toBe("rank");
+});
+
+test("Ctrl+, opens Settings and records where the curator was", async () => {
+  await openApp();
+  await click(tab("Library"));
+
+  await pressKey(window, ",", { ctrlKey: true });
+  expect(showingView()).toBe("settings");
+  expect(selectedTab()).toBeNull();
+
+  // Pressed again it does nothing: the gear is the way out, and #77's Escape
+  // will be the other. A binding that both opened and closed would mean two
+  // things.
+  await pressKey(window, ",", { ctrlKey: true });
+  expect(showingView()).toBe("settings");
+
+  await click(gear());
+  expect(showingView()).toBe("library");
+});
+
+test("a keystroke typed into a text field navigates nowhere", async () => {
+  await openApp();
+  await click(gear());
+  const input = scanInput() as HTMLInputElement;
+
+  // A path may hold a comma, and `?` is a character like any other. Every
+  // binding is off while the caret is in a field, which is the whole of the
+  // suppression rule.
+  for (const key of ["1", "2", "3", ","]) {
+    await pressKey(input, key, { ctrlKey: true });
+    expect(showingView()).toBe("settings");
+  }
+  await pressKey(input, "?");
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  // The same keystroke outside the field does navigate, so this test is about
+  // the suppression rather than about a shortcut that never worked.
+  await pressKey(window, "1", { ctrlKey: true });
+  expect(showingView()).toBe("rank");
+});
+
+test("? opens a dialog listing every binding the epic defines", async () => {
+  await openApp();
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  await pressKey(window, "?");
+
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.textContent).toContain("Keyboard shortcuts");
+
+  // Four the shell binds, and four it does not: the arrows are Rank's, F8 is
+  // the toast viewport's own hotkey, and Ctrl+Z presses the Undo #112 mounts.
+  // A shortcut nobody can find is a shortcut nobody uses.
+  const keys = Array.from(dialog.querySelectorAll("kbd")).map(
+    (el) => el.textContent,
+  );
+  expect(keys).toEqual([
+    "Ctrl",
+    "1",
+    "Ctrl",
+    "2",
+    "Ctrl",
+    "3",
+    "Ctrl",
+    ",",
+    "←",
+    "→",
+    "Ctrl",
+    "Z",
+    "F8",
+    "?",
+  ]);
+  for (const action of ["Rank", "Review", "Library", "Settings", "Undo"]) {
+    expect(dialog.textContent).toContain(action);
+  }
+
+  // It is a dialog rather than a page, so it closes and leaves the curator
+  // exactly where they were.
+  await click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(showingView()).toBe("rank");
 });
 

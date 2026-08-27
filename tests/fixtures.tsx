@@ -54,6 +54,53 @@ export function settings(over: Partial<Settings> = {}): Settings {
   };
 }
 
+/**
+ * A library nothing has been scanned into: the row of ADR 0015's boot table
+ * that dresses Settings as a first run. Spelled out rather than overridden off
+ * `stats()`, because a `total_wallpapers` of 0 beside an Eligible pool of 10 is
+ * a library the backend could never report, and the boot rule reads both.
+ */
+export function emptyStats(over: Partial<Stats> = {}): Stats {
+  return {
+    total_wallpapers: 0,
+    eligible_count: 0,
+    round: 1,
+    round_participated_count: 0,
+    evaluated_count: 0,
+    total_comparisons: 0,
+    ...over,
+  };
+}
+
+/** Every view container in the tree, in the order the shell renders them. */
+export function mountedViews(): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>('[data-slot="view"]'),
+  );
+}
+
+/**
+ * The one view being shown, by name. Throws if the shell is showing none or
+ * more than one, which is the failure a hide-and-show swap can produce and a
+ * remount cannot.
+ */
+export function showingView(): string {
+  const shown = mountedViews().filter((el) => el.style.display !== "none");
+  if (shown.length !== 1) {
+    throw new Error(
+      `${shown.length} views showing, of ${mountedViews().length} mounted`,
+    );
+  }
+  return shown[0].dataset.view ?? "";
+}
+
+/** The names of the views that are in the DOM but hidden. */
+export function hiddenViews(): string[] {
+  return mountedViews()
+    .filter((el) => el.style.display === "none")
+    .map((el) => el.dataset.view ?? "");
+}
+
 /** happy-dom keeps the media-query answers on the window rather than in the DOM. */
 interface DeviceWindow {
   happyDOM: { settings: { device: { prefersColorScheme: "light" | "dark" } } };

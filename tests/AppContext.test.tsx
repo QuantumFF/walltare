@@ -7,15 +7,14 @@ import { expectConsoleError } from "./console-guard";
 import {
   deferred,
   desktopColorScheme,
+  emptyStats,
   flush,
   settings,
+  showingView,
   stats,
   wallpaper,
 } from "./fixtures";
-import { emitEvent, mockCommand } from "./ipc-mocks";
-
-/** How many times the provider has asked for a pre-generation pass. */
-let pregenStarts = 0;
+import { mockCommand } from "./ipc-mocks";
 
 /**
  * The scan screen's path field, which Settings hosts until #77 replaces it.
@@ -23,6 +22,27 @@ let pregenStarts = 0;
  * unmounts.
  */
 const scanInput = () => screen.queryByPlaceholderText("/home/user/wallpapers");
+
+/** The Settings view's own body, which is where boot writes why it landed here. */
+const settingsView = () =>
+  document.querySelector('[data-slot="view"][data-view="settings"]');
+
+/**
+ * A twelve-row library with `eligible` of them Eligible and nothing compared
+ * yet — the two middle rows of ADR 0015's boot table, which differ only in that
+ * count. Spelled out so the numbers stay a library the backend could report:
+ * the rule reads `total_wallpapers` and `eligible_count` both.
+ */
+function withEligible(eligible: number): Stats {
+  return stats({
+    total_wallpapers: 12,
+    eligible_count: eligible,
+    round: 1,
+    round_participated_count: 0,
+    evaluated_count: 0,
+    total_comparisons: 0,
+  });
+}
 
 /** The palette classes index.css keys off, in the order light-then-dark. */
 function palette(): { light: boolean; dark: boolean } {
@@ -77,41 +97,67 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  // RankView is what the bootstrap redirect lands on; give it a pair to show.
+  // Rank is where the first row of the boot table lands; give it a pair to show.
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockCommand("get_settings", () => settings());
-  // The provider starts pre-generation as soon as the gate settles, so every
-  // render in this file reaches this command.
-  pregenStarts = 0;
-  mockCommand("start_pregen", () => {
-    pregenStarts++;
-    return null;
-  });
+  // The shell starts pre-generation as soon as it mounts, which is as soon as
+  // the boot gate settles, so every `<App />` in this file reaches this command.
+  mockCommand("start_pregen", () => null);
 });
 
-test("a library that already has wallpapers opens on rank", async () => {
-  mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
+// ADR 0015's boot table, one test per row. Boot reads what the library holds
+// rather than `library_root`, because a configured root proves the curator
+// typed something and not that a scan ever succeeded — and nothing is
+// persisted, so where they happened to be last plays no part either.
+
+test("a library with two Eligible wallpapers opens on Rank", async () => {
+  // Two is exactly what `get_pair` needs, so it is the boundary the rule is
+  // written on rather than a comfortable margin.
+  mockCommand("get_stats", () => withEligible(2));
 
   render(<App />);
   await flush();
 
-  // Without the bootstrap every launch after the first lands on the page that
-  // offers to scan a folder already scanned.
+  expect(showingView()).toBe("rank");
   expect(screen.queryByAltText("Left Wallpaper")).not.toBeNull();
   expect(scanInput()).toBeNull();
 });
 
-test("an empty library opens on settings, where the scan screen is", async () => {
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+test("a library with fewer than two Eligible opens on Library", async () => {
+  // One wallpaper left in the pool cannot be compared against anything, and a
+  // wholly Rejected library is the same row: Rank would have nothing but an
+  // error string, while Library is where a Restore is.
+  for (const eligible of [1, 0]) {
+    mockCommand("get_stats", () => withEligible(eligible));
+
+    render(<App />);
+    await flush();
+
+    expect(showingView()).toBe("library");
+    expect(screen.queryByAltText("Left Wallpaper")).toBeNull();
+    expect(scanInput()).toBeNull();
+
+    cleanup();
+  }
+});
+
+test("an empty library opens on Settings, dressed as a first run", async () => {
+  mockCommand("get_stats", () => emptyStats());
 
   render(<App />);
   await flush();
 
+  expect(showingView()).toBe("settings");
+  // Settings hosts the scan screen until #77, so the invitation has something
+  // to invite the curator into.
   expect(scanInput()).not.toBeNull();
-  expect(screen.queryByAltText("Left Wallpaper")).toBeNull();
+  expect(settingsView()?.textContent).toContain("Your library is empty");
+  expect(settingsView()?.textContent).not.toContain(
+    "couldn't read your library",
+  );
 });
 
-test("a stats lookup that fails leaves the user on settings", async () => {
+test("a library that will not read opens on Settings, saying that instead", async () => {
   mockCommand("get_stats", () =>
     Promise.reject({ kind: "db", message: "locked database" }),
   );
@@ -120,14 +166,40 @@ test("a stats lookup that fails leaves the user on settings", async () => {
   render(<App />);
   await flush();
 
-  expect(scanInput()).not.toBeNull();
+  expect(showingView()).toBe("settings");
+  expect(settingsView()?.textContent).toContain("couldn't read your library");
+  // The backend's message verbatim: it is the only account of the fault there
+  // is, and no canned sentence can name the lock.
+  expect(settingsView()?.textContent).toContain("locked database");
+  expect(settingsView()?.textContent).not.toContain("Your library is empty");
+});
+
+test("the two rows that both open Settings do not render the same thing", async () => {
+  // The bug this replaces: one screen served both, so a curator whose database
+  // would not open was told they had never scanned.
+  mockCommand("get_stats", () => emptyStats());
+  render(<App />);
+  await flush();
+  const firstRun = settingsView()?.textContent ?? "";
+
+  cleanup();
+  mockCommand("get_stats", () =>
+    Promise.reject({ kind: "db", message: "locked database" }),
+  );
+  expectConsoleError(/Failed to load library stats/);
+  render(<App />);
+  await flush();
+  const unreadable = settingsView()?.textContent ?? "";
+
+  expect(firstRun).not.toBe("");
+  expect(unreadable).not.toBe(firstRun);
 });
 
 test("nothing renders until the settings read has landed", async () => {
   // The reason the gate exists: a screen that reads a setting must not paint
   // once against the defaults and again against the stored choice.
   const held = deferred<Settings>();
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () => held.promise);
 
   render(<App />);
@@ -142,6 +214,8 @@ test("nothing renders until the settings read has landed", async () => {
 });
 
 test("nothing renders until the stats read has landed", async () => {
+  // And this one is the boot rule itself: the view is computed from the answer,
+  // so there is no honest view to paint before it arrives.
   const held = deferred<Stats>();
   mockCommand("get_stats", () => held.promise);
 
@@ -150,14 +224,14 @@ test("nothing renders until the stats read has landed", async () => {
 
   expect(scanInput()).toBeNull();
 
-  held.resolve(stats({ total_wallpapers: 0 }));
+  held.resolve(emptyStats());
   await flush();
 
   expect(scanInput()).not.toBeNull();
 });
 
 test("the stored settings are readable from useApp", async () => {
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () =>
     settings({
       theme: "dark",
@@ -185,7 +259,7 @@ test("a navigation carries where it came from and the field to focus", async () 
   // curator to one Settings field and have the page close back to where they
   // were. The field key is `keyof Settings`, so a caller cannot name one that
   // is not there.
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
 
   render(
     <AppProvider>
@@ -210,7 +284,7 @@ test("a navigation carries where it came from and the field to focus", async () 
 test("a settings read that fails still starts the app, on the defaults", async () => {
   // A bad row must not lock the curator out of the app that would let them fix
   // it, so boot logs the failure and carries on with the defaults standing.
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () =>
     Promise.reject({ kind: "db", message: "locked database" }),
   );
@@ -227,7 +301,7 @@ test("a settings read that fails still starts the app, on the defaults", async (
 });
 
 test("a stored theme of dark paints the dark palette", async () => {
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () => settings({ theme: "dark" }));
 
   render(<App />);
@@ -242,7 +316,7 @@ test("a stored theme of light paints the light palette on a dark desktop", async
   // The other direction of the same property, and the one frame ADR 0010
   // accepts as wrong-coloured before the gate settles.
   desktopColorScheme("dark");
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () => settings({ theme: "light" }));
 
   render(<App />);
@@ -253,7 +327,7 @@ test("a stored theme of light paints the light palette on a dark desktop", async
 
 test("a stored theme of system takes the palette from the desktop", async () => {
   desktopColorScheme("dark");
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () => settings({ theme: "system" }));
 
   render(<App />);
@@ -275,7 +349,7 @@ test("no palette is written until the settings read has landed", async () => {
   // Until then the `prefers-color-scheme` branch in index.css is what paints,
   // and a class written early could only name the same palette twice.
   const held = deferred<Settings>();
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () => held.promise);
 
   render(<App />);
@@ -289,63 +363,9 @@ test("no palette is written until the settings read has landed", async () => {
   expect(palette()).toEqual({ light: false, dark: true });
 });
 
-test("the pre-generation pass starts once the boot gate has settled", async () => {
-  // The frontend owns the trigger (ADR 0012), and it fires after the gate so
-  // decoding cannot compete with the first paint. A re-render must not fire it
-  // again: each call cancels and joins the pass before it.
-  const held = deferred<Settings>();
-  mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
-  mockCommand("get_settings", () => held.promise);
-
-  const { rerender } = render(<App />);
-  await flush();
-
-  expect(pregenStarts).toBe(0);
-
-  held.resolve(settings());
-  await flush();
-
-  expect(pregenStarts).toBe(1);
-
-  rerender(<App />);
-  await flush();
-
-  expect(pregenStarts).toBe(1);
-});
-
-test("a scan-complete starts the pre-generation pass again", async () => {
-  // Freshly scanned rows sit at zero comparisons, which is the head of the
-  // pass's queue, so the restart is what warms what the app will show next.
-  mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
-
-  render(<App />);
-  await flush();
-
-  expect(pregenStarts).toBe(1);
-
-  await act(async () => {
-    emitEvent("scan-complete", { added_count: 2, scanned_count: 5 });
-  });
-  await flush();
-
-  expect(pregenStarts).toBe(2);
-});
-
-test("a pre-generation start that fails leaves the app where it booted", async () => {
-  // Nothing the curator can see depends on the pass: the views it warms all
-  // generate on demand, so a refused start is logged and the boot stands.
-  mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
-  mockCommand("start_pregen", () =>
-    Promise.reject({ kind: "db", message: "locked database" }),
-  );
-  expectConsoleError(/Failed to start thumbnail pre-generation/);
-
-  render(<App />);
-  await flush();
-
-  expect(screen.queryByAltText("Left Wallpaper")).not.toBeNull();
-  expect(scanInput()).toBeNull();
-});
+// The pre-generation trigger and the scan subscription moved into the shell,
+// where a scan that finishes on some other page still reaches them, so what
+// they do now lives in `Layout.test.tsx` beside the navigation they can cause.
 
 test("both reads failing still starts the app", async () => {
   mockCommand("get_stats", () =>
@@ -360,5 +380,9 @@ test("both reads failing still starts the app", async () => {
   render(<App />);
   await flush();
 
+  // The unreadable-library row, on the default settings: a bad row in either
+  // table must not lock the curator out of the app that would let them fix it.
+  expect(showingView()).toBe("settings");
+  expect(settingsView()?.textContent).toContain("couldn't read your library");
   expect(scanInput()).not.toBeNull();
 });

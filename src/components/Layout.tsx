@@ -2,11 +2,14 @@ import { LibraryView } from "@/components/LibraryView";
 import { RankView } from "@/components/RankView";
 import { ReviewView } from "@/components/ReviewView";
 import { SettingsView } from "@/components/SettingsView";
+import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { useApp, type View } from "@/context/AppContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
+import { client } from "@/lib/client";
 import { cn } from "@/lib/utils";
 import { Images, Settings as SettingsIcon } from "lucide-react";
 import {
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -190,8 +193,47 @@ function Chrome() {
   );
 }
 
+/**
+ * The destination behind each `Ctrl` shortcut.
+ *
+ * `Ctrl` rather than a bare digit because bare keys are spoken for: Rank votes
+ * with the arrows, ADR 0022's lightbox walks with them and rejects with `Delete`,
+ * and a single-key navigation would fire from any of that (ADR 0015).
+ */
+const NAVIGATION_KEYS: Record<string, View> = {
+  "1": "rank",
+  "2": "review",
+  "3": "library",
+  ",": "settings",
+};
+
+/**
+ * `<input>` types that hold no text. A keystroke on a checkbox or a slider is a
+ * command rather than a character, so those are not the curator typing.
+ */
+const NON_TEXT_INPUT_TYPES = new Set([
+  "button",
+  "checkbox",
+  "color",
+  "file",
+  "image",
+  "radio",
+  "range",
+  "reset",
+  "submit",
+]);
+
+/** Whether a keystroke landed somewhere the curator is entering text. */
+function isTextEntry(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  if (target.tagName === "TEXTAREA") return true;
+  if (target.tagName !== "INPUT") return false;
+  return !NON_TEXT_INPUT_TYPES.has((target as HTMLInputElement).type);
+}
+
 export function Layout() {
-  const { view } = useApp();
+  const { view, setView, rerunBootRuleAfterScan } = useApp();
 
   // Which destinations have ever been shown. A view enters the tree on its first
   // visit and never leaves it, so this only ever grows.
@@ -214,6 +256,119 @@ export function Layout() {
     () => ({ container: lightboxContainer, setOpen: setLightboxOpen }),
     [lightboxContainer],
   );
+
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+
+  // The scan subscription, above the view swap.
+  //
+  // It cannot live in the page that starts the scan. A scan now starts from
+  // inside Settings, Settings is the one view the shell unmounts, and a walk of
+  // a large folder takes minutes — so by the time `scan-complete` arrives the
+  // component that asked for it is usually gone, and the curator is somewhere
+  // else entirely. That is also why the event no longer navigates: it used to
+  // pull them to Rank from whatever they were doing, on every rescan.
+  //
+  // Two things hang off it here, and two more arrive later: #111 publishes
+  // `library-scanned` so the mounted views refetch, and #112/#113 turn the
+  // progress and the four endings into ADR 0021's pinned toast. Nothing renders
+  // scan progress from up here yet.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    // The frontend owns the trigger for pre-generation, the way it already owns
+    // the scan: spawning the pass from Tauri's `setup()` would start decoding
+    // before the window paints, competing with WebKit for the first frame
+    // (ADR 0012). Mounting is the gate — `AppProvider` renders nothing until
+    // both boot reads have settled — so this runs after the boot rule has
+    // picked a view, and again after every scan, which is what gets freshly
+    // scanned files warmed first.
+    //
+    // A pass that will not start leaves the cache cold and nothing else: the
+    // views it warms for all still generate on demand, so this is logged the
+    // way a failed boot read is and the app carries on.
+    const startPregen = () => {
+      void client.startPregen().catch((error: unknown) => {
+        console.error("Failed to start thumbnail pre-generation:", error);
+      });
+    };
+
+    startPregen();
+    void client
+      .onScanComplete(() => {
+        startPregen();
+        // The boot rule's one exception, and the only navigation left on this
+        // event. It decides for itself whether this scan is the one that filled
+        // an empty library.
+        rerunBootRuleAfterScan();
+      })
+      .then((off) => {
+        if (cancelled) {
+          off();
+          return;
+        }
+        unlisten = off;
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [rerunBootRuleAfterScan]);
+
+  // One keyboard handler for the whole app, on `window` because the shell is
+  // always mounted and there is exactly one of it — the view-scoped gate
+  // ADR 0019 owes every other global listener does not apply here.
+  //
+  // Suppressed while the caret is in a text field and at no other time. That is
+  // the whole of it: `Ctrl+,` is a character a curator can be typing (a path
+  // may hold a comma) and `?` certainly is, so a shortcut firing mid-typing
+  // navigates away from a half-entered folder. ADR 0022 deleted the other half
+  // of the old rule — the lightbox no longer suppresses this handler, because
+  // doing so disabled `Ctrl+Z` in the one place a reject fires from and hid the
+  // shortcut list where it is most wanted. The one binding that looks dangerous,
+  // `Ctrl+2` swapping the view under an open lightbox, is answered by the rule
+  // that changing destination closes the lightbox — which #80 wires up along
+  // with the lightbox itself.
+  //
+  // Bare arrows are deliberately absent. They belong to whichever element has
+  // focus — the tablist above walks with them — and to the view when nothing in
+  // it does, which is how Rank votes with them (ADR 0015, as amended).
+  useEffect(() => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (isTextEntry(event.target)) return;
+
+      if (
+        event.key === "?" &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey
+      ) {
+        event.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+
+      if (!event.ctrlKey || event.altKey || event.metaKey) return;
+      const destination = NAVIGATION_KEYS[event.key];
+      if (!destination) return;
+      event.preventDefault();
+
+      if (destination !== "settings") {
+        setView(destination);
+        return;
+      }
+      // The same bargain the gear strikes: Settings is a page with no back of
+      // its own, so the shortcut records where the curator was. Pressed while
+      // Settings is already up it does nothing — the gear and, once #77 lands
+      // it, Escape are the ways out, and a second `Ctrl+,` closing the page
+      // would make the binding mean two things.
+      if (view !== "settings") setView("settings", { returnTo: view });
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [setView, view]);
 
   return (
     <div className="flex h-screen flex-col bg-background font-sans text-foreground antialiased selection:bg-primary selection:text-primary-foreground">
@@ -276,6 +431,12 @@ export function Layout() {
       />
 
       {/* #112 mounts the toast viewport here, as the last child of this root. */}
+
+      {/* Portalled to the body by the primitive, so its place in this file is
+          not what stacks it — the z-index in the component is. It is mounted
+          here rather than in a view because `?` reaches it from all four
+          destinations, and a per-view copy would need four (ADR 0015). */}
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   );
 }
