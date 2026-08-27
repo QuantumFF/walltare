@@ -8,7 +8,7 @@ mod thumbnails;
 mod voting;
 mod window_state;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -44,6 +44,26 @@ struct ScanFailed {
     message: String,
 }
 
+/// How far through its work list the pre-generation pass is.
+///
+/// `total` rides along on every emission rather than arriving once in a start
+/// event, so a listener that missed the first one still knows what it is a
+/// fraction of.
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+struct PregenProgress {
+    done: u64,
+    total: u64,
+}
+
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+struct PregenComplete {
+    generated: u64,
+    /// Wallpapers whose source was gone or would not decode. One bad file
+    /// stops nothing, so this is a count rather than an error.
+    failed: u64,
+    cancelled: bool,
+}
+
 pub struct Db(pub Mutex<rusqlite::Connection>);
 
 pub struct CacheDir(pub PathBuf);
@@ -64,6 +84,84 @@ impl Drop for ScanGuard {
             .state::<ScanRunning>()
             .0
             .store(false, Ordering::SeqCst);
+    }
+}
+
+/// A pre-generation pass in flight: its cancel flag and its thread.
+type Run = (Arc<AtomicBool>, std::thread::JoinHandle<()>);
+
+/// The pre-generation pass currently running, if any.
+///
+/// `Some` is the running state, so there is no [`ScanRunning`]-style bool
+/// beside it. The cancel flag is per run rather than global, so a cancel aimed
+/// at one pass cannot land on the pass that starts a moment later (ADR 0012).
+#[derive(Default)]
+pub struct Pregen(Mutex<Option<Run>>);
+
+impl Pregen {
+    /// The running pass, recovering from poisoning for [`lock`]'s reason.
+    ///
+    /// Held across the join in [`supervise_pregen`], which is what makes two
+    /// `start_pregen` calls queue up here instead of racing.
+    fn current(&self) -> MutexGuard<'_, Option<Run>> {
+        self.0.lock().unwrap_or_else(|poisoned| {
+            self.0.clear_poison();
+            poisoned.into_inner()
+        })
+    }
+
+    /// The running pass, or `None` when another thread holds the mutex.
+    ///
+    /// The pass's own thread clears its entry through this rather than through
+    /// [`Pregen::current`]: a second `start_pregen` holds the mutex while it
+    /// joins that very thread, so blocking there would deadlock the two.
+    fn try_current(&self) -> Option<MutexGuard<'_, Option<Run>>> {
+        match self.0.try_lock() {
+            Ok(current) => Some(current),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                self.0.clear_poison();
+                Some(poisoned.into_inner())
+            }
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// Sets the running pass's cancel flag and returns.
+    ///
+    /// Never joins. The flag is read between wallpapers and the `image` crate
+    /// cannot be interrupted mid-decode, so waiting here would block an IPC
+    /// call for up to one wallpaper's decode. A cancel therefore lands up to
+    /// one decode late, and both callers are fine with that: everything already
+    /// generated stays on disk either way.
+    fn cancel(&self) {
+        if let Some((flag, _)) = self.current().as_ref() {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// Clears a pass's entry in [`Pregen`] however its thread ends, panic included
+/// — [`ScanGuard`]'s reasoning, with an entry in place of a bool. An entry that
+/// outlived its thread would leave `cancel_pregen` setting a flag nothing reads
+/// and reporting a pass that has already stopped.
+struct PregenGuard {
+    app: AppHandle,
+    flag: Arc<AtomicBool>,
+}
+
+impl Drop for PregenGuard {
+    fn drop(&mut self) {
+        let pregen = self.app.state::<Pregen>();
+        let Some(mut current) = pregen.try_current() else {
+            // A successor is joining this thread and already took the entry as
+            // part of doing so, so there is nothing here to clear.
+            return;
+        };
+        // Only this run's own entry. A successor that installed itself while
+        // this thread was finishing owns the slot now.
+        if matches!(current.as_ref(), Some((flag, _)) if Arc::ptr_eq(flag, &self.flag)) {
+            *current = None;
+        }
     }
 }
 
@@ -179,6 +277,14 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
         ));
     }
 
+    // A running pre-generation pass stands down, and does not hold up the scan
+    // while it does. Its work list is a snapshot that the rows this scan is
+    // about to insert make stale; the frontend restarts the pass on
+    // `scan-complete`, which is what puts the new files at the head of the
+    // queue (ADR 0012). Placed after the refusal above so a scan that never
+    // starts cancels nothing.
+    app.state::<Pregen>().cancel();
+
     std::thread::spawn(move || {
         let _running = ScanGuard(app.clone());
         let files = scanner::collect_images(std::slice::from_ref(&root));
@@ -256,6 +362,258 @@ fn canonical_scan_root(expanded: PathBuf) -> Result<PathBuf, error::AppError> {
     expanded
         .canonicalize()
         .map_err(|_| error::AppError::InvalidPath(expanded.display().to_string()))
+}
+
+/// Starts generating the `small` and `medium` of every wallpaper that is short
+/// of one, in the order the curator will reach them.
+///
+/// Returns as soon as the supervisor thread is spawned, so a launch pass costs
+/// the boot no time at all. Any pass already running is cancelled and joined by
+/// that supervisor rather than by this call.
+///
+/// The frontend owns the trigger, the way it already owns [`start_scan`]:
+/// spawning from `setup()` would start decoding before the window paints,
+/// competing with WebKit's startup for the first frame (ADR 0012).
+#[tauri::command]
+fn start_pregen(app: AppHandle) {
+    std::thread::spawn(move || supervise_pregen(app));
+}
+
+/// Stands the running pass down and returns without waiting for it.
+///
+/// Everything already generated stays on disk and in the `thumbnails` table: a
+/// partial cache is a correct cache, and the pass runs again next launch.
+#[tauri::command]
+fn cancel_pregen(state: tauri::State<'_, Pregen>) {
+    state.cancel();
+}
+
+/// Retires the previous pass and installs a new one.
+///
+/// On its own thread because both halves of that block: the join waits for up
+/// to one wallpaper's decode, and the [`Pregen`] mutex is held across it, so two
+/// `start_pregen` calls serialize here instead of racing over the same state.
+fn supervise_pregen(app: AppHandle) {
+    let pregen = app.state::<Pregen>();
+    let mut current = pregen.current();
+
+    if let Some((flag, handle)) = current.take() {
+        flag.store(true, Ordering::SeqCst);
+        // A pass that panicked is a pass that has stopped, which is all this
+        // join wants to know.
+        let _ = handle.join();
+    }
+
+    let flag = Arc::new(AtomicBool::new(false));
+    let handle = {
+        let app = app.clone();
+        let flag = Arc::clone(&flag);
+        std::thread::spawn(move || {
+            let _clear = PregenGuard {
+                app: app.clone(),
+                flag: Arc::clone(&flag),
+            };
+            run_pregen(&app, &flag);
+        })
+    };
+    *current = Some((flag, handle));
+}
+
+/// Builds the work list, then runs it.
+///
+/// A work list that cannot be built emits nothing. The only way that happens is
+/// the database being gone, which is already fatal everywhere else, so there is
+/// no `pregen-failed` event for it (ADR 0012).
+fn run_pregen(app: &AppHandle, cancel: &AtomicBool) {
+    let db = app.state::<Db>();
+    let cache_dir = app.state::<CacheDir>();
+
+    let work = match thumbnails::work_list(&lock(&db), &cache_dir.0) {
+        Ok(work) => work,
+        Err(e) => {
+            eprintln!("pre-generation could not read the library: {e}");
+            return;
+        }
+    };
+    pregen_pass(&db, &cache_dir.0, &work, cancel, &EventReport(app));
+}
+
+/// Where a pass reports to.
+///
+/// A parameter rather than an `AppHandle` reached through the state, so the pass
+/// and its per-wallpaper step are drivable from a test: an `AppHandle` only
+/// exists inside a running Tauri app, and the counting is worth asserting on
+/// without one.
+trait PregenReport {
+    fn progress(&self, progress: PregenProgress);
+    fn complete(&self, complete: PregenComplete);
+}
+
+/// The real report: the two events the frontend listens for.
+struct EventReport<'a>(&'a AppHandle);
+
+impl PregenReport for EventReport<'_> {
+    fn progress(&self, progress: PregenProgress) {
+        let _ = self.0.emit("pregen-progress", progress);
+    }
+
+    fn complete(&self, complete: PregenComplete) {
+        let _ = self.0.emit("pregen-complete", complete);
+    }
+}
+
+/// What a pass has done so far.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct PregenTally {
+    generated: u64,
+    failed: u64,
+    /// Wallpapers that stopped being Eligible between the work list and their
+    /// turn. Not reported: the curator who rejected one knows, and a count of
+    /// their own rejects tells them nothing about the cache.
+    skipped: u64,
+}
+
+impl PregenTally {
+    /// Wallpapers the pass is finished with, whichever way each of them went.
+    /// What `pregen-progress` counts, so the bar reaches its total.
+    fn done(&self) -> u64 {
+        self.generated + self.failed + self.skipped
+    }
+}
+
+/// Runs a work list, one wallpaper at a time, reporting as it goes.
+///
+/// Each wallpaper finishes before the next starts, so a cancelled pass leaves a
+/// clean prefix: fully warm, in the order the curator will reach it. The cancel
+/// flag is read between wallpapers, never inside one.
+///
+/// An empty work list — every launch after the first — emits nothing at all,
+/// rather than flashing a finished progress bar for work that never happened.
+fn pregen_pass(
+    db: &Db,
+    cache_dir: &Path,
+    work: &[thumbnails::Pending],
+    cancel: &AtomicBool,
+    report: &impl PregenReport,
+) {
+    if work.is_empty() {
+        return;
+    }
+
+    let total = work.len() as u64;
+    let mut tally = PregenTally::default();
+    // Before the first wallpaper, so a bar can appear immediately instead of
+    // after a two-second decode.
+    report.progress(PregenProgress { done: 0, total });
+
+    let mut cancelled = false;
+    for pending in work {
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
+        pregen_one(db, cache_dir, pending, &mut tally);
+        report.progress(PregenProgress {
+            done: tally.done(),
+            total,
+        });
+    }
+
+    report.complete(PregenComplete {
+        generated: tally.generated,
+        failed: tally.failed,
+        cancelled,
+    });
+}
+
+/// One wallpaper, and the only part of the pass a test drives directly.
+///
+/// A missing or undecodable source is counted and left behind, because one bad
+/// file must not stop a pass over the whole library.
+fn pregen_one(db: &Db, cache_dir: &Path, pending: &thumbnails::Pending, tally: &mut PregenTally) {
+    match generate_one(db, cache_dir, pending) {
+        Ok(Step::Generated) => tally.generated += 1,
+        Ok(Step::Skipped) => tally.skipped += 1,
+        Err(e) => {
+            eprintln!("pre-generation skipped {}: {e}", pending.source.display());
+            tally.failed += 1;
+        }
+    }
+}
+
+/// Which way one wallpaper went, short of an error.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Generated,
+    Skipped,
+}
+
+/// Generates whichever sizes one wallpaper is short of.
+///
+/// The connection is taken for the reads and again for the writes, and is never
+/// held across a decode (ADR 0004). Both sizes missing is the single decode
+/// [`thumbnails::generate_both`] exists for; one size missing goes through
+/// `plan` / `fulfill` / `record`, so the cached size beside it donates its
+/// pixels instead of the source being decoded a second time.
+fn generate_one(
+    db: &Db,
+    cache_dir: &Path,
+    pending: &thumbnails::Pending,
+) -> Result<Step, error::AppError> {
+    let id = pending.wallpaper_id;
+    match pending.missing {
+        thumbnails::Missing::Both => {
+            {
+                let conn = lock(db);
+                if !still_eligible(&conn, id) {
+                    return Ok(Step::Skipped);
+                }
+            }
+            let recorded = thumbnails::generate_both(id, &pending.source, cache_dir)?;
+            let conn = lock(db);
+            for r in recorded {
+                thumbnails::record_one(&conn, id, r.size, r.width, r.height, r.source_mtime)?;
+            }
+            Ok(Step::Generated)
+        }
+        thumbnails::Missing::Only(size) => {
+            let plan = {
+                // The same lock the plan's own read takes, which is the point:
+                // the Status the pass acts on and the path it acts on come from
+                // one view of the row.
+                let conn = lock(db);
+                if !still_eligible(&conn, id) {
+                    return Ok(Step::Skipped);
+                }
+                thumbnails::plan(&conn, id, size)?
+            };
+            let resolved = thumbnails::fulfill(&plan, cache_dir)?;
+            thumbnails::record(&lock(db), &plan, &resolved)?;
+            Ok(Step::Generated)
+        }
+    }
+}
+
+/// Whether a wallpaper is still Eligible: Active or Kept.
+///
+/// Re-read immediately before generating, because the work list is a snapshot
+/// and a reject can land in the middle of a pass over it. A row that is no
+/// longer there reads as not Eligible, so it is skipped rather than failed.
+///
+/// It reads the Status rather than comparing it against the snapshot, which is
+/// what #101 asks for, so the Rejected tail group ADR 0016 put at the end of the
+/// work list is skipped too and a rejected wallpaper stays warmed only by the
+/// on-demand path. Telling a reject that landed mid-pass apart from one that was
+/// already Rejected when the list was built needs the snapshot's Status carried
+/// in `Pending`, and nothing carries it yet.
+fn still_eligible(conn: &rusqlite::Connection, wallpaper_id: i64) -> bool {
+    conn.query_row(
+        "SELECT status FROM wallpapers WHERE id = ?1",
+        [wallpaper_id],
+        |row| row.get::<_, String>(0),
+    )
+    .map(|status| status != "rejected")
+    .unwrap_or(false)
 }
 
 /// Where a Written path points, and whether a folder is there.
@@ -445,6 +803,7 @@ pub fn run() {
             app.manage(CacheDir(cache_dir));
             app.manage(Db(Mutex::new(conn)));
             app.manage(ScanRunning::default());
+            app.manage(Pregen::default());
             app.manage(ImageWorkers::new(image_worker_count()));
             Ok(())
         })
@@ -463,6 +822,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             start_scan,
+            start_pregen,
+            cancel_pregen,
             expand_path,
             get_pair,
             vote,
@@ -482,7 +843,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thumbnails::Size;
+    use image::{DynamicImage, Rgba, RgbaImage};
+    use std::cell::RefCell;
+    use thumbnails::{Missing, Pending, Size};
 
     fn parse(url: &str) -> Result<(i64, Size), error::AppError> {
         parse_image_request(&url.parse::<Uri>().expect("test urls are well-formed"))
@@ -653,5 +1016,341 @@ mod tests {
         let json = serde_json::to_value(expand_path(written.clone()).unwrap()).unwrap();
         assert_eq!(json["resolved"], written);
         assert_eq!(json["exists"], true);
+    }
+
+    /// A library the pre-generation pass can be run against: the connection
+    /// behind the mutex the pass locks, a folder of source images, and a cache
+    /// directory of its own.
+    ///
+    /// The supervisor thread, its join and the atomic flag are deliberately not
+    /// covered here. What is worth asserting is which wallpapers the pass
+    /// writes for and what it counts, and both of those are reachable without a
+    /// Tauri app.
+    struct Library {
+        db: Db,
+        sources: tempfile::TempDir,
+        cache: tempfile::TempDir,
+    }
+
+    impl Library {
+        fn new() -> Self {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            db::init_schema(&conn).unwrap();
+            Self {
+                db: Db(Mutex::new(conn)),
+                sources: tempfile::tempdir().unwrap(),
+                cache: tempfile::tempdir().unwrap(),
+            }
+        }
+
+        /// Writes a source image and inserts its row, answering the [`Pending`]
+        /// the work list would hand the pass for it.
+        fn seed(
+            &self,
+            name: &str,
+            width: u32,
+            height: u32,
+            colour: [u8; 4],
+            missing: Missing,
+        ) -> Pending {
+            let path = self.sources.path().join(name);
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(width, height, Rgba(colour)))
+                .save_with_format(&path, image::ImageFormat::Png)
+                .unwrap();
+            let conn = lock(&self.db);
+            conn.execute(
+                "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
+                rusqlite::params![name, path.to_str().unwrap()],
+            )
+            .unwrap();
+            Pending {
+                wallpaper_id: conn.last_insert_rowid(),
+                source: path,
+                missing,
+            }
+        }
+
+        fn step(&self, pending: &Pending, tally: &mut PregenTally) {
+            pregen_one(&self.db, self.cache.path(), pending, tally);
+        }
+
+        fn pass(&self, work: &[Pending], report: &impl PregenReport, cancel: &AtomicBool) {
+            pregen_pass(&self.db, self.cache.path(), work, cancel, report);
+        }
+
+        fn row(&self, wallpaper_id: i64, size: &str) -> Option<(u32, u32)> {
+            lock(&self.db)
+                .query_row(
+                    "SELECT width, height FROM thumbnails
+                     WHERE wallpaper_id = ?1 AND size = ?2",
+                    rusqlite::params![wallpaper_id, size],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok()
+        }
+
+        fn cache_file(&self, wallpaper_id: i64, size: &str) -> PathBuf {
+            self.cache.path().join(format!("{wallpaper_id}_{size}.jpg"))
+        }
+
+        /// The colour of a written cache file, so a test can tell which image
+        /// the pass decoded to make it.
+        fn colour_of(&self, wallpaper_id: i64, size: &str) -> [u8; 3] {
+            let bytes = std::fs::read(self.cache_file(wallpaper_id, size)).unwrap();
+            image::load_from_memory(&bytes)
+                .unwrap()
+                .to_rgb8()
+                .get_pixel(5, 5)
+                .0
+        }
+    }
+
+    /// Records what a pass reported, standing in for the two events, and can
+    /// trip a cancel flag partway so the between-wallpapers check has something
+    /// to find.
+    #[derive(Default)]
+    struct Recorder {
+        progress: RefCell<Vec<PregenProgress>>,
+        complete: RefCell<Vec<PregenComplete>>,
+        cancel_at: Option<(u64, Arc<AtomicBool>)>,
+    }
+
+    impl PregenReport for Recorder {
+        fn progress(&self, progress: PregenProgress) {
+            if let Some((done, flag)) = &self.cancel_at {
+                if progress.done == *done {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+            self.progress.borrow_mut().push(progress);
+        }
+
+        fn complete(&self, complete: PregenComplete) {
+            self.complete.borrow_mut().push(complete);
+        }
+    }
+
+    #[test]
+    fn the_step_writes_both_sizes_off_one_decode_and_records_both_rows() {
+        let library = Library::new();
+        let pending = library.seed("cold.png", 800, 400, [10, 200, 10, 255], Missing::Both);
+        let mut tally = PregenTally::default();
+
+        library.step(&pending, &mut tally);
+
+        let id = pending.wallpaper_id;
+        assert_eq!(library.row(id, "medium"), Some((800, 400)));
+        assert_eq!(library.row(id, "small"), Some((400, 200)));
+        assert!(library.cache_file(id, "medium").exists());
+        assert!(library.cache_file(id, "small").exists());
+        assert_eq!(
+            tally,
+            PregenTally {
+                generated: 1,
+                failed: 0,
+                skipped: 0
+            }
+        );
+    }
+
+    #[test]
+    fn the_step_takes_a_single_missing_size_off_its_donor_rather_than_the_source() {
+        // "Small is missing, medium is fresh" is what `Size::donors` was built
+        // for, and decoding the source again to make a 400px thumbnail is what
+        // this path exists to avoid.
+        let library = Library::new();
+        let mut pending = library.seed(
+            "donor.png",
+            800,
+            400,
+            [200, 30, 30, 255],
+            Missing::Only(Size::Medium),
+        );
+        let mut tally = PregenTally::default();
+        library.step(&pending, &mut tally);
+
+        // Same mtime, different pixels: whichever image the step decodes shows
+        // up in the small. The medium beside it still holds red.
+        let before = std::fs::metadata(&pending.source)
+            .unwrap()
+            .modified()
+            .unwrap();
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(800, 400, Rgba([30, 30, 200, 255])))
+            .save_with_format(&pending.source, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::File::options()
+            .append(true)
+            .open(&pending.source)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
+
+        pending.missing = Missing::Only(Size::Small);
+        library.step(&pending, &mut tally);
+
+        let id = pending.wallpaper_id;
+        assert_eq!(library.row(id, "small"), Some((400, 200)));
+        let px = library.colour_of(id, "small");
+        assert!(
+            px[0] > px[2],
+            "expected the medium's red, got {px:?} — the source was decoded again"
+        );
+        assert_eq!(tally.generated, 2);
+    }
+
+    #[test]
+    fn a_reject_landing_after_the_work_list_leaves_the_step_writing_nothing() {
+        // The work list is a snapshot. The file is still on disk and still
+        // decodable here, so the only thing standing between this wallpaper and
+        // a pair of thumbnails is the Status the step re-reads.
+        let library = Library::new();
+        let pending = library.seed("rejected.png", 800, 400, [1, 2, 3, 255], Missing::Both);
+        lock(&library.db)
+            .execute(
+                "UPDATE wallpapers SET status = 'rejected' WHERE id = ?1",
+                [pending.wallpaper_id],
+            )
+            .unwrap();
+        let mut tally = PregenTally::default();
+
+        library.step(&pending, &mut tally);
+
+        let id = pending.wallpaper_id;
+        assert_eq!(library.row(id, "medium"), None);
+        assert_eq!(library.row(id, "small"), None);
+        assert!(!library.cache_file(id, "medium").exists());
+        assert!(!library.cache_file(id, "small").exists());
+        assert_eq!(
+            tally,
+            PregenTally {
+                generated: 0,
+                failed: 0,
+                skipped: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_source_is_counted_and_the_pass_carries_on_to_the_next_wallpaper() {
+        // One bad file must not stop a pass over the whole library, and a
+        // wallpaper the pass never reports is a wallpaper the curator cannot
+        // find out about.
+        let library = Library::new();
+        let gone = library.seed("gone.png", 800, 400, [4, 4, 4, 255], Missing::Both);
+        let fine = library.seed("fine.png", 800, 400, [5, 5, 5, 255], Missing::Both);
+        std::fs::remove_file(&gone.source).unwrap();
+        let recorder = Recorder::default();
+
+        library.pass(
+            &[gone.clone(), fine.clone()],
+            &recorder,
+            &AtomicBool::new(false),
+        );
+
+        assert!(!library.cache_file(gone.wallpaper_id, "medium").exists());
+        assert!(library.cache_file(fine.wallpaper_id, "medium").exists());
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![PregenComplete {
+                generated: 1,
+                failed: 1,
+                cancelled: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_empty_work_list_emits_nothing_at_all() {
+        // Every launch after the first. Otherwise a warm library would flash a
+        // finished progress bar for work that never happened.
+        let library = Library::new();
+        let recorder = Recorder::default();
+
+        library.pass(&[], &recorder, &AtomicBool::new(false));
+
+        assert!(recorder.progress.borrow().is_empty());
+        assert!(recorder.complete.borrow().is_empty());
+    }
+
+    #[test]
+    fn every_progress_emission_carries_the_total_and_the_first_lands_before_any_work() {
+        // The `done: 0` emission is what lets a bar appear immediately instead
+        // of after a two-second decode, and `total` on each one means a
+        // listener needs no start event and survives a missed one.
+        let library = Library::new();
+        let first = library.seed("a.png", 800, 400, [6, 6, 6, 255], Missing::Both);
+        let second = library.seed("b.png", 800, 400, [7, 7, 7, 255], Missing::Both);
+        let recorder = Recorder::default();
+
+        library.pass(&[first, second], &recorder, &AtomicBool::new(false));
+
+        assert_eq!(
+            *recorder.progress.borrow(),
+            vec![
+                PregenProgress { done: 0, total: 2 },
+                PregenProgress { done: 1, total: 2 },
+                PregenProgress { done: 2, total: 2 },
+            ]
+        );
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![PregenComplete {
+                generated: 2,
+                failed: 0,
+                cancelled: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_cancel_between_wallpapers_leaves_a_clean_prefix_and_reports_itself() {
+        // A cancelled pass keeps everything it already generated — a partial
+        // cache is a correct cache — and stops at a wallpaper boundary, so the
+        // prefix is fully warm rather than half written.
+        let library = Library::new();
+        let first = library.seed("one.png", 800, 400, [8, 8, 8, 255], Missing::Both);
+        let second = library.seed("two.png", 800, 400, [9, 9, 9, 255], Missing::Both);
+        let flag = Arc::new(AtomicBool::new(false));
+        let recorder = Recorder {
+            cancel_at: Some((1, Arc::clone(&flag))),
+            ..Recorder::default()
+        };
+
+        library.pass(&[first.clone(), second.clone()], &recorder, &flag);
+
+        assert!(library.cache_file(first.wallpaper_id, "small").exists());
+        assert!(!library.cache_file(second.wallpaper_id, "small").exists());
+        assert_eq!(
+            *recorder.progress.borrow(),
+            vec![
+                PregenProgress { done: 0, total: 2 },
+                PregenProgress { done: 1, total: 2 },
+            ]
+        );
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![PregenComplete {
+                generated: 1,
+                failed: 0,
+                cancelled: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_pregen_events_cross_the_ipc_with_the_fields_client_ts_will_expect() {
+        let progress = serde_json::to_value(PregenProgress { done: 3, total: 9 }).unwrap();
+        assert_eq!(progress["done"], 3);
+        assert_eq!(progress["total"], 9);
+
+        let complete = serde_json::to_value(PregenComplete {
+            generated: 7,
+            failed: 2,
+            cancelled: true,
+        })
+        .unwrap();
+        assert_eq!(complete["generated"], 7);
+        assert_eq!(complete["failed"], 2);
+        assert_eq!(complete["cancelled"], true);
     }
 }

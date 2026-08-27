@@ -298,7 +298,6 @@ pub struct Recorded {
 ///
 /// The returned pair is in generation order, medium then small. Recording is
 /// the caller's, so the connection is never held across the decode (ADR 0004).
-#[allow(dead_code)] // The pre-generation pass is the only caller, and lands next.
 pub fn generate_both(
     wallpaper_id: i64,
     source: &Path,
@@ -391,7 +390,6 @@ pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(
 /// one missing size is the donor case [`plan`] and [`fulfill`] already handle.
 /// "Neither" has no variant because such a wallpaper never joins the list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // The pre-generation pass is the only caller, and lands next.
 pub enum Missing {
     Both,
     Only(Size),
@@ -399,7 +397,6 @@ pub enum Missing {
 
 /// One wallpaper the pre-generation pass would reach, and what it owes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // The pre-generation pass is the only caller, and lands next.
 pub struct Pending {
     pub wallpaper_id: i64,
     /// Carried through so the pass does not re-read `path` per wallpaper. It is
@@ -428,7 +425,6 @@ pub struct Pending {
 ///
 /// The length is the honest total for the pass's progress, because a wallpaper
 /// it would skip never enters the list.
-#[allow(dead_code)] // The pre-generation pass is the only caller, and lands next.
 pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
     let cached = cache_filenames(cache_dir)?;
 
