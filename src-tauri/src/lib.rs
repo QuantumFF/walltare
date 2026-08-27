@@ -710,6 +710,28 @@ fn get_review(limit: i64, state: tauri::State<Db>) -> Result<Vec<db::Wallpaper>,
     db::get_review(&conn, limit).map_err(Into::into)
 }
 
+/// Every wallpaper matching a named filter, in a named ordering.
+///
+/// No limit and no cursor: the library page takes the whole list in one call
+/// (ADR 0016). Both arguments arrive as enums, so an unknown name fails at
+/// deserialization and never reaches the query — the caller picks a name, and
+/// the backend owns every part of the `ORDER BY` (ADR 0014). Omitting either
+/// argument lands on its default, All and Score high to low.
+#[tauri::command]
+fn list_wallpapers(
+    filter: Option<db::StatusFilter>,
+    ordering: Option<db::ListOrdering>,
+    state: tauri::State<Db>,
+) -> Result<Vec<db::Wallpaper>, error::AppError> {
+    let conn = lock_conn(state);
+    db::list_wallpapers(
+        &conn,
+        filter.unwrap_or_default(),
+        ordering.unwrap_or_default(),
+    )
+    .map_err(Into::into)
+}
+
 #[tauri::command]
 fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppError> {
     let conn = lock_conn(state);
@@ -800,13 +822,14 @@ fn image_response(status: StatusCode, body: Vec<u8>) -> tauri::http::Response<Ve
     tauri::http::Response::builder()
         .status(status)
         .header(tauri::http::header::CONTENT_TYPE, "image/jpeg")
-        // Not `immutable`: the URL is keyed on id and size only, so a year-long
-        // cache would outlive the mtime-based invalidation in `thumbnails`.
-        // Revalidation costs a cache-file read, which is what we want anyway.
-        .header(
-            tauri::http::header::CACHE_CONTROL,
-            "max-age=0, must-revalidate",
-        )
+        // Five minutes is measured against the only thing that invalidates a
+        // thumbnail: the source file's mtime changing when someone edits a
+        // wallpaper in place. That is rare enough that being five minutes stale
+        // about it costs less than a versioning scheme.
+        //
+        // Not `immutable`: the URL is keyed on id and size only, so nothing in
+        // it would change once the source file did.
+        .header(tauri::http::header::CACHE_CONTROL, "max-age=300")
         .body(body)
         .unwrap()
 }
@@ -872,6 +895,7 @@ pub fn run() {
             vote,
             get_stats,
             get_review,
+            list_wallpapers,
             keep_wallpaper,
             unkeep_wallpaper,
             move_wallpaper,
@@ -944,6 +968,21 @@ mod tests {
         assert_eq!(
             parse("wallpaper://localhost/image/1?v=2&size=small").unwrap(),
             (1, Size::Small)
+        );
+    }
+
+    #[test]
+    fn a_served_image_stays_cached_for_five_minutes() {
+        // A remounted `<img>` for a wallpaper the user already scrolled past
+        // must not cost another mpsc hop, mutex lock and cache-file read.
+        // Lowering this value puts those back, so it is pinned.
+        let response = image_response(StatusCode::OK, vec![0xff, 0xd8]);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CACHE_CONTROL)
+                .unwrap(),
+            "max-age=300"
         );
     }
 

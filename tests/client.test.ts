@@ -152,6 +152,58 @@ describe("client seam", () => {
     ]);
   });
 
+  test("listWallpapers asks for every wallpaper by Score, high to low, unless told otherwise", async () => {
+    const calls: unknown[] = [];
+    mockCommand("list_wallpapers", (args) => {
+      calls.push(args);
+      return [];
+    });
+
+    await client.listWallpapers();
+    await client.listWallpapers("rejected", "filename_asc");
+
+    // Snake-case command, one argument per enum: the Rust signature is
+    // `list_wallpapers(filter: StatusFilter, ordering: ListOrdering)`, and each
+    // value is a name the backend maps to a clause it owns.
+    expect(calls).toEqual([
+      { filter: "all", ordering: "score_desc" },
+      { filter: "rejected", ordering: "filename_asc" },
+    ]);
+  });
+
+  test("listWallpapers defaults the ordering while honouring a given filter", async () => {
+    // The two arguments default independently, so filtering to one Status does
+    // not silently reorder the grid.
+    const calls: unknown[] = [];
+    mockCommand("list_wallpapers", (args) => {
+      calls.push(args);
+      return [];
+    });
+
+    await client.listWallpapers("active");
+
+    expect(calls).toEqual([{ filter: "active", ordering: "score_desc" }]);
+  });
+
+  test("listWallpapers hands back the rows in the order the backend sent them", async () => {
+    // The ordering is the backend's answer, so the seam must not sort. A
+    // Rejected row arrives with its Origin, which is how the page says where
+    // the file came from without a second call.
+    mockCommand("list_wallpapers", () => [
+      wallpaper(7, { rating_mu: 30.5, comparisons_count: 4 }),
+      wallpaper(2, {
+        status: "rejected",
+        origin_path: "/library/landscapes/dawn.jpg",
+      }),
+      wallpaper(9, { rating_mu: 25, comparisons_count: 0 }),
+    ]);
+
+    const rows = await client.listWallpapers();
+
+    expect(rows.map((w) => w.id)).toEqual([7, 2, 9]);
+    expect(rows[1].origin_path).toBe("/library/landscapes/dawn.jpg");
+  });
+
   test("moveWallpaper sends the id and the destination and resolves with where the file landed", async () => {
     let received: Record<string, unknown> | undefined;
     mockCommand("move_wallpaper", (args) => {
