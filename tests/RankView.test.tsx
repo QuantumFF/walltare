@@ -41,6 +41,8 @@ beforeEach(() => {
   });
   // The other half of the provider's boot gate; without it nothing renders.
   mockCommand("get_settings", () => settings());
+  // Started by the provider once that gate settles.
+  mockCommand("start_pregen", () => null);
 });
 
 function pair(leftId: number, rightId: number): [Wallpaper, Wallpaper] {

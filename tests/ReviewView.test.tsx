@@ -24,6 +24,8 @@ beforeEach(() => {
   // view is reached from rank, not from the bootstrap redirect.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
+  // Started by the provider once that gate settles.
+  mockCommand("start_pregen", () => null);
 });
 
 /** Mount the view with the given list already served. */

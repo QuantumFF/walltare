@@ -260,6 +260,119 @@ describe("client seam", () => {
     });
   });
 
+  test("startPregen and cancelPregen take no arguments and resolve with nothing", async () => {
+    // Neither Rust signature has a parameter: `start_pregen(app)` and
+    // `cancel_pregen(state)` are both filled by Tauri, so a payload here could
+    // only be noise. `start_pregen` returns the moment the pass is spawned, so
+    // resolving says "started", not "finished".
+    const received: unknown[] = [];
+    mockCommand("start_pregen", (args) => {
+      received.push(args);
+      return null;
+    });
+    mockCommand("cancel_pregen", (args) => {
+      received.push(args);
+      return null;
+    });
+
+    expect(await client.startPregen()).toBeUndefined();
+    expect(await client.cancelPregen()).toBeUndefined();
+    expect(received).toEqual([undefined, undefined]);
+  });
+
+  test("startPregen surfaces a backend failure untouched", async () => {
+    mockCommand("start_pregen", () =>
+      Promise.reject({ kind: "db", message: "locked database" }),
+    );
+    expect(client.startPregen()).rejects.toEqual({
+      kind: "db",
+      message: "locked database",
+    });
+  });
+
+  test("getCacheSize takes no arguments and hands back both counts", async () => {
+    // `get_cache_size(cache_dir)` is filled by Tauri, so a payload here could
+    // only be noise. Bytes and files are separate numbers because the readout
+    // says both: "48 MB cached · 172 files".
+    let received: unknown;
+    mockCommand("get_cache_size", (args) => {
+      received = args;
+      return { bytes: 48_000_000, files: 172 };
+    });
+
+    expect(await client.getCacheSize()).toEqual({
+      bytes: 48_000_000,
+      files: 172,
+    });
+    expect(received).toBeUndefined();
+  });
+
+  test("getCacheSize carries an empty cache through as zeroes", async () => {
+    // "Nothing cached yet" is a state the readout renders, so the seam must not
+    // fold a zero into a missing value.
+    mockCommand("get_cache_size", () => ({ bytes: 0, files: 0 }));
+    expect(await client.getCacheSize()).toEqual({ bytes: 0, files: 0 });
+  });
+
+  test("clearCache takes no arguments and resolves with nothing", async () => {
+    // Nothing to hand back: the cache is empty afterwards, and a caller wanting
+    // the new size asks for it.
+    let received: unknown = "unset";
+    mockCommand("clear_cache", (args) => {
+      received = args;
+      return null;
+    });
+
+    expect(await client.clearCache()).toBeUndefined();
+    expect(received).toBeUndefined();
+  });
+
+  test("clearCache surfaces a backend failure untouched", async () => {
+    mockCommand("clear_cache", () =>
+      Promise.reject({ kind: "io", message: "permission denied" }),
+    );
+    expect(client.clearCache()).rejects.toEqual({
+      kind: "io",
+      message: "permission denied",
+    });
+  });
+
+  test("onPregenProgress unwraps the payload, total included", async () => {
+    // `total` arrives on every emission rather than in a start event, so a
+    // listener that missed the first one still knows what it is a fraction of.
+    const seen: unknown[] = [];
+    const unlisten = await client.onPregenProgress((payload) =>
+      seen.push(payload),
+    );
+
+    emitEvent("pregen-progress", { done: 0, total: 42 });
+    emitEvent("pregen-progress", { done: 1, total: 42 });
+
+    expect(seen).toEqual([
+      { done: 0, total: 42 },
+      { done: 1, total: 42 },
+    ]);
+    unlisten();
+    expect(emitEvent("pregen-progress", { done: 2, total: 42 })).toBe(0);
+  });
+
+  test("onPregenComplete unwraps the payload, cancelled flag included", async () => {
+    const seen: unknown[] = [];
+    const unlisten = await client.onPregenComplete((payload) =>
+      seen.push(payload),
+    );
+
+    const delivered = emitEvent("pregen-complete", {
+      generated: 40,
+      failed: 1,
+      cancelled: true,
+    });
+
+    expect(delivered).toBe(1);
+    expect(seen).toEqual([{ generated: 40, failed: 1, cancelled: true }]);
+    unlisten();
+  });
+
   test("event subscriptions unwrap tauri payloads", async () => {
     const seen: unknown[] = [];
     const unlisten = await client.onScanProgress((payload) =>

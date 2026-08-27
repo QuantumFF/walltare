@@ -56,6 +56,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // The frontend owns the trigger for pre-generation, the way it already owns
+  // the scan: spawning the pass from Tauri's `setup()` would start decoding
+  // before the window paints, competing with WebKit for the first frame
+  // (ADR 0012). So it starts once the gate above has settled, and again after
+  // every scan, which is what gets freshly scanned files warmed first.
+  //
+  // ScanView listens to `scan-complete` as well, for its own reporting. This is
+  // a second listener rather than a call from there because that event is what
+  // moves the user off the scan view, so the component that would make the call
+  // unmounts as it fires. Nothing renders progress yet (#59).
+  useEffect(() => {
+    if (!booted) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    // A pass that will not start leaves the cache cold and nothing else: the
+    // views it warms for all still generate on demand, so this is logged the
+    // way a failed boot read is and the app carries on.
+    const start = () => {
+      void client.startPregen().catch((error: unknown) => {
+        console.error("Failed to start thumbnail pre-generation:", error);
+      });
+    };
+
+    start();
+    void client.onScanComplete(start).then((off) => {
+      if (cancelled) {
+        off();
+        return;
+      }
+      unlisten = off;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [booted]);
+
   // The palette is a class on the document element, because index.css keys both
   // the tokens and the `dark:` variant off one there. Nothing is written before
   // the gate settles: until then the `prefers-color-scheme` branch in index.css
