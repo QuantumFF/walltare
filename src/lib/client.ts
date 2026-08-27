@@ -122,6 +122,17 @@ export interface PregenComplete {
 }
 
 /**
+ * Mirrors thumbnails::CacheSize: what a walk of the cache directory found.
+ *
+ * Both are zero for a cache with nothing in it, which is also the answer for a
+ * cache directory that has not been created yet.
+ */
+export interface CacheSize {
+  bytes: number;
+  files: number;
+}
+
+/**
  * Mirrors lib.rs Expanded: where a Written path points, and whether a folder is
  * there. `exists` is `is_dir()`, so a file at that path reads as `false`.
  */
@@ -265,6 +276,19 @@ export interface Client {
    * generated stays; the pass runs again next launch.
    */
   cancelPregen(): Promise<void>;
+  /**
+   * Counts the thumbnail cache: one directory read and a `metadata` per entry,
+   * about 10,000 stats on the largest library. So read it on mount, on
+   * `pregen-complete` and after a clear, never per progress event (ADR 0020).
+   */
+  getCacheSize(): Promise<CacheSize>;
+  /**
+   * Cancels any running pass, empties the cache directory and forgets every
+   * thumbnail row. Nothing restarts: clearing is a rebuild the next launch pays
+   * for rather than a way to reclaim disk, so a caller wanting the cache back
+   * calls `startPregen` itself (ADR 0012).
+   */
+  clearCache(): Promise<void>;
   onScanProgress(handler: (payload: ScanProgress) => void): Promise<() => void>;
   onScanComplete(handler: (payload: ScanComplete) => void): Promise<() => void>;
   onScanFailed(handler: (payload: ScanFailed) => void): Promise<() => void>;
@@ -314,6 +338,10 @@ export const client: Client = {
   startPregen: () => invokeVoid("start_pregen"),
 
   cancelPregen: () => invokeVoid("cancel_pregen"),
+
+  getCacheSize: () => invoke<CacheSize>("get_cache_size"),
+
+  clearCache: () => invokeVoid("clear_cache"),
 
   // `listen` returns Promise<UnlistenFn>, not Promise<() => void>; UnlistenFn
   // is a branded type that isn't nominally assignable, so cast to the plain

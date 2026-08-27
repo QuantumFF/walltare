@@ -365,8 +365,7 @@ pub fn resolve(
 /// here: the soft reject used to, and stopped, because a Rejected wallpaper is
 /// now shown in the library page and can be restored, so its cache is worth
 /// keeping (ADR 0012). The function stays because it is the single-wallpaper
-/// case of the cache clearing that ADR 0012 gives Settings, and deleting it
-/// would mean writing it again a ticket later.
+/// case of [`clear`], which is what Settings calls.
 #[allow(dead_code)]
 pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(), AppError> {
     conn.execute(
@@ -380,6 +379,94 @@ pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(
             Err(e) => return Err(e.into()),
         }
     }
+    Ok(())
+}
+
+/// How much disk the thumbnail cache is holding.
+///
+/// Both counts are zero for a cache with nothing in it, which is the same
+/// answer a cache directory that has not been created yet gives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct CacheSize {
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Counts the cache directory, so 830MB under `app_data` is a number the
+/// curator can read rather than invisible (ADR 0012).
+///
+/// One `read_dir` and one `metadata` per entry: 172 stats on the live library
+/// and about 10,000 at ADR 0016's five-thousand-wallpaper ceiling. That is why
+/// ADR 0020 reads it on mount, on `pregen-complete` and after a clear, and
+/// never per progress event.
+///
+/// Nothing is capped and nothing is evicted, so this answers a question rather
+/// than feeding a policy: the cache is bounded by the library at two files per
+/// wallpaper, which is not the shape an LRU has, and an eviction rule would
+/// fight the pre-generation pass directly (ADR 0012).
+pub fn cache_size(cache_dir: &Path) -> Result<CacheSize, AppError> {
+    let entries = match std::fs::read_dir(cache_dir) {
+        Ok(entries) => entries,
+        // Nothing cached yet, which is a size rather than a failure.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(CacheSize::default()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut size = CacheSize::default();
+    for entry in entries {
+        let metadata = entry?.metadata()?;
+        // Files only. Nothing writes a subdirectory in here, and a directory's
+        // own `len()` is a filesystem detail rather than cached bytes.
+        if metadata.is_file() {
+            size.files += 1;
+            size.bytes += metadata.len();
+        }
+    }
+    Ok(size)
+}
+
+/// Throws away the whole cache: every file in the directory, then every row in
+/// `thumbnails`.
+///
+/// The caller cancels any running pass first. It does not wait for it, because
+/// the flag is read between wallpapers and joining would block the IPC thread
+/// for up to one decode (ADR 0012), so a pass can still finish the wallpaper it
+/// is on while this runs. That decides the order here: the pass writes a
+/// wallpaper's files and only then records its rows, so removing them in the
+/// same order leaves the row delete last, and every row the pass manages to
+/// write before that instant goes with it. Reversed, a pass recording a row
+/// after the `DELETE` and having its files swept a moment later would leave a
+/// dangling row for almost every way the two can interleave.
+///
+/// Two residues survive the narrow windows that remain, and the app already
+/// handles both: a file with no row is regenerated on demand and relisted by
+/// [`work_list`], and a row with no file is exactly what [`fulfill`] and
+/// [`work_list`] both read as missing. What cannot happen is a row promising
+/// bytes that differ from the file beside it, because the pass never records a
+/// row for a file it did not just write.
+///
+/// The directory itself stays, and nothing restarts. Clearing is a rebuild the
+/// next launch pays for rather than a way to reclaim disk (ADR 0012).
+pub fn clear(conn: &Connection, cache_dir: &Path) -> Result<(), AppError> {
+    match std::fs::read_dir(cache_dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                if !entry.file_type()?.is_file() {
+                    continue;
+                }
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => {}
+                    // Something else got there first, which is the outcome
+                    // asked for either way.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    conn.execute("DELETE FROM thumbnails", [])?;
     Ok(())
 }
 
@@ -1370,6 +1457,115 @@ mod tests {
         let cache = tmp.path().join("no-such-cache");
 
         assert_eq!(listed(&conn, &cache), vec![(id, Missing::Both)]);
+    }
+
+    #[test]
+    fn the_cache_size_counts_every_file_and_the_bytes_they_take() {
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "sized.png",
+            &solid(3000, 1000, [10, 200, 10, 255]),
+        );
+        warm(&conn, cache.path(), id, &tmp.path().join("sized.png"));
+
+        let size = cache_size(cache.path()).unwrap();
+
+        // Two files per warm wallpaper, and the bytes are the files' own, not an
+        // estimate: the readout's whole job is to be the number on disk.
+        let on_disk: u64 = [Size::Medium, Size::Small]
+            .into_iter()
+            .map(|s| {
+                std::fs::metadata(cache_path(cache.path(), id, s))
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        assert_eq!(
+            size,
+            CacheSize {
+                bytes: on_disk,
+                files: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_cache_directory_that_is_empty_or_absent_is_zero_rather_than_an_error() {
+        // Before the first thumbnail is written nothing has created the
+        // directory, and Settings still has to render a line for it.
+        let cache = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            cache_size(cache.path()).unwrap(),
+            CacheSize { bytes: 0, files: 0 }
+        );
+        assert_eq!(
+            cache_size(&cache.path().join("no-such-cache")).unwrap(),
+            CacheSize { bytes: 0, files: 0 }
+        );
+    }
+
+    #[test]
+    fn clearing_empties_the_directory_and_the_table_and_reports_zero_after() {
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let ids: Vec<i64> = ["one.png", "two.png"]
+            .into_iter()
+            .map(|name| {
+                let id = seed_wallpaper(&conn, tmp.path(), name, &solid(600, 300, [1, 2, 3, 255]));
+                warm(&conn, cache.path(), id, &tmp.path().join(name));
+                id
+            })
+            .collect();
+        assert_eq!(cache_size(cache.path()).unwrap().files, 4);
+
+        clear(&conn, cache.path()).unwrap();
+
+        for id in ids {
+            assert_eq!(thumbnail_row(&conn, id, "medium"), None);
+            assert_eq!(thumbnail_row(&conn, id, "small"), None);
+        }
+        assert_eq!(
+            cache_size(cache.path()).unwrap(),
+            CacheSize { bytes: 0, files: 0 }
+        );
+        // The directory stays, so the next pass writes into it rather than
+        // recreating it, and the library is due in full again.
+        assert!(cache.path().is_dir());
+        assert_eq!(work_list(&conn, cache.path()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn clearing_a_cache_that_is_not_there_yet_still_empties_the_table() {
+        // Nothing has written a thumbnail, so nothing has created the directory,
+        // and a row without a file is a row the curator asked to be rid of.
+        let (conn, tmp) = setup();
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "rowonly.png",
+            &solid(20, 10, [4, 4, 4, 255]),
+        );
+        record_one(&conn, id, Size::Small, 20, 10, 111).unwrap();
+
+        clear(&conn, &tmp.path().join("no-such-cache")).unwrap();
+
+        assert_eq!(thumbnail_row(&conn, id, "small"), None);
+    }
+
+    #[test]
+    fn a_cache_size_crosses_the_ipc_with_the_fields_client_ts_expects() {
+        let json = serde_json::to_value(CacheSize {
+            bytes: 48_000_000,
+            files: 172,
+        })
+        .unwrap();
+
+        assert_eq!(json["bytes"], 48_000_000);
+        assert_eq!(json["files"], 172);
     }
 
     #[test]

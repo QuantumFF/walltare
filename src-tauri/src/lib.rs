@@ -625,6 +625,38 @@ fn still_due(conn: &rusqlite::Connection, pending: &thumbnails::Pending) -> Opti
     (!rejected_since).then(|| PathBuf::from(path))
 }
 
+/// How much disk the thumbnail cache is holding, for the Settings readout.
+///
+/// A thin wrapper: the walk sits beside the rest of the cache in
+/// [`thumbnails::cache_size`], which is also where its cost is written down.
+/// ADR 0020 reads it on mount, on `pregen-complete` and after a clear, never per
+/// progress event.
+#[tauri::command]
+fn get_cache_size(
+    cache_dir: tauri::State<'_, CacheDir>,
+) -> Result<thumbnails::CacheSize, error::AppError> {
+    thumbnails::cache_size(&cache_dir.0)
+}
+
+/// Throws the whole thumbnail cache away, and does not start it building again.
+///
+/// Clearing is a rebuild rather than a way to reclaim disk: the next launch
+/// refills it, because the pass has no opt-out (ADR 0012). `thumbnails::purge`
+/// stays the single-wallpaper case.
+#[tauri::command]
+fn clear_cache(
+    pregen: tauri::State<'_, Pregen>,
+    db: tauri::State<'_, Db>,
+    cache_dir: tauri::State<'_, CacheDir>,
+) -> Result<(), error::AppError> {
+    // Before anything is deleted, so a pass is not writing files into the
+    // directory this is about to empty. It stands down between wallpapers and
+    // this does not wait for it, so it can still finish the wallpaper it is on;
+    // [`thumbnails::clear`] orders its two halves around exactly that.
+    pregen.cancel();
+    thumbnails::clear(&lock_conn(db), &cache_dir.0)
+}
+
 /// Where a Written path points, and whether a folder is there.
 ///
 /// `exists` is `is_dir()`, so a file at that path reads as nothing there:
@@ -833,6 +865,8 @@ pub fn run() {
             start_scan,
             start_pregen,
             cancel_pregen,
+            get_cache_size,
+            clear_cache,
             expand_path,
             get_pair,
             vote,
