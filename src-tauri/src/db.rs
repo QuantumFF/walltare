@@ -454,29 +454,138 @@ pub struct Wallpaper {
     pub origin_path: Option<String>,
 }
 
+/// The columns every listing selects, in the order [`wallpaper_from_row`] reads
+/// them. One copy, because a query that selects its own list and a mapper that
+/// indexes by position drift apart silently.
+const WALLPAPER_COLUMNS: &str =
+    "id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path";
+
+fn wallpaper_from_row(row: &rusqlite::Row) -> Result<Wallpaper, rusqlite::Error> {
+    Ok(Wallpaper {
+        id: row.get(0)?,
+        filename: row.get(1)?,
+        path: row.get(2)?,
+        status: row.get(3)?,
+        rating_mu: row.get(4)?,
+        rating_sigma: row.get(5)?,
+        comparisons_count: row.get(6)?,
+        origin_path: row.get(7)?,
+    })
+}
+
 pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusqlite::Error> {
     if limit <= 0 {
         return Ok(Vec::new());
     }
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {WALLPAPER_COLUMNS}
          FROM wallpapers
          WHERE status = 'active'
          ORDER BY rating_mu ASC
-         LIMIT ?1",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![limit], |row| {
-        Ok(Wallpaper {
-            id: row.get(0)?,
-            filename: row.get(1)?,
-            path: row.get(2)?,
-            status: row.get(3)?,
-            rating_mu: row.get(4)?,
-            rating_sigma: row.get(5)?,
-            comparisons_count: row.get(6)?,
-            origin_path: row.get(7)?,
-        })
-    })?;
+         LIMIT ?1"
+    ))?;
+    let rows = stmt.query_map(rusqlite::params![limit], wallpaper_from_row)?;
+    rows.collect()
+}
+
+/// Which Statuses a listing returns.
+///
+/// Eligible is deliberately absent. It is a voting-pool term, and on a browsing
+/// surface it would read as "everything I haven't thrown out", which is what
+/// [`Self::All`] already shows with the rejects greyed (ADR 0016).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusFilter {
+    /// Every row, Rejected included: the library page's promise is everything
+    /// the app knows about.
+    #[default]
+    All,
+    Active,
+    Kept,
+    Rejected,
+}
+
+impl StatusFilter {
+    /// The one `WHERE` fragment this variant stands for. `&'static str` is the
+    /// point: no caller-supplied string reaches the SQL.
+    fn where_clause(self) -> &'static str {
+        match self {
+            Self::All => "",
+            Self::Active => "WHERE status = 'active'",
+            Self::Kept => "WHERE status = 'kept'",
+            Self::Rejected => "WHERE status = 'rejected'",
+        }
+    }
+}
+
+/// How a listing is ordered. The caller picks a name; every part of the clause
+/// belongs to the backend (ADR 0014).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListOrdering {
+    /// The one view neither Rank nor Review gives, and what the app exists to
+    /// produce.
+    #[default]
+    ScoreDesc,
+    ScoreAsc,
+    FilenameAsc,
+    RecentlyAdded,
+}
+
+impl ListOrdering {
+    /// The one `ORDER BY` clause this variant stands for.
+    ///
+    /// Three terms here are load-bearing:
+    ///
+    /// - `comparisons_count = 0` leads both Score clauses. It is 0 for a rated
+    ///   wallpaper and 1 for an Unrated one and does not flip with the
+    ///   direction, so Unrated is a constant tail in both directions rather
+    ///   than a block of cards placed in the middle by the starting Score,
+    ///   which is the app's ignorance and not a judgement.
+    /// - Every clause ends in `id`. Most of a young library sits in a handful
+    ///   of exact μ ties, and without the tiebreak SQLite may return tied rows
+    ///   in any order, so the grid reshuffles under the user after a vote.
+    /// - `recently_added` is `id DESC`, not `created_at`.
+    ///   `insert_new_wallpapers` batches a whole scan into one transaction, so
+    ///   every row it adds carries the same `created_at`. Insertion order
+    ///   survives only in `id`, nothing deletes a `wallpapers` row, and
+    ///   `created_at` stays off the DTO.
+    ///
+    /// `NOCASE` because SQLite's default BINARY collation puts every capital
+    /// ahead of every lowercase letter, so `Zebra.jpg` would precede
+    /// `abstract.jpg`. The key is the filename rather than the path, since that
+    /// is what the card shows.
+    fn order_by(self) -> &'static str {
+        match self {
+            Self::ScoreDesc => "comparisons_count = 0, rating_mu DESC, id ASC",
+            Self::ScoreAsc => "comparisons_count = 0, rating_mu ASC, id ASC",
+            Self::FilenameAsc => "filename COLLATE NOCASE ASC, id ASC",
+            Self::RecentlyAdded => "id DESC",
+        }
+    }
+}
+
+/// Every wallpaper matching `filter`, in `ordering`.
+///
+/// No limit, no offset and no cursor: at the 5,000-row ceiling the whole list
+/// is about 1MB of JSON and one scan, and fetching everything costs less than a
+/// pagination design would (ADR 0016). Both Score orderings sort in memory,
+/// because a leading `comparisons_count = 0` cannot be served by the index on
+/// `(status, rating_mu)`; ADR 0014 names the index to add if that ever matters.
+pub fn list_wallpapers(
+    conn: &Connection,
+    filter: StatusFilter,
+    ordering: ListOrdering,
+) -> Result<Vec<Wallpaper>, rusqlite::Error> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {WALLPAPER_COLUMNS}
+         FROM wallpapers
+         {}
+         ORDER BY {}",
+        filter.where_clause(),
+        ordering.order_by(),
+    ))?;
+    let rows = stmt.query_map([], wallpaper_from_row)?;
     rows.collect()
 }
 
@@ -842,6 +951,251 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+    }
+
+    /// A wallpaper with Comparisons behind its Score. `comparisons_count` is
+    /// what separates a rated row from an Unrated one, and it leads both Score
+    /// orderings, so a listing test that never sets it tests half the clause.
+    fn seed_rated_wallpaper(
+        conn: &Connection,
+        path: &str,
+        status: &str,
+        mu: f64,
+        comparisons: i64,
+    ) -> i64 {
+        let id = seed_wallpaper(conn, path, status, mu);
+        conn.execute(
+            "UPDATE wallpapers SET comparisons_count = ?2 WHERE id = ?1",
+            rusqlite::params![id, comparisons],
+        )
+        .unwrap();
+        id
+    }
+
+    fn list_ids(conn: &Connection, filter: StatusFilter, ordering: ListOrdering) -> Vec<i64> {
+        list_wallpapers(conn, filter, ordering)
+            .unwrap()
+            .iter()
+            .map(|w| w.id)
+            .collect()
+    }
+
+    /// A library seeded so that `id` order agrees with no ordering under test,
+    /// with one Unrated row at exactly the starting Score. 25.0 sorts between
+    /// the two rated groups, so a clause without the tail term wedges it into
+    /// the middle.
+    fn seed_scored_library(conn: &Connection) -> (i64, i64, i64, i64) {
+        let mid = seed_rated_wallpaper(conn, "/w/mid.jpg", "active", 20.0, 3);
+        let unrated = seed_wallpaper(conn, "/w/unrated.jpg", "active", 25.0);
+        let top = seed_rated_wallpaper(conn, "/w/top.jpg", "active", 30.0, 5);
+        let low = seed_rated_wallpaper(conn, "/w/low.jpg", "active", 10.0, 2);
+        (top, mid, low, unrated)
+    }
+
+    #[test]
+    fn list_wallpapers_score_desc_ranks_high_to_low_with_the_unrated_tail() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (top, mid, low, unrated) = seed_scored_library(&conn);
+
+        assert_eq!(
+            list_ids(&conn, StatusFilter::All, ListOrdering::ScoreDesc),
+            vec![top, mid, low, unrated]
+        );
+    }
+
+    #[test]
+    fn list_wallpapers_score_asc_ranks_low_to_high_with_the_same_unrated_tail() {
+        // The tail does not flip with the direction. Mirroring it would say the
+        // unjudged wallpapers are the worst ones, which is the inversion ADR
+        // 0013 rejected; leaving it at 25.0 would place it above `low` here and
+        // below `top` in the other direction, on the strength of a starting
+        // value.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (top, mid, low, unrated) = seed_scored_library(&conn);
+
+        assert_eq!(
+            list_ids(&conn, StatusFilter::All, ListOrdering::ScoreAsc),
+            vec![low, mid, top, unrated]
+        );
+    }
+
+    #[test]
+    fn list_wallpapers_breaks_a_score_tie_by_id_and_holds_still_across_calls() {
+        // Most of a young library sits in a handful of exact μ ties, so this is
+        // the ordinary case rather than an edge one. Without the tiebreak
+        // SQLite may return tied rows in any order, and the grid reshuffles
+        // under the user after every vote.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let top = seed_rated_wallpaper(&conn, "/w/top.jpg", "active", 30.0, 4);
+        let tied_c = seed_rated_wallpaper(&conn, "/w/c.jpg", "active", 20.7948, 1);
+        let tied_a = seed_rated_wallpaper(&conn, "/w/a.jpg", "active", 20.7948, 1);
+        let tied_b = seed_rated_wallpaper(&conn, "/w/b.jpg", "active", 20.7948, 1);
+
+        let expected = vec![top, tied_c, tied_a, tied_b];
+        assert_eq!(
+            list_ids(&conn, StatusFilter::All, ListOrdering::ScoreDesc),
+            expected
+        );
+        assert_eq!(
+            list_ids(&conn, StatusFilter::All, ListOrdering::ScoreDesc),
+            expected
+        );
+    }
+
+    #[test]
+    fn list_wallpapers_filename_asc_collates_case_insensitively() {
+        // SQLite's default BINARY collation puts every capital ahead of every
+        // lowercase letter, so without NOCASE `Zebra.jpg` leads.
+        //
+        // `abstract.jpg` is the Unrated one, which is also what says the Score
+        // tail term is not in this clause.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let zebra = seed_rated_wallpaper(&conn, "/w/Zebra.jpg", "active", 30.0, 4);
+        let abstract_jpg = seed_wallpaper(&conn, "/w/abstract.jpg", "active", 25.0);
+        let mid = seed_rated_wallpaper(&conn, "/w/mid.jpg", "active", 20.0, 2);
+
+        assert_eq!(
+            list_ids(&conn, StatusFilter::All, ListOrdering::FilenameAsc),
+            vec![abstract_jpg, mid, zebra]
+        );
+    }
+
+    #[test]
+    fn list_wallpapers_recently_added_orders_by_descending_id() {
+        // Every row carries one `created_at` here, which is what a real scan
+        // produces: `insert_new_wallpapers` batches the whole walk into one
+        // transaction. Insertion order survives only in `id`.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let first = seed_rated_wallpaper(&conn, "/w/first.jpg", "active", 10.0, 2);
+        let second = seed_wallpaper(&conn, "/w/second.jpg", "active", 25.0);
+        let third = seed_rated_wallpaper(&conn, "/w/third.jpg", "active", 30.0, 5);
+        conn.execute_batch("UPDATE wallpapers SET created_at = 1787496604")
+            .unwrap();
+
+        assert_eq!(
+            list_ids(&conn, StatusFilter::All, ListOrdering::RecentlyAdded),
+            vec![third, second, first]
+        );
+    }
+
+    #[test]
+    fn list_wallpapers_filters_to_exactly_the_status_named() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let active = seed_rated_wallpaper(&conn, "/w/active.jpg", "active", 20.0, 2);
+        let kept = seed_rated_wallpaper(&conn, "/w/kept.jpg", "kept", 30.0, 3);
+        let rejected = seed_rated_wallpaper(&conn, "/w/rejected.jpg", "rejected", 10.0, 4);
+
+        let by = |filter| list_ids(&conn, filter, ListOrdering::ScoreDesc);
+        // All means everything the app knows about, rejects included: a default
+        // that hid them would turn "where did that one go" into a hunt.
+        assert_eq!(by(StatusFilter::All), vec![kept, active, rejected]);
+        assert_eq!(by(StatusFilter::Active), vec![active]);
+        assert_eq!(by(StatusFilter::Kept), vec![kept]);
+        assert_eq!(by(StatusFilter::Rejected), vec![rejected]);
+    }
+
+    #[test]
+    fn list_wallpapers_carries_a_rejected_rows_origin() {
+        // So the page can say where the file came from without a second call,
+        // and can tell a restorable reject from one that predates the column.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let library = tmp.path().join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let id = seed_real_wallpaper(&conn, &library, "dawn.jpg");
+        let origin = library.join("dawn.jpg").to_str().unwrap().to_string();
+
+        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+
+        let rejected = list_wallpapers(&conn, StatusFilter::Rejected, ListOrdering::default())
+            .unwrap()
+            .pop()
+            .expect("the rejected wallpaper is the one row this filter returns");
+        assert_eq!(rejected.id, id);
+        assert_eq!(rejected.status, "rejected");
+        assert_eq!(rejected.origin_path, Some(origin));
+        // And `path` follows the file, so the two are different answers.
+        assert_eq!(rejected.path, landed);
+    }
+
+    #[test]
+    fn the_listing_defaults_are_all_and_score_desc() {
+        // What a caller omitting both arguments gets.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (top, mid, low, unrated) = seed_scored_library(&conn);
+        let rejected = seed_rated_wallpaper(&conn, "/w/rejected.jpg", "rejected", 15.0, 2);
+
+        assert_eq!(StatusFilter::default(), StatusFilter::All);
+        assert_eq!(ListOrdering::default(), ListOrdering::ScoreDesc);
+        assert_eq!(
+            list_ids(&conn, StatusFilter::default(), ListOrdering::default()),
+            vec![top, mid, rejected, low, unrated]
+        );
+    }
+
+    #[test]
+    fn a_status_filter_arrives_as_one_of_its_four_names_and_nothing_else() {
+        // The deserialization boundary is what keeps a caller-supplied string
+        // out of the SQL: an unknown name never reaches `where_clause`.
+        for (wire, expected) in [
+            (r#""all""#, StatusFilter::All),
+            (r#""active""#, StatusFilter::Active),
+            (r#""kept""#, StatusFilter::Kept),
+            (r#""rejected""#, StatusFilter::Rejected),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<StatusFilter>(wire).unwrap(),
+                expected
+            );
+        }
+
+        for wire in [
+            r#""eligible""#,
+            r#""Active""#,
+            r#""""#,
+            r#""active'; DROP TABLE wallpapers; --""#,
+        ] {
+            assert!(
+                serde_json::from_str::<StatusFilter>(wire).is_err(),
+                "{wire} deserialized"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordering_arrives_as_one_of_its_four_names_and_nothing_else() {
+        for (wire, expected) in [
+            (r#""score_desc""#, ListOrdering::ScoreDesc),
+            (r#""score_asc""#, ListOrdering::ScoreAsc),
+            (r#""filename_asc""#, ListOrdering::FilenameAsc),
+            (r#""recently_added""#, ListOrdering::RecentlyAdded),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<ListOrdering>(wire).unwrap(),
+                expected
+            );
+        }
+
+        for wire in [
+            r#""scoreDesc""#,
+            r#""rating_mu DESC""#,
+            r#""created_at""#,
+            r#""id ASC; DROP TABLE wallpapers""#,
+        ] {
+            assert!(
+                serde_json::from_str::<ListOrdering>(wire).is_err(),
+                "{wire} deserialized"
+            );
+        }
     }
 
     fn status_of(conn: &Connection, id: i64) -> String {

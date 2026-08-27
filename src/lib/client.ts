@@ -46,6 +46,30 @@ export interface Stats {
   total_comparisons: number;
 }
 
+/**
+ * Mirrors db::StatusFilter: which Statuses `listWallpapers` returns.
+ *
+ * No `eligible`. It is a voting-pool term, and on a browsing surface it would
+ * read as "everything I haven't thrown out", which is what `all` already shows
+ * with the rejects greyed (ADR 0016).
+ */
+export type StatusFilter = "all" | "active" | "kept" | "rejected";
+
+/**
+ * Mirrors db::ListOrdering. A caller picks a name; the backend owns every part
+ * of the clause behind it, direction included (ADR 0014). There is no separate
+ * direction toggle, which is why `score` appears twice.
+ *
+ * `recently_added` is insertion order, which lives in the row id: a scan stamps
+ * every row it adds with the same `created_at`, so that column orders nothing
+ * and stays off the DTO.
+ */
+export type ListOrdering =
+  | "score_desc"
+  | "score_asc"
+  | "filename_asc"
+  | "recently_added";
+
 /** Mirrors settings::Theme; each string is what `set_setting` accepts back. */
 export type Theme = "system" | "light" | "dark";
 
@@ -231,6 +255,19 @@ export interface Client {
     value: Settings[K],
   ): Promise<Settings>;
   getReview(limit?: number): Promise<Wallpaper[]>;
+  /**
+   * Every wallpaper matching `filter`, in `ordering`. One call, no paging: the
+   * row count is the size of the library, so nothing asks a second question to
+   * find that out (ADR 0016).
+   *
+   * Unrated wallpapers tail both Score orderings rather than sorting into the
+   * middle on their starting Score, and every ordering breaks its ties by id,
+   * so a vote does not reshuffle the list under the user (ADR 0014).
+   */
+  listWallpapers(
+    filter?: StatusFilter,
+    ordering?: ListOrdering,
+  ): Promise<Wallpaper[]>;
   keepWallpaper(id: number): Promise<void>;
   /**
    * Undoes a Keep: the wallpaper lands on Active and comes back into review.
@@ -325,6 +362,9 @@ export const client: Client = {
     invoke<Settings>("set_setting", { key, value: String(value) }),
 
   getReview: (limit = 50) => invoke<Wallpaper[]>("get_review", { limit }),
+
+  listWallpapers: (filter = "all", ordering = "score_desc") =>
+    invoke<Wallpaper[]>("list_wallpapers", { filter, ordering }),
 
   keepWallpaper: (id) => invokeVoid("keep_wallpaper", { id }),
 
