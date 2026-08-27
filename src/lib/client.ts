@@ -28,13 +28,22 @@ export interface Wallpaper {
   origin_path: string | null;
 }
 
-/** Mirrors voting::Stats */
+/**
+ * Mirrors voting::Stats. Every fraction is measured against `eligible_count`,
+ * not `total_wallpapers`, so rejecting a wallpaper does not drop the progress
+ * it describes (ADR 0008).
+ */
 export interface Stats {
+  /** All rows, any status. The boot gate reads this one. */
   total_wallpapers: number;
-  total_comparisons: number;
+  /** Active + Kept: the voting pool, and the denominator for everything below. */
+  eligible_count: number;
+  /** `min(comparisons_count) + 1` over the pool; 1 when the pool is empty. */
+  round: number;
+  /** Eligible wallpapers with `comparisons_count >= round`. */
+  round_participated_count: number;
   evaluated_count: number;
-  participated_count: number;
-  percentage: number;
+  total_comparisons: number;
 }
 
 /** Mirrors settings::Theme; each string is what `set_setting` accepts back. */

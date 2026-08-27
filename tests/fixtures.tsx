@@ -17,13 +17,21 @@ export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper 
   };
 }
 
+/**
+ * A mid-life library the backend could actually report: 12 rows of which 10 are
+ * eligible, every eligible one past two comparisons so the Round is 3, six of
+ * them already through their third, and the two ahead of the pool confident
+ * enough to count as Evaluated. 18 Comparisons is the pool's comparison counts
+ * halved, so a test that overrides nothing reads a coherent library.
+ */
 export function stats(over: Partial<Stats> = {}): Stats {
   return {
-    total_wallpapers: 10,
-    total_comparisons: 4,
+    total_wallpapers: 12,
+    eligible_count: 10,
+    round: 3,
+    round_participated_count: 6,
     evaluated_count: 2,
-    participated_count: 5,
-    percentage: 50,
+    total_comparisons: 18,
     ...over,
   };
 }

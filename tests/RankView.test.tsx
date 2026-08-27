@@ -113,6 +113,21 @@ const skipButton = () =>
   screen.getByRole("button", { name: /skip pair/i }) as HTMLButtonElement;
 const alertText = () => screen.queryByRole("alert")?.textContent ?? null;
 const headline = (label: RegExp) => screen.getByText(label).textContent;
+const roundLabel = () => screen.getByText(/^Round \d+$/);
+const barValue = () =>
+  screen.getByRole("progressbar").getAttribute("aria-valuenow");
+
+/**
+ * The Round's explanation as a mouse reaches it and as a screen reader reaches
+ * it: the two have to say the same thing, since the `title` is the whole hover
+ * affordance and the described-by target is the whole focus one.
+ */
+function roundExplanation(): [string | null, string | null] {
+  const round = roundLabel();
+  const id = round.getAttribute("aria-describedby");
+  const described = id ? document.getElementById(id) : null;
+  return [round.getAttribute("title"), described?.textContent ?? null];
+}
 
 async function clickPane(side: "Left" | "Right") {
   await act(async () => {
@@ -141,7 +156,16 @@ async function runPickFeedback() {
 
 test("loads a pair, prefetches the next, and shows the progress headline", async () => {
   servePairs(pair(1, 2), pair(3, 4));
-  mockCommand("get_stats", () => stats({ percentage: 37.5 }));
+  mockCommand("get_stats", () =>
+    stats({
+      total_wallpapers: 140,
+      eligible_count: 120,
+      round: 4,
+      round_participated_count: 98,
+      evaluated_count: 61,
+      total_comparisons: 487,
+    }),
+  );
 
   await renderRankView();
 
@@ -150,10 +174,55 @@ test("loads a pair, prefetches the next, and shows the progress headline", async
   );
   expect(shownIds()).toEqual([1, 2]);
   expect(getPairCalls).toBe(2); // the shown pair, plus the prefetch slot
-  expect(headline(/%$/)).toBe("37.5%");
-  expect(headline(/Participated$/)).toBe("5 / 10 Participated");
-  expect(headline(/Comparisons$/)).toBe("4 Comparisons");
+  // 98 of 120 through Round 4, and the Evaluated count reads against the
+  // eligible pool rather than the 140 rows, so rejects do not drop it.
+  expect(headline(/%$/)).toBe("Round 4 · 82%");
+  expect(barValue()).toBe("82");
+  expect(headline(/Evaluated$/)).toBe("61 / 120 Evaluated");
+  expect(headline(/Comparisons$/)).toBe("487 Comparisons");
   expect(alertText()).toBeNull();
+});
+
+test("the Round explains its own rule in real counts, on hover and on focus", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  mockCommand("get_stats", () =>
+    stats({
+      eligible_count: 120,
+      round: 4,
+      round_participated_count: 98,
+    }),
+  );
+
+  await renderRankView();
+
+  const rule =
+    "Round 4: 98 of 120 wallpapers have been compared at least 4 times.";
+  expect(roundExplanation()).toEqual([rule, rule]);
+  expect(roundLabel().tabIndex).toBe(0); // reachable without a mouse
+});
+
+test("an empty Eligible pool reads Round 1 at 0%", async () => {
+  // Nothing to vote on cannot also serve a pair, so what this pins is the
+  // division: `eligible_count` of 0 renders the start of Round 1, not NaN%.
+  servePairs(pair(1, 2), pair(3, 4));
+  mockCommand("get_stats", () =>
+    stats({
+      total_wallpapers: 0,
+      eligible_count: 0,
+      round: 1,
+      round_participated_count: 0,
+      evaluated_count: 0,
+      total_comparisons: 0,
+    }),
+  );
+
+  await renderRankView();
+
+  expect(headline(/%$/)).toBe("Round 1 · 0%");
+  expect(barValue()).toBe("0");
+  expect(headline(/Evaluated$/)).toBe("0 / 0 Evaluated");
+  const rule = "Round 1: 0 of 0 wallpapers have been compared at least 1 time.";
+  expect(roundExplanation()).toEqual([rule, rule]);
 });
 
 test("a pick swaps in the prefetched pair before the backend answers", async () => {
@@ -177,28 +246,29 @@ test("a pick swaps in the prefetched pair before the backend answers", async () 
     inFlight.resolve({
       next_pair: pair(5, 6),
       stats: stats({
-        percentage: 60,
-        total_comparisons: 5,
-        participated_count: 6,
+        round_participated_count: 7,
+        evaluated_count: 3,
+        total_comparisons: 19,
       }),
     });
   });
   await flush();
 
   // Headline refreshed from the VoteOutcome alone.
-  expect(headline(/%$/)).toBe("60.0%");
-  expect(headline(/Participated$/)).toBe("6 / 10 Participated");
-  expect(headline(/Comparisons$/)).toBe("5 Comparisons");
+  expect(headline(/%$/)).toBe("Round 3 · 70%");
+  expect(barValue()).toBe("70");
+  expect(headline(/Evaluated$/)).toBe("3 / 10 Evaluated");
+  expect(headline(/Comparisons$/)).toBe("19 Comparisons");
   expect(getStatsCalls).toBe(statsCallsAtLoad);
 
   // The returned next_pair filled the slot, so the following pick needs no fetch.
-  response = { next_pair: pair(7, 8), stats: stats({ total_comparisons: 6 }) };
+  response = { next_pair: pair(7, 8), stats: stats({ total_comparisons: 20 }) };
   await clickPane("Right");
   await runPickFeedback();
 
   expect(votes[1]).toEqual([4, 3]); // winner = right, loser = left
   expect(shownIds()).toEqual([5, 6]);
-  expect(headline(/Comparisons$/)).toBe("6 Comparisons");
+  expect(headline(/Comparisons$/)).toBe("20 Comparisons");
   expect(getPairCalls).toBe(2);
 });
 

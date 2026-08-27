@@ -23,8 +23,30 @@ const VOTE_FAILED_ERROR = "That vote didn't save. Pick again.";
 const NOT_ENOUGH_ERROR =
   "Ranking needs at least two wallpapers that aren't rejected.";
 const LOAD_FAILED_ERROR = "Failed to load wallpapers.";
+const ROUND_EXPLANATION_ID = "rank-round-explanation";
 
 type Side = "left" | "right";
+
+/**
+ * Within-Round progress, as a whole percent. An empty Eligible pool is a
+ * library that is about to start Round 1, not one at NaN%.
+ */
+function roundPercent(stats: Stats | null): number {
+  if (!stats || stats.eligible_count === 0) return 0;
+  return Math.round(
+    (stats.round_participated_count / stats.eligible_count) * 100,
+  );
+}
+
+/**
+ * The Round rule in real counts. The Round is derived from comparison counts
+ * the user never sees (ADR 0008), so the number has to explain itself.
+ */
+function roundExplanation(stats: Stats | null): string {
+  const round = stats?.round ?? 1;
+  const times = round === 1 ? "1 time" : `${round} times`;
+  return `Round ${round}: ${stats?.round_participated_count ?? 0} of ${stats?.eligible_count ?? 0} wallpapers have been compared at least ${times}.`;
+}
 
 /** The ids in a pair slot, for the exclusion `getPair`/`vote` accept. */
 function idsOf(pair: [Wallpaper, Wallpaper] | null): number[] {
@@ -284,6 +306,8 @@ export function RankView() {
 
   const [left, right] = currentPair;
   const [leftSrc, rightSrc] = srcs as [string, string];
+  const percent = roundPercent(stats);
+  const explanation = roundExplanation(stats);
 
   return (
     <div className="flex h-full w-full max-w-[1920px] min-h-0 mx-auto flex-1 flex-col p-4">
@@ -308,15 +332,26 @@ export function RankView() {
                 Progress
               </span>
               <span className="text-2xl font-bold" aria-live="polite">
-                {stats?.percentage.toFixed(1)}%
+                <span
+                  tabIndex={0}
+                  title={explanation}
+                  aria-describedby={ROUND_EXPLANATION_ID}
+                  className="rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                >
+                  Round {stats?.round ?? 1}
+                </span>{" "}
+                · {percent}%
+              </span>
+              <span id={ROUND_EXPLANATION_ID} className="sr-only">
+                {explanation}
               </span>
             </div>
             <div className="flex flex-col items-end gap-1 text-xs text-muted-foreground">
               <span aria-live="polite">
                 <span className="font-medium text-foreground">
-                  {stats?.participated_count}
+                  {stats?.evaluated_count ?? 0}
                 </span>{" "}
-                / {stats?.total_wallpapers} Participated
+                / {stats?.eligible_count ?? 0} Evaluated
               </span>
               <span>
                 <span className="font-medium text-foreground">
@@ -326,7 +361,7 @@ export function RankView() {
               </span>
             </div>
           </div>
-          <Progress value={stats?.percentage ?? 0} className="h-2" />
+          <Progress value={percent} className="h-2" />
         </div>
 
         {/* Comparison area */}

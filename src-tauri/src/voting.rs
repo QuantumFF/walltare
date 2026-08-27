@@ -30,16 +30,26 @@ pub struct Wallpaper {
     pub origin_path: Option<String>,
 }
 
-/// Progress snapshot, mirroring rate-wallpaper's `/progress` semantics:
-/// totals count all rows regardless of Status; participated/evaluated only
-/// count eligible wallpapers.
+/// Progress snapshot for the rank headline. Every fraction is measured against
+/// the Eligible pool, so rejecting wallpapers cannot drag progress down.
+///
+/// `total_wallpapers` is the exception and counts every row: the boot gate reads
+/// it to tell an empty library from a populated one, and narrowing it would
+/// strand a user whose library is entirely Rejected.
+///
+/// The Round is derived here rather than stored (ADR 0008), so it moves
+/// whichever way the counts do — forward when the least-compared wallpaper is
+/// rejected, back when a scan brings in unseen files. No `percentage`: the
+/// frontend divides `round_participated_count` by `eligible_count`, which is the
+/// one part of this it holds the inputs for.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 pub struct Stats {
     pub total_wallpapers: u32,
-    pub total_comparisons: u32,
+    pub eligible_count: u32,
+    pub round: u32,
+    pub round_participated_count: u32,
     pub evaluated_count: u32,
-    pub participated_count: u32,
-    pub percentage: f64,
+    pub total_comparisons: u32,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -136,8 +146,8 @@ pub fn vote<R: Rng>(
     // The Comparison is durable from here on, so the follow-up pair fetch must
     // not surface as a failed vote — it has a genuine logical failure mode
     // (`NotEnoughWallpapers`) that says nothing about whether the vote counted.
-    // `get_stats` stays fatal: two `SELECT COUNT(*)`s only fail if the database
-    // itself is gone, at which point an error is the honest answer.
+    // `get_stats` stays fatal: a handful of aggregate `SELECT`s only fail if the
+    // database itself is gone, at which point an error is the honest answer.
     //
     // The two just voted on are always excluded: showing either of them again
     // straight away is the case the user reads as "nothing happened".
@@ -153,10 +163,25 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
         conn.query_row("SELECT COUNT(*) FROM wallpapers", [], |r| r.get(0))?;
     let total_comparisons: u32 =
         conn.query_row("SELECT COUNT(*) FROM comparisons", [], |r| r.get(0))?;
-    let participated_count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM wallpapers
-         WHERE status IN ('active', 'kept') AND comparisons_count > 0",
+
+    // `MIN` over no rows is NULL, which is the empty-pool case and reports Round
+    // 1: the app is always about to run Round 1, and a null would make every
+    // consumer branch on a state that has nothing to say.
+    let (eligible_count, floor): (u32, Option<i64>) = conn.query_row(
+        "SELECT COUNT(*), MIN(comparisons_count) FROM wallpapers
+         WHERE status IN ('active', 'kept')",
         [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let round = floor.map_or(1, |f| count_u32(f).saturating_add(1));
+
+    // `>= round`, not `>= round - 1`: the floor is `round - 1` and every
+    // eligible wallpaper sits at or above it by construction, so the looser
+    // comparison would read as a full Round forever.
+    let round_participated_count: u32 = conn.query_row(
+        "SELECT COUNT(*) FROM wallpapers
+         WHERE status IN ('active', 'kept') AND comparisons_count >= ?1",
+        [round],
         |r| r.get(0),
     )?;
     let evaluated_count: u32 = conn.query_row(
@@ -165,17 +190,13 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
         [],
         |r| r.get(0),
     )?;
-    let percentage = if total_wallpapers > 0 {
-        f64::from(participated_count) / f64::from(total_wallpapers) * 100.0
-    } else {
-        0.0
-    };
     Ok(Stats {
         total_wallpapers,
-        total_comparisons,
+        eligible_count,
+        round,
+        round_participated_count,
         evaluated_count,
-        participated_count,
-        percentage,
+        total_comparisons,
     })
 }
 
@@ -479,8 +500,11 @@ mod tests {
 
         assert_eq!(comparison_rows(&conn), vec![(w, l)]);
         assert_eq!(outcome.stats.total_comparisons, 1);
-        assert_eq!(outcome.stats.participated_count, 2);
-        assert_eq!(outcome.stats.percentage, 100.0);
+        assert_eq!(outcome.stats.eligible_count, 2);
+        // Both wallpapers are now at one comparison, so the floor rose with the
+        // vote and Round 2 has nobody in it yet.
+        assert_eq!(outcome.stats.round, 2);
+        assert_eq!(outcome.stats.round_participated_count, 0);
 
         // With only two eligible wallpapers, the next pair is the same two
         // (in either order).
@@ -552,37 +576,149 @@ mod tests {
     }
 
     #[test]
-    fn stats_match_hand_computed_fixture_and_empty_library() {
-        let empty = test_conn();
-        let s = get_stats(&empty).unwrap();
-        assert_eq!(
-            (
-                s.total_wallpapers,
-                s.total_comparisons,
-                s.evaluated_count,
-                s.participated_count
-            ),
-            (0, 0, 0, 0)
-        );
-        assert_eq!(s.percentage, 0.0);
+    fn an_empty_library_reports_round_one_and_zero_counts() {
+        let s = get_stats(&test_conn()).unwrap();
+        assert_eq!(s.total_wallpapers, 0);
+        assert_eq!(s.eligible_count, 0);
+        assert_eq!(s.round, 1);
+        assert_eq!(s.round_participated_count, 0);
+        assert_eq!(s.evaluated_count, 0);
+        assert_eq!(s.total_comparisons, 0);
 
+        // A library that holds only Rejected rows has an empty Eligible pool and
+        // reads the same way, while still counting towards the boot gate.
+        let rejects_only = test_conn();
+        seed_on(&rejects_only, "rejected", 30.0, 2.0, 9);
+        let s = get_stats(&rejects_only).unwrap();
+        assert_eq!(s.total_wallpapers, 1);
+        assert_eq!(s.eligible_count, 0);
+        assert_eq!(s.round, 1);
+        assert_eq!(s.round_participated_count, 0);
+    }
+
+    #[test]
+    fn a_uniform_library_at_three_comparisons_is_in_round_four() {
         let conn = test_conn();
-        let _evaluated_participated = seed_on(&conn, "active", 25.0, 3.0, 2);
-        let _participated_only = seed_on(&conn, "active", 27.0, 5.0, 1);
-        let _evaluated_kept = seed_on(&conn, "kept", 22.0, 3.5, 0);
-        let rejected = seed_on(&conn, "rejected", 30.0, 2.9, 7);
-        let any_active = seed_on(&conn, "active", 26.0, 6.0, 0);
-        for _ in 0..3 {
-            add_comparison(&conn, any_active, rejected);
+        for _ in 0..4 {
+            seed_on(&conn, "active", MU, SIGMA, 3);
+        }
+
+        // The floor is three, so nobody has had their fourth comparison yet.
+        let s = get_stats(&conn).unwrap();
+        assert_eq!(s.round, 4);
+        assert_eq!(s.eligible_count, 4);
+        assert_eq!(s.round_participated_count, 0);
+
+        // One wallpaper reaching four counts towards the Round without moving
+        // the floor that set it.
+        let ahead = seed_on(&conn, "active", MU, SIGMA, 4);
+        let s = get_stats(&conn).unwrap();
+        assert_eq!(s.round, 4);
+        assert_eq!(s.eligible_count, 5);
+        assert_eq!(s.round_participated_count, 1);
+        assert_eq!(ratings(&conn, ahead).2, 4);
+    }
+
+    #[test]
+    fn a_single_laggard_pins_the_round_to_the_floor() {
+        let conn = test_conn();
+        seed_on(&conn, "active", MU, SIGMA, 0);
+        for _ in 0..5 {
+            seed_on(&conn, "active", MU, SIGMA, 5);
         }
 
         let s = get_stats(&conn).unwrap();
-        // Totals count ALL rows regardless of Status; participated/evaluated
-        // are eligibility-filtered.
-        assert_eq!(s.total_wallpapers, 5);
-        assert_eq!(s.total_comparisons, 3);
-        assert_eq!(s.participated_count, 2);
+        assert_eq!(s.round, 1);
+        assert_eq!(s.eligible_count, 6);
+        // Everyone but the laggard is past Round 1.
+        assert_eq!(s.round_participated_count, 5);
+    }
+
+    #[test]
+    fn rejecting_the_least_compared_wallpaper_advances_the_round() {
+        let conn = test_conn();
+        let laggard = seed_on(&conn, "active", MU, SIGMA, 2);
+        for _ in 0..3 {
+            seed_on(&conn, "active", MU, SIGMA, 5);
+        }
+
+        let before = get_stats(&conn).unwrap();
+        assert_eq!(before.round, 3);
+        assert_eq!(before.eligible_count, 4);
+        assert_eq!(before.round_participated_count, 3);
+
+        conn.execute(
+            "UPDATE wallpapers SET status = 'rejected' WHERE id = ?1",
+            params![laggard],
+        )
+        .unwrap();
+
+        // A stored Round would still say 3 here. Derived, it follows the new
+        // floor of five.
+        let after = get_stats(&conn).unwrap();
+        assert_eq!(after.round, 6);
+        assert_eq!(after.eligible_count, 3);
+        assert_eq!(after.round_participated_count, 0);
+        assert_eq!(after.total_wallpapers, 4);
+    }
+
+    #[test]
+    fn rejected_rows_stay_in_the_total_and_out_of_the_eligible_fractions() {
+        let conn = test_conn();
+        let active = seed_on(&conn, "active", 25.0, 5.0, 4);
+        // Rejected on both extremes: fewer comparisons than the floor, and a σ
+        // that would otherwise count as Evaluated.
+        let rejected_low = seed_on(&conn, "rejected", 20.0, 3.0, 0);
+        let rejected_high = seed_on(&conn, "rejected", 30.0, 1.0, 40);
+        add_comparison(&conn, active, rejected_high);
+        add_comparison(&conn, rejected_low, active);
+
+        let s = get_stats(&conn).unwrap();
+        assert_eq!(s.total_wallpapers, 3);
+        assert_eq!(s.eligible_count, 1);
+        assert_eq!(s.round, 5);
+        assert_eq!(s.round_participated_count, 0);
+        assert_eq!(s.evaluated_count, 0);
+        // Comparisons a Rejected wallpaper took part in remain part of the record.
+        assert_eq!(s.total_comparisons, 2);
+    }
+
+    #[test]
+    fn kept_rows_are_counted_everywhere_a_round_is_measured() {
+        let conn = test_conn();
+        seed_on(&conn, "active", 25.0, 3.0, 7);
+        let kept_laggard = seed_on(&conn, "kept", 22.0, 3.5, 1);
+
+        // The Kept row sets the floor, and its own count is what Round 2 needs.
+        let s = get_stats(&conn).unwrap();
+        assert_eq!(s.total_wallpapers, 2);
+        assert_eq!(s.eligible_count, 2);
+        assert_eq!(s.round, 2);
+        assert_eq!(s.round_participated_count, 1);
         assert_eq!(s.evaluated_count, 2);
-        assert!((s.percentage - 40.0).abs() < 1e-12);
+
+        conn.execute(
+            "UPDATE wallpapers SET comparisons_count = 2 WHERE id = ?1",
+            params![kept_laggard],
+        )
+        .unwrap();
+        let s = get_stats(&conn).unwrap();
+        assert_eq!(s.round, 3);
+        assert_eq!(s.round_participated_count, 1);
+    }
+
+    #[test]
+    fn evaluated_counts_only_eligible_rows_under_the_sigma_threshold() {
+        let conn = test_conn();
+        seed_on(&conn, "active", 25.0, 3.999, 6);
+        seed_on(&conn, "kept", 25.0, 1.0, 6);
+        // 4.0 is the threshold, not a member of it.
+        seed_on(&conn, "active", 25.0, 4.0, 6);
+        seed_on(&conn, "active", 25.0, 4.001, 6);
+        seed_on(&conn, "rejected", 25.0, 0.5, 6);
+
+        let s = get_stats(&conn).unwrap();
+        assert_eq!(s.eligible_count, 4);
+        assert_eq!(s.evaluated_count, 2);
     }
 }
