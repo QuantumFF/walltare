@@ -25,6 +25,9 @@ beforeEach(() => {
   // the settings read has to land before anything renders at all.
   mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
   mockCommand("get_settings", () => settings());
+  // The provider starts pre-generation once the gate settles, and again on every
+  // `scan-complete` this file emits.
+  mockCommand("start_pregen", () => null);
 });
 
 /** Emit a backend event and report how many listeners took it. */

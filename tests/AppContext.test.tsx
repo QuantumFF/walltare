@@ -1,7 +1,7 @@
 import App from "@/App";
 import { AppProvider, useApp } from "@/context/AppContext";
 import type { Settings, Stats } from "@/lib/client";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -12,7 +12,10 @@ import {
   stats,
   wallpaper,
 } from "./fixtures";
-import { mockCommand } from "./ipc-mocks";
+import { emitEvent, mockCommand } from "./ipc-mocks";
+
+/** How many times the provider has asked for a pre-generation pass. */
+let pregenStarts = 0;
 
 const scanInput = () => screen.queryByPlaceholderText("/home/user/wallpapers");
 
@@ -49,6 +52,13 @@ beforeEach(() => {
   // RankView is what the bootstrap redirect lands on; give it a pair to show.
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockCommand("get_settings", () => settings());
+  // The provider starts pre-generation as soon as the gate settles, so every
+  // render in this file reaches this command.
+  pregenStarts = 0;
+  mockCommand("start_pregen", () => {
+    pregenStarts++;
+    return null;
+  });
 });
 
 test("a library that already has wallpapers opens on rank, not scan", async () => {
@@ -222,6 +232,64 @@ test("no palette is written until the settings read has landed", async () => {
   await flush();
 
   expect(palette()).toEqual({ light: false, dark: true });
+});
+
+test("the pre-generation pass starts once the boot gate has settled", async () => {
+  // The frontend owns the trigger (ADR 0012), and it fires after the gate so
+  // decoding cannot compete with the first paint. A re-render must not fire it
+  // again: each call cancels and joins the pass before it.
+  const held = deferred<Settings>();
+  mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
+  mockCommand("get_settings", () => held.promise);
+
+  const { rerender } = render(<App />);
+  await flush();
+
+  expect(pregenStarts).toBe(0);
+
+  held.resolve(settings());
+  await flush();
+
+  expect(pregenStarts).toBe(1);
+
+  rerender(<App />);
+  await flush();
+
+  expect(pregenStarts).toBe(1);
+});
+
+test("a scan-complete starts the pre-generation pass again", async () => {
+  // Freshly scanned rows sit at zero comparisons, which is the head of the
+  // pass's queue, so the restart is what warms what the app will show next.
+  mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
+
+  render(<App />);
+  await flush();
+
+  expect(pregenStarts).toBe(1);
+
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 2, scanned_count: 5 });
+  });
+  await flush();
+
+  expect(pregenStarts).toBe(2);
+});
+
+test("a pre-generation start that fails leaves the app where it booted", async () => {
+  // Nothing the curator can see depends on the pass: the views it warms all
+  // generate on demand, so a refused start is logged and the boot stands.
+  mockCommand("get_stats", () => stats({ total_wallpapers: 3 }));
+  mockCommand("start_pregen", () =>
+    Promise.reject({ kind: "db", message: "locked database" }),
+  );
+  expectConsoleError(/Failed to start thumbnail pre-generation/);
+
+  render(<App />);
+  await flush();
+
+  expect(screen.queryByAltText("Left Wallpaper")).not.toBeNull();
+  expect(scanInput()).toBeNull();
 });
 
 test("both reads failing still starts the app", async () => {

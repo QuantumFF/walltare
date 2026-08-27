@@ -102,6 +102,26 @@ export interface ScanFailed {
 }
 
 /**
+ * Payload of the `pregen-progress` event (lib.rs PregenProgress).
+ *
+ * `total` rides along on every emission rather than arriving once in a start
+ * event, so a listener needs no start event and survives a missed one. The
+ * first emission carries `done: 0`, before the first wallpaper is decoded.
+ */
+export interface PregenProgress {
+  done: number;
+  total: number;
+}
+
+/** Payload of the `pregen-complete` event (lib.rs PregenComplete) */
+export interface PregenComplete {
+  generated: number;
+  /** Wallpapers whose source was gone or would not decode; one bad file stops nothing. */
+  failed: number;
+  cancelled: boolean;
+}
+
+/**
  * Mirrors lib.rs Expanded: where a Written path points, and whether a folder is
  * there. `exists` is `is_dir()`, so a file at that path reads as `false`.
  */
@@ -230,9 +250,30 @@ export interface Client {
    * `file_missing` when the file has left the reject folder.
    */
   restoreWallpaper(id: number): Promise<string>;
+  /**
+   * Starts the thumbnail pre-generation pass and resolves as soon as it is
+   * spawned, so a launch pass costs the boot nothing. A second call cancels and
+   * joins the first, so calling it again is a restart rather than a race.
+   *
+   * A warm library is silent: the work list comes back empty and neither event
+   * below is ever emitted (ADR 0012).
+   */
+  startPregen(): Promise<void>;
+  /**
+   * Stands the running pass down and resolves without waiting for it, so a
+   * cancel lands up to one wallpaper's decode late. Everything already
+   * generated stays; the pass runs again next launch.
+   */
+  cancelPregen(): Promise<void>;
   onScanProgress(handler: (payload: ScanProgress) => void): Promise<() => void>;
   onScanComplete(handler: (payload: ScanComplete) => void): Promise<() => void>;
   onScanFailed(handler: (payload: ScanFailed) => void): Promise<() => void>;
+  onPregenProgress(
+    handler: (payload: PregenProgress) => void,
+  ): Promise<() => void>;
+  onPregenComplete(
+    handler: (payload: PregenComplete) => void,
+  ): Promise<() => void>;
 }
 
 async function invokeVoid(name: string, args?: Record<string, unknown>) {
@@ -270,6 +311,10 @@ export const client: Client = {
 
   restoreWallpaper: (id) => invoke<string>("restore_wallpaper", { id }),
 
+  startPregen: () => invokeVoid("start_pregen"),
+
+  cancelPregen: () => invokeVoid("cancel_pregen"),
+
   // `listen` returns Promise<UnlistenFn>, not Promise<() => void>; UnlistenFn
   // is a branded type that isn't nominally assignable, so cast to the plain
   // function type the Client interface promises.
@@ -285,6 +330,16 @@ export const client: Client = {
 
   onScanFailed: (handler) =>
     listen<ScanFailed>("scan-failed", (event) =>
+      handler(event.payload),
+    ) as Promise<() => void>,
+
+  onPregenProgress: (handler) =>
+    listen<PregenProgress>("pregen-progress", (event) =>
+      handler(event.payload),
+    ) as Promise<() => void>,
+
+  onPregenComplete: (handler) =>
+    listen<PregenComplete>("pregen-complete", (event) =>
       handler(event.payload),
     ) as Promise<() => void>,
 };
