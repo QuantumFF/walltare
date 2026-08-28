@@ -10,6 +10,9 @@ import {
 } from "@/components/ui/toast";
 import { useApp, type View } from "@/context/AppContext";
 import { useAppEvents } from "@/context/AppEventsContext";
+// The counts these toasts print are the counts ADR 0020's Thumbnails line
+// prints, so both read them out of one file (ADR 0021).
+import { counted, grouped } from "@/lib/copy";
 import {
   client,
   isAppError,
@@ -153,23 +156,6 @@ interface Transient {
    * and only the second one covers anything.
    */
   closed?: boolean;
-}
-
-/**
- * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
- *
- * Grouped here rather than through `toLocaleString`, which reads the host's
- * locale: the app ships one language, and a German desktop would put `1.536` in
- * the sentence while ADR 0020's Thumbnails line, which is meant to say the same
- * number the same way, says something else.
- */
-function grouped(count: number): string {
-  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-/** `1,536 files`, and `1 file`, so the noun agrees with the count in front of it. */
-function counted(count: number, noun: string): string {
-  return `${grouped(count)} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 /**

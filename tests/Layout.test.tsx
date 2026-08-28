@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  cacheSize,
   deferred,
   emptyStats,
   flush,
@@ -51,6 +52,9 @@ beforeEach(() => {
     exists: true,
   }));
   mockCommand("set_setting", () => settings());
+  // And its Thumbnails section walks the cache directory on mount, for the line
+  // it reads out (ADR 0020).
+  mockCommand("get_cache_size", () => cacheSize());
   // The shell starts pre-generation as soon as it mounts, which is as soon as
   // the boot gate settles, so every render in this file reaches this command.
   mockCommand("start_pregen", () => {

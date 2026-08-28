@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  cacheSize,
   deferred,
   desktopColorScheme,
   emptyStats,
@@ -113,6 +114,9 @@ beforeEach(() => {
     resolved: String(args?.input),
     exists: true,
   }));
+  // And it walks the thumbnail cache on mount, for the line its Thumbnails
+  // section reads out (ADR 0020).
+  mockCommand("get_cache_size", () => cacheSize());
 });
 
 // ADR 0015's boot table, one test per row. Boot reads what the library holds

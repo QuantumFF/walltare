@@ -12,7 +12,9 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
+import type { CacheSize } from "@/lib/client";
 import {
+  cacheSize,
   desktopColorScheme,
   emptyStats,
   flush,
@@ -42,6 +44,13 @@ let scannedPaths: string[];
 let settingWrites: Array<{ key: string; value: string }>;
 /** Just the two commands a scan makes, in the order the backend heard them. */
 let scanSequence: string[];
+/** What the next walk of the cache directory finds, so a clear can change it. */
+let cacheReading: CacheSize;
+/** Walks of the cache directory, which ADR 0020 rations to three occasions. */
+let cacheSizeCalls = 0;
+/** Every pass command the backend heard, including the one the shell makes on boot. */
+let pregenCommands: string[];
+let clearCalls = 0;
 
 afterEach(cleanup);
 
@@ -58,6 +67,10 @@ beforeEach(() => {
   scannedPaths = [];
   settingWrites = [];
   scanSequence = [];
+  cacheReading = cacheSize();
+  cacheSizeCalls = 0;
+  pregenCommands = [];
+  clearCalls = 0;
 
   // A library with wallpapers in it, so boot lands on Rank and the curator
   // reaches Settings through the gear — which is what puts a `returnTo` on the
@@ -67,7 +80,26 @@ beforeEach(() => {
     return stats();
   });
   mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  // The shell starts a pass as soon as it mounts, so every render in this file
+  // reaches this one before the curator has clicked anything (ADR 0012).
+  mockCommand("start_pregen", () => {
+    pregenCommands.push("start_pregen");
+    return null;
+  });
+  mockCommand("cancel_pregen", () => {
+    pregenCommands.push("cancel_pregen");
+    return null;
+  });
+  // A walk of the cache directory, answering with whatever is on disk now — so a
+  // clear can empty it between two readings the way the backend would.
+  mockCommand("get_cache_size", () => {
+    cacheSizeCalls++;
+    return cacheReading;
+  });
+  mockCommand("clear_cache", () => {
+    clearCalls++;
+    return null;
+  });
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockCommand("get_review", () => []);
   mockCommand("list_wallpapers", () => []);
@@ -205,14 +237,6 @@ test("the page is one column of four sections, in first-run order", async () => 
   const column = document.querySelector('[data-slot="settings-section"]')
     ?.parentElement as HTMLElement;
   expect(column.className).toContain("max-w-2xl");
-
-  // The one that is still empty, and staying that way until #120 fills it.
-  // What is asserted here is that it is already in the page and already in
-  // order, so that ticket does not have to decide where its section goes.
-  const [, , , unbuilt] = document.querySelectorAll(
-    '[data-slot="settings-section"]',
-  );
-  expect(unbuilt.children.length).toBe(1);
 });
 
 test("the bar names the page and the way out of it", async () => {
@@ -1108,4 +1132,273 @@ test("the window keeps following the desktop after Settings is closed", async ()
   await flipDesktop("dark");
 
   expect(palette()).toEqual({ light: false, dark: true });
+});
+
+// The Thumbnails section, which is the only maintenance on the page: one line,
+// a button that changes verb, and a confirm with a number in it. What the
+// curator reads is the line and the verb, so that is what the tests below
+// assert; the three commands with a side effect — the pass, the cancel and the
+// clear — are pinned by call, because none of them shows on screen and a Clear
+// that fired on dismissal would be silent and expensive (ADR 0020).
+
+const thumbnails = () => sectionAt(3);
+const cacheLine = () =>
+  document.querySelector(
+    '[data-slot="thumbnail-cache-status"]',
+  ) as HTMLElement | null;
+/** The one button that is Generate now or Cancel, by whichever verb it is showing. */
+const passButton = () =>
+  within(thumbnails()).getByRole("button", {
+    name: /^(generate now|cancel)$/i,
+  }) as HTMLButtonElement;
+const clearButton = () =>
+  within(thumbnails()).getByRole("button", {
+    name: "Clear cache",
+  }) as HTMLButtonElement;
+const confirmDialog = () => screen.queryByRole("alertdialog");
+/**
+ * A control inside the open confirm, which is where every one of these queries
+ * has to be scoped: the dialog carries a Clear cache of its own over the trigger
+ * that opened it, and a Cancel of its own over the button that stops a pass.
+ */
+const inDialog = (name: string) =>
+  within(confirmDialog() as HTMLElement).getByRole("button", { name });
+
+test("the section is one line and two buttons", async () => {
+  await openSettingsFromLibrary();
+
+  const section = thumbnails();
+  expect(section.querySelector("h2")?.textContent).toBe("Thumbnails");
+  expect(section.contains(cacheLine())).toBe(true);
+  expect(
+    within(section)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Generate now", "Clear cache"]);
+});
+
+test("the line says how much is cached and how many files that is", async () => {
+  await openSettingsFromLibrary();
+
+  // Hundreds of megabytes under `app_data` that nothing else on the machine
+  // explains, which is what the readout exists for (ADR 0012).
+  expect(cacheLine()?.textContent).toBe("48 MB cached · 172 files");
+});
+
+test("the size is written in the decimal units every number about this cache is in", async () => {
+  cacheReading = cacheSize({ bytes: 1_600_000, files: 52 });
+  await openSettingsFromLibrary();
+
+  // ADR 0012's own reading of the 52 small thumbnails, printed back as itself:
+  // one decimal while the number is small enough for it to mean anything, and
+  // powers of 1,000, because 46MB over 120 files is where its 383KB per file
+  // came from.
+  expect(cacheLine()?.textContent).toBe("1.6 MB cached · 52 files");
+});
+
+test("a running pass replaces the file count with its own", async () => {
+  await openSettingsFromLibrary();
+
+  await emit("pregen-progress", { done: 240, total: 1204 });
+
+  // The words ADR 0021 put in the shell's report, because they are these ones:
+  // one fact, one phrasing, in both places — and grouped in threes here rather
+  // than through the host's locale, so a German desktop cannot print `1.204` on
+  // one surface and `1,204` on the other.
+  expect(cacheLine()?.textContent).toBe(
+    "48 MB cached · 240 of 1,204 generated",
+  );
+});
+
+test("an empty cache says so, and Clear cache offers nothing", async () => {
+  cacheReading = cacheSize({ bytes: 0, files: 0 });
+  await openSettingsFromLibrary();
+
+  expect(cacheLine()?.textContent).toBe("Nothing cached yet");
+  // A control that offers to remove nothing should say so rather than sit there
+  // enabled (ADR 0020).
+  expect(clearButton().disabled).toBe(true);
+  // And the other button still has work to offer, which is the whole of what an
+  // empty cache is a reason to do.
+  expect(passButton().disabled).toBe(false);
+});
+
+test("Generate now starts a pass, and the same button cancels the one that runs", async () => {
+  await openSettingsFromLibrary();
+
+  // The shell has already started one on boot, and this page cannot tell: no
+  // command reports whether a pass is running, so the verb is read off the
+  // events and the button says Generate now until one arrives.
+  expect(pregenCommands).toEqual(["start_pregen"]);
+  expect(passButton().textContent).toBe("Generate now");
+
+  await click(passButton());
+  expect(pregenCommands).toEqual(["start_pregen", "start_pregen"]);
+
+  await emit("pregen-progress", { done: 0, total: 1204 });
+
+  // This is where `cancel_pregen` lives. ADR 0012 added the command and left it
+  // homeless, and the control that started the work is the one that stops it.
+  expect(passButton().textContent).toBe("Cancel");
+  await click(passButton());
+  expect(pregenCommands).toEqual([
+    "start_pregen",
+    "start_pregen",
+    "cancel_pregen",
+  ]);
+
+  // And the verb goes back when the pass does, not when the request was made: a
+  // cancel lands up to one wallpaper's decode late (ADR 0012), so until the
+  // ending arrives there is still a thread decoding.
+  expect(passButton().textContent).toBe("Cancel");
+  await emit("pregen-complete", { generated: 12, failed: 0, cancelled: true });
+  expect(passButton().textContent).toBe("Generate now");
+});
+
+test("a pass already running when the page opens takes the button on its next event", async () => {
+  await openSettingsFromLibrary();
+  expect(passButton().textContent).toBe("Generate now");
+
+  // The honest half of what this page can do about a pass it never saw start:
+  // it cannot ask, so it listens, and a pass in flight announces itself on its
+  // next `pregen-progress` — one per wallpaper. Nothing was clicked here.
+  await emit("pregen-progress", { done: 800, total: 1204 });
+
+  expect(passButton().textContent).toBe("Cancel");
+  expect(cacheLine()?.textContent).toBe(
+    "48 MB cached · 800 of 1,204 generated",
+  );
+  expect(pregenCommands).toEqual(["start_pregen"]);
+});
+
+test("Clear cache asks first, with the size in the question", async () => {
+  await openSettingsFromLibrary();
+
+  await click(clearButton());
+
+  // Act-then-undo, which every transition in the app uses instead, has nothing
+  // to undo here — only to redo slowly, at 420ms a wallpaper (ADR 0009,
+  // ADR 0012). So the number the line is showing goes into the question.
+  const dialog = confirmDialog() as HTMLElement;
+  expect(dialog.textContent).toContain("Clear 48 MB of thumbnails?");
+  expect(dialog.textContent).toContain(
+    "They regenerate on the next launch, which takes about a minute for 120 wallpapers.",
+  );
+  // Nothing has happened yet, which is the point of asking.
+  expect(clearCalls).toBe(0);
+});
+
+test("the question names the pass it would cancel, and only when there is one", async () => {
+  await openSettingsFromLibrary();
+
+  await click(clearButton());
+  expect(confirmDialog()?.textContent).not.toContain("pass running now");
+  await click(inDialog("Cancel"));
+
+  await emit("pregen-progress", { done: 240, total: 1204 });
+  await click(clearButton());
+
+  // The second half of what the curator is agreeing to: `clear_cache` cancels
+  // any running pass before it empties the directory (ADR 0012), and the button
+  // that would otherwise have done that is the one beside this one.
+  expect(confirmDialog()?.textContent).toContain(
+    "The pass running now will be cancelled with them.",
+  );
+});
+
+test("the question keeps the numbers it opened with", async () => {
+  await openSettingsFromLibrary();
+  await emit("pregen-progress", { done: 1203, total: 1204 });
+  await click(clearButton());
+
+  cacheReading = cacheSize({ bytes: 96_400_000, files: 344 });
+  await emit("pregen-complete", { generated: 1204, failed: 0, cancelled: false });
+
+  // A pass finishing behind the overlay refreshes the size and clears the
+  // running pass, and either would rewrite the sentence under the curator while
+  // they are reading it — the second one by dropping a clause they have already
+  // weighed. So the question says what it said when it opened (ADR 0020).
+  expect(confirmDialog()?.textContent).toContain("Clear 48 MB of thumbnails?");
+  expect(confirmDialog()?.textContent).toContain(
+    "The pass running now will be cancelled with them.",
+  );
+});
+
+test("dismissing the question clears nothing", async () => {
+  await openSettingsFromLibrary();
+  await click(clearButton());
+
+  await click(inDialog("Cancel"));
+
+  expect(confirmDialog()).toBeNull();
+  expect(clearCalls).toBe(0);
+  expect(cacheLine()?.textContent).toBe("48 MB cached · 172 files");
+});
+
+test("Escape closes the question rather than the page", async () => {
+  await openSettingsFromLibrary();
+  await click(clearButton());
+
+  // Radix dismisses its layer from a capture-phase listener and marks the event,
+  // and this page stands down on that mark — the same handover the shortcuts
+  // dialog gets. One Escape closes one thing, and the expensive one is not it.
+  await pressEscape(document.body);
+
+  expect(confirmDialog()).toBeNull();
+  expect(showingView()).toBe("settings");
+  expect(clearCalls).toBe(0);
+});
+
+test("confirming clears the cache, and the line reads what is left", async () => {
+  await openSettingsFromLibrary();
+  await click(clearButton());
+
+  cacheReading = cacheSize({ bytes: 0, files: 0 });
+  await click(inDialog("Clear cache"));
+
+  expect(clearCalls).toBe(1);
+  expect(confirmDialog()).toBeNull();
+  // Read again afterwards, because a clear is one of the three occasions the
+  // number can have moved without the page hearing an event about it.
+  expect(cacheLine()?.textContent).toBe("Nothing cached yet");
+  expect(clearButton().disabled).toBe(true);
+});
+
+test("the size is read on mount and when a pass ends, and never per wallpaper", async () => {
+  await openSettingsFromLibrary();
+  expect(cacheSizeCalls).toBe(1);
+
+  await emit("pregen-progress", { done: 1, total: 1204 });
+  await emit("pregen-progress", { done: 2, total: 1204 });
+  await emit("pregen-progress", { done: 3, total: 1204 });
+
+  // `get_cache_size` is a directory read plus a `metadata` per entry, about
+  // 10,000 stats on the largest library, and a wallpaper moves the number by
+  // 400KB. So the walk is not what follows the pass — the `of 1,204` clause is
+  // (ADR 0020).
+  expect(cacheSizeCalls).toBe(1);
+  expect(cacheLine()?.textContent).toBe("48 MB cached · 3 of 1,204 generated");
+
+  cacheReading = cacheSize({ bytes: 96_400_000, files: 344 });
+  await emit("pregen-complete", { generated: 1204, failed: 0, cancelled: false });
+
+  // And the end of a pass is the moment the number on the line is furthest from
+  // the truth, which is why it is one of the three that spends the walk.
+  expect(cacheSizeCalls).toBe(2);
+  expect(cacheLine()?.textContent).toBe("96 MB cached · 344 files");
+});
+
+test("leaving the page drops its pass subscriptions", async () => {
+  await openSettingsFromLibrary();
+
+  // Two listeners for the same event: this section's, for the line and the
+  // verb, and the toast surface's, which reports the same pass wherever the
+  // curator goes (ADR 0021).
+  expect(await emit("pregen-progress", { done: 1, total: 10 })).toBe(2);
+
+  await click(backControl() as HTMLButtonElement);
+
+  // Settings is the one view the shell unmounts, so this one has to go and the
+  // shell's has to stay.
+  expect(await emit("pregen-progress", { done: 2, total: 10 })).toBe(1);
 });
