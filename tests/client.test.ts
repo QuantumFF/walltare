@@ -2,7 +2,7 @@ import { client, wallpaperImageUrl } from "@/lib/client";
 import type { Settings, Theme } from "@/lib/client";
 import { describe, expect, test } from "bun:test";
 import { wallpaper } from "./fixtures";
-import { emitEvent, mockCommand } from "./ipc-mocks";
+import { emitEvent, mockCommand, mockFolderPicker } from "./ipc-mocks";
 
 /** A settings table with something in every key, so a default can't stand in. */
 const stored: Settings = {
@@ -65,6 +65,34 @@ describe("client seam", () => {
       kind: "invalid_path_syntax",
       message: "unknown environment variable HOEM",
     });
+  });
+
+  test("pickFolder asks for one folder rather than for files", async () => {
+    // `directory` is what makes the native dialog a folder picker rather than a
+    // file picker, and `multiple` is what makes its answer one path rather than
+    // a list of them.
+    const picker = mockFolderPicker("/home/qdes/Wallpapers");
+
+    await client.pickFolder();
+
+    expect(picker.options).toEqual({ directory: true, multiple: false });
+  });
+
+  test("pickFolder resolves with the folder the curator chose", async () => {
+    // An absolute canonical path, which is what the caller writes into the
+    // field over whatever `~` was typed there (ADR 0020).
+    mockFolderPicker("/home/qdes/Wallpapers");
+    expect(await client.pickFolder()).toBe("/home/qdes/Wallpapers");
+  });
+
+  test("pickFolder resolves with null when the curator dismisses the dialog", async () => {
+    // A dismissal is an answer. Rejecting here would put an error on screen for
+    // a decision the curator made on purpose, and the field they were already
+    // editing has to survive it untouched.
+    const picker = mockFolderPicker(null);
+
+    expect(await client.pickFolder()).toBeNull();
+    expect(picker.opened).toBe(1);
   });
 
   test("getSettings hands back the struct the backend sent", async () => {

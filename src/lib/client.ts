@@ -1,8 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 
 // Types mirroring the Rust DTOs locked in #4. Do not use these types or any
 // invoke/listen call outside this module — everything goes through `client`.
+//
+// `@tauri-apps/plugin-dialog` lives under the same rule. Opening a folder
+// picker is a call into the backend like any other, and `pickFolder` below is
+// the only thing in the app that imports the plugin.
 
 export type ThumbnailSize = "small" | "medium" | "full";
 
@@ -239,6 +244,19 @@ export interface Client {
    */
   expandPath(input: string): Promise<Expanded>;
   /**
+   * Opens the desktop's folder picker and resolves with the folder the curator
+   * chose, or with `null` when they dismissed the dialog. A dismissal is an
+   * answer rather than a failure, so nothing rejects and a Browse button that
+   * was opened by accident costs the field nothing.
+   *
+   * What comes back is an absolute canonical path, which is the cost ADR 0020
+   * accepted for having a Browse button at all: browsing after typing
+   * `~/Wallpapers` overwrites it with `/home/qdes/Wallpapers` and discards the
+   * portability the `~` was there for. Nothing warns about that, because the
+   * curator has just pointed at the folder they meant.
+   */
+  pickFolder(): Promise<string | null>;
+  /**
    * `exclude` names wallpapers that must stay out of the draw — the ones
    * already on screen or queued in the prefetch slot. Honoured only while at
    * least two candidates remain, so a small library still ranks.
@@ -352,6 +370,11 @@ export const client: Client = {
   startScan: (path) => invokeVoid("start_scan", { path }),
 
   expandPath: (input) => invoke<Expanded>("expand_path", { input }),
+
+  // `multiple` is spelled out rather than left to the plugin's default, because
+  // it is what decides between one path and a list of them, and a path field
+  // holds exactly one folder.
+  pickFolder: () => open({ directory: true, multiple: false }),
 
   getPair: (exclude) => invoke<[Wallpaper, Wallpaper]>("get_pair", { exclude }),
 
