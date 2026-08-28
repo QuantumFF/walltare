@@ -2,7 +2,13 @@ import { ScanView } from "@/components/ScanView";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import { currentView, flush, renderInApp, settings, stats } from "./fixtures";
+import {
+  currentView,
+  emptyStats,
+  flush,
+  renderInApp,
+  settings,
+} from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 let scannedPaths: string[];
@@ -21,12 +27,13 @@ beforeEach(() => {
     scannedPaths.push(args?.path as string);
     return null;
   });
-  // The provider's boot gate: an empty library is what keeps the user here, and
-  // the settings read has to land before anything renders at all.
-  mockCommand("get_stats", () => stats({ total_wallpapers: 0 }));
+  // The provider's boot gate: an empty library is what keeps the curator here,
+  // and the settings read has to land before anything renders at all.
+  mockCommand("get_stats", () => emptyStats());
   mockCommand("get_settings", () => settings());
-  // The provider starts pre-generation once the gate settles, and again on every
-  // `scan-complete` this file emits.
+  // Nothing in this file mounts the shell, so nothing starts pre-generation or
+  // hears `scan-complete` above this view. The mock stands in case a boot path
+  // reaches it.
   mockCommand("start_pregen", () => null);
 });
 
@@ -52,7 +59,7 @@ async function startScan(path = "/tmp/wallpapers") {
   });
 }
 
-test("a scan reports progress, then lands on rank", async () => {
+test("a scan reports progress, and the completion frees the button", async () => {
   await renderInApp(<ScanView />);
   await startScan();
 
@@ -68,29 +75,33 @@ test("a scan reports progress, then lands on rank", async () => {
     emitEvent("scan-complete", { added_count: 12, scanned_count: 256 });
   });
 
-  expect(currentView()).toBe("rank");
+  // This screen no longer navigates on completion. The shell owns the
+  // subscription above the view swap, because a scan finishes wherever the
+  // curator has wandered to since, and only the boot rule's one rerun moves
+  // them (ADR 0015).
+  expect(currentView()).toBe("settings");
   expect(progressText()).toBeNull();
   expect(scanButton().textContent).toContain("Start Ranking");
 });
 
-test("a rescan that adds nothing still lands on rank", async () => {
+test("a rescan that adds nothing is not reported as an empty directory", async () => {
   await renderInApp(<ScanView />);
   await startScan();
 
   // The common case on every launch after the first: the walk found images,
   // the library already knew them. Reporting that as "no images" was what
-  // stranded the user on this screen.
+  // stranded the curator on this screen.
   await act(async () => {
     emitEvent("scan-complete", { added_count: 0, scanned_count: 42 });
   });
 
-  expect(currentView()).toBe("rank");
+  expect(currentView()).toBe("settings");
   expect(
     screen.queryByText(/No supported images found in that directory\./i),
   ).toBeNull();
 });
 
-test("a directory with no images at all is reported, and the view stays usable", async () => {
+test("a directory with no images at all leaves the view usable and says nothing on it", async () => {
   await renderInApp(<ScanView />);
   await startScan();
 
@@ -98,10 +109,13 @@ test("a directory with no images at all is reported, and the view stays usable",
     emitEvent("scan-complete", { added_count: 0, scanned_count: 0 });
   });
 
-  expect(
-    screen.queryByText(/No supported images found in that directory\./i),
-  ).not.toBeNull();
-  expect(currentView()).toBe("scan");
+  // The sentence moved to the toast the event arrives on, where it names the
+  // folder as the curator wrote it and reaches them wherever they have gone
+  // since (ADR 0021); `background-report.test.tsx` asserts the copy there. What
+  // is left to this screen is a button that is usable again.
+  const said = screen.getByText(/No supported images found/i);
+  expect(said.closest("[data-slot='toast']")).not.toBeNull();
+  expect(currentView()).toBe("settings");
   expect(progressText()).toBeNull();
   expect(scanButton().disabled).toBe(false);
 
@@ -126,7 +140,7 @@ test("a scan that fails mid-walk is reported and clears the progress line", asyn
     screen.queryByText(/Failed to scan directory\. Please check the path\./i),
   ).not.toBeNull();
   expect(progressText()).toBeNull();
-  expect(currentView()).toBe("scan");
+  expect(currentView()).toBe("settings");
   expect(scanButton().disabled).toBe(false);
 });
 
@@ -147,13 +161,17 @@ test("an unreadable path is reported and the view stays usable", async () => {
   ).not.toBeNull();
   expect(scanButton().disabled).toBe(false);
 
-  // Fixing the path works: a fresh scan runs and completes.
+  // Fixing the path works: a fresh scan runs, completes, and clears the error
+  // this screen put up.
   mockCommand("start_scan", () => null);
   await startScan("/tmp/wallpapers");
   await act(async () => {
     emitEvent("scan-complete", { added_count: 5, scanned_count: 5 });
   });
-  expect(currentView()).toBe("rank");
+  expect(
+    screen.queryByText(/That directory doesn't exist or can't be read\./i),
+  ).toBeNull();
+  expect(scanButton().textContent).toContain("Start Ranking");
 });
 
 test("a mistyped variable in the path is reported by name", async () => {
@@ -222,7 +240,9 @@ test("a scan in flight cannot be started a second time", async () => {
 test("unmounting drops the scan subscriptions", async () => {
   const { unmount } = await renderInApp(<ScanView />);
   await flush();
-  expect(await emitInAct("scan-progress", { scanned: 1, added: 1 })).toBe(1);
+  // Two listeners: this view's own, and the toast surface's, which reports the
+  // same scan wherever the curator is (ADR 0021). Both have to go.
+  expect(await emitInAct("scan-progress", { scanned: 1, added: 1 })).toBe(2);
 
   unmount();
 

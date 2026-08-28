@@ -17,6 +17,25 @@ import { mockCommand } from "./ipc-mocks";
 const alerts = () => screen.queryAllByRole("alert").map((el) => el.textContent);
 const images = () => screen.getAllByRole("img") as HTMLImageElement[];
 
+/**
+ * The title and description of the one toast that is up, or `null` for none.
+ *
+ * Read off `data-slot` rather than a role: Radix gives the toast and its own
+ * announce region the same `role="status"`, so a role query matches the copy
+ * twice and would pass on either.
+ */
+function toast(): { title: string; description: string | null } | null {
+  const root = document.querySelector("[data-slot='toast']");
+  if (!root) return null;
+  return {
+    title: root.querySelector("[data-slot='toast-title']")?.textContent ?? "",
+    description:
+      root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
+  };
+}
+const refreshButton = () =>
+  screen.getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
+
 afterEach(cleanup);
 
 beforeEach(() => {
@@ -188,7 +207,13 @@ test("a keep that fails puts the card back and says so", async () => {
     fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
   });
 
-  expect(alerts()).toEqual(["Failed to keep wallpaper. Please try again."]);
+  // The generic "Please try again." is gone with the paragraph that carried it:
+  // the title is the frontend's and the detail is the backend's own account.
+  expect(toast()).toEqual({
+    title: "Couldn't keep keeper.jpg",
+    description: "disk on fire",
+  });
+  expect(alerts()).toEqual([]);
   expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
 });
 
@@ -221,7 +246,7 @@ test("a keep that fails does not resurrect a card kept while it was in flight", 
     await flush();
   });
 
-  expect(alerts()).toEqual(["Failed to keep wallpaper. Please try again."]);
+  expect(toast()?.title).toBe("Couldn't keep doomed.jpg");
   expect(images().map((img) => img.alt)).toEqual([
     "doomed.jpg",
     "untouched.jpg",
@@ -242,13 +267,14 @@ test("a move that fails puts the card back and says so", async () => {
     fireEvent.click(screen.getByRole("button", { name: /move file/i }));
   });
 
-  expect(alerts()).toEqual([
-    "Failed to move wallpaper. Please check the destination.",
-  ]);
+  expect(toast()).toEqual({
+    title: "Couldn't reject reject-me.jpg",
+    description: "destination is read-only",
+  });
   expect(screen.queryByAltText("reject-me.jpg")).not.toBeNull();
 });
 
-test("a successful fetch clears the previous failure", async () => {
+test("a successful fetch does not clear the previous failure", async () => {
   expectConsoleError(/Failed to fetch review list/);
   let broken = true;
   mockCommand("get_review", () =>
@@ -259,18 +285,24 @@ test("a successful fetch clears the previous failure", async () => {
 
   await renderInApp(<ReviewView />);
   await flush();
-  expect(alerts()).toEqual(["Failed to load the review list."]);
+  expect(toast()?.title).toBe("Couldn't load the review list");
 
   broken = false;
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
   });
 
-  expect(alerts()).toEqual([]);
+  // The inverse of what the paragraph did, and deliberately. An error is pinned
+  // and gets no exception to the replacement rule: the only things that take it
+  // down are the curator closing it or the next action overwriting it, because
+  // either one is a signal they have read it (ADR 0017). A fetch that quietly
+  // wiped it would be the eight-second error this surface exists to avoid,
+  // arriving by a side door.
+  expect(toast()?.title).toBe("Couldn't load the review list");
   expect(screen.queryByAltText("a.jpg")).not.toBeNull();
 });
 
-test("a successful keep clears the previous failure", async () => {
+test("a successful keep replaces the previous failure", async () => {
   expectConsoleError(/Failed to keep wallpaper/);
   await openReview([
     wallpaper(4, { filename: "keeper.jpg" }),
@@ -284,14 +316,16 @@ test("a successful keep clears the previous failure", async () => {
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
   });
-  expect(alerts()).toHaveLength(1);
+  expect(toast()?.title).toBe("Couldn't keep keeper.jpg");
 
   broken = false;
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: /keep stay\.jpg/i }));
   });
 
-  expect(alerts()).toEqual([]);
+  // One slot, and the newest message owns it. The failed card stays in the grid
+  // as the durable evidence the toast no longer carries.
+  expect(toast()?.title).toBe("Kept stay.jpg");
   expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
 });
 
@@ -304,20 +338,23 @@ test("the list can't be refetched while a fetch is in flight", async () => {
 
   const { container } = await renderInApp(<ReviewView />);
 
-  // While loading the view is a spinner: there is no control to fire a
-  // second fetch from.
+  // While loading the body is a spinner and Refresh is disabled. The control
+  // lives in the bar this page owns below the chrome, which holds its height in
+  // every state, so `disabled` is what keeps a second fetch out rather than the
+  // button being absent.
   expect(container.querySelector(".animate-spin")).not.toBeNull();
-  expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
+  expect(refreshButton().disabled).toBe(true);
 
   await act(async () => {
     first.resolve([wallpaper(2, { filename: "a.jpg" })]);
   });
+  expect(refreshButton().disabled).toBe(false);
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
+    fireEvent.click(refreshButton());
   });
 
   expect(fetches).toBe(2);
-  expect(screen.queryByRole("button", { name: /refresh/i })).toBeNull();
+  expect(refreshButton().disabled).toBe(true);
   expect(screen.queryByAltText("a.jpg")).toBeNull();
 
   await act(async () => {
@@ -426,5 +463,12 @@ test("a load failure surfaces readably instead of console-only", async () => {
   await renderInApp(<ReviewView />);
   await flush();
 
-  expect(alerts()).toEqual(["Failed to load the review list."]);
+  // On the shell's surface now, not in a paragraph of this view's own. Two
+  // error surfaces in one view is what ADR 0017 removed, and a list that will
+  // not load was the paragraph's last tenant.
+  expect(toast()).toEqual({
+    title: "Couldn't load the review list",
+    description: "locked database",
+  });
+  expect(alerts()).toEqual([]);
 });

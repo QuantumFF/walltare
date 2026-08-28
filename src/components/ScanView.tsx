@@ -1,11 +1,10 @@
+import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
-import { useApp } from "@/context/AppContext";
 import { client, isAppError } from "@/lib/client";
 import { FolderOpen, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 const INVALID_PATH_ERROR = "That directory doesn't exist or can't be read.";
-const NO_IMAGES_ERROR = "No supported images found in that directory.";
 const SCAN_FAILED_ERROR = "Failed to scan directory. Please check the path.";
 const SCAN_IN_PROGRESS_ERROR = "A scan is already running.";
 
@@ -33,10 +32,18 @@ export function ScanView() {
     added: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { setView } = useApp();
+
+  const { scanStarted } = useToaster();
 
   // Subscriptions live for the whole view so no completion event can race a
   // scan start.
+  //
+  // What is left here is this screen's own button and its own progress line.
+  // The three things that outlive the screen — pre-generation, the boot rule's
+  // one rerun, and the report of how the scan ended — moved into the shell,
+  // because Settings unmounts the moment the curator navigates away and a scan
+  // takes minutes (ADR 0015). Navigating on completion left with them: it used
+  // to yank the curator to Rank from wherever they were, on every rescan.
   useEffect(() => {
     let cancelled = false;
     const unlistens: Array<() => void> = [];
@@ -45,18 +52,13 @@ export function ScanView() {
       client.onScanProgress(({ scanned, added }) => {
         setProgress({ scanned, added });
       }),
-      client.onScanComplete(({ added_count, scanned_count }) => {
+      // How the scan ended is the shell's to report, on the toast the event
+      // arrives on, where it can name the folder as written and reach a curator
+      // who has long since left this page (ADR 0021). What is left here is the
+      // button, which has a scan to stop presenting as running.
+      client.onScanComplete(() => {
         setScanning(false);
         setProgress(null);
-        // Only a walk that turned up nothing at all is an empty directory.
-        // A rescan that adds nothing means the library already has these —
-        // the common case on every launch after the first, and reporting it
-        // as "no images" strands the user on this screen.
-        if (added_count > 0 || scanned_count > 0) {
-          setView("rank");
-        } else {
-          setError(NO_IMAGES_ERROR);
-        }
       }),
       client.onScanFailed(({ message }) => {
         setScanning(false);
@@ -76,7 +78,7 @@ export function ScanView() {
       cancelled = true;
       for (const fn of unlistens) fn();
     };
-  }, [setView]);
+  }, []);
 
   const handleScan = async () => {
     if (!path || scanning) return;
@@ -87,6 +89,11 @@ export function ScanView() {
 
     try {
       await client.startScan(path);
+      // The directory walk emits nothing until it is over, so the report of a
+      // scan in progress can only start from the call that asked for one — and
+      // the folder, as the curator wrote it, is knowable nowhere else either
+      // (ADR 0021).
+      scanStarted(path);
     } catch (err) {
       setScanning(false);
       setProgress(null);

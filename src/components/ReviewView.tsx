@@ -9,10 +9,17 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { PageBar } from "@/components/PageBar";
+import { useToaster } from "@/components/ToastSurface";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
+import {
+  useAppEvent,
+  useAppEvents,
+  useRefetchWhenShown,
+} from "@/context/AppEventsContext";
 import { client, wallpaperImageUrl, type Wallpaper } from "@/lib/client";
 import {
   ArrowLeft,
@@ -47,34 +54,54 @@ export const REVIEW_LIMIT = 50;
 const CARD_CLASS =
   "group relative aspect-video bg-card rounded-xl overflow-hidden border border-border shadow-sm";
 const DEFAULT_MOVE_PATH = "./rejected";
-const LOAD_FAILED_ERROR = "Failed to load the review list.";
-const KEEP_FAILED_ERROR = "Failed to keep wallpaper. Please try again.";
-const MOVE_FAILED_ERROR = "Failed to move wallpaper. Please check the destination.";
 
 export function ReviewView() {
   const [wallpapers, setWallpapers] = useState<Wallpaper[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [movePath, setMovePath] = useState(DEFAULT_MOVE_PATH);
   const { setView } = useApp();
+  const { publish } = useAppEvents();
+  // Every failure this view can have now goes to the shell's one slot, and the
+  // `role="alert"` paragraph that used to hold them is gone with the `error`
+  // state behind it. Two error surfaces in one view is what ADR 0017 set out to
+  // remove, and the generic strings it also removed — "Failed to keep
+  // wallpaper. Please try again." — said less than the backend message that
+  // replaces them.
+  const { show } = useToaster();
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
     try {
       const list = await client.getReview(REVIEW_LIMIT);
       setWallpapers(list);
-      setError(null);
     } catch (err) {
       console.error("Failed to fetch review list:", err);
-      setError(LOAD_FAILED_ERROR);
+      show({ kind: "load-failed", noun: "the review list", error: err });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [show]);
 
   useEffect(() => {
     void fetchReviewList();
   }, [fetchReviewList]);
+
+  // The one event this list answers with a fetch rather than with a patch, and
+  // the fetch waits until Review is the view being shown: fifty thumbnail
+  // requests from a hidden page are exactly what ADR 0012's dedicated
+  // pre-generation thread exists to keep off the rank view's next pair.
+  useRefetchWhenShown("review", fetchReviewList);
+
+  // Kept and Rejected never appear in review (CONTEXT.md), so a wallpaper that
+  // changed Status anywhere else leaves the list, and the card is the one thing
+  // that has to move. The other direction is not a patch this view can make: an
+  // event carries an id and not a row, so nothing here knows what a wallpaper
+  // that just became Active looks like or where it belongs in an ordering by
+  // Score. It arrives with the next fetch.
+  useAppEvent((event) => {
+    if (event.type !== "status-changed" || event.status === "active") return;
+    setWallpapers((prev) => prev.filter((w) => w.id !== event.id));
+  });
 
   // Puts one card back where it was after a failed action.
   //
@@ -96,13 +123,32 @@ export function ReviewView() {
     const index = wallpapers.findIndex((w) => w.id === id);
     const removed = wallpapers[index];
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
-    setError(null);
     try {
       await client.keepWallpaper(id);
+      // After the write and not before it: a card removed optimistically comes
+      // back if the write fails, and a Library that had already greyed the row
+      // would be the one place the failure did not reach.
+      publish({ type: "status-changed", id, status: "kept" });
+      // The card is already gone by the time this lands, which is the whole
+      // reason it toasts: a card that vanishes is not a confirmation, and the
+      // Undo is what replaces the confirm step (ADR 0009, ADR 0017).
+      if (removed) {
+        show({ kind: "kept", view: "review", id, filename: removed.filename });
+      }
     } catch (err) {
       console.error("Failed to keep wallpaper:", err);
-      if (removed) restoreCard(index, removed);
-      setError(KEEP_FAILED_ERROR);
+      // The card goes back in the grid and the toast reports why. Both: the
+      // toast is replaceable and the grid is the durable evidence.
+      if (removed) {
+        restoreCard(index, removed);
+        show({
+          kind: "failed",
+          view: "review",
+          action: "keep",
+          filename: removed.filename,
+          error: err,
+        });
+      }
     }
   };
 
@@ -110,54 +156,66 @@ export function ReviewView() {
     const index = wallpapers.findIndex((w) => w.id === id);
     const removed = wallpapers[index];
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
-    setError(null);
     try {
-      // The path the file landed at goes unread here. Review has a confirm
-      // dialog rather than a toast, so it has nowhere to report a rename yet;
-      // that arrives with the reject toast when Review is rebuilt.
-      await client.moveWallpaper(id, movePath);
+      // The path the file landed at is read now: `unique_destination` suffixes
+      // ` (n)` on a collision, so this is the only account of what the file is
+      // called on the far side, and the toast decides whether it has anything
+      // to say (ADR 0003, ADR 0017).
+      const finalPath = await client.moveWallpaper(id, movePath);
+      publish({ type: "status-changed", id, status: "rejected" });
+      if (removed) {
+        show({
+          kind: "rejected",
+          view: "review",
+          id,
+          filename: removed.filename,
+          destination: movePath,
+          finalPath,
+        });
+      }
     } catch (err) {
       console.error("Failed to move wallpaper:", err);
-      if (removed) restoreCard(index, removed);
-      setError(MOVE_FAILED_ERROR);
+      if (removed) {
+        restoreCard(index, removed);
+        show({
+          kind: "failed",
+          view: "review",
+          action: "reject",
+          filename: removed.filename,
+          error: err,
+        });
+      }
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col h-full max-w-[1920px] mx-auto p-6 gap-8 animate-in fade-in duration-500">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-border pb-6">
-        <div className="space-y-1">
-          <h2 className="text-2xl font-light tracking-tight">
-            Review Low-Rated
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Decide what to do with your lowest ranked wallpapers.
-          </p>
-        </div>
-
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          <div className="flex items-center gap-2 bg-secondary/50 p-1 rounded-lg border border-border">
-            <span className="text-xs font-medium px-2 text-muted-foreground">
+  // The destination line, in the bar this page owns below the chrome. The
+  // chrome's tab already names the page, so what was a 2xl heading and a
+  // subtitle is the sentence that actually carries information: what Review
+  // lists, and where a reject lands (ADR 0015). It renders while the list is
+  // still loading too, so the page's height does not move under the curator.
+  //
+  // ADR 0018 replaces the field with a read-out of the stored destination and a
+  // route into Settings, in the issue that reworks this whole view.
+  const header = (
+    <>
+      <h1 className="sr-only">Review</h1>
+      <PageBar>
+        <span className="font-medium">Lowest Scores first</span>
+        <div className="ml-auto flex items-center gap-3">
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary/50 p-1">
+            <span className="px-2 text-xs font-medium text-muted-foreground">
               Move to:
             </span>
             <Input
               aria-label="Move to:"
               value={movePath}
               onChange={(e) => setMovePath(e.target.value)}
-              className="h-8 w-40 bg-background border-none shadow-none focus-visible:ring-0"
+              className="h-7 w-40 border-none bg-background shadow-none focus-visible:ring-0"
             />
           </div>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => void fetchReviewList()}
             className="gap-2"
             disabled={loading}
@@ -167,6 +225,7 @@ export function ReviewView() {
           </Button>
           <Button
             variant="outline"
+            size="sm"
             onClick={() => setView("rank")}
             className="gap-2"
           >
@@ -174,101 +233,121 @@ export function ReviewView() {
             Back
           </Button>
         </div>
-      </div>
+      </PageBar>
+    </>
+  );
 
-      {error && (
-        <p className="text-sm text-destructive" role="alert" aria-live="polite">
-          {error}
-        </p>
-      )}
-
-      {/* Content */}
-      {wallpapers.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
-          <Check className="h-12 w-12 opacity-20" />
-          <p>No wallpapers to review.</p>
-          <Button variant="link" onClick={() => setView("rank")}>
-            Return to Ranking
-          </Button>
+  if (loading) {
+    return (
+      <>
+        {header}
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
-      ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-8">
-          {wallpapers.map((wallpaper) => (
-            <div
-              key={wallpaper.id}
-              className={CARD_CLASS}
-            >
-              <img
-                src={wallpaperImageUrl(wallpaper.id, "small")}
-                alt={wallpaper.filename}
-                className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105 will-change-transform"
-              />
+      </>
+    );
+  }
 
-              {/* Rating Badge */}
-              <div className="absolute top-2 right-2">
-                <Badge
-                  variant="secondary"
-                  className="bg-black/60 backdrop-blur-md text-white border-none"
-                >
-                  {wallpaper.rating_mu.toFixed(1)}
-                </Badge>
-              </div>
+  return (
+    <>
+      {header}
 
-              {/* Hover Actions Overlay */}
-              <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity will-change-[opacity] flex flex-col items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
-                <p className="text-white text-xs font-medium truncate w-full text-center px-2 mb-2">
-                  {wallpaper.filename}
-                </p>
-                <div className="flex gap-2 w-full max-w-[200px]">
-                  <Button
+      <div className="mx-auto flex h-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
+        {/* Content */}
+        {wallpapers.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
+            <Check className="h-12 w-12 opacity-20" />
+            <p>No wallpapers to review.</p>
+            <Button variant="link" onClick={() => setView("rank")}>
+              Return to Ranking
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-8">
+            {wallpapers.map((wallpaper) => (
+              <div
+                key={wallpaper.id}
+                className={CARD_CLASS}
+              >
+                <img
+                  src={wallpaperImageUrl(wallpaper.id, "small")}
+                  alt={wallpaper.filename}
+                  className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105 will-change-transform"
+                />
+
+                {/* Rating Badge */}
+                <div className="absolute top-2 right-2">
+                  <Badge
                     variant="secondary"
-                    size="sm"
-                    className="flex-1 bg-white/10 hover:bg-white/20 text-white border-none"
-                    aria-label={`Keep ${wallpaper.filename}`}
-                    onClick={() => void handleKeep(wallpaper.id)}
+                    className="bg-black/60 backdrop-blur-md text-white border-none"
                   >
-                    <Check className="mr-2 h-3 w-3" />
-                    Keep
-                  </Button>
+                    {wallpaper.rating_mu.toFixed(1)}
+                  </Badge>
+                </div>
 
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        className="flex-1"
-                        aria-label={`Move ${wallpaper.filename}`}
-                      >
-                        <FolderInput className="mr-2 h-3 w-3" />
-                        Move
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Move Wallpaper?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This will move "{wallpaper.filename}" to "{movePath}".
-                          It will be soft-rejected: out of voting and review,
-                          its history preserved.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction
-                          onClick={() => void handleMove(wallpaper.id)}
-                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                {/* Hover Actions Overlay */}
+                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity will-change-[opacity] flex flex-col items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
+                  <p className="text-white text-xs font-medium truncate w-full text-center px-2 mb-2">
+                    {wallpaper.filename}
+                  </p>
+                  <div className="flex gap-2 w-full max-w-[200px]">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="flex-1 bg-white/10 hover:bg-white/20 text-white border-none"
+                      aria-label={`Keep ${wallpaper.filename}`}
+                      onClick={() => void handleKeep(wallpaper.id)}
+                    >
+                      <Check className="mr-2 h-3 w-3" />
+                      Keep
+                    </Button>
+
+                    {/* The confirm dialog stays for now, and only for now.
+                        Act-then-undo has replaced it as of this toast — the
+                        reject offers an Undo and `Ctrl+Z` presses it — so the
+                        dialog is one interruption too many. #78 removes it
+                        along with the destination field above, in the issue
+                        that rebuilds this view on the shared card (ADR 0009,
+                        ADR 0017, ADR 0018). */}
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="flex-1"
+                          aria-label={`Move ${wallpaper.filename}`}
                         >
-                          Move File
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
+                          <FolderInput className="mr-2 h-3 w-3" />
+                          Move
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Move Wallpaper?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This will move "{wallpaper.filename}" to "{movePath}".
+                            It will be soft-rejected: out of voting and review,
+                            its history preserved.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => void handleMove(wallpaper.id)}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          >
+                            Move File
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
   );
 }
