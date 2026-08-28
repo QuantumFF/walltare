@@ -2,12 +2,14 @@ import { PageBar } from "@/components/PageBar";
 import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useApp, type View } from "@/context/AppContext";
 import {
   client,
   isAppError,
   type Expanded,
   type ScanProgress,
+  type Theme,
 } from "@/lib/client";
 import { ArrowLeft, FolderOpen } from "lucide-react";
 import {
@@ -38,11 +40,10 @@ const RETURN_LABEL: Record<View, string> = {
 /**
  * One of the four sections, heading and all.
  *
- * Two of them are still empty, and each is filled by a ticket of its own: #119
- * Appearance, #120 Thumbnails. What this file owns beyond them is the frame they
- * land in — the column, the bar, the way out, and the slot above them — so that
- * each is written against a page that already exists rather than against half of
- * one.
+ * One of them is still empty and is filled by a ticket of its own, #120
+ * Thumbnails. What this file owns beyond it is the frame it lands in — the
+ * column, the bar, the way out, and the slot above them — so that it is written
+ * against a page that already exists rather than against half of one.
  *
  * `ref` is here for the one thing a section is addressed by from outside: a
  * navigation that names a field scrolls the section holding it into view, and
@@ -591,6 +592,69 @@ function RejectDestinationSection() {
   );
 }
 
+/**
+ * The three palettes, in the order they are painted across the control.
+ *
+ * System first because it is the default and the one that needs no decision;
+ * Light and Dark after it in the order the two branches of `index.css` are
+ * written. The values are `Theme`, so a label can only be attached to a palette
+ * `set_setting` will take back.
+ */
+const THEMES: Array<{ value: Theme; label: string }> = [
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+/**
+ * The Appearance section: three choices, exactly one of them taken.
+ *
+ * A radio group and not a toggle group, which is the distinction ADR 0020 drew:
+ * `theme` cannot hold "none", and `ToggleGroup type="single"` deselects on a
+ * second click unless that is fought and announces as a row of pressed buttons
+ * rather than as "System, radio button 1 of 3". Both primitives ship in
+ * `radix-ui`, so the correct one is free.
+ *
+ * There is nothing here to commit and no line under the control. The choice
+ * writes on change rather than on blur, because a palette is one of three named
+ * things and not a string being typed a character at a time (ADR 0010) — and
+ * the repaint is the whole of the feedback, since choosing Dark that leaves the
+ * window light is the only failure the curator could care about and they are
+ * looking straight at it.
+ *
+ * No Reset beside it either. Writing `system` back is what deletes the row,
+ * which `set_setting` already does for every key on this page, so a control for
+ * it would only be explaining a rule the write path enforces (ADR 0010,
+ * ADR 0020).
+ */
+function AppearanceSection() {
+  const { settings, saveSetting } = useApp();
+
+  return (
+    <Section heading="Appearance">
+      <RadioGroup
+        aria-label="Appearance"
+        // The stored choice, read from the app's copy of the store rather than
+        // from a copy of its own. Settings is unmounted between visits, and a
+        // repaint the curator can see the instant they click is exactly the
+        // `set_setting` answer travelling back through `AppContext` (ADR 0015).
+        value={settings.theme}
+        onValueChange={(next) => {
+          void saveSetting("theme", next as Theme).catch((error: unknown) => {
+            console.error("Failed to store the theme:", error);
+          });
+        }}
+      >
+        {THEMES.map((theme) => (
+          <RadioGroupItem key={theme.value} value={theme.value}>
+            {theme.label}
+          </RadioGroupItem>
+        ))}
+      </RadioGroup>
+    </Section>
+  );
+}
+
 /** The shell both top-slot blocks are cut from, so the two read as one slot. */
 function NoticeBlock({
   tone,
@@ -689,7 +753,7 @@ function UnreadableLibraryBlock({ message }: { message: string }) {
  *
  * One column at `max-w-2xl` holding four sections in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
- * the way out. Two of the four sections are still a ticket each (ADR 0020).
+ * the way out. One of the four sections is still a ticket of its own (ADR 0020).
  *
  * Settings is the one destination the shell unmounts, so its fields start from
  * the store rather than from a copy they held across a visit — which is why the
@@ -788,7 +852,7 @@ export function SettingsView() {
             is what ADR 0020 refused. */}
         <LibraryRootSection />
         <RejectDestinationSection />
-        <Section heading="Appearance" />
+        <AppearanceSection />
         <Section heading="Thumbnails" />
       </div>
     </>

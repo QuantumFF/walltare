@@ -324,19 +324,42 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // the gate settles: until then the `prefers-color-scheme` branch in index.css
   // is what paints, and it already answers what `system` would.
   //
-  // `system` is resolved once, here. Repainting when the desktop flips
-  // mid-session needs a `matchMedia` listener, which arrives with the control
-  // that makes the choice.
+  // The listener that follows the desktop lives here rather than in the
+  // Appearance section that offers the choice, because Settings is the one view
+  // the shell unmounts (ADR 0015): owned by that page, it would repaint only
+  // while the curator had the page open, and the flip worth answering is the one
+  // that happens while they are anywhere else. `AppProvider` is mounted for as
+  // long as the app is.
   useEffect(() => {
     if (!booted) return;
-    const dark =
-      settings.theme === "dark" ||
-      (settings.theme === "system" &&
-        window.matchMedia("(prefers-color-scheme: dark)").matches);
-    // `light` is set and not merely absent: the media branch in index.css needs
-    // something to lose to when the choice is Light on a dark desktop.
-    document.documentElement.classList.toggle("dark", dark);
-    document.documentElement.classList.toggle("light", !dark);
+
+    const desktop = window.matchMedia("(prefers-color-scheme: dark)");
+
+    const paint = () => {
+      const dark =
+        settings.theme === "dark" ||
+        (settings.theme === "system" && desktop.matches);
+      // `light` is set and not merely absent: the media branch in index.css
+      // needs something to lose to when the choice is Light on a dark desktop.
+      document.documentElement.classList.toggle("dark", dark);
+      document.documentElement.classList.toggle("light", !dark);
+    };
+
+    paint();
+
+    // Only `system` is a promise to follow the desktop. Light and Dark are the
+    // curator saying which palette they want regardless of what is around the
+    // window, so the subscription exists on exactly one of the three values and
+    // is dropped by this effect re-running when the choice moves off it — and by
+    // the same cleanup when the app goes away.
+    //
+    // ADR 0020 records that this may never fire: whether WebKitGTK propagates
+    // the portal's colour-scheme change under Hyprland is untested and not
+    // measurable from here. If it stays silent this costs nothing and the
+    // boot-time read above is still what paints (ADR 0010).
+    if (settings.theme !== "system") return;
+    desktop.addEventListener("change", paint);
+    return () => desktop.removeEventListener("change", paint);
   }, [booted, settings.theme]);
 
   // Nothing paints until both reads have settled, so a screen that reads a

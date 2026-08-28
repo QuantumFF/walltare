@@ -13,6 +13,7 @@ import {
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  desktopColorScheme,
   emptyStats,
   flush,
   settings,
@@ -43,6 +44,14 @@ let settingWrites: Array<{ key: string; value: string }>;
 let scanSequence: string[];
 
 afterEach(cleanup);
+
+afterEach(() => {
+  // Both the palette class and the desktop underneath it sit outside the render
+  // and outlive it, so each has to go back before the next test arranges its
+  // own.
+  document.documentElement.classList.remove("light", "dark");
+  desktopColorScheme("light");
+});
 
 beforeEach(() => {
   statsCalls = 0;
@@ -197,16 +206,13 @@ test("the page is one column of four sections, in first-run order", async () => 
     ?.parentElement as HTMLElement;
   expect(column.className).toContain("max-w-2xl");
 
-  // The two that are still empty, and staying that way until a ticket each
-  // fills them. What is asserted here is that they are already in the page and
-  // already in order, so neither of those two has to decide where its section
-  // goes.
-  const [, , ...unbuilt] = document.querySelectorAll(
+  // The one that is still empty, and staying that way until #120 fills it.
+  // What is asserted here is that it is already in the page and already in
+  // order, so that ticket does not have to decide where its section goes.
+  const [, , , unbuilt] = document.querySelectorAll(
     '[data-slot="settings-section"]',
   );
-  for (const section of unbuilt) {
-    expect(section.children.length).toBe(1);
-  }
+  expect(unbuilt.children.length).toBe(1);
 });
 
 test("the bar names the page and the way out of it", async () => {
@@ -956,4 +962,150 @@ test("arriving from a read-out puts the caret in the field without selecting wha
   const { selectionStart, selectionEnd, value } = field;
   expect(value.slice(selectionStart ?? 0, selectionEnd ?? 0)).toBe("");
   expect(value).toBe("~/bin/rejects");
+});
+
+// The Appearance section. What the curator can observe here is two things at
+// once: which of the three is chosen, and what colour the window went — so
+// every test below asserts the palette on the document element rather than the
+// call that put it there. The write is the one exception, pinned by argument
+// for the same reason the other two are: a palette stored under the wrong key
+// is invisible until the next launch.
+
+/** The palette classes index.css keys off, in the order light-then-dark. */
+function palette(): { light: boolean; dark: boolean } {
+  const { classList } = document.documentElement;
+  return {
+    light: classList.contains("light"),
+    dark: classList.contains("dark"),
+  };
+}
+
+const paletteChoice = (name: string) => screen.getByRole("radio", { name });
+
+/** Whichever of the three is chosen, by name. There is always exactly one. */
+function chosenPalette(): string[] {
+  return screen
+    .getAllByRole("radio")
+    .filter((choice) => choice.getAttribute("aria-checked") === "true")
+    .map((choice) => choice.textContent ?? "");
+}
+
+/**
+ * Flip the desktop underneath the window, and let the media query notice.
+ *
+ * happy-dom answers `prefers-color-scheme` out of its own device settings and
+ * re-evaluates a live `MediaQueryList` on a window resize, so the resize is what
+ * stands in for the colour-scheme change a compositor sends. It dispatches only
+ * when the answer actually moved, which is why every flip here goes from light
+ * to dark and never back.
+ */
+async function flipDesktop(scheme: "light" | "dark") {
+  desktopColorScheme(scheme);
+  await act(async () => {
+    window.dispatchEvent(new Event("resize"));
+  });
+  await flush();
+}
+
+test("the section offers three palettes, with one of them always chosen", async () => {
+  await openSettingsFromLibrary();
+
+  const section = sectionAt(2);
+  expect(section.querySelector("h2")?.textContent).toBe("Appearance");
+  // A radio group and not a row of toggles: `theme` has no "none" to hold, so
+  // the primitive that cannot express one is the correct one (ADR 0020).
+  expect(within(section).getByRole("radiogroup")).not.toBeNull();
+  expect(
+    within(section)
+      .getAllByRole("radio")
+      .map((choice) => choice.textContent),
+  ).toEqual(["System", "Light", "Dark"]);
+
+  // The default, and the state a toggle group would have let the curator click
+  // their way out of.
+  expect(chosenPalette()).toEqual(["System"]);
+});
+
+test("choosing Dark writes the theme and repaints there and then", async () => {
+  await openSettingsFromLibrary();
+  expect(palette()).toEqual({ light: true, dark: false });
+
+  await click(paletteChoice("Dark"));
+
+  // The palette is one of three named things rather than a string being typed,
+  // so the choice writes on change and there is no blur to wait for (ADR 0010).
+  expect(settingWrites).toEqual([{ key: "theme", value: "dark" }]);
+  // And the window is already dark, with nothing reloaded: the write answers
+  // with the whole struct, and the class on the document element follows it.
+  expect(palette()).toEqual({ light: false, dark: true });
+  expect(chosenPalette()).toEqual(["Dark"]);
+});
+
+test("on System the window follows the desktop when it flips", async () => {
+  await openSettingsFromLibrary();
+  expect(chosenPalette()).toEqual(["System"]);
+  expect(palette()).toEqual({ light: true, dark: false });
+
+  await flipDesktop("dark");
+
+  // The point of the listener: a window that stayed light here would disagree
+  // with everything around it until the next launch (ADR 0020).
+  expect(palette()).toEqual({ light: false, dark: true });
+  // And the choice has not moved. Following the desktop is what System means,
+  // not a value the desktop got to write.
+  expect(chosenPalette()).toEqual(["System"]);
+  expect(settingWrites).toEqual([]);
+});
+
+test("on Light the desktop flipping changes nothing", async () => {
+  mockCommand("get_settings", () => settings({ theme: "light" }));
+  await openSettingsFromLibrary();
+  expect(chosenPalette()).toEqual(["Light"]);
+
+  await flipDesktop("dark");
+
+  // Light and Dark are the curator saying which palette they want regardless of
+  // what is around the window, so the flip is not theirs to answer.
+  expect(palette()).toEqual({ light: true, dark: false });
+});
+
+test("moving the choice off System stops the window following the desktop", async () => {
+  await openSettingsFromLibrary();
+  await click(paletteChoice("Light"));
+  expect(palette()).toEqual({ light: true, dark: false });
+
+  await flipDesktop("dark");
+
+  // The subscription is dropped when the choice moves off System, and this is
+  // what a stale one would look like: it closed over `system`, so it would
+  // repaint the window dark against a Light the curator had just chosen.
+  expect(palette()).toEqual({ light: true, dark: false });
+  expect(chosenPalette()).toEqual(["Light"]);
+});
+
+test("nothing follows the desktop once the app is gone", async () => {
+  await openSettingsFromLibrary();
+  expect(palette()).toEqual({ light: true, dark: false });
+
+  cleanup();
+  await flipDesktop("dark");
+
+  // The listener lives with `AppProvider` rather than with this page, so its
+  // one teardown is the app going away — and a palette written after that is a
+  // subscription outliving the tree that made it.
+  expect(palette()).toEqual({ light: true, dark: false });
+});
+
+test("the window keeps following the desktop after Settings is closed", async () => {
+  // Why the listener is not in this section: Settings is the one view the shell
+  // unmounts, so a listener owned by the page would follow the desktop only
+  // while the curator happened to be looking at the page instead of at the
+  // desktop that flipped (ADR 0015).
+  await openSettingsFromLibrary();
+  await click(gear());
+  expect(showingView()).toBe("library");
+
+  await flipDesktop("dark");
+
+  expect(palette()).toEqual({ light: false, dark: true });
 });
