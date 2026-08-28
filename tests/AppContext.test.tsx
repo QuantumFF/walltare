@@ -17,8 +17,7 @@ import {
 import { mockCommand } from "./ipc-mocks";
 
 /**
- * The scan screen's path field, which Settings hosts below its own frame
- * until #117 builds the Library root section.
+ * The Library root field, which is the first thing a first run is asked for.
  * Present only while Settings is up, because Settings is the one view the shell
  * unmounts.
  */
@@ -152,8 +151,8 @@ test("an empty library opens on Settings, dressed as a first run", async () => {
   await flush();
 
   expect(showingView()).toBe("settings");
-  // Settings hosts the scan screen below its frame until #117, so the
-  // invitation has something to invite the curator into.
+  // The invitation has something to invite the curator into: the field the
+  // first-run landing puts the caret in.
   expect(scanInput()).not.toBeNull();
   expect(settingsView()?.textContent).toContain("No wallpapers yet");
   expect(settingsView()?.textContent).not.toContain(

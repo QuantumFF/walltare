@@ -49,6 +49,13 @@ export type BootNotice =
 interface BootLanding {
   view: View;
   notice: BootNotice | null;
+  /**
+   * The Settings field boot wants the caret in, on the one landing that has an
+   * answer: a first run is entirely about naming a folder, so it arrives with
+   * the same focus key a control elsewhere would have sent (ADR 0020). The
+   * other three landings ask for nothing.
+   */
+  focus: keyof Settings | null;
 }
 
 /**
@@ -73,15 +80,22 @@ function bootLanding(stats: Stats | null, error: unknown): BootLanding {
         kind: "unreadable_library",
         message: isAppError(error) ? error.message : String(error),
       },
+      // Nothing is asked of the field, because the fault is not in it: the
+      // button to press is the Retry in the block above (ADR 0020).
+      focus: null,
     };
   }
   if (stats.total_wallpapers === 0) {
-    return { view: "settings", notice: { kind: "first_run" } };
+    return {
+      view: "settings",
+      notice: { kind: "first_run" },
+      focus: "library_root",
+    };
   }
   if (stats.eligible_count >= ELIGIBLE_MINIMUM) {
-    return { view: "rank", notice: null };
+    return { view: "rank", notice: null, focus: null };
   }
-  return { view: "library", notice: null };
+  return { view: "library", notice: null, focus: null };
 }
 
 /** Where a navigation came from, and what it wants looked at on arrival. */
@@ -127,15 +141,59 @@ interface AppContextType {
   /** What the curator chose, complete: an unread key holds its default. */
   settings: Settings;
   /**
-   * The boot rule's one rerun, called by the shell on every `scan-complete`.
+   * Write one setting, and hold on to the whole struct that comes back.
    *
-   * A no-op unless the library was empty before the scan and is not after,
-   * which is what makes it happen at most once: a first run scans, and the app
-   * moves off the page that asked it to. Every other completion leaves the
-   * curator where they are, because a scan now starts from inside Settings and
-   * finishes minutes later on whatever page they wandered to (ADR 0015).
+   * The app's copy of the store lives here rather than in the page that edits
+   * it, because Settings is the one view the shell unmounts: a page that wrote
+   * `library_root` and then re-read it on its next visit from a `settings`
+   * frozen at boot would show the curator the path they had replaced — and blur
+   * it back over the one they typed. `set_setting` answers with the whole
+   * struct precisely so that a stale read cannot survive a write (ADR 0010),
+   * and this is where that answer is kept.
+   *
+   * Rejects with whatever the write rejected with. What to say about a failed
+   * write belongs to the field that asked for it.
    */
-  rerunBootRuleAfterScan: () => void;
+  saveSetting: <K extends keyof Settings>(
+    key: K,
+    value: Settings[K],
+  ) => Promise<void>;
+  /**
+   * How many wallpapers the library holds, as of the last read; `null` when
+   * that read failed and there is no honest number to show.
+   *
+   * It is published from here rather than fetched by the page that prints it,
+   * because boot already reads the whole `Stats` to decide where to land
+   * (ADR 0020) and Settings arrives on a mount rather than on a fetch. Only the
+   * total is published: every other field of `Stats` moves with a vote, and
+   * `AppProvider` sits above the event bus and so cannot hear one, which would
+   * make the rest of the struct a set of numbers going stale between two
+   * clicks. A scan is the only thing that moves this one, and
+   * `readLibraryAfterScan` is what follows it.
+   */
+  libraryTotal: number | null;
+  /**
+   * Re-read what the library holds, and keep `libraryTotal` in step with it.
+   *
+   * Rejects with whatever the read rejected with, because its other caller is
+   * the failed-boot block's Retry, whose whole content is the fault it hit.
+   */
+  readLibrary: () => Promise<Stats>;
+  /**
+   * What the app re-reads after a scan, called by the shell on every
+   * `scan-complete`: the count the Library root section prints, and the boot
+   * rule's one rerun.
+   *
+   * The rerun is a no-op unless the library was empty before the scan and is
+   * not after, which is what makes it happen at most once: a first run scans,
+   * and the app moves off the page that asked it to. Every other completion
+   * leaves the curator where they are, because a scan now starts from inside
+   * Settings and finishes minutes later on whatever page they wandered to
+   * (ADR 0015). The count follows every scan either way, since a rescan that
+   * adds files is the ordinary case and the number on screen would otherwise be
+   * the one boot read.
+   */
+  readLibraryAfterScan: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -146,6 +204,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // so before that answer arrives there is no honest view to show.
   const [navigation, setNavigation] = useState<Navigation | null>(null);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [libraryTotal, setLibraryTotal] = useState<number | null>(null);
   const booted = navigation !== null;
 
   // Whether the library was empty the last time anything counted it, which is
@@ -198,14 +257,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (stored) setSettings(stored);
 
       // A read that failed says nothing about whether the library is empty, so
-      // it does not arm the rerun below either.
+      // it does not arm the rerun below either, and leaves the count line with
+      // nothing to print rather than with a zero it did not measure.
       libraryEmpty.current = stats?.total_wallpapers === 0;
+      setLibraryTotal(stats?.total_wallpapers ?? null);
 
       const landing = bootLanding(stats, statsError);
       setNavigation({
         view: landing.view,
         returnTo: null,
-        focus: null,
+        focus: landing.focus,
         notice: landing.notice,
       });
     })();
@@ -215,14 +276,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  const rerunBootRuleAfterScan = useCallback(() => {
-    if (!libraryEmpty.current) return;
+  const saveSetting = useCallback(
+    async <K extends keyof Settings>(key: K, value: Settings[K]) => {
+      setSettings(await client.setSetting(key, value));
+    },
+    [],
+  );
 
+  const readLibrary = useCallback(async () => {
+    const stats = await client.getStats();
+    setLibraryTotal(stats.total_wallpapers);
+    return stats;
+  }, []);
+
+  const readLibraryAfterScan = useCallback(() => {
     void (async () => {
-      const stats = await client.getStats().catch((error: unknown) => {
+      const stats = await readLibrary().catch((error: unknown) => {
         console.error("Failed to re-read library stats after a scan:", error);
         return null;
       });
+      // The count above follows every scan. Everything below is the rerun, which
+      // is armed only for a library that was empty before this one.
+      if (!libraryEmpty.current) return;
       // Neither a failed read nor a scan that added nothing can establish "and
       // is not after", so both leave the curator on the page that offered to
       // scan — with the folder they typed still in the field. A later scan of a
@@ -238,11 +313,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setNavigation({
         view: landing.view,
         returnTo: null,
-        focus: null,
+        focus: landing.focus,
         notice: landing.notice,
       });
     })();
-  }, []);
+  }, [readLibrary]);
 
   // The palette is a class on the document element, because index.css keys both
   // the tokens and the `dark:` variant off one there. Nothing is written before
@@ -279,7 +354,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         bootNotice: navigation.notice,
         setView,
         settings,
-        rerunBootRuleAfterScan,
+        saveSetting,
+        libraryTotal,
+        readLibrary,
+        readLibraryAfterScan,
       }}
     >
       {children}

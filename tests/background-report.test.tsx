@@ -57,6 +57,13 @@ beforeEach(() => {
     scannedPaths.push(args?.path as string);
     return null;
   });
+  // What the Settings page does around the scan it starts: it resolves the path
+  // under the field as it is typed, and stores it before the walk begins.
+  mockCommand("expand_path", (args) => ({
+    resolved: args?.input as string,
+    exists: true,
+  }));
+  mockCommand("set_setting", () => settings());
 });
 
 /**
@@ -131,7 +138,7 @@ async function scanFrom(path: string) {
       target: { value: path },
     });
   });
-  await click(screen.getByRole("button", { name: /start ranking/i }));
+  await click(screen.getByRole("button", { name: /^rescan$/i }));
   expect(scannedPaths).toEqual([path]);
 }
 

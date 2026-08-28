@@ -224,8 +224,8 @@ export interface Toaster {
    * curator wrote it. Reading the Round before the walk starts belongs here for
    * the same reason: by the time the scan is over, the Round it moved is gone.
    *
-   * #77's Settings page inherits this call from `ScanView` along with the button
-   * that makes it.
+   * Its one caller is the Scan button in Settings, which inherited both the call
+   * and the button from `ScanView` when that file was deleted (ADR 0020).
    */
   scanStarted: (folder: string) => void;
 }

@@ -1,10 +1,23 @@
 import { PageBar } from "@/components/PageBar";
-import { ScanView } from "@/components/ScanView";
+import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useApp, type View } from "@/context/AppContext";
-import { client, isAppError } from "@/lib/client";
-import { ArrowLeft } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  client,
+  isAppError,
+  type Expanded,
+  type ScanProgress,
+} from "@/lib/client";
+import { ArrowLeft, FolderOpen } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 /**
  * What the back control calls the view it goes back to.
@@ -25,24 +38,391 @@ const RETURN_LABEL: Record<View, string> = {
 /**
  * One of the four sections, heading and all.
  *
- * They are empty here, and each is filled by a ticket of its own: #117 the
- * Library root, #118 the Reject destination, #119 Appearance, #120 Thumbnails.
- * What this file owns is the frame those four land in — the column, the bar, the
- * way out, and the slot above them — so that each of them is written against a
- * page that already exists rather than against half of one.
+ * Three of them are still empty, and each is filled by a ticket of its own:
+ * #118 the Reject destination, #119 Appearance, #120 Thumbnails. What this file
+ * owns beyond them is the frame they land in — the column, the bar, the way out,
+ * and the slot above them — so that each is written against a page that already
+ * exists rather than against half of one.
+ *
+ * `ref` is here for the one thing a section is addressed by from outside: a
+ * navigation that names a field scrolls the section holding it into view, and
+ * the heading is the top of what has to be on screen for the field below it to
+ * make sense (ADR 0020).
  */
 function Section({
   heading,
   children,
+  ref,
 }: {
   heading: string;
   children?: ReactNode;
+  ref?: Ref<HTMLElement>;
 }) {
   return (
-    <section data-slot="settings-section" className="space-y-3">
+    <section ref={ref} data-slot="settings-section" className="space-y-3">
       <h2 className="text-sm font-medium text-foreground">{heading}</h2>
       {children}
     </section>
+  );
+}
+
+/**
+ * The sentence for a `start_scan` that never got going, when the backend's own
+ * message is not one.
+ *
+ * `InvalidPath` carries a bare path (`lib.rs:164`) rather than a sentence, so
+ * there is a frontend string for it; `InvalidPathSyntax` carries copy that names
+ * the variable the curator mistyped, so that one is rendered verbatim and has no
+ * string here. That is the boundary ADR 0011 drew and ADR 0020 kept: the kind
+ * with copy in it gets rendered, the kind with a path in it gets a sentence.
+ *
+ * `InvalidTransition` has no string either, and for the opposite reason. It can
+ * only mean a scan is already running, which is what the button says by being
+ * disabled while one is — so if it ever reaches here at all, something the page
+ * did not expect happened and the fallback below is the honest answer.
+ */
+const INVALID_PATH_ERROR = "That directory doesn't exist or can't be read.";
+const SCAN_FAILED_ERROR = "Failed to scan directory. Please check the path.";
+
+function scanStartError(err: unknown): string {
+  if (!isAppError(err)) return SCAN_FAILED_ERROR;
+  switch (err.kind) {
+    case "invalid_path":
+      return INVALID_PATH_ERROR;
+    case "invalid_path_syntax":
+      return err.message;
+    default:
+      return SCAN_FAILED_ERROR;
+  }
+}
+
+/**
+ * What `expand_path` says about the string in a path field: where it points and
+ * whether a folder is there, or the syntax error that means there is no
+ * resolved path at all (ADR 0011, as amended by ADR 0020).
+ */
+type Expansion =
+  | { kind: "expanded"; expanded: Expanded }
+  | { kind: "invalid"; message: string };
+
+/**
+ * Resolve a Written path as the curator types it, once per string.
+ *
+ * The effect is keyed on the string and nothing else, which is what ADR 0020
+ * means by memoised on the value rather than fired per paint: this page
+ * re-renders on every `scan-progress` event and on every one of its own state
+ * changes, and none of that is a new question to ask the backend. What is not
+ * kept is a cache of every string the field has held — `exists` is a fact about
+ * the filesystem underneath, and an unmounted drive coming back is exactly the
+ * case CONTEXT.md names for the Library root, so the answer is re-asked when the
+ * curator re-types the path rather than served from a map.
+ *
+ * `null` for an empty field, and for a resolution still in flight on the first
+ * string. An answer that arrives after the value moved on is dropped, so the
+ * line under the field can never describe a path that is no longer in it.
+ *
+ * #118's Reject destination field calls this too, and renders a different line
+ * from the same three answers: it has no not-found state ever, and a relative
+ * result is a rule rather than a place.
+ */
+function useExpansion(value: string): Expansion | null {
+  const [expansion, setExpansion] = useState<Expansion | null>(null);
+
+  useEffect(() => {
+    if (!value) {
+      setExpansion(null);
+      return;
+    }
+
+    let current = true;
+    void client
+      .expandPath(value)
+      .then((expanded) => {
+        if (current) setExpansion({ kind: "expanded", expanded });
+      })
+      .catch((error: unknown) => {
+        if (!current) return;
+        if (isAppError(error) && error.kind === "invalid_path_syntax") {
+          setExpansion({ kind: "invalid", message: error.message });
+          return;
+        }
+        // Nothing else is expected: the command creates nothing and reads
+        // nothing but the environment, so a rejection of any other kind is a
+        // fault rather than a verdict on the path, and the line says nothing
+        // rather than blaming what the curator typed.
+        console.error("Failed to resolve the path:", error);
+        setExpansion(null);
+      });
+
+    return () => {
+      current = false;
+    };
+  }, [value]);
+
+  return expansion;
+}
+
+/**
+ * The Library root section: the field, Browse, one status line, the count, and
+ * the button that starts a scan.
+ *
+ * This is the section a first run is entirely about, and the one that replaced
+ * `ScanView`. What came across from that file is its input, its button, its
+ * progress line and two of its four error strings; what did not is its hero
+ * layout, which was for a screen that no longer exists (ADR 0020).
+ */
+function LibraryRootSection() {
+  const { settings, saveSetting, libraryTotal, focus } = useApp();
+  const { scanStarted } = useToaster();
+
+  // The Written path as the curator has it typed, which is not the same thing
+  // as the stored one: it moves per keystroke and the store hears about it on
+  // blur (ADR 0010).
+  const [value, setValue] = useState(settings.library_root);
+  const [scanning, setScanning] = useState(false);
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
+  // A Scan that never got going, on the status line until the value changes.
+  // Not a toast: ADR 0020 put it here because the field is where the fix is
+  // typed, and an error the curator reads before clicking beats one that
+  // arrives after.
+  const [scanError, setScanError] = useState<string | null>(null);
+
+  // What the store was last told, so that a blur on the way to a button does
+  // not write a string the store already holds, and so the Scan click that
+  // follows that blur does not write it a second time.
+  const committed = useRef(settings.library_root);
+  const field = useRef<HTMLInputElement>(null);
+  const section = useRef<HTMLElement>(null);
+
+  const expansion = useExpansion(value);
+
+  // Focus, and the scroll that makes focusing mean anything on a page four
+  // sections long. The text is deliberately not selected: this field writes on
+  // blur, and a selected value is one keystroke from being an empty Library root
+  // that the next blur stores (ADR 0020).
+  useEffect(() => {
+    if (focus !== "library_root") return;
+    field.current?.focus();
+    section.current?.scrollIntoView({ block: "nearest" });
+  }, [focus]);
+
+  // The button's own progress line, and the two endings that free it.
+  //
+  // What the endings *say* is not read here. ADR 0021 gives every word about how
+  // a scan finished to the toast, which can name the folder as the curator wrote
+  // it and reach them on whatever page they wandered to during a walk that takes
+  // minutes. What is left to this section is a button that has a scan to stop
+  // presenting as running.
+  useEffect(() => {
+    let cancelled = false;
+    const unlistens: Array<() => void> = [];
+
+    const finished = () => {
+      setScanning(false);
+      setProgress(null);
+    };
+
+    void Promise.all([
+      client.onScanProgress(setProgress),
+      client.onScanComplete(finished),
+      client.onScanFailed(finished),
+    ]).then((unlisten) => {
+      if (cancelled) {
+        for (const fn of unlisten) fn();
+        return;
+      }
+      unlistens.push(...unlisten);
+    });
+
+    return () => {
+      cancelled = true;
+      for (const fn of unlistens) fn();
+    };
+  }, []);
+
+  /**
+   * Store the Written path, if the store does not already hold it.
+   *
+   * Recorded before the write lands rather than after, because a Scan click
+   * arrives on the heels of the blur that fires on the way to it, and otherwise
+   * the store would hear the same string twice for one scan. A write that fails
+   * puts the record back, so the next commit tries again rather than assuming it
+   * took.
+   */
+  const commit = useCallback(
+    async (next: string) => {
+      if (next === committed.current) return;
+      const previous = committed.current;
+      committed.current = next;
+      try {
+        await saveSetting("library_root", next);
+      } catch (error) {
+        committed.current = previous;
+        throw error;
+      }
+    },
+    [saveSetting],
+  );
+
+  // Typing is not committing, and the value moving is what clears a stale Scan
+  // error off the line: the sentence was about a path that is no longer in the
+  // field (ADR 0020).
+  const edit = (next: string) => {
+    setValue(next);
+    setScanError(null);
+  };
+
+  const commitFromBlur = () => {
+    void commit(value).catch((error: unknown) => {
+      console.error("Failed to store the library root:", error);
+    });
+  };
+
+  const browse = () => {
+    void (async () => {
+      const picked = await client.pickFolder();
+      // A dismissal is an answer rather than a failure, and the answer is that
+      // the field keeps what it had.
+      if (picked === null) return;
+      edit(picked);
+      // Committed here rather than left to a blur, because the field has
+      // already lost focus to this button and will not blur again: the pick is
+      // as deliberate as the blur ADR 0010 writes on.
+      await commit(picked);
+    })().catch((error: unknown) => {
+      console.error("Failed to store the picked folder:", error);
+    });
+  };
+
+  const scan = () => {
+    if (!value || scanning) return;
+    setScanning(true);
+    setScanError(null);
+    setProgress(null);
+
+    void (async () => {
+      try {
+        // The order ADR 0010 fixed and ADR 0020 repeats: the store learns the
+        // folder, then the walk starts on the same string, unexpanded, because
+        // the backend is what expands a Written path and storing one expanded
+        // would freeze what a variable meant this session (ADR 0011).
+        await commit(value);
+        await client.startScan(value);
+        // The walk emits nothing until it is over, so the report of a scan in
+        // progress can only start from the call that asked for one — and the
+        // folder as the curator wrote it is knowable nowhere else either
+        // (ADR 0021).
+        scanStarted(value);
+      } catch (error) {
+        setScanning(false);
+        setProgress(null);
+        setScanError(scanStartError(error));
+        console.error("Failed to start a scan:", error);
+      }
+    })();
+  };
+
+  /**
+   * The one status line, and the one thing it says.
+   *
+   * In precedence order, which is the order the four candidates for the space
+   * became true in: an empty field says nothing at all, because the first-run
+   * block above is already saying it in full sentences; a failed Scan is the
+   * newest news there is about this string; a syntax error replaces the line
+   * because there is no resolved path to show; otherwise the line is where the
+   * path points, with the not-found clause appended.
+   *
+   * Not-found is deliberately not destructive-coloured. The Library root is a
+   * stated preference that may point somewhere that no longer exists
+   * (CONTEXT.md), and the usual cause is an unmounted drive rather than a
+   * mistake.
+   */
+  const status = ((): { destructive: boolean; text: string } | null => {
+    if (!value) return null;
+    if (scanError) return { destructive: true, text: scanError };
+    if (expansion?.kind === "invalid") {
+      return { destructive: true, text: expansion.message };
+    }
+    if (expansion?.kind === "expanded") {
+      const { resolved, exists } = expansion.expanded;
+      return {
+        destructive: false,
+        text: exists ? resolved : `${resolved} · folder not found`,
+      };
+    }
+    return null;
+  })();
+
+  const scanLabel = () => {
+    if (!scanning) return libraryTotal ? "Rescan" : "Scan";
+    if (!progress) return "Scanning…";
+    return `Scanning… ${progress.scanned.toLocaleString()} scanned, ${progress.added.toLocaleString()} added`;
+  };
+
+  return (
+    <Section heading="Library root" ref={section}>
+      <div className="flex gap-2">
+        <Input
+          ref={field}
+          aria-label="Library root"
+          placeholder="/home/user/wallpapers"
+          value={value}
+          onChange={(event) => edit(event.target.value)}
+          // On blur and never on keystroke, so a path is not stored one
+          // character at a time (ADR 0010). It does not scan: a blur happens on
+          // the way to the Browse button beside it, and a scan walks a
+          // filesystem.
+          onBlur={commitFromBlur}
+          // Enter scans, which is the habit the screen this section replaced
+          // taught. The guard inside `scan` is what makes that safe while one is
+          // already running, since Enter reaches the handler with the button
+          // disabled.
+          onKeyDown={(event) => {
+            if (event.key === "Enter") scan();
+          }}
+        />
+        <Button variant="outline" onClick={browse}>
+          <FolderOpen aria-hidden />
+          Browse
+        </Button>
+      </div>
+
+      {status && (
+        <p
+          data-slot="library-root-status"
+          className={
+            status.destructive
+              ? "text-xs text-destructive"
+              : "font-mono text-xs break-all text-muted-foreground"
+          }
+        >
+          {status.text}
+        </p>
+      )}
+
+      {/* A fact rather than another control, from the `Stats` boot already
+          read. No last-scanned time beside it: nothing records one, and every
+          row a scan adds shares a single `created_at`, so the nearest available
+          number would mark the last scan that added a file rather than the last
+          scan (ADR 0020). */}
+      {libraryTotal !== null && (
+        <p className="text-xs text-muted-foreground">
+          {libraryTotal.toLocaleString()}{" "}
+          {libraryTotal === 1 ? "wallpaper" : "wallpapers"} in the library
+        </p>
+      )}
+
+      {/* Primary-styled, because on a first run this is the one thing to do on
+          the page and ADR 0020 asks for exactly one such control there.
+          Disabled while a scan runs, which is the only refusal available: no
+          command cancels a scan, and a second `start_scan` would answer
+          `InvalidTransition` with a sentence the curator can do nothing about. */}
+      <div className="flex">
+        <Button onClick={scan} disabled={scanning || !value}>
+          {scanLabel()}
+        </Button>
+      </div>
+    </Section>
   );
 }
 
@@ -94,6 +474,8 @@ function NoticeBlock({
  * read the store for themselves as the curator uses them.
  */
 function UnreadableLibraryBlock({ message }: { message: string }) {
+  const { readLibrary } = useApp();
+
   // The message on screen, which starts as the one boot failed with and becomes
   // whatever a Retry failed with. Leaving the first sentence up after a second,
   // different failure is the block lying about which fault is being looked at.
@@ -104,7 +486,10 @@ function UnreadableLibraryBlock({ message }: { message: string }) {
   const retry = async () => {
     setRetrying(true);
     try {
-      await client.getStats();
+      // The read the whole app shares, so a Retry that succeeds also gives the
+      // count line below its number rather than leaving the section reporting
+      // nothing about a library that now reads.
+      await readLibrary();
       setCleared(true);
     } catch (error) {
       console.error("Retrying the library read failed:", error);
@@ -139,11 +524,12 @@ function UnreadableLibraryBlock({ message }: { message: string }) {
  *
  * One column at `max-w-2xl` holding four sections in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
- * the way out. What goes inside the four sections is four tickets of their own
- * (ADR 0020).
+ * the way out. Three of the four sections are still a ticket each (ADR 0020).
  *
- * Settings is the one destination the shell unmounts, so its fields re-read the
- * store on arrival rather than holding a stale copy of it (ADR 0015).
+ * Settings is the one destination the shell unmounts, so its fields start from
+ * the store rather than from a copy they held across a visit — which is why the
+ * write path keeps `AppContext`'s copy in step with what `set_setting` answers,
+ * instead of each field remembering what it wrote (ADR 0015).
  */
 export function SettingsView() {
   const { bootNotice, returnTo, setView } = useApp();
@@ -235,17 +621,11 @@ export function SettingsView() {
         {/* First-run need first, maintenance last, and the order does not change
             with what the library holds: a page that grows sections after a scan
             is what ADR 0020 refused. */}
-        <Section heading="Library root" />
+        <LibraryRootSection />
         <Section heading="Reject destination" />
         <Section heading="Appearance" />
         <Section heading="Thumbnails" />
       </div>
-
-      {/* The interim scan screen, still hosted below the frame. Folding scan into
-          Settings is what deleted `scan` from the view union, so until #117
-          builds the Library root section this is the only way to fill an empty
-          library at all. That ticket deletes the file rather than emptying it. */}
-      <ScanView />
     </>
   );
 }

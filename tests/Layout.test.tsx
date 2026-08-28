@@ -44,6 +44,13 @@ beforeEach(() => {
   // starts where the curator spends their time.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
+  // The Library root field resolves what it holds and stores it before a scan,
+  // so every visit to Settings in this file reaches these two.
+  mockCommand("expand_path", (args) => ({
+    resolved: args?.input as string,
+    exists: true,
+  }));
+  mockCommand("set_setting", () => settings());
   // The shell starts pre-generation as soon as it mounts, which is as soon as
   // the boot gate settles, so every render in this file reaches this command.
   mockCommand("start_pregen", () => {
@@ -178,8 +185,8 @@ test("the gear records where the curator was, and closing Settings returns there
 
   await click(gear());
   expect(showingView()).toBe("settings");
-  // Settings hosts the scan screen below its own frame until #117 builds the
-  // Library root section.
+  // The Library root field, which is this file's proof that the page itself is
+  // up rather than only its container.
   expect(scanInput()).not.toBeNull();
   // No tab is underlined while Settings is up; the gear takes the treatment.
   expect(selectedTab()).toBeNull();
@@ -355,7 +362,7 @@ test("a scan still runs end to end from inside Settings, and leaves the curator 
   await act(async () => {
     fireEvent.change(input, { target: { value: "/tmp/walls" } });
   });
-  await click(screen.getByRole("button", { name: /start ranking/i }));
+  await click(screen.getByRole("button", { name: /^rescan$/i }));
   expect(scannedPaths).toEqual(["/tmp/walls"]);
 
   await act(async () => {
@@ -367,7 +374,7 @@ test("a scan still runs end to end from inside Settings, and leaves the curator 
   // nowhere: a scan takes minutes and finishes wherever the curator has
   // wandered to, which used to be Rank whether they liked it or not.
   expect(showingView()).toBe("settings");
-  expect(screen.getByRole("button", { name: /start ranking/i })).not.toBeNull();
+  expect(screen.getByRole("button", { name: /^rescan$/i })).not.toBeNull();
 
   // And the gear still closes back to where Settings was opened from.
   await click(gear());
