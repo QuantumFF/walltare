@@ -178,7 +178,8 @@ test("the gear records where the curator was, and closing Settings returns there
 
   await click(gear());
   expect(showingView()).toBe("settings");
-  // Settings hosts the scan screen until #77 replaces it.
+  // Settings hosts the scan screen below its own frame until #117 builds the
+  // Library root section.
   expect(scanInput()).not.toBeNull();
   // No tab is underlined while Settings is up; the gear takes the treatment.
   expect(selectedTab()).toBeNull();
@@ -515,9 +516,8 @@ test("Ctrl+, opens Settings and records where the curator was", async () => {
   expect(showingView()).toBe("settings");
   expect(selectedTab()).toBeNull();
 
-  // Pressed again it does nothing: the gear is the way out, and #77's Escape
-  // will be the other. A binding that both opened and closed would mean two
-  // things.
+  // Pressed again it does nothing: the gear and Escape are the ways out. A
+  // binding that both opened and closed would mean two things.
   await pressKey(window, ",", { ctrlKey: true });
   expect(showingView()).toBe("settings");
 
@@ -555,9 +555,10 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   const dialog = screen.getByRole("dialog");
   expect(dialog.textContent).toContain("Keyboard shortcuts");
 
-  // Four the shell binds, and four it does not: the arrows are Rank's, F8 is
-  // the toast viewport's own hotkey, and Ctrl+Z presses the Undo #112 mounts.
-  // A shortcut nobody can find is a shortcut nobody uses.
+  // Four the shell binds, and five it does not: the arrows are Rank's, Escape is
+  // the Settings page's own, F8 is the toast viewport's own hotkey, and Ctrl+Z
+  // presses the Undo #112 mounts. A shortcut nobody can find is a shortcut
+  // nobody uses.
   const keys = Array.from(dialog.querySelectorAll("kbd")).map(
     (el) => el.textContent,
   );
@@ -572,6 +573,7 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     ",",
     "←",
     "→",
+    "Esc",
     "Ctrl",
     "Z",
     "F8",

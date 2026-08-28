@@ -17,7 +17,8 @@ import {
 import { mockCommand } from "./ipc-mocks";
 
 /**
- * The scan screen's path field, which Settings hosts until #77 replaces it.
+ * The scan screen's path field, which Settings hosts below its own frame
+ * until #117 builds the Library root section.
  * Present only while Settings is up, because Settings is the one view the shell
  * unmounts.
  */
@@ -151,12 +152,12 @@ test("an empty library opens on Settings, dressed as a first run", async () => {
   await flush();
 
   expect(showingView()).toBe("settings");
-  // Settings hosts the scan screen until #77, so the invitation has something
-  // to invite the curator into.
+  // Settings hosts the scan screen below its frame until #117, so the
+  // invitation has something to invite the curator into.
   expect(scanInput()).not.toBeNull();
-  expect(settingsView()?.textContent).toContain("Your library is empty");
+  expect(settingsView()?.textContent).toContain("No wallpapers yet");
   expect(settingsView()?.textContent).not.toContain(
-    "couldn't read your library",
+    "Couldn't read the library",
   );
 });
 
@@ -170,11 +171,11 @@ test("a library that will not read opens on Settings, saying that instead", asyn
   await flush();
 
   expect(showingView()).toBe("settings");
-  expect(settingsView()?.textContent).toContain("couldn't read your library");
+  expect(settingsView()?.textContent).toContain("Couldn't read the library");
   // The backend's message verbatim: it is the only account of the fault there
   // is, and no canned sentence can name the lock.
   expect(settingsView()?.textContent).toContain("locked database");
-  expect(settingsView()?.textContent).not.toContain("Your library is empty");
+  expect(settingsView()?.textContent).not.toContain("No wallpapers yet");
 });
 
 test("the two rows that both open Settings do not render the same thing", async () => {
@@ -386,6 +387,6 @@ test("both reads failing still starts the app", async () => {
   // The unreadable-library row, on the default settings: a bad row in either
   // table must not lock the curator out of the app that would let them fix it.
   expect(showingView()).toBe("settings");
-  expect(settingsView()?.textContent).toContain("couldn't read your library");
+  expect(settingsView()?.textContent).toContain("Couldn't read the library");
   expect(scanInput()).not.toBeNull();
 });
