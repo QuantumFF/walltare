@@ -7,10 +7,11 @@ import { Dialog } from "radix-ui";
  *
  * The shell binds four of these and reads none of the rest: the arrows belong
  * to whichever element has focus and reach Rank only when nothing in it does,
- * F8 is Radix's own hotkey written into the toast viewport's label, and `Ctrl+Z`
- * presses the Undo on a visible toast, which #112 mounts. They are listed here
- * anyway because a shortcut nobody can find is a shortcut nobody uses, and this
- * dialog is the one place the whole set is written down (ADR 0015).
+ * F8 is Radix's own hotkey written into the toast viewport's label, `Ctrl+Z`
+ * presses the Undo on a visible toast, which #112 mounts, and Escape is the
+ * Settings page's own. They are listed here anyway because a shortcut nobody
+ * can find is a shortcut nobody uses, and this dialog is the one place the whole
+ * set is written down (ADR 0015).
  *
  * ADR 0022's lightbox keys — `←`, `→`, `K`, `Delete`, `R` — are deliberately
  * absent until #80 builds the surface that answers them. A list that promises
@@ -32,6 +33,10 @@ const GROUPS = [
       { keys: ["←"], action: "Pick the wallpaper on the left" },
       { keys: ["→"], action: "Pick the wallpaper on the right" },
     ],
+  },
+  {
+    heading: "Settings",
+    bindings: [{ keys: ["Esc"], action: "Close, back to where you were" }],
   },
   {
     heading: "Notifications",
@@ -98,7 +103,9 @@ export function ShortcutsDialog({
           </Dialog.Title>
           <Dialog.Description className="mt-1 text-sm text-muted-foreground">
             None of these fire while the caret is in a text field, so a path
-            with a comma in it stays a path.
+            with a comma in it stays a path. Escape is the exception, because
+            Settings is mostly text fields and closing it has to work from
+            inside one.
           </Dialog.Description>
 
           <div className="mt-5 space-y-5">

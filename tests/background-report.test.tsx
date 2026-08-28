@@ -1,7 +1,14 @@
 import App from "@/App";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { flush, settings, showingView, stats, wallpaper } from "./fixtures";
+import {
+  cacheSize,
+  flush,
+  settings,
+  showingView,
+  stats,
+  wallpaper,
+} from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // ADR 0021's lower slot. The report is shell-level and outlives every page, so
@@ -57,6 +64,16 @@ beforeEach(() => {
     scannedPaths.push(args?.path as string);
     return null;
   });
+  // What the Settings page does around the scan it starts: it resolves the path
+  // under the field as it is typed, and stores it before the walk begins.
+  mockCommand("expand_path", (args) => ({
+    resolved: args?.input as string,
+    exists: true,
+  }));
+  mockCommand("set_setting", () => settings());
+  // And its Thumbnails section walks the cache directory on mount, for the line
+  // that prints the same pass this file's report does (ADR 0020).
+  mockCommand("get_cache_size", () => cacheSize());
 });
 
 /**
@@ -131,7 +148,7 @@ async function scanFrom(path: string) {
       target: { value: path },
     });
   });
-  await click(screen.getByRole("button", { name: /start ranking/i }));
+  await click(screen.getByRole("button", { name: /^rescan$/i }));
   expect(scannedPaths).toEqual([path]);
 }
 

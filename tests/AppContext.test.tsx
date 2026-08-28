@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  cacheSize,
   deferred,
   desktopColorScheme,
   emptyStats,
@@ -17,7 +18,7 @@ import {
 import { mockCommand } from "./ipc-mocks";
 
 /**
- * The scan screen's path field, which Settings hosts until #77 replaces it.
+ * The Library root field, which is the first thing a first run is asked for.
  * Present only while Settings is up, because Settings is the one view the shell
  * unmounts.
  */
@@ -106,6 +107,16 @@ beforeEach(() => {
   // Library is the second row of the boot table, and it lists its rows on the
   // first visit — which, for that row, is boot itself.
   mockCommand("list_wallpapers", () => [wallpaper(1)]);
+  // Settings resolves the Written path in each of its two path fields on mount,
+  // and the reject destination has a default, so the two rows of the boot table
+  // that land there reach this command without anything being typed.
+  mockCommand("expand_path", (args) => ({
+    resolved: String(args?.input),
+    exists: true,
+  }));
+  // And it walks the thumbnail cache on mount, for the line its Thumbnails
+  // section reads out (ADR 0020).
+  mockCommand("get_cache_size", () => cacheSize());
 });
 
 // ADR 0015's boot table, one test per row. Boot reads what the library holds
@@ -151,12 +162,12 @@ test("an empty library opens on Settings, dressed as a first run", async () => {
   await flush();
 
   expect(showingView()).toBe("settings");
-  // Settings hosts the scan screen until #77, so the invitation has something
-  // to invite the curator into.
+  // The invitation has something to invite the curator into: the field the
+  // first-run landing puts the caret in.
   expect(scanInput()).not.toBeNull();
-  expect(settingsView()?.textContent).toContain("Your library is empty");
+  expect(settingsView()?.textContent).toContain("No wallpapers yet");
   expect(settingsView()?.textContent).not.toContain(
-    "couldn't read your library",
+    "Couldn't read the library",
   );
 });
 
@@ -170,11 +181,11 @@ test("a library that will not read opens on Settings, saying that instead", asyn
   await flush();
 
   expect(showingView()).toBe("settings");
-  expect(settingsView()?.textContent).toContain("couldn't read your library");
+  expect(settingsView()?.textContent).toContain("Couldn't read the library");
   // The backend's message verbatim: it is the only account of the fault there
   // is, and no canned sentence can name the lock.
   expect(settingsView()?.textContent).toContain("locked database");
-  expect(settingsView()?.textContent).not.toContain("Your library is empty");
+  expect(settingsView()?.textContent).not.toContain("No wallpapers yet");
 });
 
 test("the two rows that both open Settings do not render the same thing", async () => {
@@ -386,6 +397,6 @@ test("both reads failing still starts the app", async () => {
   // The unreadable-library row, on the default settings: a bad row in either
   // table must not lock the curator out of the app that would let them fix it.
   expect(showingView()).toBe("settings");
-  expect(settingsView()?.textContent).toContain("couldn't read your library");
+  expect(settingsView()?.textContent).toContain("Couldn't read the library");
   expect(scanInput()).not.toBeNull();
 });

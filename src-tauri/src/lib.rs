@@ -857,6 +857,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(window_state::plugin())
+        // The Browse button beside each path field on Settings. A folder picker
+        // cannot be hand-rolled in a WebView, so this is a dependency rather
+        // than a layout decision (ADR 0020). Unlike `window_state`, its `open`
+        // command is called from the frontend, so `capabilities/default.json`
+        // grants exactly that one.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;

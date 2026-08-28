@@ -10,6 +10,9 @@ import {
 } from "@/components/ui/toast";
 import { useApp, type View } from "@/context/AppContext";
 import { useAppEvents } from "@/context/AppEventsContext";
+// The counts these toasts print are the counts ADR 0020's Thumbnails line
+// prints, so both read them out of one file (ADR 0021).
+import { counted, grouped } from "@/lib/copy";
 import {
   client,
   isAppError,
@@ -156,23 +159,6 @@ interface Transient {
 }
 
 /**
- * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
- *
- * Grouped here rather than through `toLocaleString`, which reads the host's
- * locale: the app ships one language, and a German desktop would put `1.536` in
- * the sentence while ADR 0020's Thumbnails line, which is meant to say the same
- * number the same way, says something else.
- */
-function grouped(count: number): string {
-  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-}
-
-/** `1,536 files`, and `1 file`, so the noun agrees with the count in front of it. */
-function counted(count: number, noun: string): string {
-  return `${grouped(count)} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-/**
  * The lower slot: whatever background work is running, reported wherever the
  * curator is (ADR 0021).
  *
@@ -224,8 +210,8 @@ export interface Toaster {
    * curator wrote it. Reading the Round before the walk starts belongs here for
    * the same reason: by the time the scan is over, the Round it moved is gone.
    *
-   * #77's Settings page inherits this call from `ScanView` along with the button
-   * that makes it.
+   * Its one caller is the Scan button in Settings, which inherited both the call
+   * and the button from `ScanView` when that file was deleted (ADR 0020).
    */
   scanStarted: (folder: string) => void;
 }

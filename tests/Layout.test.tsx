@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  cacheSize,
   deferred,
   emptyStats,
   flush,
@@ -44,6 +45,16 @@ beforeEach(() => {
   // starts where the curator spends their time.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
+  // The Library root field resolves what it holds and stores it before a scan,
+  // so every visit to Settings in this file reaches these two.
+  mockCommand("expand_path", (args) => ({
+    resolved: args?.input as string,
+    exists: true,
+  }));
+  mockCommand("set_setting", () => settings());
+  // And its Thumbnails section walks the cache directory on mount, for the line
+  // it reads out (ADR 0020).
+  mockCommand("get_cache_size", () => cacheSize());
   // The shell starts pre-generation as soon as it mounts, which is as soon as
   // the boot gate settles, so every render in this file reaches this command.
   mockCommand("start_pregen", () => {
@@ -178,7 +189,8 @@ test("the gear records where the curator was, and closing Settings returns there
 
   await click(gear());
   expect(showingView()).toBe("settings");
-  // Settings hosts the scan screen until #77 replaces it.
+  // The Library root field, which is this file's proof that the page itself is
+  // up rather than only its container.
   expect(scanInput()).not.toBeNull();
   // No tab is underlined while Settings is up; the gear takes the treatment.
   expect(selectedTab()).toBeNull();
@@ -354,7 +366,7 @@ test("a scan still runs end to end from inside Settings, and leaves the curator 
   await act(async () => {
     fireEvent.change(input, { target: { value: "/tmp/walls" } });
   });
-  await click(screen.getByRole("button", { name: /start ranking/i }));
+  await click(screen.getByRole("button", { name: /^rescan$/i }));
   expect(scannedPaths).toEqual(["/tmp/walls"]);
 
   await act(async () => {
@@ -366,7 +378,7 @@ test("a scan still runs end to end from inside Settings, and leaves the curator 
   // nowhere: a scan takes minutes and finishes wherever the curator has
   // wandered to, which used to be Rank whether they liked it or not.
   expect(showingView()).toBe("settings");
-  expect(screen.getByRole("button", { name: /start ranking/i })).not.toBeNull();
+  expect(screen.getByRole("button", { name: /^rescan$/i })).not.toBeNull();
 
   // And the gear still closes back to where Settings was opened from.
   await click(gear());
@@ -515,9 +527,8 @@ test("Ctrl+, opens Settings and records where the curator was", async () => {
   expect(showingView()).toBe("settings");
   expect(selectedTab()).toBeNull();
 
-  // Pressed again it does nothing: the gear is the way out, and #77's Escape
-  // will be the other. A binding that both opened and closed would mean two
-  // things.
+  // Pressed again it does nothing: the gear and Escape are the ways out. A
+  // binding that both opened and closed would mean two things.
   await pressKey(window, ",", { ctrlKey: true });
   expect(showingView()).toBe("settings");
 
@@ -555,9 +566,10 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   const dialog = screen.getByRole("dialog");
   expect(dialog.textContent).toContain("Keyboard shortcuts");
 
-  // Four the shell binds, and four it does not: the arrows are Rank's, F8 is
-  // the toast viewport's own hotkey, and Ctrl+Z presses the Undo #112 mounts.
-  // A shortcut nobody can find is a shortcut nobody uses.
+  // Four the shell binds, and five it does not: the arrows are Rank's, Escape is
+  // the Settings page's own, F8 is the toast viewport's own hotkey, and Ctrl+Z
+  // presses the Undo #112 mounts. A shortcut nobody can find is a shortcut
+  // nobody uses.
   const keys = Array.from(dialog.querySelectorAll("kbd")).map(
     (el) => el.textContent,
   );
@@ -572,6 +584,7 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     ",",
     "←",
     "→",
+    "Esc",
     "Ctrl",
     "Z",
     "F8",

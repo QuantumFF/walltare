@@ -158,7 +158,8 @@ function Chrome() {
     }
     // The gear is the way back out as well as in. With no `returnTo` — boot
     // landed the curator here — there is nowhere to go and the tabs are the
-    // exit (ADR 0020). Escape is the Settings page's own, and #77 owns it.
+    // exit (ADR 0020). Escape does the same thing from the page's own handler,
+    // which is where it has to be to answer from inside a text field.
     if (returnTo) setView(returnTo);
   };
 
@@ -249,7 +250,7 @@ function Shell({
   lightboxOpen: boolean;
   setLightboxOpen: (open: boolean) => void;
 }) {
-  const { view, setView, rerunBootRuleAfterScan } = useApp();
+  const { view, setView, readLibraryAfterScan } = useApp();
   const { publish } = useAppEvents();
   const { pressUndo } = useToaster();
 
@@ -286,8 +287,9 @@ function Shell({
   // pull them to Rank from whatever they were doing, on every rescan.
   //
   // Three things hang off it here, and they are what a scan *does* rather than
-  // what it says: the pre-generation restart, the freshness event, and the boot
-  // rule's one rerun. ADR 0021's report of the same event — the progress line,
+  // what it says: the pre-generation restart, the freshness event, and the
+  // re-read of what the library now holds, which carries the boot rule's one
+  // rerun with it. ADR 0021's report of the same event — the progress line,
   // the four endings, and the `Stats` refetch that says whether the Round moved
   // backwards — is `ToastSurface`'s, so that every word the app puts in a toast
   // is written in one file.
@@ -321,10 +323,10 @@ function Shell({
         // rather than with a patch. The count rides along because zero of it is
         // the answer "nothing changed": a scan inserts and never deletes.
         publish({ type: "library-scanned", added: payload.added_count });
-        // The boot rule's one exception, and the only navigation left on this
-        // event. It decides for itself whether this scan is the one that filled
-        // an empty library.
-        rerunBootRuleAfterScan();
+        // The count the Library root section prints, and the boot rule's one
+        // exception — the only navigation left on this event. It decides for
+        // itself whether this scan is the one that filled an empty library.
+        readLibraryAfterScan();
       })
       .then((off) => {
         if (cancelled) {
@@ -338,7 +340,7 @@ function Shell({
       cancelled = true;
       unlisten?.();
     };
-  }, [publish, rerunBootRuleAfterScan]);
+  }, [publish, readLibraryAfterScan]);
 
   // One keyboard handler for the whole app, on `window` because the shell is
   // always mounted and there is exactly one of it — the view-scoped gate
@@ -397,9 +399,9 @@ function Shell({
       }
       // The same bargain the gear strikes: Settings is a page with no back of
       // its own, so the shortcut records where the curator was. Pressed while
-      // Settings is already up it does nothing — the gear and, once #77 lands
-      // it, Escape are the ways out, and a second `Ctrl+,` closing the page
-      // would make the binding mean two things.
+      // Settings is already up it does nothing — the gear, Escape and the back
+      // control are the ways out, and a second `Ctrl+,` closing the page would
+      // make the binding mean two things.
       if (view !== "settings") setView("settings", { returnTo: view });
     };
 

@@ -1,7 +1,7 @@
 import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
-import type { Settings, Stats, Wallpaper } from "@/lib/client";
+import type { CacheSize, Settings, Stats, Wallpaper } from "@/lib/client";
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 
@@ -54,6 +54,16 @@ export function settings(over: Partial<Settings> = {}): Settings {
     reject_destination: "./rejected",
     ...over,
   };
+}
+
+/**
+ * The thumbnail cache as ADR 0020 measured it on the live machine: 48MB across
+ * 172 files, which is the reading its Thumbnails line is written around. Every
+ * visit to Settings walks the cache directory on mount, so this belongs beside
+ * `settings()` for the same reason that one does.
+ */
+export function cacheSize(over: Partial<CacheSize> = {}): CacheSize {
+  return { bytes: 48_200_000, files: 172, ...over };
 }
 
 /**
