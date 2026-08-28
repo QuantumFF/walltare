@@ -1,10 +1,10 @@
+import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
 import { client, isAppError } from "@/lib/client";
 import { FolderOpen, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 const INVALID_PATH_ERROR = "That directory doesn't exist or can't be read.";
-const NO_IMAGES_ERROR = "No supported images found in that directory.";
 const SCAN_FAILED_ERROR = "Failed to scan directory. Please check the path.";
 const SCAN_IN_PROGRESS_ERROR = "A scan is already running.";
 
@@ -33,6 +33,8 @@ export function ScanView() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const { scanStarted } = useToaster();
+
   // Subscriptions live for the whole view so no completion event can race a
   // scan start.
   //
@@ -50,15 +52,13 @@ export function ScanView() {
       client.onScanProgress(({ scanned, added }) => {
         setProgress({ scanned, added });
       }),
-      client.onScanComplete(({ scanned_count }) => {
+      // How the scan ended is the shell's to report, on the toast the event
+      // arrives on, where it can name the folder as written and reach a curator
+      // who has long since left this page (ADR 0021). What is left here is the
+      // button, which has a scan to stop presenting as running.
+      client.onScanComplete(() => {
         setScanning(false);
         setProgress(null);
-        // Only a walk that turned up nothing at all is an empty directory. A
-        // rescan that adds nothing means the library already has these — the
-        // common case on every launch after the first — and it is not worth a
-        // word on this screen. #113 moves this sentence to the toast the event
-        // arrives on, where it can name the folder as written.
-        if (scanned_count === 0) setError(NO_IMAGES_ERROR);
       }),
       client.onScanFailed(({ message }) => {
         setScanning(false);
@@ -89,6 +89,11 @@ export function ScanView() {
 
     try {
       await client.startScan(path);
+      // The directory walk emits nothing until it is over, so the report of a
+      // scan in progress can only start from the call that asked for one — and
+      // the folder, as the curator wrote it, is knowable nowhere else either
+      // (ADR 0021).
+      scanStarted(path);
     } catch (err) {
       setScanning(false);
       setProgress(null);

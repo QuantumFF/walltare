@@ -101,7 +101,7 @@ test("a rescan that adds nothing is not reported as an empty directory", async (
   ).toBeNull();
 });
 
-test("a directory with no images at all is reported, and the view stays usable", async () => {
+test("a directory with no images at all leaves the view usable and says nothing on it", async () => {
   await renderInApp(<ScanView />);
   await startScan();
 
@@ -109,11 +109,12 @@ test("a directory with no images at all is reported, and the view stays usable",
     emitEvent("scan-complete", { added_count: 0, scanned_count: 0 });
   });
 
-  // #113 moves this sentence to the toast the event arrives on, where it can
-  // name the folder as written.
-  expect(
-    screen.queryByText(/No supported images found in that directory\./i),
-  ).not.toBeNull();
+  // The sentence moved to the toast the event arrives on, where it names the
+  // folder as the curator wrote it and reaches them wherever they have gone
+  // since (ADR 0021); `background-report.test.tsx` asserts the copy there. What
+  // is left to this screen is a button that is usable again.
+  const said = screen.getByText(/No supported images found/i);
+  expect(said.closest("[data-slot='toast']")).not.toBeNull();
   expect(currentView()).toBe("settings");
   expect(progressText()).toBeNull();
   expect(scanButton().disabled).toBe(false);
@@ -239,7 +240,9 @@ test("a scan in flight cannot be started a second time", async () => {
 test("unmounting drops the scan subscriptions", async () => {
   const { unmount } = await renderInApp(<ScanView />);
   await flush();
-  expect(await emitInAct("scan-progress", { scanned: 1, added: 1 })).toBe(1);
+  // Two listeners: this view's own, and the toast surface's, which reports the
+  // same scan wherever the curator is (ADR 0021). Both have to go.
+  expect(await emitInAct("scan-progress", { scanned: 1, added: 1 })).toBe(2);
 
   unmount();
 

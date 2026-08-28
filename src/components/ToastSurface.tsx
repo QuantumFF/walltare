@@ -1,3 +1,4 @@
+import { Progress } from "@/components/ui/progress";
 import {
   Toast,
   ToastAction,
@@ -7,9 +8,14 @@ import {
   ToastTitle,
   ToastViewport,
 } from "@/components/ui/toast";
-import type { View } from "@/context/AppContext";
+import { useApp, type View } from "@/context/AppContext";
 import { useAppEvents } from "@/context/AppEventsContext";
-import { client, isAppError } from "@/lib/client";
+import {
+  client,
+  isAppError,
+  type PregenProgress,
+  type ScanProgress,
+} from "@/lib/client";
 import {
   createContext,
   useCallback,
@@ -136,6 +142,66 @@ interface Transient {
    * is the one signal that they have moved on (ADR 0017).
    */
   pinned: boolean;
+  /**
+   * Set when this toast has closed itself or been closed, which is what hands
+   * the surface over to the lower slot: a keep during a fourteen-minute pass
+   * covers the report for eight seconds and the report comes back when the
+   * eight seconds are up (ADR 0021).
+   *
+   * The record outlives the toast either way — see `disarm` — so this is the
+   * difference between "the slot holds a message" and "a message is on screen",
+   * and only the second one covers anything.
+   */
+  closed?: boolean;
+}
+
+/**
+ * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
+ *
+ * Grouped here rather than through `toLocaleString`, which reads the host's
+ * locale: the app ships one language, and a German desktop would put `1.536` in
+ * the sentence while ADR 0020's Thumbnails line, which is meant to say the same
+ * number the same way, says something else.
+ */
+function grouped(count: number): string {
+  return String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/** `1,536 files`, and `1 file`, so the noun agrees with the count in front of it. */
+function counted(count: number, noun: string): string {
+  return `${grouped(count)} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/**
+ * The lower slot: whatever background work is running, reported wherever the
+ * curator is (ADR 0021).
+ *
+ * `run` is the toast's key, and it is the pass rather than the payload —
+ * exactly the inverse of `Transient.key`'s rule, and it inverts for the reason
+ * that rule exists. Radix restarts the close timer on `open` and `duration`, and
+ * `duration={Infinity}` short-circuits `startTimer` outright, so this toast
+ * holds no countdown for a fresh key to re-arm. What a fresh key would buy
+ * instead is 1,204 remounts of one report whose content changes twice a second,
+ * each of them re-announcing itself to a screen reader.
+ */
+type Background =
+  /**
+   * `progress` is `null` for the walk, which is silent: `collect_images` runs to
+   * completion before the first `scan-progress`, so on a large or networked tree
+   * the only thing the frontend knows for minutes is that it asked for a scan.
+   */
+  | { run: string; kind: "scan"; progress: ScanProgress | null }
+  | { run: string; kind: "pregen"; progress: PregenProgress };
+
+/** The one line the report shows, which is the phase the work is in. */
+function backgroundLine(work: Background): string {
+  if (work.kind === "pregen") {
+    const { done, total } = work.progress;
+    return `Preparing thumbnails… ${grouped(done)} of ${grouped(total)}`;
+  }
+  if (!work.progress) return "Scanning…";
+  const { scanned, added } = work.progress;
+  return `Scanning… ${counted(scanned, "file")}, ${grouped(added)} new`;
 }
 
 export interface Toaster {
@@ -148,6 +214,20 @@ export interface Toaster {
    * nothing (ADR 0017).
    */
   pressUndo: () => void;
+  /**
+   * Say that a scan has just been started, and on what folder.
+   *
+   * The one thing about background work that no backend event can tell this
+   * surface. The walk emits nothing at all, so `Scanning…` can only come from
+   * the call that asked for it; and `scan-complete` names no folder, so the
+   * ending that reports an empty one has to have been handed the path as the
+   * curator wrote it. Reading the Round before the walk starts belongs here for
+   * the same reason: by the time the scan is over, the Round it moved is gone.
+   *
+   * #77's Settings page inherits this call from `ScanView` along with the button
+   * that makes it.
+   */
+  scanStarted: (folder: string) => void;
 }
 
 const ToasterContext = createContext<Toaster | undefined>(undefined);
@@ -229,7 +309,8 @@ function once(run: () => void): () => void {
 }
 
 /**
- * The shell's toast surface: one slot, one `show()`, at most one mounted toast.
+ * The shell's toast surface: two slots, `transient ?? background`, and at most
+ * one mounted toast.
  *
  * It wraps the shell's body rather than sitting beside it, so that the viewport
  * lands as the last child of the shell root while `show` is in scope for
@@ -238,24 +319,78 @@ function once(run: () => void): () => void {
  * is not what places it on screen; the viewport's own z-index is (ADR 0017,
  * ADR 0022).
  *
- * #113 adds ADR 0021's second slot for background work below this one and
- * renders `transient ?? background`, which is why the state below is one named
- * slot rather than a bare toast.
+ * The upper slot holds ADR 0017's four transitions and every error; the lower
+ * holds ADR 0021's report of work nobody clicked for. Precedence is what lets
+ * one mounted toast serve two lifetimes: background work never replaces a
+ * transition, because the curator's own click outranks a machine's progress, and
+ * a transition never destroys the report, because it did not replace anything.
+ *
+ * `lightboxOpen` is one of the two surfaces the report is suppressed on rather
+ * than merely covered by. It arrives as a prop because the state has to be read
+ * here and written inside the shell, and this component is the one wrapping the
+ * other; `LightboxHostContext` carries the setter down to whoever opens one.
  */
-export function ToastSurface({ children }: { children: ReactNode }) {
+export function ToastSurface({
+  children,
+  lightboxOpen = false,
+}: {
+  children: ReactNode;
+  lightboxOpen?: boolean;
+}) {
+  const { view, setView } = useApp();
   const { publish, requestRefetch } = useAppEvents();
   const [transient, setTransient] = useState<Transient | null>(null);
+  const [background, setBackground] = useState<Background | null>(null);
+  /** The run the curator said "stop telling me" about; `null` for none. */
+  const [dismissed, setDismissed] = useState<string | null>(null);
 
   // A counter and not a hash of the message, because the key's whole job is to
   // differ: two keeps of the same wallpaper are two messages and the second one
   // owes a full eight seconds.
-  const messages = useRef(0);
+  //
+  // One counter for both slots, and that is load-bearing. React reconciles the
+  // two at the same position, so a transient keyed `1` arriving over a report
+  // keyed `1` is one element type under one key: React would keep the mounted
+  // toast and swap its props, handing a pinned report's node — and its open
+  // state, and its `onOpenChange` — to an eight-second message.
+  const keys = useRef(0);
+
+  /** The folder the running scan was asked for, as the curator wrote it. */
+  const scanFolder = useRef("");
+  /**
+   * The Round as it stood when the running scan started, which is the only thing
+   * the "back to Round 1" sentence can be judged against: a scan that adds
+   * unseen files sends the Round backwards, and one that adds files to a library
+   * still on its first Round moves nothing (ADR 0008).
+   */
+  const roundBeforeScan = useRef<number | null>(null);
+
+  /**
+   * Put a message with no filename in it into the upper slot.
+   *
+   * The whole title is one string here, the way `load-failed` already writes it:
+   * nothing a scan or a pass has to say names a file, so there is nothing in
+   * these titles that may be truncated.
+   */
+  const raise = useCallback(
+    (title: string, description: string | undefined, pinned: boolean) => {
+      setTransient({
+        key: String(++keys.current),
+        prefix: title,
+        filename: "",
+        suffix: "",
+        description,
+        pinned,
+      });
+    },
+    [],
+  );
 
   const show = useCallback(
     // A named function expression, so the Undo closures below can raise the
     // toast that answers them without a ref to break the cycle.
     function show(request: ToastRequest) {
-      const key = String(++messages.current);
+      const key = String(++keys.current);
 
       switch (request.kind) {
         case "kept": {
@@ -390,6 +525,163 @@ export function ToastSurface({ children }: { children: ReactNode }) {
     [publish, requestRefetch],
   );
 
+  const scanStarted = useCallback(
+    (folder: string) => {
+      scanFolder.current = folder;
+      roundBeforeScan.current = null;
+      // Read now rather than held from boot, because "now" is the only moment
+      // this number is knowable: the walk takes minutes, the inserts that follow
+      // move the Round, and by the time `scan-complete` arrives the answer has
+      // already changed. A read that fails costs the sentence and nothing else.
+      void client
+        .getStats()
+        .then((stats) => {
+          roundBeforeScan.current = stats.round;
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to read the Round before a scan:", error);
+        });
+      setBackground({
+        run: String(++keys.current),
+        kind: "scan",
+        progress: null,
+      });
+    },
+    [],
+  );
+
+  /**
+   * ADR 0021's report, and the four endings that close it out.
+   *
+   * The subscriptions are here rather than in the shell for the reason the rest
+   * of this file exists: what a scan or a pass has to say is copy, and every
+   * word the app puts in a toast is written in one place. The shell keeps its
+   * own `scan-complete` listener for what a scan *does* — restart pre-generation,
+   * publish `library-scanned`, rerun the boot rule — and the two never overlap.
+   *
+   * Registered once for the life of the shell, which is what a report of work
+   * that outlives any page needs: a pass is running before the first view mounts
+   * and a scan finishes wherever the curator has wandered to since.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const unlistens: Array<() => void> = [];
+
+    /** Empty the lower slot, but only if the work that filled it is the work that ended. */
+    const clear = (kind: Background["kind"]) => {
+      setBackground((prev) => (prev?.kind === kind ? null : prev));
+    };
+
+    void Promise.all([
+      client.onScanProgress((progress) => {
+        // The run is spent outside the updater, which has to stay pure. A
+        // counter's only job is to differ, so one burnt on a run that turns out
+        // to be already open costs nothing.
+        const run = String(++keys.current);
+        setBackground((prev) =>
+          prev?.kind === "scan"
+            ? { ...prev, progress }
+            : { run, kind: "scan", progress },
+        );
+      }),
+
+      client.onScanComplete(({ added_count, scanned_count }) => {
+        clear("scan");
+
+        // Only a walk that turned up nothing at all is an empty folder, and it
+        // pins with the folder named, because a mistyped Library root is
+        // something the curator has to see and fix. A rescan that adds nothing
+        // is the common case and is the row below.
+        if (scanned_count === 0) {
+          raise(
+            "No supported images found",
+            scanFolder.current || undefined,
+            true,
+          );
+          return;
+        }
+
+        if (added_count === 0) {
+          raise(
+            "No new wallpapers",
+            `${counted(scanned_count, "file")} scanned, all already in your library.`,
+            false,
+          );
+          return;
+        }
+
+        const before = roundBeforeScan.current;
+        roundBeforeScan.current = null;
+        // The message waits on the read rather than being amended by it. A
+        // number moving backwards on Rank's headline needs its explanation in
+        // the same sentence the curator reads once, and `get_stats` costs 0.3ms.
+        void client
+          .getStats()
+          .then((stats) => {
+            // The headline moves through the bus, so Rank hears about the Round
+            // a scan just sent it back to without knowing a scan happened.
+            publish({ type: "stats-changed", stats });
+            raise(
+              `${counted(added_count, "wallpaper")} added`,
+              before !== null && stats.round < before
+                ? `Back to Round ${grouped(stats.round)}. The new wallpapers have no comparisons yet.`
+                : undefined,
+              false,
+            );
+          })
+          .catch((error: unknown) => {
+            console.error("Failed to read the Round a scan left behind:", error);
+            raise(`${counted(added_count, "wallpaper")} added`, undefined, false);
+          });
+      }),
+
+      client.onScanFailed(({ message }) => {
+        clear("scan");
+        raise("Couldn't finish the scan", message, true);
+      }),
+
+      client.onPregenProgress((progress) => {
+        const run = String(++keys.current);
+        setBackground((prev) => {
+          // A scan outranks the pass underneath it: it is the work the curator
+          // asked for, it is the shorter of the two, and `scan-complete`
+          // restarts the pass anyway, so what is dropped here is a run that is
+          // about to be replaced.
+          if (prev?.kind === "scan") return prev;
+          if (prev?.kind === "pregen") return { ...prev, progress };
+          return { run, kind: "pregen", progress };
+        });
+      }),
+
+      client.onPregenComplete(({ generated, failed, cancelled: byRequest }) => {
+        clear("pregen");
+        // Two of the three endings say nothing at all, and that is the decision
+        // rather than an omission. Nobody acts on "1,204 thumbnails ready", the
+        // pass runs on essentially every launch, and a notification whose only
+        // content is that a background task stopped is what trains people to
+        // dismiss notifications unread. A cancel says it more directly still,
+        // since the curator pressed the button.
+        if (byRequest || failed === 0) return;
+        raise(
+          `${counted(generated, "thumbnail")} ready, ${grouped(failed)} failed`,
+          undefined,
+          false,
+        );
+      }),
+    ]).then((offs) => {
+      if (cancelled) {
+        for (const off of offs) off();
+        return;
+      }
+      unlistens.push(...offs);
+    });
+
+    return () => {
+      cancelled = true;
+      for (const off of unlistens) off();
+    };
+  }, [publish, raise]);
+
   // Read by `pressUndo`, which is registered once for the life of the shell and
   // would otherwise press the first render's toast forever.
   const latest = useRef<Transient | null>(null);
@@ -401,10 +693,13 @@ export function ToastSurface({ children }: { children: ReactNode }) {
     latest.current?.undo?.();
   }, []);
 
-  const toaster = useMemo<Toaster>(() => ({ show, pressUndo }), [show, pressUndo]);
+  const toaster = useMemo<Toaster>(
+    () => ({ show, pressUndo, scanStarted }),
+    [show, pressUndo, scanStarted],
+  );
 
   /**
-   * A closed toast keeps its record and loses its Undo.
+   * A closed toast keeps its record, loses its Undo, and stops covering the slot.
    *
    * Clearing the slot outright would unmount the toast mid-fade, since Radix
    * keeps the node around for its own exit animation; leaving the Undo on a
@@ -414,21 +709,47 @@ export function ToastSurface({ children }: { children: ReactNode }) {
    */
   const disarm = useCallback((key: string) => {
     setTransient((prev) =>
-      prev?.key === key && prev.undo ? { ...prev, undo: undefined } : prev,
+      prev?.key === key ? { ...prev, undo: undefined, closed: true } : prev,
     );
   }, []);
+
+  /**
+   * The lower slot, as it renders: suppressed outright on the two surfaces that
+   * already carry the same numbers, and hidden for the rest of a run the curator
+   * has closed.
+   *
+   * A full-screen lightbox is the one place the app asks for the whole window,
+   * and ADR 0017's reason for putting a toast over it — confirming a keep or a
+   * reject fired from inside it — does not extend to a report about work nobody
+   * started. Settings prints the scan's counter on its button and the pass's in
+   * its Thumbnails line, and three copies of one number on one screen is not
+   * emphasis (ADR 0020, ADR 0021).
+   */
+  const report =
+    background &&
+    background.run !== dismissed &&
+    view !== "settings" &&
+    !lightboxOpen
+      ? background
+      : null;
+
+  // `transient ?? background`, with "a message is on screen" rather than "the
+  // slot holds a message" as the test: an expired transition hands the surface
+  // back, and one that has expired with nothing waiting keeps its own node for
+  // the length of its fade.
+  const covering = transient !== null && !(transient.closed && report);
 
   return (
     <ToasterContext.Provider value={toaster}>
       <ToastProvider>
         {children}
 
-        {transient && (
+        {covering && transient ? (
           <Toast
             key={transient.key}
             // Every one of these follows the curator's own click, so the live
-            // region interrupts rather than waits. #113's background report is
-            // the only `background` toast the app has.
+            // region interrupts rather than waits. The background report below
+            // is the only `background` toast the app has.
             type="foreground"
             duration={transient.pinned ? Infinity : undefined}
             onOpenChange={(open) => {
@@ -471,6 +792,74 @@ export function ToastSurface({ children }: { children: ReactNode }) {
 
             {transient.pinned && <ToastClose />}
           </Toast>
+        ) : (
+          report && (
+            <Toast
+              // The run, not the payload: a progress event mutates this toast
+              // rather than remounting it, which is what keeps a report that
+              // changes twice a second from re-announcing itself 1,204 times
+              // (ADR 0021). Radix memoises `announceTextContent` on the node, so
+              // a screen reader hears the first line and none of the updates —
+              // and that is Radix's to do, as long as the node holds still.
+              key={report.run}
+              // A launch pass follows no click at all, and a scan follows one
+              // made minutes ago on a page the curator has left, so the live
+              // region waits its turn rather than interrupting.
+              type="background"
+              // Pinned. `startTimer` short-circuits `Infinity`, so this toast
+              // arms no close timer and the pause machinery is inert for it: the
+              // report goes when the work does, or when the curator says so.
+              duration={Infinity}
+              onOpenChange={(open) => {
+                // "Stop telling me", for the rest of this run. A later scan or a
+                // later pass reports again, because it is a different run and
+                // the curator asked for it.
+                if (!open) setDismissed(report.run);
+              }}
+            >
+              <ToastTitle>{backgroundLine(report)}</ToastTitle>
+
+              {/* Only the pass draws one. `scan-progress` carries no total, the
+                  walk before it emits nothing, and the loop that does emit
+                  chunks at 256 inserts, so a real library fires one event at
+                  100% — any bar drawn for it would be an animation standing in
+                  for information the frontend does not have (ADR 0021). */}
+              {report.kind === "pregen" && (
+                <Progress
+                  className="col-start-1 mt-2 h-1"
+                  aria-label="Thumbnail progress"
+                  // A percentage rather than a count, because the indicator
+                  // translates by `100 - value` and reads no `max`.
+                  value={
+                    report.progress.total === 0
+                      ? 0
+                      : Math.round(
+                          (report.progress.done / report.progress.total) * 100,
+                        )
+                  }
+                />
+              )}
+
+              {/* Cancel lives on Settings, on the button that becomes it while a
+                  pass runs (ADR 0020), so the report's one action is the route
+                  there. It carries no focus key: that field is typed
+                  `keyof Settings` and Thumbnails is a section rather than a
+                  setting. `preventDefault` keeps the report up — a `ToastAction`
+                  is a `ToastClose` underneath, and "let me do something about
+                  it" is not "stop telling me". */}
+              <ToastAction
+                altText="Settings"
+                onClick={(event) => {
+                  event.preventDefault();
+                  setView("settings", { returnTo: view });
+                }}
+              >
+                Settings
+              </ToastAction>
+
+              <ToastClose />
+            </Toast>
+          )
         )}
 
         <ToastViewport />

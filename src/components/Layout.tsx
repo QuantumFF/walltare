@@ -242,7 +242,13 @@ function isTextEntry(target: EventTarget | null): boolean {
  * the slot. One handler for the whole app is the rule (ADR 0015), and the way to
  * keep it one is for it to be inside.
  */
-function Shell() {
+function Shell({
+  lightboxOpen,
+  setLightboxOpen,
+}: {
+  lightboxOpen: boolean;
+  setLightboxOpen: (open: boolean) => void;
+}) {
   const { view, setView, rerunBootRuleAfterScan } = useApp();
   const { publish } = useAppEvents();
   const { pressUndo } = useToaster();
@@ -260,13 +266,12 @@ function Shell() {
     setVisited(new Set(visited).add(view));
   }
 
-  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxContainer, setLightboxContainer] = useState<HTMLElement | null>(
     null,
   );
   const lightboxHost = useMemo(
     () => ({ container: lightboxContainer, setOpen: setLightboxOpen }),
-    [lightboxContainer],
+    [lightboxContainer, setLightboxOpen],
   );
 
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -280,11 +285,12 @@ function Shell() {
   // else entirely. That is also why the event no longer navigates: it used to
   // pull them to Rank from whatever they were doing, on every rescan.
   //
-  // Three things hang off it here, and one more arrives later: #112/#113 turn
-  // the progress and the four endings into ADR 0021's pinned toast. Nothing
-  // renders scan progress from up here yet. #113 also refetches `Stats` on the
-  // event and publishes `stats-changed` with what comes back, which is what
-  // moves Rank's headline to the Round a scan just sent it back to.
+  // Three things hang off it here, and they are what a scan *does* rather than
+  // what it says: the pre-generation restart, the freshness event, and the boot
+  // rule's one rerun. ADR 0021's report of the same event — the progress line,
+  // the four endings, and the `Stats` refetch that says whether the Round moved
+  // backwards — is `ToastSurface`'s, so that every word the app puts in a toast
+  // is written in one file.
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -471,18 +477,26 @@ function Shell() {
 }
 
 /**
- * The shell, wrapped in the surface that holds its one toast slot.
+ * The shell, wrapped in the surface that holds its two toast slots.
  *
  * The surface is outside rather than inside so that `show` is in scope for every
  * view and for the shell's own `Ctrl+Z`, and its viewport renders after the
  * shell root instead of within it. Radix does not portal the viewport, so
  * document order is half of what puts a toast over the page; the z-index in the
  * component is the other half (ADR 0017, ADR 0022).
+ *
+ * Whether a lightbox is up is the one fact both halves need and neither owns:
+ * the shell puts `inert` on the view container while one is, and the surface
+ * suppresses ADR 0021's report outright while one is, because a full-screen
+ * picture is the one place the app asks for the whole window. So it is held here
+ * — the component that wraps them both — rather than in either of them.
  */
 export function Layout() {
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+
   return (
-    <ToastSurface>
-      <Shell />
+    <ToastSurface lightboxOpen={lightboxOpen}>
+      <Shell lightboxOpen={lightboxOpen} setLightboxOpen={setLightboxOpen} />
     </ToastSurface>
   );
 }
