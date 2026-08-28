@@ -10,6 +10,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { PageBar } from "@/components/PageBar";
+import { useToaster } from "@/components/ToastSurface";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,31 +54,33 @@ export const REVIEW_LIMIT = 50;
 const CARD_CLASS =
   "group relative aspect-video bg-card rounded-xl overflow-hidden border border-border shadow-sm";
 const DEFAULT_MOVE_PATH = "./rejected";
-const LOAD_FAILED_ERROR = "Failed to load the review list.";
-const KEEP_FAILED_ERROR = "Failed to keep wallpaper. Please try again.";
-const MOVE_FAILED_ERROR = "Failed to move wallpaper. Please check the destination.";
 
 export function ReviewView() {
   const [wallpapers, setWallpapers] = useState<Wallpaper[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [movePath, setMovePath] = useState(DEFAULT_MOVE_PATH);
   const { setView } = useApp();
   const { publish } = useAppEvents();
+  // Every failure this view can have now goes to the shell's one slot, and the
+  // `role="alert"` paragraph that used to hold them is gone with the `error`
+  // state behind it. Two error surfaces in one view is what ADR 0017 set out to
+  // remove, and the generic strings it also removed — "Failed to keep
+  // wallpaper. Please try again." — said less than the backend message that
+  // replaces them.
+  const { show } = useToaster();
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
     try {
       const list = await client.getReview(REVIEW_LIMIT);
       setWallpapers(list);
-      setError(null);
     } catch (err) {
       console.error("Failed to fetch review list:", err);
-      setError(LOAD_FAILED_ERROR);
+      show({ kind: "load-failed", noun: "the review list", error: err });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [show]);
 
   useEffect(() => {
     void fetchReviewList();
@@ -120,17 +123,32 @@ export function ReviewView() {
     const index = wallpapers.findIndex((w) => w.id === id);
     const removed = wallpapers[index];
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
-    setError(null);
     try {
       await client.keepWallpaper(id);
       // After the write and not before it: a card removed optimistically comes
       // back if the write fails, and a Library that had already greyed the row
       // would be the one place the failure did not reach.
       publish({ type: "status-changed", id, status: "kept" });
+      // The card is already gone by the time this lands, which is the whole
+      // reason it toasts: a card that vanishes is not a confirmation, and the
+      // Undo is what replaces the confirm step (ADR 0009, ADR 0017).
+      if (removed) {
+        show({ kind: "kept", view: "review", id, filename: removed.filename });
+      }
     } catch (err) {
       console.error("Failed to keep wallpaper:", err);
-      if (removed) restoreCard(index, removed);
-      setError(KEEP_FAILED_ERROR);
+      // The card goes back in the grid and the toast reports why. Both: the
+      // toast is replaceable and the grid is the durable evidence.
+      if (removed) {
+        restoreCard(index, removed);
+        show({
+          kind: "failed",
+          view: "review",
+          action: "keep",
+          filename: removed.filename,
+          error: err,
+        });
+      }
     }
   };
 
@@ -138,17 +156,35 @@ export function ReviewView() {
     const index = wallpapers.findIndex((w) => w.id === id);
     const removed = wallpapers[index];
     setWallpapers((prev) => prev.filter((w) => w.id !== id));
-    setError(null);
     try {
-      // The path the file landed at goes unread here. Review has a confirm
-      // dialog rather than a toast, so it has nowhere to report a rename yet;
-      // that arrives with the reject toast when Review is rebuilt.
-      await client.moveWallpaper(id, movePath);
+      // The path the file landed at is read now: `unique_destination` suffixes
+      // ` (n)` on a collision, so this is the only account of what the file is
+      // called on the far side, and the toast decides whether it has anything
+      // to say (ADR 0003, ADR 0017).
+      const finalPath = await client.moveWallpaper(id, movePath);
       publish({ type: "status-changed", id, status: "rejected" });
+      if (removed) {
+        show({
+          kind: "rejected",
+          view: "review",
+          id,
+          filename: removed.filename,
+          destination: movePath,
+          finalPath,
+        });
+      }
     } catch (err) {
       console.error("Failed to move wallpaper:", err);
-      if (removed) restoreCard(index, removed);
-      setError(MOVE_FAILED_ERROR);
+      if (removed) {
+        restoreCard(index, removed);
+        show({
+          kind: "failed",
+          view: "review",
+          action: "reject",
+          filename: removed.filename,
+          error: err,
+        });
+      }
     }
   };
 
@@ -217,16 +253,6 @@ export function ReviewView() {
       {header}
 
       <div className="mx-auto flex h-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
-        {error && (
-          <p
-            className="text-sm text-destructive"
-            role="alert"
-            aria-live="polite"
-          >
-            {error}
-          </p>
-        )}
-
         {/* Content */}
         {wallpapers.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
@@ -276,6 +302,13 @@ export function ReviewView() {
                       Keep
                     </Button>
 
+                    {/* The confirm dialog stays for now, and only for now.
+                        Act-then-undo has replaced it as of this toast — the
+                        reject offers an Undo and `Ctrl+Z` presses it — so the
+                        dialog is one interruption too many. #78 removes it
+                        along with the destination field above, in the issue
+                        that rebuilds this view on the shared card (ADR 0009,
+                        ADR 0017, ADR 0018). */}
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button

@@ -1,3 +1,4 @@
+import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
 import type { Settings, Stats, Wallpaper } from "@/lib/client";
@@ -142,13 +143,21 @@ export function currentView(): string | null {
  * so a view mounted without it would throw on the first click. Nothing else
  * subscribes, which is the point: what a shell full of views does with those
  * events is `Layout.test.tsx` and `freshness.test.tsx`'s to assert.
+ *
+ * The toast surface is here for the same reason and with the same limit. A view
+ * raises a toast on every transition and every failure, so one mounted without
+ * it throws on the first click; but the shell's `Ctrl+Z` is not in this tree, so
+ * what the surface does with a keyboard is `toasts.test.tsx`'s to assert against
+ * the whole app.
  */
 export async function renderInApp(ui: ReactNode) {
   const rendered = render(
     <AppProvider>
       <AppEventsProvider>
-        <ViewProbe />
-        {ui}
+        <ToastSurface>
+          <ViewProbe />
+          {ui}
+        </ToastSurface>
       </AppEventsProvider>
     </AppProvider>,
   );

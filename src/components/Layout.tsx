@@ -3,6 +3,7 @@ import { RankView } from "@/components/RankView";
 import { ReviewView } from "@/components/ReviewView";
 import { SettingsView } from "@/components/SettingsView";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
+import { ToastSurface, useToaster } from "@/components/ToastSurface";
 import { useApp, type View } from "@/context/AppContext";
 import { useAppEvents } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
@@ -233,9 +234,18 @@ function isTextEntry(target: EventTarget | null): boolean {
   return !NON_TEXT_INPUT_TYPES.has((target as HTMLInputElement).type);
 }
 
-export function Layout() {
+/**
+ * Everything the shell renders, inside the toast surface that wraps it.
+ *
+ * Split from `Layout` for one reason: the keyboard handler below binds `Ctrl+Z`
+ * to the visible toast's Undo, so it has to sit under the provider that holds
+ * the slot. One handler for the whole app is the rule (ADR 0015), and the way to
+ * keep it one is for it to be inside.
+ */
+function Shell() {
   const { view, setView, rerunBootRuleAfterScan } = useApp();
   const { publish } = useAppEvents();
+  const { pressUndo } = useToaster();
 
   // Which destinations have ever been shown. A view enters the tree on its first
   // visit and never leaves it, so this only ever grows.
@@ -358,6 +368,19 @@ export function Layout() {
       }
 
       if (!event.ctrlKey || event.altKey || event.metaKey) return;
+
+      // A shortcut for the button on screen, not an undo stack. With no toast
+      // up, or one that offers no Undo, it does nothing — and that is the honest
+      // behaviour rather than a gap: CONTEXT.md says Comparisons are never
+      // deleted, so there is no vote for a general `Ctrl+Z` to take back
+      // (ADR 0017). Nothing native is being suppressed, because this whole
+      // handler is already off while the caret is in a field.
+      if (event.key === "z" || event.key === "Z") {
+        event.preventDefault();
+        pressUndo();
+        return;
+      }
+
       const destination = NAVIGATION_KEYS[event.key];
       if (!destination) return;
       event.preventDefault();
@@ -438,13 +461,28 @@ export function Layout() {
         className="relative z-50"
       />
 
-      {/* #112 mounts the toast viewport here, as the last child of this root. */}
-
       {/* Portalled to the body by the primitive, so its place in this file is
           not what stacks it — the z-index in the component is. It is mounted
           here rather than in a view because `?` reaches it from all four
           destinations, and a per-view copy would need four (ADR 0015). */}
       <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
+  );
+}
+
+/**
+ * The shell, wrapped in the surface that holds its one toast slot.
+ *
+ * The surface is outside rather than inside so that `show` is in scope for every
+ * view and for the shell's own `Ctrl+Z`, and its viewport renders after the
+ * shell root instead of within it. Radix does not portal the viewport, so
+ * document order is half of what puts a toast over the page; the z-index in the
+ * component is the other half (ADR 0017, ADR 0022).
+ */
+export function Layout() {
+  return (
+    <ToastSurface>
+      <Shell />
+    </ToastSurface>
   );
 }
