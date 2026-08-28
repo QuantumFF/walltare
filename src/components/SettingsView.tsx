@@ -38,11 +38,11 @@ const RETURN_LABEL: Record<View, string> = {
 /**
  * One of the four sections, heading and all.
  *
- * Three of them are still empty, and each is filled by a ticket of its own:
- * #118 the Reject destination, #119 Appearance, #120 Thumbnails. What this file
- * owns beyond them is the frame they land in — the column, the bar, the way out,
- * and the slot above them — so that each is written against a page that already
- * exists rather than against half of one.
+ * Two of them are still empty, and each is filled by a ticket of its own: #119
+ * Appearance, #120 Thumbnails. What this file owns beyond them is the frame they
+ * land in — the column, the bar, the way out, and the slot above them — so that
+ * each is written against a page that already exists rather than against half of
+ * one.
  *
  * `ref` is here for the one thing a section is addressed by from outside: a
  * navigation that names a field scrolls the section holding it into view, and
@@ -121,9 +121,9 @@ type Expansion =
  * string. An answer that arrives after the value moved on is dropped, so the
  * line under the field can never describe a path that is no longer in it.
  *
- * #118's Reject destination field calls this too, and renders a different line
- * from the same three answers: it has no not-found state ever, and a relative
- * result is a rule rather than a place.
+ * The Reject destination field calls this too, and renders a different line from
+ * the same three answers: it has no not-found state ever, and a relative result
+ * is a rule rather than a place.
  */
 function useExpansion(value: string): Expansion | null {
   const [expansion, setExpansion] = useState<Expansion | null>(null);
@@ -162,6 +162,74 @@ function useExpansion(value: string): Expansion | null {
   return expansion;
 }
 
+/** The two settings that hold a Written path, which is the two fields below. */
+type PathSetting = "library_root" | "reject_destination";
+
+/**
+ * Everything the two Written path fields on this page are alike in: the string
+ * as the curator has it typed, the one write that stores it, what the backend
+ * says it resolves to, and the pair of refs a navigation naming this field
+ * addresses it by.
+ *
+ * They are alike in more than they differ. What differs is the line underneath —
+ * the Library root reports a place and can say nothing is there, the Reject
+ * destination explains a rule and never can (ADR 0020) — and the button only one
+ * of them has, so both of those stay with the sections.
+ */
+function usePathField(key: PathSetting) {
+  const { settings, saveSetting, focus } = useApp();
+
+  // The Written path as the curator has it typed, which is not the same thing
+  // as the stored one: it moves per keystroke and the store hears about it on
+  // blur (ADR 0010).
+  const [value, setValue] = useState(settings[key]);
+
+  // What the store was last told, so that a blur on the way to a button does
+  // not write a string the store already holds, and so a click that follows
+  // that blur does not write it a second time.
+  const committed = useRef(settings[key]);
+  const field = useRef<HTMLInputElement>(null);
+  const section = useRef<HTMLElement>(null);
+
+  const expansion = useExpansion(value);
+
+  // Focus, and the scroll that makes focusing mean anything on a page four
+  // sections long. The text is deliberately not selected: these fields write on
+  // blur, and a selected value is one keystroke from being an empty setting that
+  // the next blur stores (ADR 0020).
+  useEffect(() => {
+    if (focus !== key) return;
+    field.current?.focus();
+    section.current?.scrollIntoView({ block: "nearest" });
+  }, [focus, key]);
+
+  /**
+   * Store the Written path, if the store does not already hold it.
+   *
+   * Recorded before the write lands rather than after, because a Scan click
+   * arrives on the heels of the blur that fires on the way to it, and otherwise
+   * the store would hear the same string twice for one scan. A write that fails
+   * puts the record back, so the next commit tries again rather than assuming it
+   * took.
+   */
+  const commit = useCallback(
+    async (next: string) => {
+      if (next === committed.current) return;
+      const previous = committed.current;
+      committed.current = next;
+      try {
+        await saveSetting(key, next);
+      } catch (error) {
+        committed.current = previous;
+        throw error;
+      }
+    },
+    [key, saveSetting],
+  );
+
+  return { value, setValue, commit, expansion, field, section };
+}
+
 /**
  * The Library root section: the field, Browse, one status line, the count, and
  * the button that starts a scan.
@@ -172,13 +240,11 @@ function useExpansion(value: string): Expansion | null {
  * layout, which was for a screen that no longer exists (ADR 0020).
  */
 function LibraryRootSection() {
-  const { settings, saveSetting, libraryTotal, focus } = useApp();
+  const { libraryTotal } = useApp();
   const { scanStarted } = useToaster();
 
-  // The Written path as the curator has it typed, which is not the same thing
-  // as the stored one: it moves per keystroke and the store hears about it on
-  // blur (ADR 0010).
-  const [value, setValue] = useState(settings.library_root);
+  const { value, setValue, commit, expansion, field, section } =
+    usePathField("library_root");
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   // A Scan that never got going, on the status line until the value changes.
@@ -186,25 +252,6 @@ function LibraryRootSection() {
   // typed, and an error the curator reads before clicking beats one that
   // arrives after.
   const [scanError, setScanError] = useState<string | null>(null);
-
-  // What the store was last told, so that a blur on the way to a button does
-  // not write a string the store already holds, and so the Scan click that
-  // follows that blur does not write it a second time.
-  const committed = useRef(settings.library_root);
-  const field = useRef<HTMLInputElement>(null);
-  const section = useRef<HTMLElement>(null);
-
-  const expansion = useExpansion(value);
-
-  // Focus, and the scroll that makes focusing mean anything on a page four
-  // sections long. The text is deliberately not selected: this field writes on
-  // blur, and a selected value is one keystroke from being an empty Library root
-  // that the next blur stores (ADR 0020).
-  useEffect(() => {
-    if (focus !== "library_root") return;
-    field.current?.focus();
-    section.current?.scrollIntoView({ block: "nearest" });
-  }, [focus]);
 
   // The button's own progress line, and the two endings that free it.
   //
@@ -239,30 +286,6 @@ function LibraryRootSection() {
       for (const fn of unlistens) fn();
     };
   }, []);
-
-  /**
-   * Store the Written path, if the store does not already hold it.
-   *
-   * Recorded before the write lands rather than after, because a Scan click
-   * arrives on the heels of the blur that fires on the way to it, and otherwise
-   * the store would hear the same string twice for one scan. A write that fails
-   * puts the record back, so the next commit tries again rather than assuming it
-   * took.
-   */
-  const commit = useCallback(
-    async (next: string) => {
-      if (next === committed.current) return;
-      const previous = committed.current;
-      committed.current = next;
-      try {
-        await saveSetting("library_root", next);
-      } catch (error) {
-        committed.current = previous;
-        throw error;
-      }
-    },
-    [saveSetting],
-  );
 
   // Typing is not committing, and the value moving is what clears a stale Scan
   // error off the line: the sentence was about a path that is no longer in the
@@ -426,6 +449,148 @@ function LibraryRootSection() {
   );
 }
 
+/**
+ * What a relative reject destination means, which is the whole reason this line
+ * exists.
+ *
+ * Settings cannot resolve a relative destination, because ADR 0011 resolves one
+ * against each wallpaper's own folder and this page does not know which
+ * wallpaper. So the line states the rule instead — and that relative means
+ * "beside each wallpaper" rather than "beside the library root" is the most
+ * surprising thing about this setting, which makes the field it is typed into
+ * the last place to leave it unsaid (ADR 0018, ADR 0020).
+ */
+const RELATIVE_DESTINATION =
+  "Relative, so one rejected folder beside each wallpaper.";
+
+/**
+ * Whether a resolved Written path names a place, asked of the answer rather than
+ * of the string.
+ *
+ * The string cannot be asked: `~/bin` and `$HOME/bin` both look relative and
+ * both expand absolute, so only `expand_path` knows (ADR 0018). What comes back
+ * is `PathBuf::display`, and on the one platform this app targets an absolute
+ * path is exactly one with a leading `/`.
+ */
+function isAbsolute(resolved: string): boolean {
+  return resolved.startsWith("/");
+}
+
+/** Which of ADR 0020's three rows the Reject destination's line is showing. */
+type DestinationLine = "path" | "rule" | "error";
+
+const DESTINATION_LINE_CLASS: Record<DestinationLine, string> = {
+  // A place, in the same muted mono the Library root's resolved path is in,
+  // because it is the same kind of answer.
+  path: "font-mono text-xs break-all text-muted-foreground",
+  // A rule rather than a place, so it reads as the sentence it is and not as
+  // something that could be pasted into a shell.
+  rule: "text-xs text-muted-foreground",
+  // The one error kind rendered verbatim: it names the variable the curator
+  // mistyped, and reading `unknown environment variable HOEM` here beats
+  // learning it from fifty identical failed rejects (ADR 0011, ADR 0018).
+  error: "text-xs text-destructive",
+};
+
+/**
+ * The Reject destination section: the field, Browse, and one status line that
+ * explains rather than resolves.
+ *
+ * The only place `reject_destination` can be edited. ADR 0018 took the field out
+ * of Review because a control sitting under fifty cards, which may have come
+ * from fifty different folders, looked like it belonged to the pass while
+ * actually writing a global preference — and it is the same correction ADR 0010
+ * made when it moved the Library root out of `ScanView`.
+ */
+function RejectDestinationSection() {
+  const { value, setValue, commit, expansion, field, section } =
+    usePathField("reject_destination");
+
+  const store = (next: string) => {
+    void commit(next).catch((error: unknown) => {
+      console.error("Failed to store the reject destination:", error);
+    });
+  };
+
+  const browse = () => {
+    void (async () => {
+      const picked = await client.pickFolder();
+      // A dismissal is an answer rather than a failure, and the answer is that
+      // the field keeps what it had.
+      if (picked === null) return;
+      setValue(picked);
+      // Committed here rather than left to a blur, because the field has
+      // already lost focus to this button and will not blur again. The picker
+      // answers with an absolute path, so a destination that was a rule is now
+      // a place, and the line under the field changes shape with it.
+      await commit(picked);
+    })().catch((error: unknown) => {
+      console.error("Failed to store the picked folder:", error);
+    });
+  };
+
+  /**
+   * The one status line, which explains instead of resolving (ADR 0020).
+   *
+   * Three answers and three lines, and nothing in the list is a not-found state.
+   * A reject destination cannot fail to exist: ADR 0003 creates it on demand, so
+   * `exists` is the one field of `Expanded` this section reads past — which is
+   * the same reason ADR 0018 gave for leaving not-found off the two read-out
+   * bars.
+   *
+   * A field the curator has emptied says nothing, for the want of anything to
+   * resolve. ADR 0020's table has three rows and none of them is that, and a
+   * fourth line invented here would be inventing a rule with it.
+   */
+  const status = ((): { kind: DestinationLine; text: string } | null => {
+    if (expansion === null) return null;
+    if (expansion.kind === "invalid") {
+      return { kind: "error", text: expansion.message };
+    }
+    const { resolved } = expansion.expanded;
+    return isAbsolute(resolved)
+      ? { kind: "path", text: resolved }
+      : { kind: "rule", text: RELATIVE_DESTINATION };
+  })();
+
+  return (
+    <Section heading="Reject destination" ref={section}>
+      <div className="flex gap-2">
+        <Input
+          ref={field}
+          aria-label="Reject destination"
+          placeholder="./rejected"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          // On blur and never on keystroke, so a path is not stored one
+          // character at a time (ADR 0010).
+          onBlur={() => store(value)}
+          // Enter only commits. The Library root field beside this one scans on
+          // Enter, and there is nothing of the sort here: a reject destination
+          // is read by the next reject, on a page the curator has to leave this
+          // one to reach (ADR 0020).
+          onKeyDown={(event) => {
+            if (event.key === "Enter") store(value);
+          }}
+        />
+        <Button variant="outline" onClick={browse}>
+          <FolderOpen aria-hidden />
+          Browse
+        </Button>
+      </div>
+
+      {status && (
+        <p
+          data-slot="reject-destination-status"
+          className={DESTINATION_LINE_CLASS[status.kind]}
+        >
+          {status.text}
+        </p>
+      )}
+    </Section>
+  );
+}
+
 /** The shell both top-slot blocks are cut from, so the two read as one slot. */
 function NoticeBlock({
   tone,
@@ -524,7 +689,7 @@ function UnreadableLibraryBlock({ message }: { message: string }) {
  *
  * One column at `max-w-2xl` holding four sections in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
- * the way out. Three of the four sections are still a ticket each (ADR 0020).
+ * the way out. Two of the four sections are still a ticket each (ADR 0020).
  *
  * Settings is the one destination the shell unmounts, so its fields start from
  * the store rather than from a copy they held across a visit — which is why the
@@ -622,7 +787,7 @@ export function SettingsView() {
             with what the library holds: a page that grows sections after a scan
             is what ADR 0020 refused. */}
         <LibraryRootSection />
-        <Section heading="Reject destination" />
+        <RejectDestinationSection />
         <Section heading="Appearance" />
         <Section heading="Thumbnails" />
       </div>

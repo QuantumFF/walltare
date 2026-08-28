@@ -1,5 +1,15 @@
 import App from "@/App";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { Layout } from "@/components/Layout";
+import { AppProvider, useApp } from "@/context/AppContext";
+import { AppEventsProvider } from "@/context/AppEventsContext";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -85,6 +95,19 @@ const scanButton = () =>
   }) as HTMLButtonElement;
 const statusLine = () =>
   document.querySelector('[data-slot="library-root-status"]') as HTMLElement;
+const destinationInput = () =>
+  screen.getByLabelText("Reject destination") as HTMLInputElement;
+const destinationLine = () =>
+  document.querySelector(
+    '[data-slot="reject-destination-status"]',
+  ) as HTMLElement;
+const sectionAt = (index: number) =>
+  document.querySelectorAll('[data-slot="settings-section"]')[
+    index
+  ] as HTMLElement;
+/** Both path fields have one, so a Browse click has to say which field it is for. */
+const browseIn = (section: HTMLElement) =>
+  within(section).getByRole("button", { name: "Browse" });
 const sectionHeadings = () =>
   Array.from(document.querySelectorAll('[data-slot="settings-section"] h2')).map(
     (el) => el.textContent,
@@ -101,6 +124,13 @@ async function click(element: Element) {
 async function type(value: string) {
   await act(async () => {
     fireEvent.change(scanInput(), { target: { value } });
+  });
+  await flush();
+}
+
+async function typeDestination(value: string) {
+  await act(async () => {
+    fireEvent.change(destinationInput(), { target: { value } });
   });
   await flush();
 }
@@ -167,11 +197,11 @@ test("the page is one column of four sections, in first-run order", async () => 
     ?.parentElement as HTMLElement;
   expect(column.className).toContain("max-w-2xl");
 
-  // The three that are still empty, and staying that way until a ticket each
+  // The two that are still empty, and staying that way until a ticket each
   // fills them. What is asserted here is that they are already in the page and
-  // already in order, so none of those three has to decide where its section
+  // already in order, so neither of those two has to decide where its section
   // goes.
-  const [, ...unbuilt] = document.querySelectorAll(
+  const [, , ...unbuilt] = document.querySelectorAll(
     '[data-slot="settings-section"]',
   );
   for (const section of unbuilt) {
@@ -362,12 +392,10 @@ test("neither block is up when boot found a library it could read", async () => 
 test("the section holds a field, a Browse button and the button that scans", async () => {
   await openSettingsFromLibrary();
 
-  const section = document.querySelectorAll('[data-slot="settings-section"]')[0];
+  const section = sectionAt(0);
   expect(section.querySelector("h2")?.textContent).toBe("Library root");
   expect(section.contains(scanInput())).toBe(true);
-  expect(
-    section.contains(screen.getByRole("button", { name: "Browse" })),
-  ).toBe(true);
+  expect(section.contains(browseIn(section))).toBe(true);
   expect(section.contains(scanButton())).toBe(true);
 });
 
@@ -459,7 +487,7 @@ test("Browse fills the field with the folder the curator pointed at", async () =
   await openSettingsFromLibrary();
   await type("~/pics");
 
-  await click(screen.getByRole("button", { name: "Browse" }));
+  await click(browseIn(sectionAt(0)));
 
   expect(picker.opened).toBe(1);
   // The cost ADR 0020 accepted for having a picker at all: it answers with an
@@ -479,7 +507,7 @@ test("a picker the curator dismissed leaves the field alone", async () => {
   await openSettingsFromLibrary();
   await type("~/pics");
 
-  await click(screen.getByRole("button", { name: "Browse" }));
+  await click(browseIn(sectionAt(0)));
 
   // A dismissal is an answer rather than a failure, and the answer is that the
   // field keeps what it had.
@@ -704,4 +732,228 @@ test("leaving the page drops its scan subscriptions", async () => {
   // Settings is the one view the shell unmounts, so this one has to go and the
   // shell's has to stay.
   expect(await emit("scan-progress", { scanned: 2, added: 2 })).toBe(1);
+});
+
+// The Reject destination section, which is the only place `reject_destination`
+// can be edited (ADR 0018). One test per row of ADR 0020's table, because the
+// three lines are the section's real content: the field and its Browse button
+// are the Library root's again, and the line is the part that is not.
+
+/**
+ * The app, plus the control ADR 0018 promises and no view carries yet.
+ *
+ * Review's and Library's second bars route here with `focus:
+ * "reject_destination"`, and both read-outs belong to tickets of their own. This
+ * stands in for them so that the arrival this section has to answer can be
+ * tested against the page that answers it, rather than deferred to whichever of
+ * the two lands first.
+ */
+function DeepLink() {
+  const { setView } = useApp();
+  return (
+    <button
+      onClick={() =>
+        setView("settings", { returnTo: "review", focus: "reject_destination" })
+      }
+    >
+      change in Settings
+    </button>
+  );
+}
+
+async function openSettingsOnTheDestination() {
+  render(
+    <AppProvider>
+      <AppEventsProvider>
+        <DeepLink />
+        <Layout />
+      </AppEventsProvider>
+    </AppProvider>,
+  );
+  await flush();
+  await click(screen.getByRole("button", { name: "change in Settings" }));
+  expect(showingView()).toBe("settings");
+}
+
+test("the section holds a field, a Browse button and one status line", async () => {
+  await openSettingsFromLibrary();
+
+  const section = sectionAt(1);
+  expect(section.querySelector("h2")?.textContent).toBe("Reject destination");
+  expect(section.contains(destinationInput())).toBe(true);
+  expect(section.contains(browseIn(section))).toBe(true);
+  // One line, and nothing beside it: there is no count to print here and
+  // nothing to run, so the section is the field, the button and the sentence.
+  expect(section.contains(destinationLine())).toBe(true);
+  expect(section.querySelectorAll("p").length).toBe(1);
+  // And no button that starts anything, which is what makes Enter's job below
+  // the whole of what Enter can do here.
+  expect(within(section).queryAllByRole("button").length).toBe(1);
+});
+
+test("an absolute destination shows the folder it resolves to", async () => {
+  mockCommand("get_settings", () => settings({ reject_destination: "~/bin" }));
+  await openSettingsFromLibrary();
+
+  // A place, so the line names it, in the same mono the Library root's resolved
+  // path is in.
+  expect(destinationLine().textContent).toBe(`${HOME}/bin`);
+  expect(destinationLine().className).toContain("font-mono");
+  expect(destinationLine().className).toContain("text-muted-foreground");
+  expect(destinationInput().value).toBe("~/bin");
+});
+
+test("a relative destination states the rule instead of a place", async () => {
+  await openSettingsFromLibrary();
+
+  // The default, and the most surprising thing about this setting: relative
+  // means beside each wallpaper rather than beside the library root, so a nested
+  // library gets one rejected folder per source folder. Settings cannot resolve
+  // it — it does not know which wallpaper — so it says what it means instead
+  // (ADR 0018, ADR 0020).
+  expect(destinationInput().value).toBe("./rejected");
+  expect(destinationLine().textContent).toBe(
+    "Relative, so one rejected folder beside each wallpaper.",
+  );
+  // A sentence rather than a path, so it is not set as one.
+  expect(destinationLine().className).not.toContain("font-mono");
+  expect(destinationLine().className).not.toContain("text-destructive");
+});
+
+test("whether a destination is relative is not read off the string", async () => {
+  // `$HOME/bin` looks relative and expands absolute, which is why only
+  // `expand_path` gets to decide which of the two lines is up (ADR 0018).
+  mockCommand("expand_path", (args) => ({
+    resolved: String(args?.input).replace(/^\$HOME/, HOME),
+    exists: true,
+  }));
+  await openSettingsFromLibrary();
+  await typeDestination("$HOME/bin");
+
+  expect(destinationLine().textContent).toBe(`${HOME}/bin`);
+  expect(destinationLine().className).toContain("font-mono");
+});
+
+test("a mistyped variable replaces the destination line, in the backend's own words", async () => {
+  mockCommand("expand_path", () =>
+    Promise.reject({
+      kind: "invalid_path_syntax",
+      message: "unknown environment variable HOEM",
+    }),
+  );
+  await openSettingsFromLibrary();
+  await typeDestination("$HOEM/rejected");
+
+  // It fails every reject of the pass with a message naming the variable, so
+  // reading it here beats reading it fifty times afterwards (ADR 0018).
+  expect(destinationLine().textContent).toBe(
+    "unknown environment variable HOEM",
+  );
+  expect(destinationLine().className).toContain("text-destructive");
+});
+
+test("no destination is ever reported as not found", async () => {
+  // Nothing has to be there: a soft reject creates the destination on demand
+  // (ADR 0003), so this field ignores the `exists` its own resolution answered
+  // with — the one thing it reads past that the Library root reports.
+  mockCommand("expand_path", (args) => ({
+    resolved: String(args?.input).replace(/^~/, HOME),
+    exists: false,
+  }));
+  await openSettingsFromLibrary();
+
+  expect(destinationLine().textContent).toBe(
+    "Relative, so one rejected folder beside each wallpaper.",
+  );
+
+  await typeDestination("~/bin/nowhere");
+  expect(destinationLine().textContent).toBe(`${HOME}/bin/nowhere`);
+  expect(destinationLine().textContent).not.toContain("not found");
+  expect(destinationLine().className).not.toContain("text-destructive");
+});
+
+test("the destination commits on blur, and a keystroke commits nothing", async () => {
+  await openSettingsFromLibrary();
+  await typeDestination("~/bin/rejects");
+
+  expect(settingWrites).toEqual([]);
+
+  await act(async () => {
+    fireEvent.blur(destinationInput());
+  });
+  await flush();
+  expect(settingWrites).toEqual([
+    { key: "reject_destination", value: "~/bin/rejects" },
+  ]);
+
+  // A second blur with nothing changed writes nothing: the store already holds
+  // this string.
+  await act(async () => {
+    fireEvent.blur(destinationInput());
+  });
+  await flush();
+  expect(settingWrites.length).toBe(1);
+});
+
+test("Enter commits and starts nothing", async () => {
+  await openSettingsFromLibrary();
+  await typeDestination("~/bin/rejects");
+
+  await act(async () => {
+    fireEvent.keyDown(destinationInput(), { key: "Enter" });
+  });
+  await flush();
+
+  // The Library root's Enter scans, because that section has a walk to start.
+  // There is nothing of the sort here, so Enter does the one thing the blur
+  // would have done and the rest of the app is left alone (ADR 0020).
+  expect(settingWrites).toEqual([
+    { key: "reject_destination", value: "~/bin/rejects" },
+  ]);
+  expect(scanSequence).toEqual(["set_setting"]);
+  expect(scannedPaths).toEqual([]);
+});
+
+test("Browse fills the destination with the folder the curator pointed at", async () => {
+  const picker = mockFolderPicker("/mnt/photos/rejects");
+  await openSettingsFromLibrary();
+
+  await click(browseIn(sectionAt(1)));
+
+  expect(picker.opened).toBe(1);
+  expect(destinationInput().value).toBe("/mnt/photos/rejects");
+  // Committed by the pick, since the field lost focus to this button on the way
+  // here and will not blur again.
+  expect(settingWrites).toEqual([
+    { key: "reject_destination", value: "/mnt/photos/rejects" },
+  ]);
+  // And the line changes shape with it: what was a rule is now a place.
+  expect(destinationLine().textContent).toBe("/mnt/photos/rejects");
+});
+
+test("a picker the curator dismissed leaves the destination alone", async () => {
+  const picker = mockFolderPicker(null);
+  await openSettingsFromLibrary();
+
+  await click(browseIn(sectionAt(1)));
+
+  expect(picker.opened).toBe(1);
+  expect(destinationInput().value).toBe("./rejected");
+  expect(settingWrites).toEqual([]);
+});
+
+test("arriving from a read-out puts the caret in the field without selecting what is in it", async () => {
+  mockCommand("get_settings", () =>
+    settings({ reject_destination: "~/bin/rejects" }),
+  );
+  await openSettingsOnTheDestination();
+
+  const field = destinationInput();
+  expect(document.activeElement).toBe(field);
+  // Not selected: this field writes on blur, and a selected value is one
+  // keystroke away from being an empty reject destination that the next blur
+  // stores (ADR 0020).
+  const { selectionStart, selectionEnd, value } = field;
+  expect(value.slice(selectionStart ?? 0, selectionEnd ?? 0)).toBe("");
+  expect(value).toBe("~/bin/rejects");
 });

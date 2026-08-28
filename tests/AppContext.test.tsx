@@ -106,6 +106,13 @@ beforeEach(() => {
   // Library is the second row of the boot table, and it lists its rows on the
   // first visit — which, for that row, is boot itself.
   mockCommand("list_wallpapers", () => [wallpaper(1)]);
+  // Settings resolves the Written path in each of its two path fields on mount,
+  // and the reject destination has a default, so the two rows of the boot table
+  // that land there reach this command without anything being typed.
+  mockCommand("expand_path", (args) => ({
+    resolved: String(args?.input),
+    exists: true,
+  }));
 });
 
 // ADR 0015's boot table, one test per row. Boot reads what the library holds
