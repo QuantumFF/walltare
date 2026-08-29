@@ -8,6 +8,9 @@ import {
   type StatusFilter,
   type Wallpaper,
 } from "@/lib/client";
+// The words for a Status and for a Score, from the file that holds the app's
+// phrasings, so the list below and the card #78 builds spell them alike.
+import { score, STATUS_LABEL } from "@/lib/copy";
 import { Images } from "lucide-react";
 import {
   useCallback,
@@ -38,12 +41,6 @@ const ORDERINGS: Array<{ value: ListOrdering; label: string }> = [
   { value: "filename_asc", label: "Filename, A to Z" },
   { value: "recently_added", label: "Recently added" },
 ];
-
-const STATUS_LABEL: Record<Status, string> = {
-  active: "Active",
-  kept: "Kept",
-  rejected: "Rejected",
-};
 
 /** Whether a row still belongs in a list filtered this way. */
 function matchesFilter(status: Status, filter: StatusFilter): boolean {
@@ -184,15 +181,17 @@ export function LibraryView() {
   }, [showing]);
 
   /**
-   * What the card will show for a Score, in one line, because the answer is not
-   * the number: a wallpaper in no Comparison has no Score yet and the value it
-   * starts on is the app's ignorance rather than a judgement (ADR 0013), and one
-   * whose Score has moved holds a number that is a Comparison out of date.
+   * The shared wording, with this page's one extra answer in front of it.
+   *
+   * `Score moved` stays here and does not belong in `copy.ts`, because it is not
+   * a way of writing a Score down at all — it is this page saying it no longer
+   * knows one. It comes from `score-changed`, which this view subscribes to and
+   * which names two wallpapers without naming their new numbers, so a card
+   * rendered anywhere else has nothing to say it with.
    */
   const scoreLabel = (wallpaper: Wallpaper): string => {
     if (scoresMoved.has(wallpaper.id)) return "Score moved";
-    if (wallpaper.comparisons_count === 0) return "Unrated";
-    return wallpaper.rating_mu.toFixed(1);
+    return score(wallpaper);
   };
 
   return (

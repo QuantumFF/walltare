@@ -19,7 +19,6 @@ import {
   client,
   isAppError,
   type CacheSize,
-  type Expanded,
   type PregenProgress,
   type ScanProgress,
   type Theme,
@@ -27,6 +26,10 @@ import {
 // The counts in the Thumbnails line are the counts the shell's report prints,
 // written once so that one fact keeps one phrasing (ADR 0021).
 import { bytes, counted, grouped } from "@/lib/copy";
+// Both fields below resolve their string through the same hook the rejecting
+// bars read the destination with, so "is this path relative" has one answer and
+// one `expand_path` call behind it (ADR 0018).
+import { useExpansion } from "@/lib/useExpansion";
 import { ArrowLeft, FolderOpen } from "lucide-react";
 import {
   useCallback,
@@ -106,72 +109,6 @@ function scanStartError(err: unknown): string {
     default:
       return SCAN_FAILED_ERROR;
   }
-}
-
-/**
- * What `expand_path` says about the string in a path field: where it points and
- * whether a folder is there, or the syntax error that means there is no
- * resolved path at all (ADR 0011, as amended by ADR 0020).
- */
-type Expansion =
-  | { kind: "expanded"; expanded: Expanded }
-  | { kind: "invalid"; message: string };
-
-/**
- * Resolve a Written path as the curator types it, once per string.
- *
- * The effect is keyed on the string and nothing else, which is what ADR 0020
- * means by memoised on the value rather than fired per paint: this page
- * re-renders on every `scan-progress` event and on every one of its own state
- * changes, and none of that is a new question to ask the backend. What is not
- * kept is a cache of every string the field has held — `exists` is a fact about
- * the filesystem underneath, and an unmounted drive coming back is exactly the
- * case CONTEXT.md names for the Library root, so the answer is re-asked when the
- * curator re-types the path rather than served from a map.
- *
- * `null` for an empty field, and for a resolution still in flight on the first
- * string. An answer that arrives after the value moved on is dropped, so the
- * line under the field can never describe a path that is no longer in it.
- *
- * The Reject destination field calls this too, and renders a different line from
- * the same three answers: it has no not-found state ever, and a relative result
- * is a rule rather than a place.
- */
-function useExpansion(value: string): Expansion | null {
-  const [expansion, setExpansion] = useState<Expansion | null>(null);
-
-  useEffect(() => {
-    if (!value) {
-      setExpansion(null);
-      return;
-    }
-
-    let current = true;
-    void client
-      .expandPath(value)
-      .then((expanded) => {
-        if (current) setExpansion({ kind: "expanded", expanded });
-      })
-      .catch((error: unknown) => {
-        if (!current) return;
-        if (isAppError(error) && error.kind === "invalid_path_syntax") {
-          setExpansion({ kind: "invalid", message: error.message });
-          return;
-        }
-        // Nothing else is expected: the command creates nothing and reads
-        // nothing but the environment, so a rejection of any other kind is a
-        // fault rather than a verdict on the path, and the line says nothing
-        // rather than blaming what the curator typed.
-        console.error("Failed to resolve the path:", error);
-        setExpansion(null);
-      });
-
-    return () => {
-      current = false;
-    };
-  }, [value]);
-
-  return expansion;
 }
 
 /** The two settings that hold a Written path, which is the two fields below. */
