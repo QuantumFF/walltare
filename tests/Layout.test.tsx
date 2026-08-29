@@ -614,10 +614,13 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   const dialog = screen.getByRole("dialog");
   expect(dialog.textContent).toContain("Keyboard shortcuts");
 
-  // Four the shell binds, and five it does not: the arrows are Rank's, Escape is
-  // the Settings page's own, F8 is the toast viewport's own hotkey, and Ctrl+Z
-  // presses the Undo #112 mounts. A shortcut nobody can find is a shortcut
-  // nobody uses.
+  // Four the shell binds, and the rest it does not: the arrows are Rank's,
+  // Escape is the Settings page's own, F8 is the toast viewport's own hotkey,
+  // Ctrl+Z presses the Undo #112 mounts, and the nine in the middle are read by
+  // the grid container while focus is inside it. A shortcut nobody can find is a
+  // shortcut nobody uses, and a listed key nothing reads is worse still — which
+  // is what this assertion is for: the list is copy, and copy that drifts from
+  // what the app binds is the failure the dialog exists to prevent.
   const keys = Array.from(dialog.querySelectorAll("kbd")).map(
     (el) => el.textContent,
   );
@@ -632,6 +635,15 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     ",",
     "←",
     "→",
+    "←",
+    "→",
+    "↑",
+    "↓",
+    "Home",
+    "End",
+    "K",
+    "Delete",
+    "R",
     "Esc",
     "Ctrl",
     "Z",
@@ -641,6 +653,13 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   for (const action of ["Rank", "Review", "Library", "Settings", "Undo"]) {
     expect(dialog.textContent).toContain(action);
   }
+
+  // The grid's keys say what they do to the selected wallpaper, and Enter is out
+  // until #80 builds the lightbox it opens.
+  expect(dialog.textContent).toContain("Keep the selected wallpaper");
+  expect(dialog.textContent).toContain("Reject the selected wallpaper");
+  expect(dialog.textContent).toContain("Restore the selected wallpaper");
+  expect(keys).not.toContain("Enter");
 
   // It is a dialog rather than a page, so it closes and leaves the curator
   // exactly where they were.
