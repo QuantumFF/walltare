@@ -13,9 +13,21 @@ import { Dialog } from "radix-ui";
  * can find is a shortcut nobody uses, and this dialog is the one place the whole
  * set is written down (ADR 0015).
  *
- * ADR 0022's lightbox keys — `←`, `→`, `K`, `Delete`, `R` — are deliberately
- * absent until #80 builds the surface that answers them. A list that promises
- * keys nothing reads is worse than a short list.
+ * The grid's nine are read by the grid container's own `keydown` and by nothing
+ * above it, so they fire only while focus is inside a grid. That is the dividing
+ * line ADR 0019 draws — global shortcuts live in the shell's handler, view-local
+ * keys live on the element that owns the focus — and it is why `←` and `→` are
+ * listed twice: in a grid they move the selection, and they reach Rank only from
+ * outside one. Review mounts that grid today and the library page mounts the
+ * same one (#79), so the heading names the grid rather than either page.
+ *
+ * `Enter` is deliberately absent. The grid answers it today by doing nothing to
+ * the wallpaper, because it is #80's seam for opening the lightbox, and a list
+ * that promises a key nothing reads is worse than a short list. The rest of
+ * ADR 0022's lightbox keys are already here as the grid's: that ADR gives the
+ * lightbox the grid's own `←`, `→`, `K`, `Delete` and `R` rather than a
+ * vocabulary of its own, so what #80 adds to this list is `Enter` and the
+ * lightbox's Escape.
  */
 const GROUPS = [
   {
@@ -32,6 +44,23 @@ const GROUPS = [
     bindings: [
       { keys: ["←"], action: "Pick the wallpaper on the left" },
       { keys: ["→"], action: "Pick the wallpaper on the right" },
+    ],
+  },
+  {
+    heading: "Wallpaper grid",
+    bindings: [
+      { keys: ["←"], action: "Select the wallpaper before this one" },
+      { keys: ["→"], action: "Select the wallpaper after this one" },
+      { keys: ["↑"], action: "Select the wallpaper a row up" },
+      { keys: ["↓"], action: "Select the wallpaper a row down" },
+      { keys: ["Home"], action: "Select the first wallpaper" },
+      { keys: ["End"], action: "Select the last wallpaper" },
+      {
+        keys: ["K"],
+        action: "Keep the selected wallpaper, or make a Kept one Active",
+      },
+      { keys: ["Delete"], action: "Reject the selected wallpaper" },
+      { keys: ["R"], action: "Restore the selected wallpaper" },
     ],
   },
   {

@@ -54,6 +54,12 @@ beforeEach(() => {
 
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
+  // Review's bar resolves the stored destination as soon as the view mounts,
+  // which is the one backend call this file's navigation adds (ADR 0018).
+  mockCommand("expand_path", (args) => ({
+    resolved: args?.input as string,
+    exists: true,
+  }));
   mockCommand("start_pregen", () => null);
 
   // Rank opens on wallpapers 1 and 2, which are also rows in the library, so a
@@ -251,8 +257,7 @@ test("a reject drops the row from a Library filtered to Active", async () => {
   expect(row(1)).not.toBeNull();
 
   await click(tab("Review"));
-  await click(screen.getByRole("button", { name: /move one\.jpg/i }));
-  await click(screen.getByRole("button", { name: /move file/i }));
+  await click(screen.getByRole("button", { name: /reject one\.jpg/i }));
 
   expect(listCalls).toBe(2); // the two the filter asked for, and no more
   expect(row(1)).toBeNull();

@@ -32,6 +32,13 @@ beforeEach(() => {
 
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
+  // Review's bar resolves the stored destination on mount, which is also what
+  // decides whether a reject toast has a path to name (ADR 0018). `./rejected`
+  // resolves to itself, so every reject below is into a relative destination.
+  mockCommand("expand_path", (args) => ({
+    resolved: args?.input as string,
+    exists: true,
+  }));
   mockCommand("start_pregen", () => null);
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockCommand("list_wallpapers", () => []);
@@ -102,10 +109,9 @@ async function click(name: RegExp) {
   await flush();
 }
 
-/** Reject wall-7 through the confirm dialog #78 has yet to remove. */
+/** Reject wall-7. One press: #123 removed the confirm dialog that stood here. */
 async function rejectWall7() {
-  await click(/move wall-7\.jpg/i);
-  await click(/move file/i);
+  await click(/reject wall-7\.jpg/i);
 }
 
 test("a keep raises its toast, with the Undo named twice over", async () => {
@@ -136,18 +142,11 @@ test("a reject names the final path when the destination resolved relative", asy
 });
 
 test("a reject with an absolute destination that renamed nothing says no path", async () => {
+  // Arranged in the store rather than typed into Review, which is the only
+  // place a destination comes from since ADR 0018 moved the field to Settings.
+  mockCommand("get_settings", () => settings({ reject_destination: "/rejects" }));
   mockCommand("move_wallpaper", () => "/rejects/wall-7.jpg");
-  render(<App />);
-  await flush();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("tab", { name: "Review" }));
-  });
-  await flush();
-
-  const field = screen.getByLabelText("Move to:") as HTMLInputElement;
-  await act(async () => {
-    fireEvent.change(field, { target: { value: "/rejects" } });
-  });
+  await openReview();
   await rejectWall7();
 
   // The bar already names the place and the file kept its name, so repeating
@@ -158,18 +157,9 @@ test("a reject with an absolute destination that renamed nothing says no path", 
 test("a reject that renamed the file says so even from an absolute destination", async () => {
   // `unique_destination` suffixes ` (n)` rather than overwriting, and that
   // suffix is the one thing the destination read-out cannot have told anyone.
+  mockCommand("get_settings", () => settings({ reject_destination: "/rejects" }));
   mockCommand("move_wallpaper", () => "/rejects/wall-7 (2).jpg");
-  render(<App />);
-  await flush();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("tab", { name: "Review" }));
-  });
-  await flush();
-
-  const field = screen.getByLabelText("Move to:") as HTMLInputElement;
-  await act(async () => {
-    fireEvent.change(field, { target: { value: "/rejects" } });
-  });
+  await openReview();
   await rejectWall7();
 
   expect(toast()).toEqual({
@@ -394,13 +384,16 @@ test("the filename carries its full string for the title that truncates it", asy
   expect(name?.className).toContain("truncate");
 });
 
-test("Review still has the confirm dialog and the destination field for #78 to remove", async () => {
+test("a reject asks nothing before it moves the file", async () => {
   await openReview();
+  await click(/reject wall-7\.jpg/i);
 
-  // Both are out of this ticket's scope and in #78's, which rebuilds this view
-  // on the shared card. A test rather than a comment, because removing them
-  // early is the easy mistake and it would collide with that issue.
-  expect(screen.getByLabelText("Move to:")).toBeTruthy();
-  await click(/move wall-7\.jpg/i);
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  // The confirm dialog that used to stand here is gone: #123 rebuilt this view
+  // on the shared card, whose Reject has nowhere to hang one, and the Undo above
+  // is what replaced it (ADR 0009, ADR 0017). The destination field that stood
+  // beside it went with #126, which put ADR 0018's read-out on the bar in its
+  // place — `ReviewView.test.tsx` holds what that line says.
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByLabelText("Move to:")).toBeNull();
+  expect(moves).toEqual([{ id: 7, destination: "./rejected" }]);
 });

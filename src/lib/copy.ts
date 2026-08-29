@@ -1,5 +1,5 @@
 /**
- * How the app writes a number into a sentence.
+ * How the app writes a fact down, when more than one surface writes it.
  *
  * Two surfaces print the same numbers about the same work: the shell's report of
  * a scan or a pass, and the Settings page's Thumbnails line. ADR 0021 put
@@ -8,9 +8,16 @@
  * phrasing lives here rather than once per caller, where the two would eventually
  * disagree about a comma.
  *
+ * The same rule brought the Status and Score wording down here from the library
+ * page. A Status is a pill, an accessible name and a row on the library's list,
+ * and a Score is a badge, a caption and a row; each of those is a different
+ * component writing down the same fact, and there is nothing to gain from two of
+ * them spelling it differently.
+ *
  * Nothing here is a component and nothing here reaches the backend, which is why
- * it sits beside `client.ts` rather than inside either of the files that call it.
+ * it sits beside `client.ts` rather than inside any of the files that call it.
  */
+import type { Status, Wallpaper } from "@/lib/client";
 
 /**
  * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
@@ -66,4 +73,56 @@ export function bytes(count: number): string {
   const rounded =
     unit === 0 || value >= 10 ? Math.round(value) : Number(value.toFixed(1));
   return `${rounded} ${UNITS[unit]}`;
+}
+
+/**
+ * The three Statuses, written the way CONTEXT.md names them.
+ *
+ * Capitalised, because these are the domain's proper nouns rather than adjectives
+ * — the same three words the glossary uses — and the filter control offers them
+ * in the same spelling (ADR 0016). The map is keyed on `Status` itself, so a
+ * fourth Status could not be added to the DTO without a line arriving here for
+ * it.
+ */
+export const STATUS_LABEL: Record<Status, string> = {
+  active: "Active",
+  kept: "Kept",
+  rejected: "Rejected",
+};
+
+/**
+ * A Score as every surface showing one writes it: μ to one decimal, or `Unrated`.
+ *
+ * The answer is not simply the number, because a wallpaper in no Comparison has
+ * no Score yet. Every one of them holds exactly 25.0, which is the starting value
+ * and not a measurement, and printing it would sort the app's own ignorance into
+ * the middle of a list as though it had been judged (ADR 0013).
+ *
+ * One decimal and nothing else: no unit, no second number and no word `Score`,
+ * which ADR 0013 keeps to the places with room for it — the hover overlay, the
+ * lightbox caption and the library's sort control.
+ */
+export function score(wallpaper: Wallpaper): string {
+  if (wallpaper.comparisons_count === 0) return "Unrated";
+  return wallpaper.rating_mu.toFixed(1);
+}
+
+/**
+ * CONTEXT.md's Evaluated, per wallpaper: σ below 4.0, roughly half the starting
+ * uncertainty and about seven comparisons away from it.
+ *
+ * The number is the one `voting.rs` counts `evaluated_count` with
+ * (`WHERE status IN ('active', 'kept') AND rating_sigma < 4.0`), and this is the
+ * frontend's only copy of it. A Score badge dims until a wallpaper reaches it,
+ * and that is the whole of what the app says about confidence: no second number
+ * and no bands, so there is one definition to disagree with rather than two
+ * (ADR 0013, ADR 0019).
+ *
+ * A wallpaper in no Comparison is never Evaluated — it still holds the starting
+ * σ — so the dimmed badge and `Unrated` agree without either checking the other.
+ */
+export const EVALUATED_SIGMA = 4.0;
+
+export function isEvaluated(wallpaper: Wallpaper): boolean {
+  return wallpaper.rating_sigma < EVALUATED_SIGMA;
 }

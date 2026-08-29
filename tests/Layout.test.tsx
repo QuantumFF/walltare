@@ -244,6 +244,54 @@ test("arrows pressed while Library is showing cast no vote", async () => {
   expect(votes).toEqual([[1, 2]]);
 });
 
+test("arrows pressed while Review is showing move the selection and cast no vote", async () => {
+  // The same gate, on the view that now answers arrows itself. Review's grid
+  // walks its selection with them, so a curator arrowing across a page of cards
+  // is holding down the key Rank votes with — and Rank is still mounted behind
+  // it under `display: none` (ADR 0015, ADR 0019).
+  jest.useFakeTimers();
+  mockCommand("get_review", () => {
+    getReviewCalls++;
+    return [
+      wallpaper(90, { filename: "lowest.jpg" }),
+      wallpaper(91, { filename: "next.jpg" }),
+    ];
+  });
+  await openApp();
+  await panesArrive();
+
+  // First prove the arrow does work where it belongs, so the assertion below is
+  // about the gate rather than about a broken fixture.
+  await pressKey(window, "ArrowLeft");
+  await advancePickFeedback();
+  expect(votes).toEqual([[1, 2]]);
+  await panesArrive();
+
+  await click(tab("Review"));
+
+  // With focus outside the grid nothing answers the key at all, so the view
+  // check is the only thing standing between an arrow and a Comparison. That is
+  // the half of this the grid's own `preventDefault` cannot cover.
+  await pressKey(window, "ArrowLeft");
+  await advancePickFeedback();
+  expect(votes).toEqual([[1, 2]]);
+
+  const first = screen.getAllByRole("gridcell")[0];
+  await act(async () => {
+    first.focus();
+  });
+
+  await pressKey(first, "ArrowRight");
+  await advancePickFeedback();
+
+  // The key moved the selection and nothing else. A vote here would be a
+  // permanent Comparison between two wallpapers the curator cannot see.
+  expect(votes).toEqual([[1, 2]]);
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "next.jpg, Active",
+  );
+});
+
 test("an arrow inside the tab bar walks the tabs and casts no vote", async () => {
   // The other half of the same rule. Here Rank *is* the current view, so the
   // view check cannot help: the tablist answers the key and marks it, and
@@ -566,10 +614,13 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   const dialog = screen.getByRole("dialog");
   expect(dialog.textContent).toContain("Keyboard shortcuts");
 
-  // Four the shell binds, and five it does not: the arrows are Rank's, Escape is
-  // the Settings page's own, F8 is the toast viewport's own hotkey, and Ctrl+Z
-  // presses the Undo #112 mounts. A shortcut nobody can find is a shortcut
-  // nobody uses.
+  // Four the shell binds, and the rest it does not: the arrows are Rank's,
+  // Escape is the Settings page's own, F8 is the toast viewport's own hotkey,
+  // Ctrl+Z presses the Undo #112 mounts, and the nine in the middle are read by
+  // the grid container while focus is inside it. A shortcut nobody can find is a
+  // shortcut nobody uses, and a listed key nothing reads is worse still — which
+  // is what this assertion is for: the list is copy, and copy that drifts from
+  // what the app binds is the failure the dialog exists to prevent.
   const keys = Array.from(dialog.querySelectorAll("kbd")).map(
     (el) => el.textContent,
   );
@@ -584,6 +635,15 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     ",",
     "←",
     "→",
+    "←",
+    "→",
+    "↑",
+    "↓",
+    "Home",
+    "End",
+    "K",
+    "Delete",
+    "R",
     "Esc",
     "Ctrl",
     "Z",
@@ -593,6 +653,13 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   for (const action of ["Rank", "Review", "Library", "Settings", "Undo"]) {
     expect(dialog.textContent).toContain(action);
   }
+
+  // The grid's keys say what they do to the selected wallpaper, and Enter is out
+  // until #80 builds the lightbox it opens.
+  expect(dialog.textContent).toContain("Keep the selected wallpaper");
+  expect(dialog.textContent).toContain("Reject the selected wallpaper");
+  expect(dialog.textContent).toContain("Restore the selected wallpaper");
+  expect(keys).not.toContain("Enter");
 
   // It is a dialog rather than a page, so it closes and leaves the curator
   // exactly where they were.
