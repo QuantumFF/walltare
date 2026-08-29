@@ -1,4 +1,5 @@
-import type { Wallpaper } from "@/lib/client";
+import type { CardAction } from "@/components/WallpaperCard";
+import { client, type Wallpaper } from "@/lib/client";
 import { WallpaperGrid } from "@/components/WallpaperGrid";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -25,16 +26,73 @@ afterEach(() => {
   viewportWidth(1024);
 });
 
+/** The commands the keys below reached, in order, and what was asked for. */
+let commands: string[];
+let asked: CardAction[];
+
 beforeEach(() => {
+  commands = [];
+  asked = [];
   // The provider's boot gate; the grid itself asks the backend nothing.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
   mockCommand("start_pregen", () => null);
+  // The four a page can make on the curator's behalf. Review reaches two of
+  // them and the library page reaches all four, so this host stands in for the
+  // page rather than for either one.
+  mockCommand("keep_wallpaper", () => commands.push("keep_wallpaper"));
+  mockCommand("unkeep_wallpaper", () => commands.push("unkeep_wallpaper"));
+  mockCommand("move_wallpaper", () => {
+    commands.push("move_wallpaper");
+    return "/library/rejected/wall-1.jpg";
+  });
+  mockCommand("restore_wallpaper", () => {
+    commands.push("restore_wallpaper");
+    return "/library/wall-1.jpg";
+  });
 });
 
 /** Wallpapers 1..count, `wall-1.jpg` through `wall-<count>.jpg`. */
 function cards(count: number): Wallpaper[] {
   return Array.from({ length: count }, (_, i) => wallpaper(i + 1));
+}
+
+/**
+ * One card of each Status, plus the cohort ADR 0009's migration left with no
+ * Origin.
+ *
+ * Review lists Active wallpapers only, so three of the four transitions have no
+ * route through that view; the keys are tested here against a host that mounts
+ * a row of each, the way the card's own tests are.
+ */
+function mixed(): Wallpaper[] {
+  return [
+    wallpaper(1),
+    wallpaper(2, { status: "kept" }),
+    wallpaper(3, {
+      status: "rejected",
+      path: "/library/rejected/wall-3.jpg",
+      origin_path: "/library/wall-3.jpg",
+    }),
+    wallpaper(4, {
+      status: "rejected",
+      path: "/library/rejected/wall-4.jpg",
+      origin_path: null,
+    }),
+  ];
+}
+
+/**
+ * What a page does with what a card asks for: one command per action, and
+ * nothing that decides for itself whether the action was offered. That decision
+ * is the card's table, which is the point of asserting on the commands.
+ */
+function handleAction(action: CardAction, subject: Wallpaper): void {
+  asked.push(action);
+  if (action === "keep") void client.keepWallpaper(subject.id);
+  if (action === "make-active") void client.unkeepWallpaper(subject.id);
+  if (action === "reject") void client.moveWallpaper(subject.id, "./rejected");
+  if (action === "restore") void client.restoreWallpaper(subject.id);
 }
 
 let setList: (list: Wallpaper[]) => void = () => {};
@@ -53,7 +111,7 @@ function Harness({ initial }: { initial: Wallpaper[] }) {
       <WallpaperGrid
         wallpapers={list}
         label="Wallpapers"
-        onAction={() => {}}
+        onAction={handleAction}
       />
       <button type="button">after</button>
     </>
@@ -73,8 +131,19 @@ async function relist(list: Wallpaper[]) {
 }
 
 /** One card, by the accessible name it carries as a cell. */
-function cell(id: number): HTMLElement {
-  return screen.getByRole("gridcell", { name: `wall-${id}.jpg, Active` });
+function cell(id: number, status = "Active"): HTMLElement {
+  return screen.getByRole("gridcell", { name: `wall-${id}.jpg, ${status}` });
+}
+
+/** The title and description of the one toast that is up, or `null` for none. */
+function toast(): { title: string; description: string | null } | null {
+  const root = document.querySelector("[data-slot='toast']");
+  if (!root) return null;
+  return {
+    title: root.querySelector("[data-slot='toast-title']")?.textContent ?? "",
+    description:
+      root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
+  };
 }
 
 function grid(): HTMLElement {
@@ -324,4 +393,126 @@ test("the selection is scrolled into view when it moves", async () => {
 
   expect(revealed).toEqual([8]);
   expect(document.activeElement).toBe(cell(9));
+});
+
+// The direct keys. Each one presses on a card of every Status and asks which
+// command the page was made to call, because that is what a curator can observe:
+// a key that acts moves a file or writes a column, and a key that does not acts
+// on nothing at all (ADR 0019).
+
+test("K keeps an Active card, makes a Kept one Active, and does nothing on a Rejected one", async () => {
+  await mount(mixed());
+  await enterGrid();
+
+  await press("k");
+  expect(commands).toEqual(["keep_wallpaper"]);
+
+  // The keep slot's other end. One finger means "the keep decision" and the
+  // Status picks which end applies, rather than `K` meaning something unrelated
+  // on the card beside it.
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(cell(2, "Kept"));
+  await press("k");
+  expect(commands).toEqual(["keep_wallpaper", "unkeep_wallpaper"]);
+
+  // Rejected offers only Restore, so `K` is a wrong key rather than a wrong
+  // action — and never a transition CONTEXT.md would call an error.
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(cell(3, "Rejected"));
+  await press("k");
+  expect(commands).toEqual(["keep_wallpaper", "unkeep_wallpaper"]);
+  expect(asked).toEqual(["keep", "make-active"]);
+});
+
+test("Delete rejects an Active card and a Kept one, and does nothing on a Rejected one", async () => {
+  await mount(mixed());
+  await enterGrid();
+
+  // No confirm and no modifier: the dialog is gone and the toast's Undo is the
+  // safety net (ADR 0009, ADR 0017).
+  await press("Delete");
+  expect(commands).toEqual(["move_wallpaper"]);
+
+  await press("ArrowRight");
+  await press("Delete");
+  expect(commands).toEqual(["move_wallpaper", "move_wallpaper"]);
+
+  // A soft reject of an already Rejected wallpaper is the transition the
+  // backend answers with `invalid_transition`. The key never asks for it.
+  await press("ArrowRight");
+  await press("Delete");
+  expect(commands).toEqual(["move_wallpaper", "move_wallpaper"]);
+  expect(asked).toEqual(["reject", "reject"]);
+});
+
+test("R restores a Rejected card with an Origin, and does nothing on an Active or a Kept one", async () => {
+  await mount(mixed());
+  await enterGrid();
+
+  await press("r");
+  await press("ArrowRight");
+  await press("r");
+  expect(commands).toEqual([]);
+  expect(asked).toEqual([]);
+
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(cell(3, "Rejected"));
+  await press("r");
+  expect(commands).toEqual(["restore_wallpaper"]);
+  expect(asked).toEqual(["restore"]);
+});
+
+test("R on a row with no Origin explains itself and calls nothing", async () => {
+  await mount(mixed());
+  await enterGrid();
+  await press("End");
+  expect(document.activeElement).toBe(cell(4, "Rejected"));
+
+  await press("r");
+
+  // The same refusal the `aria-disabled` button raises, from the same place:
+  // `origin_path` is on the DTO, so the frontend knows the answer before the
+  // press and the key costs no round trip (ADR 0009, ADR 0019).
+  expect(toast()).toEqual({
+    title: "Can't restore wall-4.jpg",
+    description:
+      "Rejected before Restore existed, so nothing recorded where it came from.",
+  });
+  expect(commands).toEqual([]);
+  expect(asked).toEqual([]);
+});
+
+test("Enter calls no command and changes no Status", async () => {
+  await mount(mixed());
+  await enterGrid();
+
+  // #80 opens the lightbox on the selection. Until then the binding is claimed
+  // and inert, which is the state worth pinning: the card it is pressed on is
+  // the same card afterwards, by the Status in its own accessible name.
+  await press("Enter");
+  await press("ArrowRight");
+  await press("Enter");
+
+  expect(commands).toEqual([]);
+  expect(asked).toEqual([]);
+  expect(cell(1, "Active")).toBeTruthy();
+  expect(cell(2, "Kept")).toBeTruthy();
+});
+
+test("a key that removes the selected card leaves the selection at that index", async () => {
+  await mount(cards(4));
+  await enterGrid();
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(cell(2));
+
+  await press("k");
+  expect(commands).toEqual(["keep_wallpaper"]);
+  // What a page does next, and the whole reason the keys are worth having: the
+  // row leaves, and the sweep continues from where that card was rather than
+  // from wherever a rebuilt tab order happens to start (ADR 0019).
+  await relist([wallpaper(1), wallpaper(3), wallpaper(4)]);
+  expect(document.activeElement).toBe(cell(3));
+
+  await press("Delete");
+  expect(commands).toEqual(["keep_wallpaper", "move_wallpaper"]);
 });

@@ -244,6 +244,54 @@ test("arrows pressed while Library is showing cast no vote", async () => {
   expect(votes).toEqual([[1, 2]]);
 });
 
+test("arrows pressed while Review is showing move the selection and cast no vote", async () => {
+  // The same gate, on the view that now answers arrows itself. Review's grid
+  // walks its selection with them, so a curator arrowing across a page of cards
+  // is holding down the key Rank votes with — and Rank is still mounted behind
+  // it under `display: none` (ADR 0015, ADR 0019).
+  jest.useFakeTimers();
+  mockCommand("get_review", () => {
+    getReviewCalls++;
+    return [
+      wallpaper(90, { filename: "lowest.jpg" }),
+      wallpaper(91, { filename: "next.jpg" }),
+    ];
+  });
+  await openApp();
+  await panesArrive();
+
+  // First prove the arrow does work where it belongs, so the assertion below is
+  // about the gate rather than about a broken fixture.
+  await pressKey(window, "ArrowLeft");
+  await advancePickFeedback();
+  expect(votes).toEqual([[1, 2]]);
+  await panesArrive();
+
+  await click(tab("Review"));
+
+  // With focus outside the grid nothing answers the key at all, so the view
+  // check is the only thing standing between an arrow and a Comparison. That is
+  // the half of this the grid's own `preventDefault` cannot cover.
+  await pressKey(window, "ArrowLeft");
+  await advancePickFeedback();
+  expect(votes).toEqual([[1, 2]]);
+
+  const first = screen.getAllByRole("gridcell")[0];
+  await act(async () => {
+    first.focus();
+  });
+
+  await pressKey(first, "ArrowRight");
+  await advancePickFeedback();
+
+  // The key moved the selection and nothing else. A vote here would be a
+  // permanent Comparison between two wallpapers the curator cannot see.
+  expect(votes).toEqual([[1, 2]]);
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "next.jpg, Active",
+  );
+});
+
 test("an arrow inside the tab bar walks the tabs and casts no vote", async () => {
   // The other half of the same rule. Here Rank *is* the current view, so the
   // view check cannot help: the tablist answers the key and marks it, and

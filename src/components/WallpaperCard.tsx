@@ -1,10 +1,17 @@
 import { NO_ORIGIN_REASON, useToaster } from "@/components/ToastSurface";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
+import { wallpaperImageUrl, type Status, type Wallpaper } from "@/lib/client";
 import { counted, isEvaluated, score, STATUS_LABEL } from "@/lib/copy";
 import { cn } from "@/lib/utils";
-import { Check, FolderInput, RotateCcw, Undo2 } from "lucide-react";
+import {
+  Check,
+  FolderInput,
+  RotateCcw,
+  Undo2,
+  type LucideIcon,
+} from "lucide-react";
+import { useCallback } from "react";
 
 /**
  * The four transitions a card can offer, named after the resulting Status where
@@ -13,6 +20,83 @@ import { Check, FolderInput, RotateCcw, Undo2 } from "lucide-react";
  * rather than coining a noun.
  */
 export type CardAction = "keep" | "reject" | "make-active" | "restore";
+
+/**
+ * What each Status offers: Active gets Keep and Reject, Kept gets Make Active
+ * and Reject, Rejected gets Restore (ADR 0019).
+ *
+ * One table, read twice. The overlay below renders its buttons from it, and
+ * #125's direct keys resolve against it in `WallpaperGrid`, so a key cannot
+ * offer a transition the buttons do not — and neither surface can drift into
+ * asking for one the domain refuses. CONTEXT.md is what makes that a
+ * correctness rule rather than a tidiness one: Active becomes Kept or Rejected,
+ * Kept becomes Rejected or Active again, Rejected becomes Active again by a
+ * Restore, and anything else is an error the backend answers with
+ * `invalid_transition` rather than a no-op. Every entry here is one of those
+ * legal moves; a key that finds none simply does nothing.
+ */
+export const STATUS_ACTIONS: Record<Status, readonly CardAction[]> = {
+  active: ["keep", "reject"],
+  kept: ["make-active", "reject"],
+  rejected: ["restore"],
+};
+
+/**
+ * How each action reads in the overlay, and the accessible name it takes:
+ * `<label> <filename>`, so a screen reader hears which card the control belongs
+ * to on a grid full of identical rows.
+ *
+ * **Make Active** is the keep inverse's label, naming the resulting Status
+ * rather than coining a noun — not "Un-keep", and not the prototype's "Return to
+ * voting", which is wrong against the glossary: a Kept wallpaper already votes,
+ * and what un-keeping restores is appearance in Review (ADR 0017, ADR 0019).
+ */
+const CONTROLS: Record<
+  CardAction,
+  { label: string; Icon: LucideIcon; destructive?: boolean }
+> = {
+  keep: { label: "Keep", Icon: Check },
+  "make-active": { label: "Make Active", Icon: Undo2 },
+  reject: { label: "Reject", Icon: FolderInput, destructive: true },
+  restore: { label: "Restore", Icon: RotateCcw },
+};
+
+/**
+ * Ask the host for a transition, from the overlay's buttons and from the grid's
+ * direct keys alike.
+ *
+ * The origin-less refusal lives here rather than on the button, because #125
+ * gives the same Restore a second trigger and a refusal written twice is a
+ * refusal that will eventually disagree with itself: `R` on a row rejected
+ * before ADR 0009 recorded an Origin has to raise the same pinned toast the
+ * `aria-disabled` button raises, and make the same absence of a call. Putting it
+ * on the one path both go through is what makes "no IPC call" a property of the
+ * action rather than of the control that happened to be pressed.
+ *
+ * No round trip, because `origin_path` is on the DTO for exactly this, and the
+ * sentence is the frontend's own — the one place ADR 0017's "the title is ours
+ * and the detail is the backend's" does not apply, because there is no backend
+ * in it (ADR 0009, ADR 0019).
+ */
+export function useCardAction(
+  onAction: (action: CardAction, wallpaper: Wallpaper) => void,
+): (action: CardAction, wallpaper: Wallpaper) => void {
+  const { show } = useToaster();
+  return useCallback(
+    (action: CardAction, wallpaper: Wallpaper) => {
+      if (action === "restore" && wallpaper.origin_path === null) {
+        show({
+          kind: "refused",
+          filename: wallpaper.filename,
+          reason: NO_ORIGIN_REASON,
+        });
+        return;
+      }
+      onAction(action, wallpaper);
+    },
+    [onAction, show],
+  );
+}
 
 /**
  * Where this card sits in the grid that mounted it, and whether it is the one
@@ -93,7 +177,8 @@ export function WallpaperCard({
   animated = false,
   cell,
 }: WallpaperCardProps) {
-  const { show } = useToaster();
+  // One entry for every press on this card, and the same one #125's keys use.
+  const act = useCardAction(onAction);
   const rejected = wallpaper.status === "rejected";
   const evaluated = isEvaluated(wallpaper);
   // Known before the press, because ADR 0009 put `origin_path` on the DTO for
@@ -237,78 +322,51 @@ export function WallpaperCard({
             </p>
           </div>
 
+          {/*
+            One button per action the Status offers, off the table above rather
+            than off a branch of its own. The branch is what the card used to
+            carry, and #125 is what makes the difference matter: the direct keys
+            read that table, so a card whose buttons came from somewhere else
+            could offer a curator one set with the mouse and another with the
+            keyboard.
+          */}
           <div className="flex gap-1.5">
-            {rejected ? (
-              <Button
-                size="xs"
-                // Not `disabled`. A disabled button is not focusable, so under
-                // ADR 0019's keyboard model the reason would be unreachable by
-                // keyboard and silent to a screen reader, which is most of the
-                // people the explanation exists for. `aria-disabled` keeps the
-                // control in the tab order and in the roving selection, styled
-                // as unavailable, and lets it explain itself when pressed.
-                aria-disabled={restorable ? undefined : true}
-                aria-label={`Restore ${wallpaper.filename}`}
-                tabIndex={buttonTabIndex}
-                onClick={() => {
-                  if (!restorable) {
-                    // No IPC call. `origin_path` is `null` on the row, so the
-                    // answer is known here, and the sentence is the frontend's
-                    // own — the one place ADR 0017's "the title is ours and the
-                    // detail is the backend's" does not apply, because there is
-                    // no backend in it.
-                    show({
-                      kind: "refused",
-                      filename: wallpaper.filename,
-                      reason: NO_ORIGIN_REASON,
-                    });
-                    return;
-                  }
-                  onAction("restore", wallpaper);
-                }}
-                className={cn(
-                  "flex-1 bg-white/15 text-white hover:bg-white/25",
-                  !restorable &&
-                    "cursor-not-allowed opacity-40 hover:bg-white/15",
-                )}
-              >
-                <RotateCcw />
-                Restore
-              </Button>
-            ) : (
-              <>
+            {STATUS_ACTIONS[wallpaper.status].map((action) => {
+              const { label, Icon, destructive } = CONTROLS[action];
+              // Only Restore has a row it cannot act on, and only because
+              // ADR 0009's migration left one behind.
+              const unavailable = action === "restore" && !restorable;
+              return (
                 <Button
+                  key={action}
                   size="xs"
-                  aria-label={
-                    wallpaper.status === "kept"
-                      ? `Make Active ${wallpaper.filename}`
-                      : `Keep ${wallpaper.filename}`
-                  }
+                  variant={destructive ? "destructive" : undefined}
+                  // Not `disabled`. A disabled button is not focusable, so under
+                  // ADR 0019's keyboard model the reason would be unreachable by
+                  // keyboard and silent to a screen reader, which is most of the
+                  // people the explanation exists for. `aria-disabled` keeps the
+                  // control in the tab order and in the roving selection, styled
+                  // as unavailable, and lets it explain itself when pressed.
+                  aria-disabled={unavailable ? true : undefined}
+                  aria-label={`${label} ${wallpaper.filename}`}
                   tabIndex={buttonTabIndex}
-                  onClick={() =>
-                    onAction(
-                      wallpaper.status === "kept" ? "make-active" : "keep",
-                      wallpaper,
-                    )
-                  }
-                  className="flex-1 bg-white/15 text-white hover:bg-white/25"
+                  // The refusal an origin-less row gets is `useCardAction`'s and
+                  // not this button's, so pressing Restore and pressing `R` are
+                  // the same event with the same outcome.
+                  onClick={() => act(action, wallpaper)}
+                  className={cn(
+                    destructive
+                      ? "flex-1 bg-destructive/90 text-white hover:bg-destructive"
+                      : "flex-1 bg-white/15 text-white hover:bg-white/25",
+                    unavailable &&
+                      "cursor-not-allowed opacity-40 hover:bg-white/15",
+                  )}
                 >
-                  {wallpaper.status === "kept" ? <Undo2 /> : <Check />}
-                  {wallpaper.status === "kept" ? "Make Active" : "Keep"}
+                  <Icon />
+                  {label}
                 </Button>
-                <Button
-                  size="xs"
-                  variant="destructive"
-                  aria-label={`Reject ${wallpaper.filename}`}
-                  tabIndex={buttonTabIndex}
-                  onClick={() => onAction("reject", wallpaper)}
-                  className="flex-1 bg-destructive/90 text-white hover:bg-destructive"
-                >
-                  <FolderInput />
-                  Reject
-                </Button>
-              </>
-            )}
+              );
+            })}
           </div>
         </div>
       </div>

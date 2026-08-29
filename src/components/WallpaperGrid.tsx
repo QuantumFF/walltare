@@ -1,5 +1,10 @@
-import { WallpaperCard, type CardAction } from "@/components/WallpaperCard";
-import type { Wallpaper } from "@/lib/client";
+import {
+  STATUS_ACTIONS,
+  useCardAction,
+  WallpaperCard,
+  type CardAction,
+} from "@/components/WallpaperCard";
+import type { Status, Wallpaper } from "@/lib/client";
 import { cn } from "@/lib/utils";
 import {
   useLayoutEffect,
@@ -80,6 +85,46 @@ export function useGridColumns(): number {
   return useSyncExternalStore(subscribeToWidth, columnsNow);
 }
 
+/**
+ * The direct keys, as the actions each one names.
+ *
+ * `K` names two, because the keep slot has two ends: keeping an Active
+ * wallpaper and making a Kept one Active again. One finger, one meaning — "the
+ * keep decision" — and the card's Status picks which end of it applies, so `K`
+ * is never a keep on one card and something unrelated on the card beside it.
+ *
+ * `Delete` rather than a letter for reject is what keeps `R` unambiguous. A
+ * Rejected card offers only Restore and a non-Rejected card only Reject, so one
+ * `R` for both is technically unambiguous and would still be the same finger
+ * producing opposite outcomes on cards sitting next to each other in a mixed
+ * grid. `Delete` also carries the right shape for the one action here that moves
+ * a file (ADR 0019).
+ */
+const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
+  k: ["keep", "make-active"],
+  delete: ["reject"],
+  r: ["restore"],
+};
+
+/**
+ * What a key means on a card of this Status, or `null` for nothing at all.
+ *
+ * The answer is an intersection rather than a second table: the key names
+ * candidates, and `STATUS_ACTIONS` — the same table the card's buttons render
+ * from — says which of them this row actually offers. So a key the Status has no
+ * action for does nothing, which is what makes a wrong key a wrong key rather
+ * than a wrong action, and what keeps the keyboard from ever asking for a
+ * transition CONTEXT.md calls an error.
+ *
+ * The key is lowercased so that a curator with Caps Lock on still keeps and
+ * still restores.
+ */
+function actionFor(key: string, status: Status): CardAction | null {
+  const offered = STATUS_ACTIONS[status];
+  const candidates = KEY_ACTIONS[key.toLowerCase()] ?? [];
+  return candidates.find((action) => offered.includes(action)) ?? null;
+}
+
 export interface WallpaperGridProps {
   wallpapers: Wallpaper[];
   /**
@@ -145,6 +190,10 @@ export function WallpaperGrid({
   className,
 }: WallpaperGridProps) {
   const columns = useGridColumns();
+  // The same entry a card's own buttons go through, so a key and a click take
+  // one path — including the refusal an origin-less Restore raises, which is
+  // written once and not once per trigger.
+  const act = useCardAction(onAction);
   const gridRef = useRef<HTMLDivElement>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Where the selection was, for the fall back below. Also the initial stop:
@@ -228,7 +277,36 @@ export function WallpaperGrid({
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
     const last = wallpapers.length - 1;
-    if (index === -1) return;
+    if (index === -1 || !selected) return;
+
+    // The direct keys, before the movement keys and on this container rather
+    // than on `window`: they fire only while focus is inside the grid, which is
+    // the dividing line ADR 0019 draws and the reason nothing here reaches Rank.
+    // Global shortcuts live in the shell's handler; view-local keys live on the
+    // element that owns the focus.
+    //
+    // A single keypress rejects, with no confirm and no modifier. ADR 0009
+    // deleted the confirm dialog and put act-then-undo in its place, so the
+    // safety is ADR 0017's toast and the `Ctrl+Z` that presses its Undo — and
+    // focus stays here while that toast is up, so the next card is already
+    // selected. It does mean a stray `Delete` on a focused grid moves a file,
+    // which ADR 0019 wrote down as the cost rather than as an oversight.
+    const action = actionFor(event.key, selected.status);
+    if (action) {
+      event.preventDefault();
+      act(action, selected);
+      return;
+    }
+
+    // #80's seam. `Enter` opens the lightbox on the selection ADR 0022 has the
+    // two surfaces share; until that exists it does nothing to the wallpaper —
+    // no command, no Status change — and it is answered here rather than left to
+    // the movement keys' `default` so the binding has one home to arrive at.
+    //
+    // Nothing is prevented, deliberately. A cell's overlay buttons are still
+    // buttons: `Enter` on a focused one activates it, and that activation is a
+    // default action this handler would cancel on the way up.
+    if (event.key === "Enter") return;
 
     let next: number;
     switch (event.key) {

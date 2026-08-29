@@ -36,6 +36,28 @@ function toast(): { title: string; description: string | null } | null {
 const refreshButton = () =>
   screen.getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
 
+/**
+ * Put focus on the grid's selection, which with nothing arrowed to yet is the
+ * first card — the one cell holding the tab stop, and so where Tab lands.
+ */
+async function enterGrid() {
+  await act(async () => {
+    screen.getAllByRole("gridcell")[0].focus();
+  });
+}
+
+async function press(key: string) {
+  await act(async () => {
+    fireEvent.keyDown(document.activeElement ?? document.body, { key });
+  });
+  await flush();
+}
+
+/** The card holding the selection, by the accessible name it carries. */
+const selectedCard = () =>
+  (document.activeElement as HTMLElement | null)?.getAttribute("aria-label") ??
+  null;
+
 afterEach(cleanup);
 
 beforeEach(() => {
@@ -460,4 +482,77 @@ test("a load failure surfaces readably instead of console-only", async () => {
     description: "locked database",
   });
   expect(alerts()).toEqual([]);
+});
+
+// The direct keys, through the view that mounts the grid. Review lists Active
+// wallpapers only, so `K` and `Delete` are the two that have a route through it
+// — the other two are the library page's, and `WallpaperGrid.test.tsx` presses
+// them against a host mounting a card of each Status.
+
+test("K keeps the selected card, the same as pressing Keep", async () => {
+  const keptIds: unknown[] = [];
+  await openReview([
+    wallpaper(4, { filename: "keeper.jpg" }),
+    wallpaper(5, { filename: "next.jpg" }),
+  ]);
+  mockCommand("keep_wallpaper", (args) => {
+    keptIds.push(args?.id);
+    return null;
+  });
+
+  await enterGrid();
+  await press("k");
+
+  // One handler behind both, so a key and a click cannot drift into meaning
+  // different things: the same command, the same removal, the same toast.
+  expect(keptIds).toEqual([4]);
+  expect(screen.queryByAltText("keeper.jpg")).toBeNull();
+  expect(toast()?.title).toBe("Kept keeper.jpg");
+  // And the sweep carries on from where that card was, which is what makes two
+  // keystrokes per wallpaper a pass rather than a series of hunts (ADR 0019).
+  expect(selectedCard()).toBe("next.jpg, Active");
+});
+
+test("Delete rejects the selected card, with no confirm in the way", async () => {
+  const moveArgs: unknown[] = [];
+  await openReview([
+    wallpaper(6, { filename: "reject-me.jpg" }),
+    wallpaper(7, { filename: "next.jpg" }),
+  ]);
+  mockCommand("move_wallpaper", (args) => {
+    moveArgs.push(args);
+    return "/library/rejected/reject-me.jpg";
+  });
+
+  await enterGrid();
+  await press("Delete");
+
+  // A single keypress moves a file. ADR 0009 deleted the confirm dialog and put
+  // act-then-undo in its place, so the safety is the toast and the `Ctrl+Z` that
+  // presses its Undo — and focus stays on the grid while that toast is up.
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(moveArgs).toEqual([{ id: 6, destinationFolder: "./rejected" }]);
+  expect(screen.queryByAltText("reject-me.jpg")).toBeNull();
+  expect(selectedCard()).toBe("next.jpg, Active");
+});
+
+test("a key that fails puts the card back, and the selection with it", async () => {
+  expectConsoleError(/Failed to keep wallpaper/);
+  await openReview([
+    wallpaper(4, { filename: "keeper.jpg" }),
+    wallpaper(5, { filename: "next.jpg" }),
+  ]);
+  mockCommand("keep_wallpaper", () =>
+    Promise.reject({ kind: "db", message: "disk on fire" }),
+  );
+
+  await enterGrid();
+  await press("k");
+
+  // The optimistic removal is undone, and the selection follows the wallpaper
+  // back rather than staying on whatever had moved up into the slot: it is
+  // tracked by id, so the card that returns is the card that is selected
+  // (ADR 0019, ADR 0022).
+  expect(toast()?.title).toBe("Couldn't keep keeper.jpg");
+  expect(selectedCard()).toBe("keeper.jpg, Active");
 });
