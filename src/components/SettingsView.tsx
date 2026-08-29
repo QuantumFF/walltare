@@ -29,7 +29,7 @@ import { bytes, counted, grouped } from "@/lib/copy";
 // Both fields below resolve their string through the same hook the rejecting
 // bars read the destination with, so "is this path relative" has one answer and
 // one `expand_path` call behind it (ADR 0018).
-import { useExpansion } from "@/lib/useExpansion";
+import { isAbsolute, useExpansion } from "@/lib/useExpansion";
 import { ArrowLeft, FolderOpen } from "lucide-react";
 import {
   useCallback,
@@ -411,19 +411,6 @@ function LibraryRootSection() {
  */
 const RELATIVE_DESTINATION =
   "Relative, so one rejected folder beside each wallpaper.";
-
-/**
- * Whether a resolved Written path names a place, asked of the answer rather than
- * of the string.
- *
- * The string cannot be asked: `~/bin` and `$HOME/bin` both look relative and
- * both expand absolute, so only `expand_path` knows (ADR 0018). What comes back
- * is `PathBuf::display`, and on the one platform this app targets an absolute
- * path is exactly one with a leading `/`.
- */
-function isAbsolute(resolved: string): boolean {
-  return resolved.startsWith("/");
-}
 
 /** Which of ADR 0020's three rows the Reject destination's line is showing. */
 type DestinationLine = "path" | "rule" | "error";

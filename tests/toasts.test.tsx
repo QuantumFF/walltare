@@ -32,6 +32,13 @@ beforeEach(() => {
 
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
+  // Review's bar resolves the stored destination on mount, which is also what
+  // decides whether a reject toast has a path to name (ADR 0018). `./rejected`
+  // resolves to itself, so every reject below is into a relative destination.
+  mockCommand("expand_path", (args) => ({
+    resolved: args?.input as string,
+    exists: true,
+  }));
   mockCommand("start_pregen", () => null);
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockCommand("list_wallpapers", () => []);
@@ -135,18 +142,11 @@ test("a reject names the final path when the destination resolved relative", asy
 });
 
 test("a reject with an absolute destination that renamed nothing says no path", async () => {
+  // Arranged in the store rather than typed into Review, which is the only
+  // place a destination comes from since ADR 0018 moved the field to Settings.
+  mockCommand("get_settings", () => settings({ reject_destination: "/rejects" }));
   mockCommand("move_wallpaper", () => "/rejects/wall-7.jpg");
-  render(<App />);
-  await flush();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("tab", { name: "Review" }));
-  });
-  await flush();
-
-  const field = screen.getByLabelText("Move to:") as HTMLInputElement;
-  await act(async () => {
-    fireEvent.change(field, { target: { value: "/rejects" } });
-  });
+  await openReview();
   await rejectWall7();
 
   // The bar already names the place and the file kept its name, so repeating
@@ -157,18 +157,9 @@ test("a reject with an absolute destination that renamed nothing says no path", 
 test("a reject that renamed the file says so even from an absolute destination", async () => {
   // `unique_destination` suffixes ` (n)` rather than overwriting, and that
   // suffix is the one thing the destination read-out cannot have told anyone.
+  mockCommand("get_settings", () => settings({ reject_destination: "/rejects" }));
   mockCommand("move_wallpaper", () => "/rejects/wall-7 (2).jpg");
-  render(<App />);
-  await flush();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("tab", { name: "Review" }));
-  });
-  await flush();
-
-  const field = screen.getByLabelText("Move to:") as HTMLInputElement;
-  await act(async () => {
-    fireEvent.change(field, { target: { value: "/rejects" } });
-  });
+  await openReview();
   await rejectWall7();
 
   expect(toast()).toEqual({
@@ -393,17 +384,16 @@ test("the filename carries its full string for the title that truncates it", asy
   expect(name?.className).toContain("truncate");
 });
 
-test("Review still has the destination field for #126 to remove", async () => {
+test("a reject asks nothing before it moves the file", async () => {
   await openReview();
-
-  // Out of this ticket's scope and in #126's, which puts ADR 0018's read-out on
-  // the bar in its place. A test rather than a comment, because removing it
-  // early is the easy mistake and it would collide with that issue.
-  //
-  // The confirm dialog that used to stand beside it here is gone: #123 rebuilt
-  // this view on the shared card, whose Reject has nowhere to hang one, and the
-  // Undo above is what replaced it (ADR 0009, ADR 0017).
-  expect(screen.getByLabelText("Move to:")).toBeTruthy();
   await click(/reject wall-7\.jpg/i);
+
+  // The confirm dialog that used to stand here is gone: #123 rebuilt this view
+  // on the shared card, whose Reject has nowhere to hang one, and the Undo above
+  // is what replaced it (ADR 0009, ADR 0017). The destination field that stood
+  // beside it went with #126, which put ADR 0018's read-out on the bar in its
+  // place — `ReviewView.test.tsx` holds what that line says.
   expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.queryByLabelText("Move to:")).toBeNull();
+  expect(moves).toEqual([{ id: 7, destination: "./rejected" }]);
 });

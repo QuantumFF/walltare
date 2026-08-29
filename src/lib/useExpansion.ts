@@ -28,6 +28,24 @@ export type Expansion =
   | { kind: "invalid"; message: string };
 
 /**
+ * Whether a resolved Written path names a place, asked of the answer rather than
+ * of the string.
+ *
+ * The string cannot be asked: `~/bin` and `$HOME/bin` both look relative and
+ * both expand absolute, so only `expand_path` knows (ADR 0018). What comes back
+ * is `PathBuf::display`, and on the one platform this app targets an absolute
+ * path is exactly one with a leading `/`.
+ *
+ * It sits beside the hook that produces the answer because three surfaces ask
+ * this same question of the same setting — the Settings line that resolves it,
+ * the rejecting bars' clause and the reject toast's path line — and a second
+ * copy of the rule is a second place for the three of them to disagree.
+ */
+export function isAbsolute(resolved: string): boolean {
+  return resolved.startsWith("/");
+}
+
+/**
  * Resolve a Written path as the curator types it, once per string.
  *
  * The effect is keyed on the string and nothing else, which is what ADR 0020

@@ -51,16 +51,28 @@ export type ToastRequest =
    */
   | { kind: "kept"; view: View; id: number; filename: string }
   /**
-   * A soft reject that persisted. `destination` is the Written path it was sent
-   * to and `finalPath` is the absolute path `move_wallpaper` answered with;
-   * between them they decide whether the path line has anything to say.
+   * A soft reject that persisted. `finalPath` is the absolute path
+   * `move_wallpaper` answered with, and `relativeDestination` is the caller's
+   * read-out saying whether its bar could name the folder; between them they
+   * decide whether the path line has anything to say.
    */
   | {
       kind: "rejected";
       view: View;
       id: number;
       filename: string;
-      destination: string;
+      /**
+       * Whether the destination resolved relative, taken from the same
+       * `useRejectDestination` the caller's bar renders from rather than worked
+       * out here.
+       *
+       * A boolean and not the Written path, because this surface cannot answer
+       * the question the path raises: `~/bin` and `$HOME/bin` both look relative
+       * and only `expand_path` knows that both are not, so a string here would
+       * be a second verdict that disagrees with the bar on exactly the
+       * destinations the string cannot be asked about (ADR 0018).
+       */
+      relativeDestination: boolean;
       finalPath: string;
     }
   /** A Restore that persisted, with the absolute path `restore_wallpaper` answered with. */
@@ -225,41 +237,27 @@ function basename(path: string): string {
 }
 
 /**
- * Whether a reject's destination read-out already told the curator where the
- * file went.
- *
- * A leading `/` or `~` resolves absolute, so the bar names the place and
- * repeating it on every reject is noise during a fast review pass. Everything
- * else gets the path line: a relative destination names a rule rather than a
- * place, and under ADR 0011 a nested library then has one `rejected/` folder per
- * source folder with nothing on screen saying which one took the file. A `$VAR`
- * lands here too, because the frontend cannot resolve one without a round trip
- * and naming a path the bar could also have named costs a line rather than being
- * wrong.
- *
- * #78 puts ADR 0018's read-out on Review's bar, which computes this same boolean
- * from `expand_path` for its own clause; this is the syntactic stand-in until
- * then.
- */
-function destinationNamesAPlace(destination: string): boolean {
-  return destination.startsWith("/") || destination.startsWith("~");
-}
-
-/**
  * The reject's path line: the final path when the file was renamed or when the
  * destination resolved relative, which is "name the path whenever the read-out
  * could not" (ADR 0017 as amended by ADR 0018).
  *
+ * A relative destination puts a rule on the bar rather than a place, and in a
+ * nested library the file then lands in one of many `rejected/` folders with
+ * nothing on screen saying which (ADR 0011). An absolute one was named exactly
+ * two inches away, and repeating it on every reject of a fast pass is the noise
+ * ADR 0017 was right to avoid.
+ *
+ * Whether a rename happened needs no flag from the backend:
  * `unique_destination` suffixes ` (n)` on a collision, so comparing the returned
- * basename against the wallpaper's own filename is how a rename is spotted.
+ * basename against the wallpaper's own filename is the whole test.
  */
 function rejectPathLine(
   filename: string,
-  destination: string,
+  relativeDestination: boolean,
   finalPath: string,
 ): string | undefined {
   const renamed = basename(finalPath) !== filename;
-  if (renamed || !destinationNamesAPlace(destination)) return finalPath;
+  if (renamed || relativeDestination) return finalPath;
   return undefined;
 }
 
@@ -413,13 +411,18 @@ export function ToastSurface({
         }
 
         case "rejected": {
-          const { view, id, filename, destination, finalPath } = request;
+          const { view, id, filename, relativeDestination, finalPath } =
+            request;
           setTransient({
             key,
             prefix: "Rejected ",
             filename,
             suffix: "",
-            description: rejectPathLine(filename, destination, finalPath),
+            description: rejectPathLine(
+              filename,
+              relativeDestination,
+              finalPath,
+            ),
             pinned: false,
             undo: once(() => {
               void client

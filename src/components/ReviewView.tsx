@@ -1,9 +1,12 @@
 import { PageBar } from "@/components/PageBar";
+import {
+  RejectDestinationLine,
+  useRejectDestination,
+} from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import type { CardAction } from "@/components/WallpaperCard";
 import { WallpaperGrid } from "@/components/WallpaperGrid";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
 import {
   useAppEvent,
@@ -16,13 +19,17 @@ import { useCallback, useEffect, useState } from "react";
 
 export const REVIEW_LIMIT = 50;
 
-const DEFAULT_MOVE_PATH = "./rejected";
-
 export function ReviewView() {
   const [wallpapers, setWallpapers] = useState<Wallpaper[]>([]);
   const [loading, setLoading] = useState(true);
-  const [movePath, setMovePath] = useState(DEFAULT_MOVE_PATH);
   const { setView } = useApp();
+  // Where a reject goes, read once for the line on the bar, for the string
+  // `move_wallpaper` is handed and for what the toast has left to say. The
+  // `movePath` state that used to stand here is gone with the field that edited
+  // it: it configured a global preference from inside one of the views that
+  // consumes it, defaulted to a hardcoded `./rejected` and reset on every launch
+  // (ADR 0010, ADR 0018).
+  const destination = useRejectDestination();
   const { publish } = useAppEvents();
   // Every failure this view can have now goes to the shell's one slot, and the
   // `role="alert"` paragraph that used to hold them is gone with the `error`
@@ -124,7 +131,7 @@ export function ReviewView() {
       // ` (n)` on a collision, so this is the only account of what the file is
       // called on the far side, and the toast decides whether it has anything
       // to say (ADR 0003, ADR 0017).
-      const finalPath = await client.moveWallpaper(id, movePath);
+      const finalPath = await client.moveWallpaper(id, destination.written);
       publish({ type: "status-changed", id, status: "rejected" });
       if (removed) {
         show({
@@ -132,7 +139,12 @@ export function ReviewView() {
           view: "review",
           id,
           filename: removed.filename,
-          destination: movePath,
+          // The read-out's own boolean, handed over rather than worked out
+          // again from the string. It is what decides whether the toast has a
+          // path to name, and a second answer computed somewhere else would
+          // disagree with the bar on exactly the destinations the string cannot
+          // be asked about — `$HOME/bin` looks relative and is not (ADR 0018).
+          relativeDestination: destination.relative,
           finalPath,
         });
       }
@@ -169,25 +181,18 @@ export function ReviewView() {
   // lists, and where a reject lands (ADR 0015). It renders while the list is
   // still loading too, so the page's height does not move under the curator.
   //
-  // ADR 0018 replaces the field with a read-out of the stored destination and a
-  // route into Settings, in the issue that reworks this whole view.
+  // Where the field used to sit there is a read-out of the stored destination
+  // and a route into Settings, which is the whole of what Review may say about a
+  // preference it does not own (ADR 0018).
   const header = (
     <>
       <h1 className="sr-only">Review</h1>
       <PageBar>
-        <span className="font-medium">Lowest Scores first</span>
-        <div className="ml-auto flex items-center gap-3">
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary/50 p-1">
-            <span className="px-2 text-xs font-medium text-muted-foreground">
-              Move to:
-            </span>
-            <Input
-              aria-label="Move to:"
-              value={movePath}
-              onChange={(e) => setMovePath(e.target.value)}
-              className="h-7 w-40 border-none bg-background shadow-none focus-visible:ring-0"
-            />
-          </div>
+        <span className="font-medium whitespace-nowrap">
+          Lowest Scores first
+        </span>
+        <RejectDestinationLine destination={destination} />
+        <div className="flex items-center gap-3">
           <Button
             variant="outline"
             size="sm"

@@ -1,21 +1,52 @@
-import { ReviewView } from "@/components/ReviewView";
-import type { Wallpaper } from "@/lib/client";
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import App from "@/App";
+import type { Settings, Wallpaper } from "@/lib/client";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
-  currentView,
+  cacheSize,
   deferred,
   flush,
-  renderInApp,
   settings,
+  showingView,
   stats,
   wallpaper,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
-const alerts = () => screen.queryAllByRole("alert").map((el) => el.textContent);
-const images = () => screen.getAllByRole("img") as HTMLImageElement[];
+// Review, driven through the whole app the way the curator reaches it: boot
+// lands on Rank and a tab click opens this page. Mounting the view alone stopped
+// being the arrangement the app runs when the toast moved into the shell — every
+// transition here reports itself there — and the read-out on the bar routes into
+// Settings, which is a second thing this file can only assert against the shell
+// (ADR 0017, ADR 0018).
+
+/** What `~` expands to in this file, matching `SettingsView.test.tsx`'s. */
+const HOME = "/home/curator";
+
+/** Every string the read-out asked `expand_path` about, in order. */
+let expansions: string[];
+
+const reviewView = () =>
+  document.querySelector(
+    '[data-slot="view"][data-view="review"]',
+  ) as HTMLElement;
+
+/** Queries scoped to the page under test, since the shell keeps Rank mounted. */
+const inReview = () => within(reviewView());
+
+const alerts = () =>
+  inReview()
+    .queryAllByRole("alert")
+    .map((el) => el.textContent);
+const images = () => inReview().getAllByRole("img") as HTMLImageElement[];
 
 /**
  * The title and description of the one toast that is up, or `null` for none.
@@ -33,8 +64,15 @@ function toast(): { title: string; description: string | null } | null {
       root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
   };
 }
+
+/** ADR 0018's line on the second bar, whichever of its two shapes is up. */
+const destinationLine = () =>
+  document.querySelector(
+    "[data-slot='reject-destination']",
+  ) as HTMLElement | null;
+
 const refreshButton = () =>
-  screen.getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
+  inReview().getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
 
 /**
  * Put focus on the grid's selection, which with nothing arrowed to yet is the
@@ -42,13 +80,20 @@ const refreshButton = () =>
  */
 async function enterGrid() {
   await act(async () => {
-    screen.getAllByRole("gridcell")[0].focus();
+    inReview().getAllByRole("gridcell")[0].focus();
   });
 }
 
 async function press(key: string) {
   await act(async () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key });
+  });
+  await flush();
+}
+
+async function click(element: Element) {
+  await act(async () => {
+    fireEvent.click(element);
   });
   await flush();
 }
@@ -61,20 +106,42 @@ const selectedCard = () =>
 afterEach(cleanup);
 
 beforeEach(() => {
-  // The provider's boot gate, which holds every render until both land. This
-  // view is reached from rank, not from the bootstrap redirect.
+  expansions = [];
+
+  // A library with wallpapers in it, so boot lands on Rank and Review is
+  // reached the way the curator reaches it.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
-  // Started by the provider once that gate settles.
   mockCommand("start_pregen", () => null);
+  // Rank mounts at boot and stays mounted behind this page. Its pair is named
+  // apart from anything in the review list, so a query that reaches past the
+  // shown view is a failing test rather than a passing one.
+  mockCommand("get_pair", () => [
+    wallpaper(101, { filename: "pair-a.jpg" }),
+    wallpaper(102, { filename: "pair-b.jpg" }),
+  ]);
+  // The read-out resolves the stored destination, because whether it is
+  // relative cannot be read off the string (ADR 0018).
+  mockCommand("expand_path", (args) => {
+    const input = String(args?.input);
+    expansions.push(input);
+    return { resolved: input.replace(/^~/, HOME), exists: true };
+  });
 });
 
-/** Mount the view with the given list already served. */
-async function openReview(list: Wallpaper[]) {
-  mockCommand("get_review", () => list);
-  const rendered = await renderInApp(<ReviewView />);
+/** Render the app and land on Review, which is what a tab click does. */
+async function openApp() {
+  const rendered = render(<App />);
   await flush();
+  await click(screen.getByRole("tab", { name: "Review" }));
   return rendered;
+}
+
+/** Mount the app with the given list already served, and open Review. */
+async function openReview(list: Wallpaper[], stored: Partial<Settings> = {}) {
+  mockCommand("get_review", () => list);
+  mockCommand("get_settings", () => settings(stored));
+  return openApp();
 }
 
 test("renders the rows the backend returned, in the order it returned them", async () => {
@@ -105,7 +172,7 @@ test("renders the rows the backend returned, in the order it returned them", asy
   ]);
 
   // One mu badge per row, rounded to a single decimal.
-  const badges = screen.getAllByText(/^\d+\.\d$/);
+  const badges = inReview().getAllByText(/^\d+\.\d$/);
   expect(badges.map((badge) => badge.textContent)).toEqual([
     "8.2",
     "25.0",
@@ -170,8 +237,7 @@ test("asks the backend for 50 rows", async () => {
     return [];
   });
 
-  await renderInApp(<ReviewView />);
-  await flush();
+  await openApp();
 
   expect(limits).toEqual([50]);
 });
@@ -188,14 +254,12 @@ test("keep records the decision and removes the card without waiting for a refet
     return pending.promise;
   });
 
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
-  });
+  await click(inReview().getByRole("button", { name: /keep keeper\.jpg/i }));
 
   // Gone while the command is still in flight.
   expect(keptIds).toEqual([4]);
-  expect(screen.queryByAltText("keeper.jpg")).toBeNull();
-  expect(screen.queryByAltText("stay.jpg")).not.toBeNull();
+  expect(inReview().queryByAltText("keeper.jpg")).toBeNull();
+  expect(inReview().queryByAltText("stay.jpg")).not.toBeNull();
 
   await act(async () => {
     pending.resolve(null);
@@ -211,14 +275,11 @@ test("refresh renders whatever the backend returns next", async () => {
   ];
   mockCommand("get_review", () => responses[Math.min(fetches++, 1)]);
 
-  await renderInApp(<ReviewView />);
-  await flush();
+  await openApp();
   expect(fetches).toBe(1);
-  expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
+  expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
 
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
-  });
+  await click(refreshButton());
 
   expect(fetches).toBe(2);
   expect(images().map((img) => img.alt)).toEqual(["fresh.jpg"]);
@@ -231,18 +292,18 @@ test("a keep that fails puts the card back and says so", async () => {
     Promise.reject({ kind: "db", message: "disk on fire" }),
   );
 
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
-  });
+  await click(inReview().getByRole("button", { name: /keep keeper\.jpg/i }));
 
   // The generic "Please try again." is gone with the paragraph that carried it:
   // the title is the frontend's and the detail is the backend's own account.
+  // Nothing in this view has held an error since the toast took them (ADR 0017),
+  // and the empty `alerts()` below is what says so.
   expect(toast()).toEqual({
     title: "Couldn't keep keeper.jpg",
     description: "disk on fire",
   });
   expect(alerts()).toEqual([]);
-  expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
+  expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
 });
 
 test("a keep that fails does not resurrect a card kept while it was in flight", async () => {
@@ -261,14 +322,8 @@ test("a keep that fails does not resurrect a card kept while it was in flight", 
     args?.id === 1 ? doomed.promise : null,
   );
 
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /keep doomed\.jpg/i }));
-  });
-  await act(async () => {
-    fireEvent.click(
-      screen.getByRole("button", { name: /keep goes-fine\.jpg/i }),
-    );
-  });
+  await click(inReview().getByRole("button", { name: /keep doomed\.jpg/i }));
+  await click(inReview().getByRole("button", { name: /keep goes-fine\.jpg/i }));
   await act(async () => {
     doomed.reject({ kind: "db", message: "disk on fire" });
     await flush();
@@ -288,17 +343,15 @@ test("a move that fails puts the card back and says so", async () => {
     Promise.reject({ kind: "io", message: "destination is read-only" }),
   );
 
-  await act(async () => {
-    fireEvent.click(
-      screen.getByRole("button", { name: /reject reject-me\.jpg/i }),
-    );
-  });
+  await click(
+    inReview().getByRole("button", { name: /reject reject-me\.jpg/i }),
+  );
 
   expect(toast()).toEqual({
     title: "Couldn't reject reject-me.jpg",
     description: "destination is read-only",
   });
-  expect(screen.queryByAltText("reject-me.jpg")).not.toBeNull();
+  expect(inReview().queryByAltText("reject-me.jpg")).not.toBeNull();
 });
 
 test("a successful fetch does not clear the previous failure", async () => {
@@ -310,14 +363,11 @@ test("a successful fetch does not clear the previous failure", async () => {
       : [wallpaper(2, { filename: "a.jpg" })],
   );
 
-  await renderInApp(<ReviewView />);
-  await flush();
+  await openApp();
   expect(toast()?.title).toBe("Couldn't load the review list");
 
   broken = false;
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /refresh/i }));
-  });
+  await click(refreshButton());
 
   // The inverse of what the paragraph did, and deliberately. An error is pinned
   // and gets no exception to the replacement rule: the only things that take it
@@ -326,7 +376,7 @@ test("a successful fetch does not clear the previous failure", async () => {
   // wiped it would be the eight-second error this surface exists to avoid,
   // arriving by a side door.
   expect(toast()?.title).toBe("Couldn't load the review list");
-  expect(screen.queryByAltText("a.jpg")).not.toBeNull();
+  expect(inReview().queryByAltText("a.jpg")).not.toBeNull();
 });
 
 test("a successful keep replaces the previous failure", async () => {
@@ -340,20 +390,16 @@ test("a successful keep replaces the previous failure", async () => {
     broken ? Promise.reject({ kind: "db", message: "disk on fire" }) : null,
   );
 
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /keep keeper\.jpg/i }));
-  });
+  await click(inReview().getByRole("button", { name: /keep keeper\.jpg/i }));
   expect(toast()?.title).toBe("Couldn't keep keeper.jpg");
 
   broken = false;
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /keep stay\.jpg/i }));
-  });
+  await click(inReview().getByRole("button", { name: /keep stay\.jpg/i }));
 
   // One slot, and the newest message owns it. The failed card stays in the grid
   // as the durable evidence the toast no longer carries.
   expect(toast()?.title).toBe("Kept stay.jpg");
-  expect(screen.queryByAltText("keeper.jpg")).not.toBeNull();
+  expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
 });
 
 test("the list can't be refetched while a fetch is in flight", async () => {
@@ -363,106 +409,187 @@ test("the list can't be refetched while a fetch is in flight", async () => {
   let fetches = 0;
   mockCommand("get_review", () => responses[fetches++]);
 
-  const { container } = await renderInApp(<ReviewView />);
+  await openApp();
 
   // While loading the body is a spinner and Refresh is disabled. The control
   // lives in the bar this page owns below the chrome, which holds its height in
   // every state, so `disabled` is what keeps a second fetch out rather than the
   // button being absent.
-  expect(container.querySelector(".animate-spin")).not.toBeNull();
+  expect(reviewView().querySelector(".animate-spin")).not.toBeNull();
   expect(refreshButton().disabled).toBe(true);
 
   await act(async () => {
     first.resolve([wallpaper(2, { filename: "a.jpg" })]);
   });
   expect(refreshButton().disabled).toBe(false);
-  await act(async () => {
-    fireEvent.click(refreshButton());
-  });
+  await click(refreshButton());
 
   expect(fetches).toBe(2);
   expect(refreshButton().disabled).toBe(true);
-  expect(screen.queryByAltText("a.jpg")).toBeNull();
+  expect(inReview().queryByAltText("a.jpg")).toBeNull();
 
   await act(async () => {
     second.resolve([]);
   });
-  expect(screen.queryByText(/no wallpapers to review\./i)).not.toBeNull();
+  expect(inReview().queryByText(/no wallpapers to review\./i)).not.toBeNull();
   expect(fetches).toBe(2);
 });
 
-test("a reject asks nothing and soft-rejects on the press", async () => {
+test("a reject asks nothing and soft-rejects to the stored destination", async () => {
   const moveArgs: unknown[] = [];
-  await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
+  // Not the default, so what reaches `move_wallpaper` can only have come from
+  // the settings object the bar reads (ADR 0018).
+  await openReview([wallpaper(6, { filename: "reject-me.jpg" })], {
+    reject_destination: "~/bin",
+  });
   // The command answers with the path the file landed at; the toast is what
   // reports it, and a card that leaves the list is what this test is about.
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
-    return "/library/rejected/reject-me.jpg";
+    return `${HOME}/bin/reject-me.jpg`;
   });
 
-  await act(async () => {
-    fireEvent.click(
-      screen.getByRole("button", { name: /reject reject-me\.jpg/i }),
-    );
-  });
+  await click(
+    inReview().getByRole("button", { name: /reject reject-me\.jpg/i }),
+  );
 
   // Nothing between the press and the move. Act-then-undo replaced the confirm
   // dialog that used to stand here: the toast offers an Undo and the shell's
   // `Ctrl+Z` presses it, so one interruption per reject is enough (ADR 0009,
   // ADR 0017).
   expect(screen.queryByRole("alertdialog")).toBeNull();
-  expect(moveArgs).toEqual([{ id: 6, destinationFolder: "./rejected" }]);
-  expect(screen.queryByAltText("reject-me.jpg")).toBeNull();
-  expect(screen.queryByText(/no wallpapers to review\./i)).not.toBeNull();
+  // The Written path as stored, not the resolved one: `expand_path` is asked
+  // whether the destination is relative, and never asked to rewrite it.
+  expect(moveArgs).toEqual([{ id: 6, destinationFolder: "~/bin" }]);
+  expect(inReview().queryByAltText("reject-me.jpg")).toBeNull();
+  expect(inReview().queryByText(/no wallpapers to review\./i)).not.toBeNull();
 });
 
-test("the destination defaults to ./rejected and is editable before the press", async () => {
-  let destination = "";
+test("the destination is a read-out and no longer a field", async () => {
   await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
-  mockCommand("move_wallpaper", (args) => {
-    destination = args?.destinationFolder as string;
-    return `${destination}/reject-me.jpg`;
-  });
 
-  const destinationInput = screen.getByLabelText(
-    /move to:/i,
-  ) as HTMLInputElement;
-  expect(destinationInput.value).toBe("./rejected");
+  // ADR 0018 took the editor out of Review: a control under fifty cards that
+  // may have come from fifty folders looked like it belonged to the pass, while
+  // it actually wrote a global preference. Settings owns the only one.
+  expect(inReview().queryByLabelText(/move to:/i)).toBeNull();
+  expect(reviewView().querySelector("input")).toBeNull();
+  expect(destinationLine()).not.toBeNull();
+});
 
-  await act(async () => {
-    fireEvent.change(destinationInput, {
-      target: { value: "/mnt/archive/rejected" },
-    });
-  });
-  await act(async () => {
-    fireEvent.click(
-      screen.getByRole("button", { name: /reject reject-me\.jpg/i }),
-    );
-  });
+test("the bar says where rejects go, in the string the curator wrote", async () => {
+  await openReview([wallpaper(6)], { reject_destination: "~/bin" });
 
-  expect(destination).toBe("/mnt/archive/rejected");
+  // The written string and not the resolved one. ADR 0011 put the resolved-path
+  // preview on the Settings field, so `~/bin` stays `~/bin` here rather than
+  // repeating `${HOME}/bin` on two more bars.
+  expect(destinationLine()?.textContent).toBe(
+    "Rejects go to ~/bin · change in Settings",
+  );
+  expect(destinationLine()?.textContent).not.toContain(HOME);
+  expect(destinationLine()?.className).not.toContain("text-destructive");
+});
+
+test("a relative destination gets the clause that says what relative means", async () => {
+  await openReview([wallpaper(6)]);
+
+  // The default, and the part that earns the line its place: relative resolves
+  // against each wallpaper's own folder, so a nested library gets one reject
+  // folder per source folder (CONTEXT.md, ADR 0011, ADR 0018).
+  expect(destinationLine()?.textContent).toBe(
+    "Rejects go to ./rejected, beside each wallpaper · change in Settings",
+  );
+});
+
+test("whether the destination is relative is not read off the string", async () => {
+  // `$HOME/bin` looks relative and expands absolute, which is why the clause
+  // waits on `expand_path` rather than on a leading character (ADR 0018).
+  mockCommand("expand_path", (args) => {
+    const input = String(args?.input);
+    expansions.push(input);
+    return { resolved: input.replace(/^\$HOME/, HOME), exists: true };
+  });
+  await openReview([wallpaper(6)], { reject_destination: "$HOME/bin" });
+
+  expect(destinationLine()?.textContent).toBe(
+    "Rejects go to $HOME/bin · change in Settings",
+  );
+});
+
+test("a malformed destination is on the bar before the first click", async () => {
+  mockCommand("expand_path", () =>
+    Promise.reject({
+      kind: "invalid_path_syntax",
+      message: "unknown environment variable HOEM",
+    }),
+  );
+  await openReview([wallpaper(6)], { reject_destination: "$HOEM/rejected" });
+
+  // The message replaces the whole line, in the destructive colour. It fails
+  // every reject in the pass, so there is no destination left to describe, and
+  // reading the variable's name here beats fifty identical failures after the
+  // fact (ADR 0011, ADR 0018).
+  expect(destinationLine()?.textContent).toBe(
+    "unknown environment variable HOEM",
+  );
+  expect(destinationLine()?.className).toContain("text-destructive");
+  expect(
+    inReview().queryByRole("button", { name: "change in Settings" }),
+  ).toBeNull();
+});
+
+test("the destination is resolved once per value, not once per render", async () => {
+  await openReview([
+    wallpaper(4, { filename: "keeper.jpg" }),
+    wallpaper(5, { filename: "stay.jpg" }),
+  ]);
+  mockCommand("keep_wallpaper", () => null);
+
+  // Three rounds of renders that have nothing to do with the setting: a card
+  // leaving the list, a toast arriving over it, and a refetch replacing the
+  // whole grid. The read-out is memoised on the string, so none of them is a
+  // new question for the backend (ADR 0018, ADR 0020).
+  await click(inReview().getByRole("button", { name: /keep keeper\.jpg/i }));
+  await click(refreshButton());
+
+  expect(expansions).toEqual(["./rejected"]);
+});
+
+test("change in Settings opens the field the line is about", async () => {
+  mockCommand("get_cache_size", () => cacheSize());
+  await openReview([wallpaper(6)]);
+
+  await click(
+    inReview().getByRole("button", { name: "change in Settings" }) as HTMLElement,
+  );
+
+  // The words are a control rather than text: naming a destination that is one
+  // click away and leaving it inert is a small cruelty (ADR 0018). What lands is
+  // ADR 0020's arrival — the caret in the field, and a way back to the page the
+  // curator was rejecting from.
+  expect(showingView()).toBe("settings");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "Reject destination",
+  );
+  expect(
+    screen.getByRole("button", { name: /back to/i }).textContent,
+  ).toBe("Back to Review· Esc");
 });
 
 test("the empty state offers a way back to ranking", async () => {
   await openReview([]);
 
-  expect(screen.queryByText(/no wallpapers to review\./i)).not.toBeNull();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /return to ranking/i }));
-  });
+  expect(inReview().queryByText(/no wallpapers to review\./i)).not.toBeNull();
+  await click(inReview().getByRole("button", { name: /return to ranking/i }));
 
-  expect(currentView()).toBe("rank");
+  expect(showingView()).toBe("rank");
 });
 
 test("back returns to ranking", async () => {
   await openReview([wallpaper(2, { filename: "a.jpg" })]);
 
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
-  });
+  await click(inReview().getByRole("button", { name: /^back$/i }));
 
-  expect(currentView()).toBe("rank");
+  expect(showingView()).toBe("rank");
 });
 
 test("a load failure surfaces readably instead of console-only", async () => {
@@ -471,8 +598,7 @@ test("a load failure surfaces readably instead of console-only", async () => {
     Promise.reject({ kind: "db", message: "locked database" }),
   );
 
-  await renderInApp(<ReviewView />);
-  await flush();
+  await openApp();
 
   // On the shell's surface now, not in a paragraph of this view's own. Two
   // error surfaces in one view is what ADR 0017 removed, and a list that will
@@ -482,6 +608,68 @@ test("a load failure surfaces readably instead of console-only", async () => {
     description: "locked database",
   });
   expect(alerts()).toEqual([]);
+});
+
+// What the reject toast has left to say, which is decided by the same boolean
+// the read-out above draws its clause from: name the path whenever the bar could
+// not (ADR 0017 as amended by ADR 0018).
+
+test("a reject into a relative destination names the path the file landed at", async () => {
+  await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
+  mockCommand(
+    "move_wallpaper",
+    () => "/library/holiday/rejected/reject-me.jpg",
+  );
+
+  await click(
+    inReview().getByRole("button", { name: /reject reject-me\.jpg/i }),
+  );
+
+  // `./rejected` states a rule and not a place, and in a nested library the
+  // file lands in one of many `rejected/` folders with nothing else on screen
+  // saying which one took it.
+  expect(toast()).toEqual({
+    title: "Rejected reject-me.jpg",
+    description: "/library/holiday/rejected/reject-me.jpg",
+  });
+});
+
+test("a reject into an absolute destination repeats nothing the bar said", async () => {
+  await openReview([wallpaper(6, { filename: "reject-me.jpg" })], {
+    reject_destination: "~/bin",
+  });
+  mockCommand("move_wallpaper", () => `${HOME}/bin/reject-me.jpg`);
+
+  await click(
+    inReview().getByRole("button", { name: /reject reject-me\.jpg/i }),
+  );
+
+  // The bar named the exact folder two inches away, and the file kept its name,
+  // so there is nothing the path line could add to a fast pass.
+  expect(toast()).toEqual({
+    title: "Rejected reject-me.jpg",
+    description: null,
+  });
+});
+
+test("a rename is named wherever the destination pointed", async () => {
+  await openReview([wallpaper(6, { filename: "reject-me.jpg" })], {
+    reject_destination: "~/bin",
+  });
+  // `unique_destination` suffixes ` (1)` rather than overwriting what is
+  // already sitting there (ADR 0003), and the returned basename is the only
+  // account of it — no flag rides along, because the frontend holds the
+  // wallpaper's own filename to compare against (ADR 0018).
+  mockCommand("move_wallpaper", () => `${HOME}/bin/reject-me (1).jpg`);
+
+  await click(
+    inReview().getByRole("button", { name: /reject reject-me\.jpg/i }),
+  );
+
+  expect(toast()).toEqual({
+    title: "Rejected reject-me.jpg",
+    description: `${HOME}/bin/reject-me (1).jpg`,
+  });
 });
 
 // The direct keys, through the view that mounts the grid. Review lists Active
@@ -506,7 +694,7 @@ test("K keeps the selected card, the same as pressing Keep", async () => {
   // One handler behind both, so a key and a click cannot drift into meaning
   // different things: the same command, the same removal, the same toast.
   expect(keptIds).toEqual([4]);
-  expect(screen.queryByAltText("keeper.jpg")).toBeNull();
+  expect(inReview().queryByAltText("keeper.jpg")).toBeNull();
   expect(toast()?.title).toBe("Kept keeper.jpg");
   // And the sweep carries on from where that card was, which is what makes two
   // keystrokes per wallpaper a pass rather than a series of hunts (ADR 0019).
@@ -532,7 +720,7 @@ test("Delete rejects the selected card, with no confirm in the way", async () =>
   // presses its Undo — and focus stays on the grid while that toast is up.
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(moveArgs).toEqual([{ id: 6, destinationFolder: "./rejected" }]);
-  expect(screen.queryByAltText("reject-me.jpg")).toBeNull();
+  expect(inReview().queryByAltText("reject-me.jpg")).toBeNull();
   expect(selectedCard()).toBe("next.jpg, Active");
 });
 
