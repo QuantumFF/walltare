@@ -106,3 +106,23 @@ export function score(wallpaper: Wallpaper): string {
   if (wallpaper.comparisons_count === 0) return "Unrated";
   return wallpaper.rating_mu.toFixed(1);
 }
+
+/**
+ * CONTEXT.md's Evaluated, per wallpaper: σ below 4.0, roughly half the starting
+ * uncertainty and about seven comparisons away from it.
+ *
+ * The number is the one `voting.rs` counts `evaluated_count` with
+ * (`WHERE status IN ('active', 'kept') AND rating_sigma < 4.0`), and this is the
+ * frontend's only copy of it. A Score badge dims until a wallpaper reaches it,
+ * and that is the whole of what the app says about confidence: no second number
+ * and no bands, so there is one definition to disagree with rather than two
+ * (ADR 0013, ADR 0019).
+ *
+ * A wallpaper in no Comparison is never Evaluated — it still holds the starting
+ * σ — so the dimmed badge and `Unrated` agree without either checking the other.
+ */
+export const EVALUATED_SIGMA = 4.0;
+
+export function isEvaluated(wallpaper: Wallpaper): boolean {
+  return wallpaper.rating_sigma < EVALUATED_SIGMA;
+}

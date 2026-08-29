@@ -251,8 +251,7 @@ test("a reject drops the row from a Library filtered to Active", async () => {
   expect(row(1)).not.toBeNull();
 
   await click(tab("Review"));
-  await click(screen.getByRole("button", { name: /move one\.jpg/i }));
-  await click(screen.getByRole("button", { name: /move file/i }));
+  await click(screen.getByRole("button", { name: /reject one\.jpg/i }));
 
   expect(listCalls).toBe(2); // the two the filter asked for, and no more
   expect(row(1)).toBeNull();

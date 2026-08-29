@@ -98,7 +98,8 @@ export type ToastRequest =
    * rejected before ADR 0009 recorded an Origin. `origin_path` is on the DTO, so
    * the answer is known before the press and the description is the frontend's
    * own sentence — the one place ADR 0017's "the backend message" does not
-   * apply. #79 builds the `aria-disabled` control that raises it.
+   * apply. `WallpaperCard`'s Restore is the `aria-disabled` control that raises
+   * it, on any page that mounts a Rejected card.
    */
   | { kind: "refused"; filename: string; reason: string };
 

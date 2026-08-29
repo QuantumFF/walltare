@@ -1,17 +1,6 @@
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { PageBar } from "@/components/PageBar";
 import { useToaster } from "@/components/ToastSurface";
-import { Badge } from "@/components/ui/badge";
+import { WallpaperCard, type CardAction } from "@/components/WallpaperCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
@@ -20,39 +9,12 @@ import {
   useAppEvents,
   useRefetchWhenShown,
 } from "@/context/AppEventsContext";
-import { client, wallpaperImageUrl, type Wallpaper } from "@/lib/client";
-import {
-  ArrowLeft,
-  Check,
-  FolderInput,
-  Loader2,
-  RefreshCw,
-} from "lucide-react";
+import { client, type Wallpaper } from "@/lib/client";
+import { ArrowLeft, Check, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 export const REVIEW_LIMIT = 50;
 
-/**
- * A review card. Carries no hover shadow, deliberately.
- *
- * A wheel scroll holds the pointer still while cards stream underneath, so
- * every card that passes fires `:hover`. Changing `box-shadow` there repaints
- * outside the card's own bounds, and measured against a real WebKitGTK view it
- * took the grid from a locked 60fps to 38 with every frame late — which is why
- * the wheel felt worse than the scrollbar, where the pointer never crosses the
- * grid. Dropping only the transition still dropped half the frames, so it is
- * the repaint and not the animation. The overlay fade, the image scale, and
- * the backdrop blurs all measured free. See ADR 0006.
- *
- * The image and the overlay declare `will-change` for the one property each
- * animates, which is why the fade and the scale stay affordable. Without it
- * WebKit builds those two composited layers the first time a card is hovered,
- * and that lands mid-gesture: one ~50-95ms stall per card, scaling with the
- * card's pixel area, until every card on screen has been passed over once.
- * See ADR 0007.
- */
-const CARD_CLASS =
-  "group relative aspect-video bg-card rounded-xl overflow-hidden border border-border shadow-sm";
 const DEFAULT_MOVE_PATH = "./rejected";
 
 export function ReviewView() {
@@ -188,6 +150,18 @@ export function ReviewView() {
     }
   };
 
+  // What a card asks for, routed to the two handlers that already existed.
+  //
+  // Review lists Active wallpapers only (CONTEXT.md), so Keep and Reject are
+  // the only two that can arrive here; Make Active and Restore are offered by
+  // the same card on the library page, which is the page that mounts a Kept or
+  // a Rejected row. Nothing branches on the wallpaper: the card decides what to
+  // offer from the Status it was handed, and this only says who answers.
+  const handleAction = (action: CardAction, card: Wallpaper) => {
+    if (action === "keep") void handleKeep(card.id);
+    if (action === "reject") void handleMove(card.id);
+  };
+
   // The destination line, in the bar this page owns below the chrome. The
   // chrome's tab already names the page, so what was a 2xl heading and a
   // subtitle is the sentence that actually carries information: what Review
@@ -264,86 +238,23 @@ export function ReviewView() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-8">
+            {/* The card is the shared one, and the confirm dialog that used to
+                hang off its Reject went with the markup it replaced. Act-then-undo
+                is in its place: the reject toast offers an Undo and the shell's
+                `Ctrl+Z` presses it, so one interruption per reject is enough
+                (ADR 0009, ADR 0017).
+
+                `animated` is Review's alone. ADR 0016 gives the library's
+                instance of this card no animated property and no `will-change`,
+                and ADR 0007's licence stays scoped to the fifty rows it was
+                measured on. */}
             {wallpapers.map((wallpaper) => (
-              <div
+              <WallpaperCard
                 key={wallpaper.id}
-                className={CARD_CLASS}
-              >
-                <img
-                  src={wallpaperImageUrl(wallpaper.id, "small")}
-                  alt={wallpaper.filename}
-                  className="object-cover w-full h-full transition-transform duration-500 group-hover:scale-105 will-change-transform"
-                />
-
-                {/* Rating Badge */}
-                <div className="absolute top-2 right-2">
-                  <Badge
-                    variant="secondary"
-                    className="bg-black/60 backdrop-blur-md text-white border-none"
-                  >
-                    {wallpaper.rating_mu.toFixed(1)}
-                  </Badge>
-                </div>
-
-                {/* Hover Actions Overlay */}
-                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity will-change-[opacity] flex flex-col items-center justify-center gap-3 p-4 backdrop-blur-[2px]">
-                  <p className="text-white text-xs font-medium truncate w-full text-center px-2 mb-2">
-                    {wallpaper.filename}
-                  </p>
-                  <div className="flex gap-2 w-full max-w-[200px]">
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      className="flex-1 bg-white/10 hover:bg-white/20 text-white border-none"
-                      aria-label={`Keep ${wallpaper.filename}`}
-                      onClick={() => void handleKeep(wallpaper.id)}
-                    >
-                      <Check className="mr-2 h-3 w-3" />
-                      Keep
-                    </Button>
-
-                    {/* The confirm dialog stays for now, and only for now.
-                        Act-then-undo has replaced it as of this toast — the
-                        reject offers an Undo and `Ctrl+Z` presses it — so the
-                        dialog is one interruption too many. #78 removes it
-                        along with the destination field above, in the issue
-                        that rebuilds this view on the shared card (ADR 0009,
-                        ADR 0017, ADR 0018). */}
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          className="flex-1"
-                          aria-label={`Move ${wallpaper.filename}`}
-                        >
-                          <FolderInput className="mr-2 h-3 w-3" />
-                          Move
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Move Wallpaper?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This will move "{wallpaper.filename}" to "{movePath}".
-                            It will be soft-rejected: out of voting and review,
-                            its history preserved.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => void handleMove(wallpaper.id)}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          >
-                            Move File
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </div>
-                </div>
-              </div>
+                wallpaper={wallpaper}
+                onAction={handleAction}
+                animated
+              />
             ))}
           </div>
         )}

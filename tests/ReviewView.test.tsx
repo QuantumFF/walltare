@@ -1,6 +1,6 @@
 import { ReviewView } from "@/components/ReviewView";
 import type { Wallpaper } from "@/lib/client";
-import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -59,10 +59,16 @@ test("renders the rows the backend returned, in the order it returned them", asy
   // Deliberately not sorted: ordering and the Active-only filter belong to
   // db.rs (`get_review_returns_active_ordered_by_mu_ascending`). This view is
   // a bare map, and the test says so.
+  // Each one past a Comparison, so the badge is a Score rather than the
+  // `Unrated` a wallpaper the app knows nothing about reads (ADR 0013).
   await openReview([
-    wallpaper(3, { filename: "lowest.jpg", rating_mu: 8.24 }),
-    wallpaper(1, { filename: "middle.png", rating_mu: 25.0 }),
-    wallpaper(7, { filename: "highest.webp", rating_mu: 15.55 }),
+    wallpaper(3, { filename: "lowest.jpg", rating_mu: 8.24, comparisons_count: 4 }),
+    wallpaper(1, { filename: "middle.png", rating_mu: 25.0, comparisons_count: 4 }),
+    wallpaper(7, {
+      filename: "highest.webp",
+      rating_mu: 15.55,
+      comparisons_count: 4,
+    }),
   ]);
 
   expect(images().map((img) => img.src)).toEqual([
@@ -261,10 +267,9 @@ test("a move that fails puts the card back and says so", async () => {
   );
 
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /move file/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /reject reject-me\.jpg/i }),
+    );
   });
 
   expect(toast()).toEqual({
@@ -364,48 +369,33 @@ test("the list can't be refetched while a fetch is in flight", async () => {
   expect(fetches).toBe(2);
 });
 
-test("move is gated behind a confirm dialog showing filename and destination", async () => {
+test("a reject asks nothing and soft-rejects on the press", async () => {
   const moveArgs: unknown[] = [];
   await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
-  // The command answers with the path the file landed at; Review has nowhere to
-  // report it yet, and a card that leaves the list either way is what this test
-  // is about.
+  // The command answers with the path the file landed at; the toast is what
+  // reports it, and a card that leaves the list is what this test is about.
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
     return "/library/rejected/reject-me.jpg";
   });
 
-  // Cancel path: no command fired.
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
-  });
-  expect(
-    screen.queryByText(/this will move "reject-me\.jpg" to "\.\/rejected"\./i),
-  ).not.toBeNull();
-
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
-  });
-  await waitFor(() => {
-    expect(screen.queryByText(/move wallpaper\?/i)).toBeNull();
-  });
-  expect(moveArgs).toEqual([]);
-  expect(screen.queryByAltText("reject-me.jpg")).not.toBeNull();
-
-  // Confirm path: the soft reject runs with the destination it showed.
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
-  });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /move file/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /reject reject-me\.jpg/i }),
+    );
   });
 
+  // Nothing between the press and the move. Act-then-undo replaced the confirm
+  // dialog that used to stand here: the toast offers an Undo and the shell's
+  // `Ctrl+Z` presses it, so one interruption per reject is enough (ADR 0009,
+  // ADR 0017).
+  expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(moveArgs).toEqual([{ id: 6, destinationFolder: "./rejected" }]);
   expect(screen.queryByAltText("reject-me.jpg")).toBeNull();
   expect(screen.queryByText(/no wallpapers to review\./i)).not.toBeNull();
 });
 
-test("the destination defaults to ./rejected and is editable before confirming", async () => {
+test("the destination defaults to ./rejected and is editable before the press", async () => {
   let destination = "";
   await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
   mockCommand("move_wallpaper", (args) => {
@@ -419,15 +409,14 @@ test("the destination defaults to ./rejected and is editable before confirming",
   expect(destinationInput.value).toBe("./rejected");
 
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /move reject-me\.jpg/i }));
-  });
-  await act(async () => {
     fireEvent.change(destinationInput, {
       target: { value: "/mnt/archive/rejected" },
     });
   });
   await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /move file/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /reject reject-me\.jpg/i }),
+    );
   });
 
   expect(destination).toBe("/mnt/archive/rejected");

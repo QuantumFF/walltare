@@ -102,10 +102,9 @@ async function click(name: RegExp) {
   await flush();
 }
 
-/** Reject wall-7 through the confirm dialog #78 has yet to remove. */
+/** Reject wall-7. One press: #123 removed the confirm dialog that stood here. */
 async function rejectWall7() {
-  await click(/move wall-7\.jpg/i);
-  await click(/move file/i);
+  await click(/reject wall-7\.jpg/i);
 }
 
 test("a keep raises its toast, with the Undo named twice over", async () => {
@@ -394,13 +393,17 @@ test("the filename carries its full string for the title that truncates it", asy
   expect(name?.className).toContain("truncate");
 });
 
-test("Review still has the confirm dialog and the destination field for #78 to remove", async () => {
+test("Review still has the destination field for #126 to remove", async () => {
   await openReview();
 
-  // Both are out of this ticket's scope and in #78's, which rebuilds this view
-  // on the shared card. A test rather than a comment, because removing them
+  // Out of this ticket's scope and in #126's, which puts ADR 0018's read-out on
+  // the bar in its place. A test rather than a comment, because removing it
   // early is the easy mistake and it would collide with that issue.
+  //
+  // The confirm dialog that used to stand beside it here is gone: #123 rebuilt
+  // this view on the shared card, whose Reject has nowhere to hang one, and the
+  // Undo above is what replaced it (ADR 0009, ADR 0017).
   expect(screen.getByLabelText("Move to:")).toBeTruthy();
-  await click(/move wall-7\.jpg/i);
-  expect(screen.getByRole("alertdialog")).toBeTruthy();
+  await click(/reject wall-7\.jpg/i);
+  expect(screen.queryByRole("alertdialog")).toBeNull();
 });
