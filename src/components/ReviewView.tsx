@@ -1,6 +1,7 @@
 import { PageBar } from "@/components/PageBar";
 import { useToaster } from "@/components/ToastSurface";
-import { WallpaperCard, type CardAction } from "@/components/WallpaperCard";
+import type { CardAction } from "@/components/WallpaperCard";
+import { WallpaperGrid } from "@/components/WallpaperGrid";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
@@ -237,26 +238,29 @@ export function ReviewView() {
             </Button>
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 pb-8">
-            {/* The card is the shared one, and the confirm dialog that used to
-                hang off its Reject went with the markup it replaced. Act-then-undo
-                is in its place: the reject toast offers an Undo and the shell's
-                `Ctrl+Z` presses it, so one interruption per reject is enough
-                (ADR 0009, ADR 0017).
+          /* The grid is the shared one, and Review's own `div.grid` went with
+             the card markup it used to hold. One tab stop with a roving
+             selection, so the keyboard reaches every card here the same way it
+             reaches every card on a library page mounting thirty of five
+             thousand — a second interaction model to learn is worse than the
+             one it would save (ADR 0019). Review needs no `reveal`: it mounts
+             every row, so the default scroll-into-view is the whole of it.
 
-                `animated` is Review's alone. ADR 0016 gives the library's
-                instance of this card no animated property and no `will-change`,
-                and ADR 0007's licence stays scoped to the fifty rows it was
-                measured on. */}
-            {wallpapers.map((wallpaper) => (
-              <WallpaperCard
-                key={wallpaper.id}
-                wallpaper={wallpaper}
-                onAction={handleAction}
-                animated
-              />
-            ))}
-          </div>
+             The confirm dialog that used to hang off Reject went the same way.
+             Act-then-undo is in its place: the reject toast offers an Undo and
+             the shell's `Ctrl+Z` presses it, so one interruption per reject is
+             enough (ADR 0009, ADR 0017).
+
+             `animated` is Review's alone. ADR 0016 gives the library's instance
+             of this card no animated property and no `will-change`, and ADR
+             0007's licence stays scoped to the fifty rows it was measured on. */
+          <WallpaperGrid
+            wallpapers={wallpapers}
+            label="Wallpapers to review"
+            onAction={handleAction}
+            animated
+            className="pb-8"
+          />
         )}
       </div>
     </>

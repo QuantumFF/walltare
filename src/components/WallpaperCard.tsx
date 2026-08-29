@@ -14,6 +14,25 @@ import { Check, FolderInput, RotateCcw, Undo2 } from "lucide-react";
  */
 export type CardAction = "keep" | "reject" | "make-active" | "restore";
 
+/**
+ * Where this card sits in the grid that mounted it, and whether it is the one
+ * holding the selection.
+ *
+ * The card renders itself as a cell from this rather than the grid reaching in
+ * and setting attributes on a node it does not own: what a `gridcell` is made of
+ * — the role, the roving `tabindex`, the position the grid finds it by — is one
+ * fact arriving through one prop, and a card mounted outside a grid simply has
+ * no cell and stays the labelled `group` it was.
+ *
+ * `index` is the index in the whole list, not in what is mounted. ADR 0016's
+ * library grid mounts a window of about thirty cards out of five thousand, so
+ * the two differ there and the absolute one is what the selection means.
+ */
+export interface GridCell {
+  index: number;
+  selected: boolean;
+}
+
 export interface WallpaperCardProps {
   wallpaper: Wallpaper;
   /**
@@ -46,6 +65,8 @@ export interface WallpaperCardProps {
    * alone.
    */
   animated?: boolean;
+  /** See `GridCell`. Absent for a card standing on its own. */
+  cell?: GridCell;
 }
 
 /**
@@ -70,6 +91,7 @@ export function WallpaperCard({
   wallpaper,
   onAction,
   animated = false,
+  cell,
 }: WallpaperCardProps) {
   const { show } = useToaster();
   const rejected = wallpaper.status === "rejected";
@@ -78,15 +100,33 @@ export function WallpaperCard({
   // exactly this: the frontend can refuse without asking the backend.
   const restorable = wallpaper.origin_path !== null;
   const folder = rejected ? containingFolder(wallpaper.path) : "";
+  // Inside a grid the buttons leave the tab order, and the cell is the only
+  // stop. Leaving them in it is the alternative ADR 0019 rejected under "the
+  // buttons in the tab order and the card out of it": Review's fifty cards
+  // would be a hundred stops and the library's window would still strand
+  // wallpaper 3,000 behind the end of what is mounted. They stay focusable and
+  // clickable, and #125's direct keys are how the keyboard fires them.
+  const buttonTabIndex = cell ? -1 : undefined;
 
   return (
     <div
       // ADR 0019 asks each card for an accessible name carrying the filename
       // and the Status, since the Status is otherwise a pill and a dimming —
-      // and on an Active card not even a pill. `group` is the honest role for a
-      // labelled container today; #124 makes the card a `gridcell` when the
-      // grid that would justify one arrives.
-      role="group"
+      // and on an Active card not even a pill.
+      //
+      // A card in a grid is that grid's cell, and the roving `tabindex` is what
+      // makes the whole grid one tab stop: every cell is out of the tab order
+      // except the selected one, so Tab reaches the grid once and leaves it
+      // once whatever the row count. Outside a grid the honest role is the
+      // labelled `group` this card has always been, and nothing there is
+      // focusable but the buttons in the overlay.
+      role={cell ? "gridcell" : "group"}
+      tabIndex={cell ? (cell.selected ? 0 : -1) : undefined}
+      // How the grid finds this cell to focus it. An attribute rather than a
+      // ref handed back up, because under ADR 0016's virtualisation the mounted
+      // cards are a window: their order in the DOM is not their order in the
+      // list, and only the index the grid wrote is.
+      data-cell={cell?.index}
       aria-label={`${wallpaper.filename}, ${STATUS_LABEL[wallpaper.status]}`}
       className="group relative aspect-video overflow-hidden rounded-lg border border-border bg-card"
     >
@@ -209,6 +249,7 @@ export function WallpaperCard({
                 // as unavailable, and lets it explain itself when pressed.
                 aria-disabled={restorable ? undefined : true}
                 aria-label={`Restore ${wallpaper.filename}`}
+                tabIndex={buttonTabIndex}
                 onClick={() => {
                   if (!restorable) {
                     // No IPC call. `origin_path` is `null` on the row, so the
@@ -243,6 +284,7 @@ export function WallpaperCard({
                       ? `Make Active ${wallpaper.filename}`
                       : `Keep ${wallpaper.filename}`
                   }
+                  tabIndex={buttonTabIndex}
                   onClick={() =>
                     onAction(
                       wallpaper.status === "kept" ? "make-active" : "keep",
@@ -258,6 +300,7 @@ export function WallpaperCard({
                   size="xs"
                   variant="destructive"
                   aria-label={`Reject ${wallpaper.filename}`}
+                  tabIndex={buttonTabIndex}
                   onClick={() => onAction("reject", wallpaper)}
                   className="flex-1 bg-destructive/90 text-white hover:bg-destructive"
                 >

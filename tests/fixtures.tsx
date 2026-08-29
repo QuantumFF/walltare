@@ -131,6 +131,24 @@ export function desktopColorScheme(scheme: "light" | "dark"): void {
   device.prefersColorScheme = scheme;
 }
 
+interface ViewportWindow {
+  happyDOM: { setViewport: (viewport: { width: number }) => void };
+}
+
+/**
+ * Set how wide the window is, which is what `matchMedia("(min-width: ...)")`
+ * then answers — and so how many columns the wallpaper grid has.
+ *
+ * The same arrangement `desktopColorScheme` makes for the theme: the real media
+ * query, given a viewport, rather than a stub in front of the component. happy-dom
+ * fires `resize` from this, which is the one event the grid subscribes to.
+ *
+ * It outlives the test that set it; reset it wherever it is used.
+ */
+export function viewportWidth(width: number): void {
+  (window as unknown as ViewportWindow).happyDOM.setViewport({ width });
+}
+
 /** Reports the current view so a test can assert navigation without the target view mounting. */
 export function ViewProbe() {
   const { view } = useApp();
