@@ -5,7 +5,7 @@ import {
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import type { CardAction } from "@/components/WallpaperCard";
-import { WallpaperGrid } from "@/components/WallpaperGrid";
+import { useGridSelection, WallpaperGrid } from "@/components/WallpaperGrid";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import {
@@ -38,6 +38,13 @@ export function ReviewView() {
   // wallpaper. Please try again." — said less than the backend message that
   // replaces them.
   const { show } = useToaster();
+  // The grid's selection, held here rather than inside the grid because ADR
+  // 0022 has the lightbox render this same selection and keeps the lightbox's
+  // state on the page that mounted the grid. Nothing on this page reads it yet;
+  // it is handed straight back down, and #80 is the first caller of any of it —
+  // starting with the failure handler below, which re-inserts a card the
+  // selection has by then moved off (#137).
+  const selection = useGridSelection(wallpapers);
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
@@ -279,6 +286,7 @@ export function ReviewView() {
              0007's licence stays scoped to the fifty rows it was measured on. */
           <WallpaperGrid
             wallpapers={wallpapers}
+            selection={selection}
             label="Wallpapers to review"
             onAction={handleAction}
             onOpen={handleOpen}

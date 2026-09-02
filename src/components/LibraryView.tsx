@@ -5,7 +5,11 @@ import {
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import type { CardAction } from "@/components/WallpaperCard";
-import { useGridColumns, WallpaperGrid } from "@/components/WallpaperGrid";
+import {
+  useGridColumns,
+  useGridSelection,
+  WallpaperGrid,
+} from "@/components/WallpaperGrid";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import {
@@ -402,6 +406,19 @@ export function LibraryView() {
       : { start: 0, end: 0, before: 0, after: 0 };
 
   /**
+   * The grid's selection, held here rather than inside the grid because ADR
+   * 0022 has the lightbox render this same selection and keeps the lightbox's
+   * state on the page that mounted the grid — for the same reason the rows are
+   * here, that both change on every action.
+   *
+   * Nothing on this page reads it yet; it is handed straight back down, and #80
+   * is the first caller of any of it. It is resolved against `list` and not
+   * against the `range` above, so wallpaper 3,000 can hold the selection
+   * whichever thirty cards have nodes (#137).
+   */
+  const selection = useGridSelection(list);
+
+  /**
    * Put the card the selection moved to on screen, which under a window means
    * mounting its row first.
    *
@@ -705,6 +722,7 @@ export function LibraryView() {
              lands outside it gets one (#131). */
           <WallpaperGrid
             wallpapers={list}
+            selection={selection}
             label="Wallpapers in the library"
             onAction={handleAction}
             onOpen={handleOpen}

@@ -1,6 +1,10 @@
 import type { CardAction } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
-import { WallpaperGrid } from "@/components/WallpaperGrid";
+import {
+  useGridSelection,
+  WallpaperGrid,
+  type GridSelection,
+} from "@/components/WallpaperGrid";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useState } from "react";
@@ -99,23 +103,72 @@ function handleAction(action: CardAction, subject: Wallpaper): void {
 }
 
 let setList: (list: Wallpaper[]) => void = () => {};
+/**
+ * The selection the host is holding, which is what a page reaches for: the
+ * wallpaper on screen, a move, a set to a named id, and the request that puts
+ * focus back on the selected card (#137). #80's lightbox is the caller; these
+ * tests stand in for it.
+ */
+let selection: GridSelection;
 
 /**
  * The grid between two other tab stops, so a test can walk into it and out the
  * far side, and with the list in state so it can change under the selection the
  * way an action or a filter does.
+ *
+ * The selection is the host's, resolved over the same list the grid is handed.
+ * There is no version of this harness without one: the rule has one home, and
+ * the grid reads it rather than keeping a second copy.
  */
-function Harness({ initial }: { initial: Wallpaper[] }) {
+function Harness({
+  initial,
+  reveal,
+  window: size,
+}: {
+  initial: Wallpaper[];
+  /**
+   * The seam the grid calls before it moves focus, which is #79's virtualiser
+   * in the app. Absent leaves the grid's own scroll of the cell.
+   */
+  reveal?: (index: number) => void;
+  /**
+   * How many cards have a node at a time, which is the host half of a reveal:
+   * the window moves to the card the grid asked for, and the node arrives on the
+   * commit after. Absent mounts every row, which is Review's grid (ADR 0016).
+   */
+  window?: number;
+}) {
   const [list, set] = useState(initial);
+  const [start, setStart] = useState(0);
   setList = set;
+  selection = useGridSelection(list);
   return (
     <>
       <button type="button">before</button>
       <WallpaperGrid
         wallpapers={list}
+        selection={selection}
         label="Wallpapers"
         onAction={handleAction}
         onOpen={(subject) => opened.push(subject.id)}
+        range={
+          size === undefined
+            ? undefined
+            : {
+                start,
+                end: Math.min(start + size, list.length),
+                before: 0,
+                after: 0,
+              }
+        }
+        reveal={
+          reveal === undefined && size === undefined
+            ? undefined
+            : (index) => {
+                reveal?.(index);
+                if (size !== undefined) setStart(Math.max(0, index - size + 1));
+              }
+        }
       />
       <button type="button">after</button>
     </>
@@ -137,6 +190,18 @@ async function relist(list: Wallpaper[]) {
 /** One card, by the accessible name it carries as a cell. */
 function cell(id: number, status = "Active"): HTMLElement {
   return screen.getByRole("gridcell", { name: `wall-${id}.jpg, ${status}` });
+}
+
+/** Whether that card has a node at all, which under a window it may not. */
+function mounted(id: number): boolean {
+  return (
+    screen.queryByRole("gridcell", { name: `wall-${id}.jpg, Active` }) !== null
+  );
+}
+
+/** Every card with a node, which is the whole list unless a window says less. */
+function mountedCells(): HTMLElement[] {
+  return screen.queryAllByRole("gridcell");
 }
 
 /** The title and description of the one toast that is up, or `null` for none. */
@@ -378,10 +443,8 @@ test("the selection is scrolled into view when it moves", async () => {
   // needs, which is reveal first and focus after.
   const revealed: number[] = [];
   await renderInApp(
-    <WallpaperGrid
-      wallpapers={cards(9)}
-      label="Wallpapers"
-      onAction={() => {}}
+    <Harness
+      initial={cards(9)}
       reveal={(index) => {
         revealed.push(index);
         expect(document.activeElement).not.toBe(cell(index + 1));
@@ -396,6 +459,85 @@ test("the selection is scrolled into view when it moves", async () => {
   await press("End");
 
   expect(revealed).toEqual([8]);
+  expect(document.activeElement).toBe(cell(9));
+});
+
+// The three things the page holds the selection for (#137). #80's lightbox is
+// what calls them: it renders this same selection, so opening on a card the
+// selection was not on is a move, a failed action puts the selection back on the
+// wallpaper the toast names, and closing asks for the card to take focus again.
+
+test("the page can select a wallpaper by id, and the tab stop follows it", async () => {
+  await mount(cards(4));
+
+  // Nobody has been in the grid, so this is the case the page's failure handler
+  // lands in: the curator is elsewhere and the selection moves under them.
+  await act(async () => {
+    button("after").focus();
+  });
+  await act(async () => {
+    selection.selectId(3);
+  });
+
+  // Focus stayed where they put it, and the selection moved anyway. The way
+  // back in is what makes the second half observable.
+  expect(document.activeElement).toBe(button("after"));
+  await act(async () => {
+    button("before").focus();
+    pressTab();
+  });
+  expect(document.activeElement).toBe(cell(3));
+});
+
+test("a focus request from the page puts focus on the selected card", async () => {
+  await mount(cards(4));
+  await act(async () => {
+    button("after").focus();
+  });
+  await act(async () => {
+    selection.selectId(3);
+  });
+  expect(document.activeElement).toBe(button("after"));
+
+  // The one route in from outside. Moving the selection deliberately does not
+  // take focus, so closing the lightbox has to ask — and what it asks for is
+  // the card for the current selection, not the one it was opened from
+  // (ADR 0022).
+  await act(async () => {
+    selection.requestFocus();
+  });
+  expect(document.activeElement).toBe(cell(3));
+});
+
+test("a focus request reveals a card with no node before focusing it", async () => {
+  const revealed: number[] = [];
+  await renderInApp(
+    <Harness
+      initial={cards(9)}
+      window={4}
+      reveal={(index) => revealed.push(index)}
+    />,
+  );
+  await flush();
+
+  // The window ADR 0016 puts over the library, at the size this file can assert
+  // against: four of the nine cards have a node, and the wallpaper the page
+  // selects is not one of them.
+  expect(mountedCells().length).toBe(4);
+  await act(async () => {
+    selection.selectId(9);
+  });
+  expect(mounted(9)).toBe(false);
+
+  await act(async () => {
+    selection.requestFocus();
+  });
+
+  // The row was asked for before the focus move: the reveal moves the window,
+  // the commit that follows gives card 9 a node, and the focus lands on the
+  // pass after that. Focusing a node that does not exist yet is the one way the
+  // pattern breaks (ADR 0019).
+  expect(revealed[0]).toBe(8);
   expect(document.activeElement).toBe(cell(9));
 });
 
