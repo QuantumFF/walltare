@@ -1,9 +1,12 @@
 import { LibraryView } from "@/components/LibraryView";
+import { useApp } from "@/context/AppContext";
 import type { Settings, Wallpaper } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  currentView,
+  deferred,
   flush,
   renderInApp,
   settings,
@@ -65,14 +68,37 @@ async function openLibrary(count: number) {
   );
 }
 
+/**
+ * The Settings field a navigation asked for, or the empty string for none.
+ *
+ * `ViewProbe` reports where the app went and cannot report what it wants looked
+ * at on arrival, which is half of what the empty library's route is for: a page
+ * of four sections with the answer somewhere in it is not the same landing as a
+ * caret in the Library root field (ADR 0020).
+ */
+function FocusProbe() {
+  const { focus } = useApp();
+  return <span data-testid="focus">{focus ?? ""}</span>;
+}
+
+const focusedField = () => screen.getByTestId("focus").textContent;
+
 /** These rows, on the page and fetched, with whatever settings the test needs. */
-async function openLibraryOf(rows: Wallpaper[], stored: Partial<Settings> = {}) {
+async function openLibraryOf(
+  rows: Wallpaper[],
+  stored: Partial<Settings> = {},
+) {
   // Four cards to a row, which is the count the window and the arrow keys both
   // read off the same table (`useGridColumns`).
   viewportWidth(1024);
   library = rows;
   mockCommand("get_settings", () => settings(stored));
-  await renderInApp(<LibraryView />);
+  await renderInApp(
+    <>
+      <FocusProbe />
+      <LibraryView />
+    </>,
+  );
   await flush();
 }
 
@@ -96,7 +122,8 @@ const cardFor = (id: number): HTMLElement | null =>
     .querySelector(`img[src="wallpaper://localhost/image/${id}?size=small"]`)
     ?.closest<HTMLElement>('[role="gridcell"]') ?? null;
 
-const cardName = (id: number) => cardFor(id)?.getAttribute("aria-label") ?? null;
+const cardName = (id: number) =>
+  cardFor(id)?.getAttribute("aria-label") ?? null;
 
 /**
  * The title and description of the one toast that is up, or `null` for none.
@@ -110,7 +137,8 @@ function toast(): { title: string; description: string | null } | null {
   return {
     title: root.querySelector("[data-slot='toast-title']")?.textContent ?? "",
     description:
-      root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
+      root.querySelector("[data-slot='toast-description']")?.textContent ??
+      null,
   };
 }
 
@@ -401,4 +429,82 @@ test("the direct keys act on the selected card, the same as its buttons", async 
   expect(keptIds).toEqual([1]);
   expect(cardName(1)).toBe("wall-1.jpg, Kept");
   expect(toast()?.title).toBe("Kept wall-1.jpg");
+});
+
+// The two empty states (#133). They are two screens: the filter is the only
+// thing that can tell an empty library from a filter matching nothing, because
+// with All selected the fetch asked about the whole library and with any other
+// filter it asked about one Status.
+
+test("an empty library names the reason and routes to the library root field", async () => {
+  await openLibraryOf([]);
+
+  expect(
+    screen.getByText("Nothing has been scanned into the library yet."),
+  ).toBeTruthy();
+
+  await click(screen.getByRole("button", { name: "Choose a library root" }));
+
+  // Settings, with the caret asked for by name. A disabled tab explains
+  // nothing, so the destination that is empty owes the route out, and the
+  // route lands on the one field that fixes it (ADR 0015, ADR 0020).
+  expect(currentView()).toBe("settings");
+  expect(focusedField()).toBe("library_root");
+});
+
+test("a filter matching nothing names the filter and clears back to All", async () => {
+  await openLibraryOf([wallpaper(1)]);
+  await choose("Filter", "kept");
+  expect(listCalls).toBe(2);
+
+  // The library is fine and this view of it is not, which is what separates
+  // this sentence from the one above. The Status is capitalised, as CONTEXT.md
+  // spells it and as the card's own pill does (`copy.ts`).
+  expect(screen.getByText("No Kept wallpapers in the library.")).toBeTruthy();
+  expect(
+    screen.queryByText("Nothing has been scanned into the library yet."),
+  ).toBeNull();
+
+  await click(screen.getByRole("button", { name: "Show all wallpapers" }));
+
+  // Through the same state setter the control on the bar writes, so the filter
+  // change owns the refetch and the scroll reset it always did — and #130
+  // moving that control cannot take this way out with it.
+  expect(listCalls).toBe(3);
+  expect(cardFor(1)).not.toBeNull();
+});
+
+test("neither empty state renders while the first fetch is still out", async () => {
+  const list = deferred<Wallpaper[]>();
+  mockCommand("list_wallpapers", () => {
+    listCalls++;
+    return list.promise;
+  });
+
+  await renderInApp(
+    <>
+      <FocusProbe />
+      <LibraryView />
+    </>,
+  );
+
+  // A call that has not come back is not an answer. `rows` is `null` here and
+  // `[]` only once the backend has said so, and telling a curator their library
+  // is empty because a fetch is in flight is what that distinction prevents.
+  expect(listCalls).toBe(1);
+  expect(
+    screen.queryByText("Nothing has been scanned into the library yet."),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Choose a library root" }),
+  ).toBeNull();
+
+  await act(async () => {
+    list.resolve([]);
+  });
+  await flush();
+
+  expect(
+    screen.getByText("Nothing has been scanned into the library yet."),
+  ).toBeTruthy();
 });

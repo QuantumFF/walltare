@@ -418,7 +418,17 @@ test("an empty library says so on the page that would have listed it", async () 
 
   // ADR 0015 disables no tab, so every destination owes an empty state that
   // says why it is empty and where to go instead.
-  expect(screen.queryByText(/nothing here yet/i)).not.toBeNull();
+  expect(
+    screen.queryByText("Nothing has been scanned into the library yet."),
+  ).not.toBeNull();
+
+  // And the route out is a real one through the whole shell: the control lands
+  // on Settings, where the field it asked for is the one the curator has to
+  // fill in (#133, ADR 0020).
+  await click(screen.getByRole("button", { name: "Choose a library root" }));
+
+  expect(showingView()).toBe("settings");
+  expect(document.activeElement).toBe(scanInput());
 });
 
 test("a scan still runs end to end from inside Settings, and leaves the curator there", async () => {

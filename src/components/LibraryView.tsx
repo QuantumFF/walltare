@@ -3,6 +3,7 @@ import { useRejectDestination } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import type { CardAction } from "@/components/WallpaperCard";
 import { useGridColumns, WallpaperGrid } from "@/components/WallpaperGrid";
+import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import {
   useAppEvent,
@@ -20,8 +21,9 @@ import {
 // empty state and the card's own pill spell them alike.
 import { STATUS_LABEL } from "@/lib/copy";
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
-import { Images } from "lucide-react";
+import { Filter, Images, type LucideIcon } from "lucide-react";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -118,6 +120,39 @@ function matchesFilter(status: Status, filter: StatusFilter): boolean {
 }
 
 /**
+ * The shape both of this page's empty states share: an icon, one sentence
+ * saying why there is nothing here, and the control that leads out of it.
+ *
+ * One component rather than two blocks, because ADR 0015's rule is about the
+ * pair and not about either half — no tab is ever disabled, so every
+ * destination owes a sentence saying why it is empty *and* where to go instead
+ * — and two independently written blocks are how one of them ends up with the
+ * sentence and no route. What differs between the two states is the wording and
+ * where the control leads, which is the whole of what this takes.
+ */
+function EmptyState({
+  icon: Icon,
+  action,
+  onAction,
+  children,
+}: {
+  icon: LucideIcon;
+  action: string;
+  onAction: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 p-10 text-center">
+      <Icon className="h-10 w-10 text-muted-foreground/30" aria-hidden />
+      <p className="text-sm text-muted-foreground">{children}</p>
+      <Button variant="link" onClick={onAction}>
+        {action}
+      </Button>
+    </div>
+  );
+}
+
+/**
  * The library page: every matching row in one fetch (ADR 0016), drawn as the
  * shared card in the shared grid, inside the scroll container this view owns.
  *
@@ -130,13 +165,18 @@ function matchesFilter(status: Status, filter: StatusFilter): boolean {
  * in it, and the three events that keep the rows honest while the curator is
  * looking at something else.
  *
- * The empty state stays, in both of its readings. ADR 0015 disables no tab — a
- * disabled tab is a dead end that explains nothing — so every destination owes
- * a sentence saying why it is empty and where to go instead. #133 is what
- * separates the two readings into two screens.
+ * There are two empty states and they are two screens: a library nothing has
+ * been scanned into, which routes to the Settings field that fixes it, and a
+ * filter matching nothing, which offers to go back to All. ADR 0015 disables no
+ * tab — a disabled tab is a dead end that explains nothing — so every
+ * destination owes a sentence saying why it is empty and where to go instead,
+ * and the two reasons here have different answers to the second half.
  */
 export function LibraryView() {
-  const { view } = useApp();
+  // `setView` is the empty library's way out: nothing on this page can name a
+  // library root, so the state that says so routes to the page that can
+  // (ADR 0015, ADR 0020).
+  const { view, setView } = useApp();
   const showing = view === "library";
 
   const { publish } = useAppEvents();
@@ -512,15 +552,59 @@ export function LibraryView() {
         }}
         className="min-h-0 flex-1 overflow-y-auto"
       >
+        {/* The two empty states, and they are two screens rather than one
+            sentence with a branch in it (#133).
+
+            The condition on `rows` is what keeps either of them off the screen
+            while the first fetch is still out: `null` is "nobody has asked yet"
+            and `[]` is the backend's answer, and telling a curator their library
+            is empty because a call has not come back is the state this
+            distinction exists to prevent.
+
+            Which of the two is showing is read off the filter, because that is
+            the only thing that can tell them apart. With All selected the fetch
+            asked about the whole library, so no rows means no library. The other
+            three asked about one Status, so no rows means a library with nothing
+            of that Status in it — the library is fine and this view of it is
+            not. */}
         {rows !== null && rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 p-10 text-center">
-            <Images className="h-10 w-10 text-muted-foreground/30" aria-hidden />
-            <p className="text-sm text-muted-foreground">
-              {filter === "all"
-                ? "Nothing here yet. Point walltare at a folder in Settings and scan it."
-                : `No ${STATUS_LABEL[filter].toLowerCase()} wallpapers. Try a different filter.`}
-            </p>
-          </div>
+          filter === "all" ? (
+            /* The route carries `focus`, so the curator lands on the field they
+               have to fill in rather than on a page of four sections with the
+               answer somewhere in it (ADR 0020). `returnTo` is this page by
+               name and not the current view, since the only way to press this is
+               to be looking at it. */
+            <EmptyState
+              icon={Images}
+              action="Choose a library root"
+              onAction={() =>
+                setView("settings", {
+                  returnTo: "library",
+                  focus: "library_root",
+                })
+              }
+            >
+              Nothing has been scanned into the library yet.
+            </EmptyState>
+          ) : (
+            /* The Status as CONTEXT.md spells it, capitalised: these are the
+               domain's proper nouns and `STATUS_LABEL` is where the app agrees
+               with itself about them, card pill included (`copy.ts`).
+
+               The way out is the same state setter the control on the bar
+               writes, not the control itself. #130 replaces that `<select>` with
+               the designed filter row and moves it, and an empty state that
+               reached for a DOM node would go with it; going through `setFilter`
+               also means the refetch and the scroll reset are the ones a filter
+               change already owns (ADR 0016). */
+            <EmptyState
+              icon={Filter}
+              action="Show all wallpapers"
+              onAction={() => setFilter("all")}
+            >
+              No {STATUS_LABEL[filter]} wallpapers in the library.
+            </EmptyState>
+          )
         ) : (
           /* The grid is the shared one, in the order the fetch returned its
              rows — the ordering is ADR 0014's and belongs to the backend, so
