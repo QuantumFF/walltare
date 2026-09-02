@@ -149,6 +149,37 @@ export interface WallpaperCardProps {
    * alone.
    */
   animated?: boolean;
+  /**
+   * Whether the Score on this row is a Comparison out of date, in which case the
+   * badge says so instead of printing a number.
+   *
+   * The library page is the only caller that can know this. `score-changed`
+   * names the two wallpapers in a Comparison and cannot name their new Scores,
+   * so a page subscribed to it knows those two numbers are stale and does not
+   * know what they became — and refetching every row because two Scores moved is
+   * the blunt shape ADR 0015 turned a query library down over. A card mounted
+   * anywhere else is showing the numbers it was handed, which are current.
+   */
+  scoreMoved?: boolean;
+  /**
+   * A click anywhere on the card that is not a button: the curator asking to
+   * look closer, which is what opens the lightbox (#134).
+   *
+   * There is no open control, and the card is the target rather than the image
+   * inside it because ADR 0019 made the card a `gridcell` — the cell is the
+   * thing the curator pressed, and a button for the gesture the whole card
+   * already carries would be a second affordance for one action. The overlay's
+   * buttons stop the click before it reaches here, so pressing Keep is a keep
+   * and nothing else. It is the touchscreen path too: a hover-less pointer
+   * cannot reveal the overlay, so its tap lands on the cell and the lightbox is
+   * where its Keep, Reject and Restore live (ADR 0019, ADR 0022).
+   *
+   * The wallpaper travels with the click rather than being read off the grid's
+   * selection, which a click does not move. ADR 0022 has the lightbox render
+   * that selection, so the two have to be reconciled where the lightbox is
+   * built; until then what the host is told is which card was pressed.
+   */
+  onOpen?: (wallpaper: Wallpaper) => void;
   /** See `GridCell`. Absent for a card standing on its own. */
   cell?: GridCell;
 }
@@ -175,6 +206,8 @@ export function WallpaperCard({
   wallpaper,
   onAction,
   animated = false,
+  scoreMoved = false,
+  onOpen,
   cell,
 }: WallpaperCardProps) {
   // One entry for every press on this card, and the same one #125's keys use.
@@ -213,6 +246,10 @@ export function WallpaperCard({
       // list, and only the index the grid wrote is.
       data-cell={cell?.index}
       aria-label={`${wallpaper.filename}, ${STATUS_LABEL[wallpaper.status]}`}
+      // See `onOpen`. Nothing is prevented and nothing is stopped: this is the
+      // end of the bubble path, and a card outside a grid with no host asking
+      // for the gesture simply does not fire it.
+      onClick={() => onOpen?.(wallpaper)}
       className="group relative aspect-video overflow-hidden rounded-lg border border-border bg-card"
     >
       <img
@@ -249,6 +286,12 @@ export function WallpaperCard({
         is dimmed today and that is correct: σ crosses 4.0 at about seven
         comparisons. The tooltip is what says which state the dimming is, since
         the badge itself may not say `Score`.
+
+        `Score moved` is the one other thing the badge can read, and it is not a
+        way of writing a Score down at all — it is the app saying it no longer
+        knows one, which is why it stays here rather than joining `score()` in
+        `copy.ts`. Only a page subscribed to `score-changed` can hand it over,
+        and only the two wallpapers a Comparison named get it (#129).
       */}
       <div className="pointer-events-none absolute top-1.5 right-1.5">
         <Badge
@@ -260,7 +303,7 @@ export function WallpaperCard({
               : "border-white/30 bg-black/50 text-white/70",
           )}
         >
-          {score(wallpaper)}
+          {scoreMoved ? "Score moved" : score(wallpaper)}
         </Badge>
       </div>
 
@@ -283,8 +326,9 @@ export function WallpaperCard({
         The reveal layer covers the card and the gradient strip inside it does
         not, so the image stays visible under a hover while there is still one
         element per card carrying the fade. `pointer-events-none` on the layer
-        keeps the uncovered image clickable for the lightbox #124 opens; the
-        strip takes its own events back for the buttons.
+        keeps the uncovered image clickable, so a click on the picture is a
+        click on the cell and opens the lightbox; the strip takes its own events
+        back for the buttons.
       */}
       <div
         className={cn(
@@ -353,7 +397,18 @@ export function WallpaperCard({
                   // The refusal an origin-less row gets is `useCardAction`'s and
                   // not this button's, so pressing Restore and pressing `R` are
                   // the same event with the same outcome.
-                  onClick={() => act(action, wallpaper)}
+                  onClick={(event) => {
+                    // Where the card's own click handler stops. The cell
+                    // underneath opens the lightbox, and a press on one of
+                    // these is that transition and not both of them (#134).
+                    //
+                    // Propagation only: the default action stays, because that
+                    // is what `Enter` on a focused button produces. Cancelling
+                    // it here would leave the keyboard pressing a control that
+                    // does nothing.
+                    event.stopPropagation();
+                    act(action, wallpaper);
+                  }}
                   className={cn(
                     destructive
                       ? "flex-1 bg-destructive/90 text-white hover:bg-destructive"

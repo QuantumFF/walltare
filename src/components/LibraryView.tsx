@@ -1,6 +1,18 @@
 import { PageBar } from "@/components/PageBar";
+import {
+  RejectDestinationLine,
+  useRejectDestination,
+} from "@/components/RejectDestination";
+import { useToaster } from "@/components/ToastSurface";
+import type { CardAction } from "@/components/WallpaperCard";
+import { useGridColumns, WallpaperGrid } from "@/components/WallpaperGrid";
+import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
-import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
+import {
+  useAppEvent,
+  useAppEvents,
+  useRefetchWhenShown,
+} from "@/context/AppEventsContext";
 import {
   client,
   type ListOrdering,
@@ -8,11 +20,13 @@ import {
   type StatusFilter,
   type Wallpaper,
 } from "@/lib/client";
-// The words for a Status and for a Score, from the file that holds the app's
-// phrasings, so the list below and the card #78 builds spell them alike.
-import { score, STATUS_LABEL } from "@/lib/copy";
-import { Images } from "lucide-react";
+// The words for a Status, from the file that holds the app's phrasings, so the
+// empty state and the card's own pill spell them alike.
+import { STATUS_LABEL } from "@/lib/copy";
+import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
+import { Filter, Images, type LucideIcon } from "lucide-react";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -22,7 +36,63 @@ import {
 
 const LOAD_FAILED_ERROR = "Failed to load the library.";
 
-/** The four filters, in the order the control offers them (ADR 0016). */
+/**
+ * The grid's own spacing, as numbers, because the virtualiser has to know how
+ * tall a row is before the row exists and the CSS is the only place that says.
+ * `gap-6` between the cards, `p-4` around the grid, and an `aspect-video` card
+ * (`WallpaperCard`).
+ *
+ * Three classes and three constants, and the duplication costs something when
+ * it drifts: a window positioned against a row height nothing has puts the
+ * wrong cards on screen. The alternative is measuring a card once it is laid
+ * out and feeding the height back, which is what happy-dom rules out — it does
+ * no layout, so the measurement is zero, the window collapses and the tests
+ * that pin it have nothing to assert against (#131).
+ */
+const GRID_GAP = 24;
+const GRID_PADDING = 16;
+const CARD_ASPECT = 9 / 16;
+
+/**
+ * What a box that measures zero is taken to be: a row about as tall as a card
+ * in the default 1280x800 window, inside a viewport about as tall as that
+ * window.
+ *
+ * A zero-sized box is not an edge case here, and a window with no fallback is
+ * no window at all — the virtualiser answers a viewport of zero with an empty
+ * range, so every card would be unmounted rather than thirty of them mounted.
+ * happy-dom does no layout and reports every rect as zero, which is what would
+ * otherwise leave the two windowing tests asserting about an empty grid (#131);
+ * and ADR 0015 keeps this view mounted under `display: none` while another view
+ * is showing, which zeroes the box in a real browser too.
+ */
+const UNMEASURED_ROW = 130;
+const UNMEASURED_BOX = 800;
+
+/**
+ * How tall one row of cards is, from the width the row has to fill and the
+ * number of cards sharing it.
+ *
+ * Derived from the width rather than measured off a laid-out card, for the same
+ * reason `useGridColumns` reads the media queries rather than the cards: a size
+ * taken from a rect is zero under test, and a window built on it degenerates.
+ */
+function rowHeight(boxWidth: number, columns: number): number {
+  const cards = boxWidth - 2 * GRID_PADDING - GRID_GAP * (columns - 1);
+  if (cards <= 0) return UNMEASURED_ROW;
+  return (cards / columns) * CARD_ASPECT;
+}
+
+/**
+ * The four filters, in the order the chips sit in, and All first because the
+ * page's promise is everything the app knows about (ADR 0014).
+ *
+ * Four and not five. There is no Eligible chip: Eligible is a voting-pool term,
+ * and on a browsing surface it reads as "everything I haven't thrown out", which
+ * is what All already shows with the rejects greyed. Putting a word with a
+ * precise domain meaning on a chip invites a looser reading of it (CONTEXT.md,
+ * ADR 0016).
+ */
 const FILTERS: Array<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "All" },
   { value: "active", label: "Active" },
@@ -42,31 +112,100 @@ const ORDERINGS: Array<{ value: ListOrdering; label: string }> = [
   { value: "recently_added", label: "Recently added" },
 ];
 
+/**
+ * What a failed transition is logged as, per action.
+ *
+ * The console line names the command, which is the one thing the toast beside it
+ * does not: that carries the wallpaper and the backend's own sentence, and all
+ * four of these arrive at the curator through the same `failed` row.
+ */
+const FAILURE_LOG: Record<CardAction, string> = {
+  keep: "Failed to keep wallpaper:",
+  "make-active": "Failed to unkeep wallpaper:",
+  reject: "Failed to move wallpaper:",
+  restore: "Failed to restore wallpaper:",
+};
+
 /** Whether a row still belongs in a list filtered this way. */
 function matchesFilter(status: Status, filter: StatusFilter): boolean {
   return filter === "all" || filter === status;
 }
 
 /**
- * Interim, and it is meant to read as one. #79 builds the library page: the
- * virtualised grid ADR 0016 settled on, the card, the designed filter row and
- * the sort control, all of them inside the two seams below — the bar, and the
- * scroll container.
+ * The shape both of this page's empty states share: an icon, one sentence
+ * saying why there is nothing here, and the control that leads out of it.
  *
- * What lands here is everything the grid will sit on and nothing that looks
- * like it: the row state, the filter, the ordering, the scroll position, and
- * the three events that keep the rows honest while the curator is looking at
- * something else. The list of lines is a read-out of that state rather than a
- * design, because a page that fetched every row and drew none of them could not
- * be told from one that fetched nothing.
+ * One component rather than two blocks, because ADR 0015's rule is about the
+ * pair and not about either half — no tab is ever disabled, so every
+ * destination owes a sentence saying why it is empty *and* where to go instead
+ * — and two independently written blocks are how one of them ends up with the
+ * sentence and no route. What differs between the two states is the wording and
+ * where the control leads, which is the whole of what this takes.
+ */
+function EmptyState({
+  icon: Icon,
+  action,
+  onAction,
+  children,
+}: {
+  icon: LucideIcon;
+  action: string;
+  onAction: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 p-10 text-center">
+      <Icon className="h-10 w-10 text-muted-foreground/30" aria-hidden />
+      <p className="text-sm text-muted-foreground">{children}</p>
+      <Button variant="link" onClick={onAction}>
+        {action}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * The library page: every matching row in one fetch (ADR 0016), drawn as the
+ * shared card in the shared grid, inside the scroll container this view owns.
  *
- * The empty state stays, in both of its readings. ADR 0015 disables no tab — a
- * disabled tab is a dead end that explains nothing — so every destination owes
- * a sentence saying why it is empty and where to go instead.
+ * The bar carries four things and they are all read-outs of the same two pieces
+ * of state or of a setting: the Status filter as four chips, the ordering as one
+ * named control, the line saying where rejects go, and the row count (#130).
+ *
+ * What this view owns underneath is the state the grid reads: the rows, the
+ * filter, the ordering, the scroll position, the window of rows that has cards
+ * in it, and the three events that keep the rows honest while the curator is
+ * looking at something else.
+ *
+ * There are two empty states and they are two screens: a library nothing has
+ * been scanned into, which routes to the Settings field that fixes it, and a
+ * filter matching nothing, which offers to go back to All. ADR 0015 disables no
+ * tab — a disabled tab is a dead end that explains nothing — so every
+ * destination owes a sentence saying why it is empty and where to go instead,
+ * and the two reasons here have different answers to the second half.
  */
 export function LibraryView() {
-  const { view } = useApp();
+  // `setView` is the empty library's way out: nothing on this page can name a
+  // library root, so the state that says so routes to the page that can
+  // (ADR 0015, ADR 0020).
+  const { view, setView } = useApp();
   const showing = view === "library";
+
+  const { publish } = useAppEvents();
+  // Every transition this page makes reports itself on the shell's one slot, and
+  // this view holds no error state of its own: two error surfaces in one view is
+  // what ADR 0017 removed, and the backend's own message says more than a string
+  // written here would.
+  const { show } = useToaster();
+  // Where a reject goes, read once for the two things that must agree about it:
+  // the string `move_wallpaper` is handed, and the boolean the toast reads to
+  // decide whether it has a path left to name. One object rather than a value
+  // each of them resolves for itself, because `$HOME/bin` looks relative and is
+  // not, so a second `expand_path` call is a second verdict (ADR 0018). The line
+  // on the bar is handed this same object rather than reading the setting for
+  // itself, which is what makes "the toast names the path whenever the bar could
+  // not" a property of the page rather than a hope about two callers.
+  const destination = useRejectDestination();
 
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [ordering, setOrdering] = useState<ListOrdering>("score_desc");
@@ -83,6 +222,12 @@ export function LibraryView() {
   const [scoresMoved, setScoresMoved] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
+
+  // The same count the grid moves the selection by, read from the same table
+  // rather than computed a second time: a virtualiser that disagreed with the
+  // arrow keys about how many cards are in a row would scroll one row in and
+  // focus a card in another (#131).
+  const columns = useGridColumns();
 
   const scroller = useRef<HTMLDivElement | null>(null);
   // Where the curator was, for the lifetime of the run and no longer.
@@ -174,50 +319,275 @@ export function LibraryView() {
   });
 
   // Put the curator back where they were, before the frame paints, so the
-  // restore is never a visible jump from the top of the list.
+  // restore is never a visible jump from the top of the list. The offset is
+  // still what is restored under a virtualised grid: the window is a function of
+  // the offset, so putting the scroller back where it was is what mounts the
+  // rows the curator was looking at.
   useLayoutEffect(() => {
     if (!showing || !scroller.current) return;
     scroller.current.scrollTop = scrollTop.current;
   }, [showing]);
 
+  const list = rows ?? [];
+  // The scroll box as last measured, and the width the row height is derived
+  // from. The last non-zero measurement is kept, so a view the shell has hidden
+  // — which zeroes the box — keeps the size it had rather than rebuilding its
+  // whole window on the way back (ADR 0015).
+  const measured = useRef({ width: 0, height: 0 });
+  const [boxWidth, setBoxWidth] = useState(0);
+  const rowSize = rowHeight(boxWidth, columns);
+
   /**
-   * The shared wording, with this page's one extra answer in front of it.
+   * The window of rows (ADR 0016). Thirty cards in the DOM out of five
+   * thousand fetched, because 5,000 images and 5,000 overlays is a page that
+   * scrolls badly whatever the card is made of.
    *
-   * `Score moved` stays here and does not belong in `copy.ts`, because it is not
-   * a way of writing a Score down at all — it is this page saying it no longer
-   * knows one. It comes from `score-changed`, which this view subscribes to and
-   * which names two wallpapers without naming their new numbers, so a card
-   * rendered anywhere else has nothing to say it with.
+   * It counts rows and not cards, which is why `columns` above has to be the
+   * grid's own count: one virtual item is one row of the CSS grid, and the gap
+   * and the padding are the grid's, told to the virtualiser rather than folded
+   * into the row height so the offsets it hands back are the offsets the CSS
+   * produces.
    */
-  const scoreLabel = (wallpaper: Wallpaper): string => {
-    if (scoresMoved.has(wallpaper.id)) return "Score moved";
-    return score(wallpaper);
+  const virtualiser = useVirtualizer({
+    count: Math.ceil(list.length / columns),
+    getScrollElement: () => scroller.current,
+    estimateSize: () => rowSize,
+    // One row above and one below. Two rows doubles the in-flight image
+    // requests to buy a margin the memory cache already provides after the
+    // first pass (ADR 0016).
+    overscan: 1,
+    gap: GRID_GAP,
+    paddingStart: GRID_PADDING,
+    paddingEnd: GRID_PADDING,
+    // The measurement, with the fallback above under it. The virtualiser's own
+    // observer does the observing — this wraps it rather than replacing it, so
+    // the resize handling stays theirs — and what the wrapper adds is that a
+    // rect of zero never reaches the window calculation, and that the width the
+    // row height is derived from comes off the same measurement rather than a
+    // second one taken somewhere else.
+    observeElementRect: (instance, report) =>
+      observeElementRect(instance, ({ width, height }) => {
+        const box = {
+          width: width || measured.current.width,
+          height: height || measured.current.height,
+        };
+        measured.current = box;
+        setBoxWidth(box.width);
+        report({ width: box.width, height: box.height || UNMEASURED_BOX });
+      }),
+  });
+
+  // A changed estimate does not re-measure by itself: the virtualiser caches
+  // what it measured and rebuilds when the row count changes, not when the
+  // function behind the estimate starts answering differently. So the first
+  // real measurement after a mount, and a resize that does not cross a
+  // breakpoint, say so here.
+  useLayoutEffect(() => {
+    virtualiser.measure();
+  }, [virtualiser, rowSize]);
+
+  const mountedRows = virtualiser.getVirtualItems();
+  const firstRow = mountedRows[0];
+  const lastRow = mountedRows[mountedRows.length - 1];
+  // The mounted range, as indexes into the whole list, and the empty space that
+  // holds the rest of the scroll height open above and below it.
+  const range =
+    firstRow && lastRow
+      ? {
+          start: firstRow.index * columns,
+          end: Math.min((lastRow.index + 1) * columns, list.length),
+          before: firstRow.start,
+          after: virtualiser.getTotalSize() - lastRow.end,
+        }
+      : { start: 0, end: 0, before: 0, after: 0 };
+
+  /**
+   * Put the card the selection moved to on screen, which under a window means
+   * mounting its row first.
+   *
+   * The grid calls this before it moves focus and never after, because a card
+   * an arrow key selected may have no node yet and asking the virtualiser to
+   * scroll the row in is what creates one. Focusing a node that does not exist
+   * is the one way that pattern breaks (ADR 0019).
+   */
+  const reveal = useCallback(
+    (index: number) => virtualiser.scrollToIndex(Math.floor(index / columns)),
+    [virtualiser, columns],
+  );
+
+  /**
+   * The four transitions a card can ask for: one call, one published patch, one
+   * toast (#132).
+   *
+   * **Nothing here is optimistic**, and that is the difference from Review. That
+   * page removes the card on the click and puts it back when the write fails,
+   * because a kept wallpaper leaves its list either way. This page keeps every
+   * row it fetched, so there is no removal to undo: the published patch is the
+   * only thing that edits a row, the subscriber above is what applies it, and a
+   * call that never lands leaves the card exactly where the curator left it.
+   *
+   * The patch is published **after** the write for the same reason. Publishing
+   * ahead of it would grey a row that never changed, and the failure would be
+   * the one thing the page did not hear about.
+   *
+   * Every one of them toasts, success and failure alike. The row does update in
+   * place under the cursor, but a virtualised grid may reorder it or filter it
+   * out from under the click, and a card that vanishes is not a confirmation
+   * (ADR 0016, ADR 0017).
+   *
+   * The origin-less Restore never arrives here. `useCardAction` refuses it with
+   * a pinned toast and makes no call, from the button and from `R` alike, so
+   * that refusal is a property of the action rather than of this host
+   * (ADR 0009, ADR 0019).
+   */
+  const act = async (action: CardAction, card: Wallpaper) => {
+    const { id, filename } = card;
+    try {
+      switch (action) {
+        case "keep":
+          await client.keepWallpaper(id);
+          publish({ type: "status-changed", id, status: "kept" });
+          show({ kind: "kept", view: "library", id, filename });
+          break;
+
+        case "make-active":
+          // The keep inverse: one column write with nothing on disk to move,
+          // which is why it is `unkeep_wallpaper` and not a Restore. It carries
+          // no path and offers no Undo, since Keep is the button that replaces
+          // it on the card it just changed (ADR 0009, ADR 0017).
+          await client.unkeepWallpaper(id);
+          publish({ type: "status-changed", id, status: "active" });
+          show({ kind: "made-active", filename });
+          break;
+
+        case "reject": {
+          // The path the file landed at is read now: `unique_destination`
+          // suffixes ` (n)` on a collision rather than overwriting what is
+          // already there, so this is the only account of what the file is
+          // called on the far side (ADR 0003).
+          const finalPath = await client.moveWallpaper(id, destination.written);
+          publish({ type: "status-changed", id, status: "rejected" });
+          show({
+            kind: "rejected",
+            view: "library",
+            id,
+            filename,
+            // The same read-out the call was handed, so the destination the
+            // toast describes and the one the file went to are one answer.
+            relativeDestination: destination.relative,
+            finalPath,
+          });
+          break;
+        }
+
+        case "restore": {
+          // A Restore lands on Active whichever Status the wallpaper held before
+          // the reject, because Kept is a judgement about a rating and changing
+          // your mind about a reject is not that judgement (CONTEXT.md,
+          // ADR 0009). So Active is what the patch carries, and a row the filter
+          // no longer matches leaves the grid.
+          const finalPath = await client.restoreWallpaper(id);
+          publish({ type: "status-changed", id, status: "active" });
+          show({ kind: "restored", filename, finalPath });
+          break;
+        }
+      }
+    } catch (err) {
+      console.error(FAILURE_LOG[action], err);
+      // The card is untouched and the toast carries the backend's own account of
+      // why. `invalid_transition` goes one step further on the surface itself: it
+      // can only mean this view acted on a row that had already changed
+      // underneath, which no patch can correct, so it asks this view for the
+      // refetch `useRefetchWhenShown` above is registered for (ADR 0017).
+      show({ kind: "failed", view: "library", action, filename, error: err });
+    }
   };
+
+  const handleAction = (action: CardAction, card: Wallpaper) => {
+    void act(action, card);
+  };
+
+  /**
+   * What a click on a card asks for: the lightbox, on the wallpaper it was made
+   * on (#134).
+   *
+   * **The lightbox is #80 and does not exist**, so this is the seam and not the
+   * surface. It opens nothing, makes no call and changes no Status — a gesture
+   * that cannot yet do the thing it means must not quietly do something else
+   * instead — and the click is wired now because the card's half of it is what
+   * this ticket builds.
+   *
+   * It is answered on the page rather than in the grid because that is where
+   * ADR 0022 puts the lightbox's state, for the same reason the list and the
+   * selection are here: they change on every action, and a shell holding them
+   * would need them pushed back on each one. The page keeps the state and
+   * portals only the DOM.
+   *
+   * It takes no argument yet. The wallpaper arrives with the click and there is
+   * nowhere on this page to put it until #80 gives it one.
+   */
+  const handleOpen = () => {};
 
   return (
     <>
       <PageBar>
-        {/* #79 replaces both of these with the designed filter row and sort
-            control. What they are here is the state behind them: the pair of
-            choices that own a refetch and reset the scroll position. */}
-        <select
-          aria-label="Filter"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value as StatusFilter)}
-          className="rounded-md border border-border bg-background px-2 py-1 text-sm"
-        >
-          {FILTERS.map(({ value, label }) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+        {/* The filter, as four chips laid out rather than four entries behind a
+            menu. Every value is one word, all four fit, and a chip row is the
+            one shape where the current filter and the three alternatives are
+            legible without opening anything.
 
+            One group with one accessible name, because four buttons in a row
+            are otherwise four unrelated controls with no word between them
+            saying what they are for, and `aria-pressed` is what makes the
+            current filter the same fact to a screen reader that the fill makes
+            it to an eye.
+
+            Pressed and not checked: a `radiogroup` would put the four on the
+            arrow keys, and this page already spends the arrows on moving the
+            selection through the grid (ADR 0019). */}
+        <div
+          role="group"
+          aria-label="Filter by Status"
+          className="flex shrink-0 items-center gap-1"
+        >
+          {FILTERS.map(({ value, label }) => {
+            const current = filter === value;
+            return (
+              <Button
+                key={value}
+                size="sm"
+                variant={current ? "secondary" : "ghost"}
+                aria-pressed={current}
+                onClick={() => setFilter(value)}
+                className="rounded-full"
+              >
+                {label}
+              </Button>
+            );
+          })}
+        </div>
+
+        {/* ADR 0018's line, and it sits between the two controls because it is
+            the thing that truncates when the bar runs out of width: the chips
+            and the ordering keep their labels and the read-out gives up its
+            tail, which is the order of precedence that ADR names. It is the
+            same component Review's bar carries, on the object this page hands
+            `move_wallpaper`. */}
+        <RejectDestinationLine destination={destination} />
+
+        {/* One control with ADR 0014's four names in it, direction included, so
+            nothing here composes a key and a direction — the frontend picks a
+            name and the backend owns every part of the clause behind it.
+
+            A `<select>`, styled to sit beside the chips. Four fixed entries the
+            curator opens, reads and closes is exactly what the native control
+            is, and a popover would be a menu component, a focus trap and a
+            keyboard model this app does not otherwise have. */}
         <select
           aria-label="Order by"
           value={ordering}
           onChange={(event) => setOrdering(event.target.value as ListOrdering)}
-          className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+          className="h-7 shrink-0 rounded-lg border border-border bg-background px-2 text-[0.8rem] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           {ORDERINGS.map(({ value, label }) => (
             <option key={value} value={value}>
@@ -226,7 +596,10 @@ export function LibraryView() {
           ))}
         </select>
 
-        <span className="ml-auto text-xs text-muted-foreground">
+        {/* The row count, which is the size of the library under this filter and
+            not a page of it: one call returns every matching row, so nothing
+            asks a second question to say how many there are (ADR 0016). */}
+        <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">
           {rows === null
             ? "Loading…"
             : `${rows.length} ${rows.length === 1 ? "wallpaper" : "wallpapers"}`}
@@ -241,10 +614,10 @@ export function LibraryView() {
         </p>
       )}
 
-      {/* The scroll container, which is the other half of what #79 needs: the
-          grid goes in here, and the position the curator left it at is this
-          page's to remember. It scrolls rather than the whole page so that the
-          bar above stays put while the grid moves. */}
+      {/* The scroll container the grid sits in, and the position the curator
+          left it at is this page's to remember. It scrolls rather than the
+          whole page so that the bar above stays put while the grid moves, and
+          it is the element the virtualiser measures its window against. */}
       <div
         ref={scroller}
         data-slot="library-rows"
@@ -253,41 +626,93 @@ export function LibraryView() {
         }}
         className="min-h-0 flex-1 overflow-y-auto"
       >
+        {/* The two empty states, and they are two screens rather than one
+            sentence with a branch in it (#133).
+
+            The condition on `rows` is what keeps either of them off the screen
+            while the first fetch is still out: `null` is "nobody has asked yet"
+            and `[]` is the backend's answer, and telling a curator their library
+            is empty because a call has not come back is the state this
+            distinction exists to prevent.
+
+            Which of the two is showing is read off the filter, because that is
+            the only thing that can tell them apart. With All selected the fetch
+            asked about the whole library, so no rows means no library. The other
+            three asked about one Status, so no rows means a library with nothing
+            of that Status in it — the library is fine and this view of it is
+            not. */}
         {rows !== null && rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 p-10 text-center">
-            <Images className="h-10 w-10 text-muted-foreground/30" aria-hidden />
-            <p className="text-sm text-muted-foreground">
-              {filter === "all"
-                ? "Nothing here yet. Point walltare at a folder in Settings and scan it."
-                : `No ${STATUS_LABEL[filter].toLowerCase()} wallpapers. Try a different filter.`}
-            </p>
-          </div>
+          filter === "all" ? (
+            /* The route carries `focus`, so the curator lands on the field they
+               have to fill in rather than on a page of four sections with the
+               answer somewhere in it (ADR 0020). `returnTo` is this page by
+               name and not the current view, since the only way to press this is
+               to be looking at it. */
+            <EmptyState
+              icon={Images}
+              action="Choose a library root"
+              onAction={() =>
+                setView("settings", {
+                  returnTo: "library",
+                  focus: "library_root",
+                })
+              }
+            >
+              Nothing has been scanned into the library yet.
+            </EmptyState>
+          ) : (
+            /* The Status as CONTEXT.md spells it, capitalised: these are the
+               domain's proper nouns and `STATUS_LABEL` is where the app agrees
+               with itself about them, card pill included (`copy.ts`).
+
+               The way out is the same state setter the chips on the bar write,
+               not a chip itself: #130 turned that control from a `<select>`
+               into four buttons, and an empty state reaching for a DOM node
+               would have gone with it. Going through `setFilter` also means the
+               refetch and the scroll reset are the ones a filter change already
+               owns (ADR 0016). */
+            <EmptyState
+              icon={Filter}
+              action="Show all wallpapers"
+              onAction={() => setFilter("all")}
+            >
+              No {STATUS_LABEL[filter]} wallpapers in the library.
+            </EmptyState>
+          )
         ) : (
-          <ul className="divide-y divide-border/60">
-            {(rows ?? []).map((wallpaper) => (
-              <li
-                key={wallpaper.id}
-                data-wallpaper-id={wallpaper.id}
-                className="flex items-center gap-4 px-4 py-2 text-sm"
-              >
-                <span className="truncate" title={wallpaper.path}>
-                  {wallpaper.filename}
-                </span>
-                <span
-                  data-slot="score"
-                  className="ml-auto shrink-0 text-xs text-muted-foreground"
-                >
-                  {scoreLabel(wallpaper)}
-                </span>
-                <span
-                  data-slot="status"
-                  className="w-20 shrink-0 text-right text-xs text-muted-foreground"
-                >
-                  {STATUS_LABEL[wallpaper.status]}
-                </span>
-              </li>
-            ))}
-          </ul>
+          /* The grid is the shared one, in the order the fetch returned its
+             rows — the ordering is ADR 0014's and belongs to the backend, so
+             nothing here sorts.
+
+             No `animated`, and that is the decision rather than an omission.
+             ADR 0016 gives this card no animated property and no `will-change`,
+             because a wheel gesture over #131's virtualised grid mounts cards
+             continuously — first paint and first hover become the same moment,
+             which is the moment ADR 0007 was moving the cost away from. That
+             ADR's licence stays scoped to Review's fifty rows, so `animated` is
+             Review's alone.
+
+             The name names the library and not the filter. A composite widget
+             is one tab stop, so the name is all a screen reader gets on the way
+             in (ADR 0019), and the filter is a control they can read for
+             themselves — a name that moved with it would announce a different
+             widget every time the same grid was narrowed.
+
+             Every row goes in and a window of them comes out. The grid is what
+             resolves the selection and moves it with the arrows, so it needs the
+             list the curator is browsing rather than the slice of it that has
+             nodes; `range` is the slice, and `reveal` is how a selection that
+             lands outside it gets one (#131). */
+          <WallpaperGrid
+            wallpapers={list}
+            label="Wallpapers in the library"
+            onAction={handleAction}
+            onOpen={handleOpen}
+            scoresMoved={scoresMoved}
+            reveal={reveal}
+            range={range}
+            className="p-4"
+          />
         )}
       </div>
     </>

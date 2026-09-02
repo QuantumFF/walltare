@@ -2,7 +2,14 @@ import App from "@/App";
 import { LibraryView } from "@/components/LibraryView";
 import { useAppEvents } from "@/context/AppEventsContext";
 import type { StatusFilter, Wallpaper } from "@/lib/client";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { flush, renderInApp, settings, stats, wallpaper } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
@@ -142,11 +149,28 @@ const pageBar = (view: string) =>
     `[data-view="${view}"] [data-slot="page-bar"]`,
   ) as HTMLElement;
 
-const row = (id: number) =>
-  document.querySelector(`[data-wallpaper-id="${id}"]`) as HTMLElement | null;
+/**
+ * The card for a wallpaper, scoped to the library page and found by the request
+ * its image makes for that row's thumbnail.
+ *
+ * The `<li data-wallpaper-id>` these queries used to reach for went with the
+ * interim read-out (#129), and the scoping is not decoration: Review is mounted
+ * behind this page and its list is drawn from the same two wallpapers, so an
+ * unscoped query would answer about the wrong view's card.
+ */
+const card = (id: number): HTMLElement | null => {
+  const image = document
+    .querySelector('[data-view="library"]')
+    ?.querySelector(`img[src="wallpaper://localhost/image/${id}?size=small"]`);
+  return image?.closest<HTMLElement>('[role="gridcell"]') ?? null;
+};
 
-const cell = (id: number, slot: "score" | "status") =>
-  row(id)?.querySelector(`[data-slot="${slot}"]`)?.textContent ?? null;
+/** What the card calls itself: `<filename>, <Status>` (ADR 0019). */
+const cardName = (id: number) => card(id)?.getAttribute("aria-label") ?? null;
+
+/** The Score badge: μ to one decimal, `Unrated`, or `Score moved`. */
+const badge = (id: number) =>
+  card(id)?.querySelector('[data-slot="badge"]')?.textContent ?? null;
 
 const scroller = () =>
   document.querySelector('[data-slot="library-rows"]') as HTMLElement;
@@ -171,12 +195,26 @@ function browserDropsScrollOffset() {
   scroller().scrollTop = 0;
 }
 
-const select = (label: string) =>
-  screen.getByLabelText(label) as HTMLSelectElement;
+/**
+ * The library page's own bar, which both of its controls live on.
+ *
+ * Scoped like the card queries above: Review is mounted behind this page and
+ * carries a bar of its own, so an unscoped query would be free to answer about
+ * the wrong view's (#130).
+ */
+const libraryBar = () => within(pageBar("library"));
 
-async function choose(label: string, value: string) {
+/** Press one of the filter chips, by the word on it. */
+async function filterBy(label: string) {
+  await click(libraryBar().getByRole("button", { name: label }));
+}
+
+/** Choose one of ADR 0014's four orderings, by its wire name. */
+async function orderBy(value: string) {
   await act(async () => {
-    fireEvent.change(select(label), { target: { value } });
+    fireEvent.change(libraryBar().getByLabelText("Order by"), {
+      target: { value },
+    });
   });
   await flush();
 }
@@ -228,7 +266,7 @@ test("a keep in Review patches the hidden Library, and neither view fetches anyt
   await openApp();
   await click(tab("Library"));
   expect(listCalls).toBe(1);
-  expect(cell(1, "status")).toBe("Active");
+  expect(cardName(1)).toBe("one.jpg, Active");
 
   await click(tab("Review"));
   expect(getReviewCalls).toBe(1);
@@ -238,12 +276,13 @@ test("a keep in Review patches the hidden Library, and neither view fetches anyt
   expect(listCalls).toBe(1);
   expect(getReviewCalls).toBe(1);
   // Patched while nobody was looking at it, so the answer is already right when
-  // the curator arrives rather than fetched once they do.
-  expect(cell(1, "status")).toBe("Kept");
+  // the curator arrives rather than fetched once they do. The card's own name
+  // is where the Status is legible, since otherwise it is a pill and a dimming.
+  expect(cardName(1)).toBe("one.jpg, Kept");
 
   await click(tab("Library"));
   expect(listCalls).toBe(1);
-  expect(cell(1, "status")).toBe("Kept");
+  expect(cardName(1)).toBe("one.jpg, Kept");
 });
 
 test("a reject drops the row from a Library filtered to Active", async () => {
@@ -252,16 +291,16 @@ test("a reject drops the row from a Library filtered to Active", async () => {
   // looks like or where it would go.
   await openApp();
   await click(tab("Library"));
-  await choose("Filter", "active");
+  await filterBy("Active");
   expect(listFilters).toEqual(["all", "active"]);
-  expect(row(1)).not.toBeNull();
+  expect(card(1)).not.toBeNull();
 
   await click(tab("Review"));
   await click(screen.getByRole("button", { name: /reject one\.jpg/i }));
 
   expect(listCalls).toBe(2); // the two the filter asked for, and no more
-  expect(row(1)).toBeNull();
-  expect(row(2)).not.toBeNull();
+  expect(card(1)).toBeNull();
+  expect(card(2)).not.toBeNull();
 });
 
 test("a library-scanned refetch waits until the view is shown", async () => {
@@ -289,7 +328,7 @@ test("a library-scanned refetch waits until the view is shown", async () => {
 
   await click(tab("Library"));
   expect([getReviewCalls, listCalls]).toEqual([2, 2]);
-  expect(row(4)).not.toBeNull();
+  expect(card(4)).not.toBeNull();
 
   // And the debt is settled, not standing: coming back a second time fetches
   // nothing, because nothing has changed since.
@@ -329,7 +368,7 @@ test("a scan-complete arriving while Library is showing fetches straight away", 
   await flush();
 
   expect(listCalls).toBe(2);
-  expect(row(4)).not.toBeNull();
+  expect(card(4)).not.toBeNull();
 });
 
 test("a vote patches Rank's headline from stats-changed", async () => {
@@ -354,11 +393,9 @@ test("score-changed tells Library which two Scores moved, without a fetch", asyn
   await openApp();
   await panesArrive();
   await click(tab("Library"));
-  expect([cell(1, "score"), cell(2, "score"), cell(3, "score")]).toEqual([
-    "29.2",
-    "20.8",
-    "25.5",
-  ]);
+  // Read off the card's own badge, which is where a Score is written now that
+  // the page draws cards rather than describing them (#129).
+  expect([badge(1), badge(2), badge(3)]).toEqual(["29.2", "20.8", "25.5"]);
 
   await click(tab("Rank"));
   await pressKey("ArrowLeft");
@@ -369,7 +406,7 @@ test("score-changed tells Library which two Scores moved, without a fetch", asyn
   // The event names the two wallpapers in the Comparison and cannot name their
   // new Scores, so this is the whole of what the patch supports: those two
   // numbers are a Comparison out of date, and the third one is not.
-  expect([cell(1, "score"), cell(2, "score"), cell(3, "score")]).toEqual([
+  expect([badge(1), badge(2), badge(3)]).toEqual([
     "Score moved",
     "Score moved",
     "25.5",
@@ -392,9 +429,9 @@ test("a refetch makes every Score current again", async () => {
     rating_mu: 33.1,
   });
   await click(tab("Library"));
-  await choose("Order by", "filename_asc");
+  await orderBy("filename_asc");
 
-  expect(cell(1, "score")).toBe("33.1");
+  expect(badge(1)).toBe("33.1");
 });
 
 test("returning to Library puts the curator back where they were", async () => {
@@ -416,12 +453,12 @@ test("a filter change puts the list back at the top", async () => {
   await click(tab("Library"));
   await scrollLibraryTo(240);
 
-  await choose("Filter", "kept");
+  await filterBy("Kept");
 
   expect(scroller().scrollTop).toBe(0);
   expect(listFilters).toEqual(["all", "kept"]);
-  expect(row(3)).not.toBeNull();
-  expect(row(1)).toBeNull();
+  expect(card(3)).not.toBeNull();
+  expect(card(1)).toBeNull();
 });
 
 test("an ordering change puts the list back at the top", async () => {
@@ -431,7 +468,7 @@ test("an ordering change puts the list back at the top", async () => {
   await click(tab("Library"));
   await scrollLibraryTo(240);
 
-  await choose("Order by", "recently_added");
+  await orderBy("recently_added");
 
   expect(scroller().scrollTop).toBe(0);
 });
@@ -463,7 +500,7 @@ test("a deferred refetch that finds the same rows keeps the place", async () => 
   // fetch comes back with exactly what it had.
   await openApp();
   await click(tab("Library"));
-  await choose("Filter", "kept");
+  await filterBy("Kept");
   await scrollLibraryTo(240);
   await click(tab("Rank"));
 

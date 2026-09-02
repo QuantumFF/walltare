@@ -175,6 +175,24 @@ export function ReviewView() {
     if (action === "reject") void handleMove(card.id);
   };
 
+  /**
+   * A click on a card asks for the lightbox, here as well as on the library
+   * page (#134).
+   *
+   * **The lightbox is #80 and does not exist**, so this opens nothing, calls
+   * nothing and changes no Status. Review is wired for it anyway rather than
+   * left to inherit it later: the card is shared, so the gesture is already on
+   * every card in this grid, and ADR 0022 keeps the state on whichever page
+   * mounted the grid — so the page that shows the fifty needs its own answer to
+   * a click the same way the library page does. The action set inside the
+   * lightbox is read off the Status, so nothing here has to tell it that Review
+   * lists Active wallpapers only.
+   *
+   * It takes no argument yet, for the same reason the library page's does not:
+   * the wallpaper arrives and there is nowhere to put it until #80 lands.
+   */
+  const handleOpen = () => {};
+
   // The destination line, in the bar this page owns below the chrome. The
   // chrome's tab already names the page, so what was a 2xl heading and a
   // subtitle is the sentence that actually carries information: what Review
@@ -263,6 +281,7 @@ export function ReviewView() {
             wallpapers={wallpapers}
             label="Wallpapers to review"
             onAction={handleAction}
+            onOpen={handleOpen}
             animated
             className="pb-8"
           />

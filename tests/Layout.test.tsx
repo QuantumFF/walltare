@@ -1,6 +1,13 @@
 import App from "@/App";
 import type { Settings } from "@/lib/client";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -375,24 +382,47 @@ test("Rank's Round headline lives in Rank's own bar", async () => {
   expect(chromeRow().textContent).not.toContain("Round");
 });
 
-test("Library lists what the backend returned, in the bar and the scroll container #79 fills", async () => {
+test("Library draws the shared card in the shared grid, under the bar's two controls", async () => {
   await openApp();
   await click(tab("Library"));
 
-  // Interim: the grid, the card and the designed controls are #79's. What has
-  // to be here now is the state under them, which is why the rows, the filter
-  // and the ordering are assertable at all.
-  const rows = document.querySelectorAll("[data-wallpaper-id]");
-  expect(Array.from(rows).map((el) => el.textContent)).toEqual([
-    "lowest.jpgUnratedActive",
-    "highest.jpg25.0Active",
+  const library = within(
+    document.querySelector('[data-view="library"]') as HTMLElement,
+  );
+  // The grid is one tab stop, so its name is all a screen reader gets on the
+  // way in — and it names the library rather than the filter, which is a
+  // control the curator can read for themselves (ADR 0019).
+  expect(library.getByRole("grid").getAttribute("aria-label")).toBe(
+    "Wallpapers in the library",
+  );
+  // One card per row the fetch returned, in the order it returned them, each
+  // naming its filename and its Status.
+  expect(
+    library.getAllByRole("gridcell").map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["lowest.jpg, Active", "highest.jpg, Active"]);
+  // And the bar over it, as #130 built it: the four chips in one named group
+  // with All the current one, and the ordering opening on Score, high to low —
+  // the one view neither Rank nor Review gives (ADR 0014, ADR 0016).
+  const bar = within(
+    document.querySelector(
+      '[data-view="library"] [data-slot="page-bar"]',
+    ) as HTMLElement,
+  );
+  const chips = within(
+    bar.getByRole("group", { name: "Filter by Status" }),
+  ).getAllByRole("button");
+  expect(chips.map((el) => el.textContent)).toEqual([
+    "All",
+    "Active",
+    "Kept",
+    "Rejected",
   ]);
   expect(
-    (screen.getByLabelText("Filter") as HTMLSelectElement).value,
-  ).toBe("all");
-  expect(
-    (screen.getByLabelText("Order by") as HTMLSelectElement).value,
-  ).toBe("score_desc");
+    bar.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
+  ).toEqual(["All"]);
+  expect((bar.getByLabelText("Order by") as HTMLSelectElement).value).toBe(
+    "score_desc",
+  );
 });
 
 test("an empty library says so on the page that would have listed it", async () => {
@@ -402,7 +432,17 @@ test("an empty library says so on the page that would have listed it", async () 
 
   // ADR 0015 disables no tab, so every destination owes an empty state that
   // says why it is empty and where to go instead.
-  expect(screen.queryByText(/nothing here yet/i)).not.toBeNull();
+  expect(
+    screen.queryByText("Nothing has been scanned into the library yet."),
+  ).not.toBeNull();
+
+  // And the route out is a real one through the whole shell: the control lands
+  // on Settings, where the field it asked for is the one the curator has to
+  // fill in (#133, ADR 0020).
+  await click(screen.getByRole("button", { name: "Choose a library root" }));
+
+  expect(showingView()).toBe("settings");
+  expect(document.activeElement).toBe(scanInput());
 });
 
 test("a scan still runs end to end from inside Settings, and leaves the curator there", async () => {
