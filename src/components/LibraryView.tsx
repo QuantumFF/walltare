@@ -717,10 +717,16 @@ export function LibraryView() {
       </div>
 
       {/* The same component Review mounts, on the same selection the grid above
-          is showing, with no argument saying which page it is: the action set
-          #140 puts in it comes off the wallpaper's Status, so this page's Kept
-          and Rejected rows offer Make Active and Restore in there without the
-          lightbox knowing whose grid it opened over (ADR 0022).
+          is showing, with no argument saying which page it is: the action set in
+          it comes off the wallpaper's Status, so this page's Kept and Rejected
+          rows offer Make Active and Restore in there without the lightbox
+          knowing whose grid it opened over (ADR 0022).
+
+          `onAction` is the grid's own handler, so nothing a curator does from
+          in there is optimistic either: the published patch is what edits the
+          row, which is why rejecting under a filter of All leaves the same
+          wallpaper up wearing its new Status and its new actions, and rejecting
+          under Active takes the row out of the list and advances.
 
           Outside the empty-state branch, so a filter that empties the list
           closes it onto that state rather than unmounting it out from under the
@@ -730,6 +736,7 @@ export function LibraryView() {
         selection={selection}
         open={lightbox.open}
         onClose={lightbox.close}
+        onAction={handleAction}
       />
     </>
   );

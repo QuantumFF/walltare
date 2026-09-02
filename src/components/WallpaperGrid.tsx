@@ -108,7 +108,34 @@ const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
 };
 
 /**
- * What a key means on a card of this Status, or `null` for nothing at all.
+ * How each key is written on the control that fires it: `Keep K`, `Reject Del`,
+ * `Restore R`, and `Make Active K` for the other end of the keep slot (#140).
+ *
+ * `Del` is the one abbreviation, because the key's own name is wider than the
+ * verb in front of it on a row that has a floor to fit inside, and because it
+ * is what the key is printed as on the keyboard the curator is looking at.
+ */
+const KEY_NAMES: Record<string, string> = { k: "K", delete: "Del", r: "R" };
+
+/**
+ * The key that fires an action, spelled as the control firing it prints it.
+ *
+ * Read out of the table above rather than written a second time beside the
+ * labels, so a rebinding takes the print with it: a button carrying a key that
+ * no longer works is worse than a button carrying no key at all, and #140 puts
+ * the key on the button precisely because that is the copy that survives the
+ * row narrowing. Every action is bound, so the empty string is what a future
+ * unbound one would print rather than a case the app reaches.
+ */
+export function printedKey(action: CardAction): string {
+  const bound = Object.entries(KEY_ACTIONS).find(([, actions]) =>
+    actions.includes(action),
+  );
+  return bound ? KEY_NAMES[bound[0]] : "";
+}
+
+/**
+ * What a key means on a wallpaper of this Status, or `null` for nothing at all.
  *
  * The answer is an intersection rather than a second table: the key names
  * candidates, and `STATUS_ACTIONS` — the same table the card's buttons render
@@ -119,8 +146,15 @@ const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
  *
  * The key is lowercased so that a curator with Caps Lock on still keeps and
  * still restores.
+ *
+ * Exported because #140's lightbox answers the same three keys on the wallpaper
+ * it is showing. It resolves them here rather than carrying its own copy, which
+ * is the same reason its buttons render from `STATUS_ACTIONS` and act through
+ * `useCardAction`: one action vocabulary in the app, and no surface that can
+ * offer a curator one set with the mouse and another with the keyboard
+ * (ADR 0022).
  */
-function actionFor(key: string, status: Status): CardAction | null {
+export function actionFor(key: string, status: Status): CardAction | null {
   const offered = STATUS_ACTIONS[status];
   const candidates = KEY_ACTIONS[key.toLowerCase()] ?? [];
   return candidates.find((action) => offered.includes(action)) ?? null;

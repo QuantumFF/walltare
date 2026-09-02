@@ -82,12 +82,23 @@ export function ReviewView() {
     setWallpapers((prev) => prev.filter((w) => w.id !== event.id));
   });
 
-  // Puts one card back where it was after a failed action.
+  // Puts one card back where it was after a failed action, and the selection
+  // back on it.
   //
   // Restoring a whole snapshot of the list would resurrect any *other* card
   // that was successfully removed while this action was in flight — the
   // snapshot is captured at render time and goes stale the moment a second
   // action starts. Re-inserting only the affected card cannot do that.
+  //
+  // The selection comes back with it because the removal moved it on: under ADR
+  // 0022 the lightbox is a second rendering of that selection, so a reject
+  // whose file move fails would otherwise leave the picture on wallpaper N+1
+  // while the error toast names wallpaper N. Usually the id is still the one
+  // held — the rule keeps it through a list that no longer has it, which is what
+  // makes the fall back to the position temporary — and the call is what makes
+  // this true as well when the curator stepped on while the write was in
+  // flight. Waiting for the call instead would stall every reject on a file
+  // move during a sweep, which is the two-keystrokes-over-four ADR 0019 chose.
   const restoreCard = (index: number, wallpaper: Wallpaper) => {
     setWallpapers((prev) => {
       if (prev.some((w) => w.id === wallpaper.id)) return prev;
@@ -95,6 +106,7 @@ export function ReviewView() {
       next.splice(Math.min(index, next.length), 0, wallpaper);
       return next;
     });
+    selection.selectId(wallpaper.id);
   };
 
   const handleKeep = async (id: number) => {
@@ -284,9 +296,15 @@ export function ReviewView() {
 
       {/* The same component the library page mounts, on the same selection the
           grid above is showing, with no argument saying which page it is: the
-          action set #140 puts in it comes off the wallpaper's Status, and
-          Review's list holds only Active rows, so Restore and Make Active
-          never appear here without anyone configuring that (ADR 0022).
+          action set in it comes off the wallpaper's Status, and Review's list
+          holds only Active rows, so Restore and Make Active never appear here
+          without anyone configuring that (ADR 0022).
+
+          `onAction` is the grid's own handler, so a keep from inside the
+          lightbox is this page's keep — the optimistic removal, the published
+          patch and the toast — and the advance the curator sees is that removal
+          resolving through the shared selection rather than anything the
+          lightbox decided.
 
           Outside the two branches above, so an emptied list closes it onto
           this page's own empty state rather than unmounting it out from under
@@ -297,6 +315,7 @@ export function ReviewView() {
         selection={selection}
         open={lightbox.open}
         onClose={lightbox.close}
+        onAction={handleAction}
       />
     </>
   );

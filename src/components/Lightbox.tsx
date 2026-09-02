@@ -1,12 +1,52 @@
-import type { GridSelection } from "@/components/WallpaperGrid";
+import {
+  ACTION_CONTROLS,
+  STATUS_ACTIONS,
+  useCardAction,
+  type CardAction,
+} from "@/components/WallpaperCard";
+import {
+  actionFor,
+  printedKey,
+  type GridSelection,
+} from "@/components/WallpaperGrid";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useLightboxHost } from "@/context/LightboxHostContext";
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
 import { counted, grouped, isEvaluated, score, STATUS_LABEL } from "@/lib/copy";
+import { cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+/**
+ * How narrow the row under the picture is allowed to get, in pixels.
+ *
+ * The row is measured off the painted picture (#44), so a portrait wallpaper
+ * paints one narrower than its own controls need: at the default 1280x800
+ * window the image box is about 1216x680, and a 9:16 phone wallpaper fills the
+ * height and paints 382px wide. Below this the row overhangs the picture
+ * instead of shrinking with it, and the read-out is what drops — an overhanging
+ * row reads as controls refusing to shrink, a row clipping its own buttons
+ * reads as a bug, and the read-out is the one part that tells the curator
+ * nothing they need in order to act (ADR 0022).
+ *
+ * The number is the widest thing the floor has to hold, which is a Kept
+ * wallpaper: a Score badge (38) and a Status pill (58) with a filename between
+ * them that is still worth printing (88), two gaps of 8 inside that block, the
+ * position (40) and the two gaps of 16 around it, and `Make Active K` beside
+ * `Reject Del` (227 with the gap between them). That is 499, so 500.
+ *
+ * **It has no test and cannot have one.** happy-dom does no layout, so the
+ * measurement below is `null` under a test runner and the row falls back to the
+ * full width; ADR 0022 records this as untested by construction, since the live
+ * library holds no portrait wallpaper — 120 rows, the narrowest a square — and
+ * says the arithmetic wants checking against a real 9:16 file once one exists.
+ * A test standing a fake measurement in front of the component would pin the
+ * arithmetic to itself rather than to a laid-out row.
+ */
+const ROW_FLOOR = 500;
 
 /**
  * Whether a lightbox is up, and the two gestures that change that.
@@ -137,6 +177,20 @@ export interface LightboxProps {
    * Close button; the two closes nobody pressed never reach here.
    */
   onClose: () => void;
+  /**
+   * A transition the curator asked for while looking at the picture, on the
+   * wallpaper the picture is of.
+   *
+   * The same entry the grid behind is handed, and the pages pass the same
+   * function to both: a keep from in here is the page's own keep, with the
+   * page's optimistic removal, its published patch and its toast, rather than a
+   * second implementation that happens to agree. One entry rather than a
+   * callback per action for the reason `WallpaperCardProps.onAction` gives —
+   * this surface owns no branch on the Status either, it renders what
+   * `STATUS_ACTIONS` offers — and the wallpaper travels back with the action
+   * because the page answers about the row it acted on (#140).
+   */
+  onAction: (action: CardAction, wallpaper: Wallpaper) => void;
 }
 
 /**
@@ -149,14 +203,33 @@ export interface LightboxProps {
  * prototype's `← → navigate · Esc close` hint dropped, because the keys move
  * onto the controls they fire and the rest live in the `?` dialog.
  *
- * It knows nothing about which page opened it. The action set #140 puts in the
- * row comes off the wallpaper's Status and nothing else, so Review's list of
- * Active rows never offers a Restore without anyone configuring that, and the
- * card and the lightbox cannot drift into offering different things.
+ * It knows nothing about which page opened it. The action set in the row comes
+ * off the wallpaper's Status and nothing else, so Review's list of Active rows
+ * never offers a Restore without anyone configuring that, and the card and the
+ * lightbox cannot drift into offering different things.
+ *
+ * What an action does to this surface is not decided here either, and that is
+ * the whole of ADR 0022: the lightbox renders the grid's selection, so a keep
+ * that empties a row lands wherever the selection rule lands, which reads as
+ * advancing in Review, as staying put in a library showing everything, and as a
+ * close when the row was the last one. There is no rule in this file about what
+ * a keep or a reject does to what is on screen, because a rule here is a second
+ * answer to a question the list already answers.
  */
-export function Lightbox({ selection, open, onClose }: LightboxProps) {
+export function Lightbox({
+  selection,
+  open,
+  onClose,
+  onAction,
+}: LightboxProps) {
   const { container } = useLightboxHost();
   const { wallpaper, index, length, moveTo } = selection;
+  // The same entry the card's buttons and the grid's keys go through, so the
+  // three triggers are one path. What it adds is ADR 0019's refusal for a row
+  // with no Origin: the pinned `Can't restore <filename>` and the absence of an
+  // IPC call are properties of the action rather than of whichever control was
+  // pressed, which is why nothing about them is written again here (#140).
+  const act = useCardAction(onAction);
 
   /**
    * One step through the list, which is a selection move and nothing else.
@@ -173,28 +246,49 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
   const atFirst = index <= 0;
   const atLast = index >= length - 1;
 
-  // `←` and `→`, bound on `window` rather than on the content below.
+  // The five keys, bound on `window` rather than on the content below.
   //
   // The content's own `onKeyDown` is where ADR 0019 puts a view-local key — the
-  // element that owns the focus answers it — and the arrow buttons are what
-  // rules it out here. A pointer press lands the focus on the button, and
-  // reaching the end of the list disables the button that was just pressed,
-  // which drops the focus to `body` and takes the keys with it. Nothing else
-  // claims a bare arrow while this is up, either: everything behind is `inert`,
-  // and Rank's own arrow listener is bound only while Rank is the view being
-  // shown.
+  // element that owns the focus answers it — and the buttons in here are what
+  // rules it out. A pointer press lands the focus on the control pressed, and
+  // acting through one is what replaces it: rejecting under a library showing
+  // everything swaps Keep and Reject for a Restore, and reaching the end of the
+  // list disables the arrow just clicked. Either drops the focus to `body` and
+  // takes the keys with it. Nothing else claims a bare arrow or a bare letter
+  // while this is up, either: everything behind is `inert`, and Rank's own
+  // arrow listener is bound only while Rank is the view being shown.
   //
-  // `defaultPrevented` is the stand-down that listener makes, in the other
-  // direction. An element inside the lightbox that ever answers an arrow itself
-  // marks the event, and this stops behind it.
+  // Modifiers stand down, which is what leaves the shell's live handler its
+  // own: `Ctrl+Z` presses the visible toast's Undo from in here and `?` opens
+  // the shortcut list, both because that handler is running and not because
+  // this one reimplemented them. ADR 0022 deleted the clause that used to
+  // suppress it, on the grounds that its only effect was turning off Undo in
+  // the one place a reject fires from (ADR 0015 as amended, ADR 0017).
+  //
+  // `defaultPrevented` is the stand-down this listener makes, in the other
+  // direction. An element inside the lightbox that ever answers one of these
+  // itself marks the event, and this stops behind it.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !wallpaper) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
       if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
         return;
       }
+
+      // The direct keys, before the movement keys and resolved against the
+      // Status by the grid's own `actionFor`: `K`, `Delete` and `R` do exactly
+      // what they do on a card, and a key the Status has no action for does
+      // nothing at all. `Enter` is nowhere in that table and gets no branch of
+      // its own, because it is the key that opened this.
+      const action = actionFor(event.key, wallpaper.status);
+      if (action) {
+        event.preventDefault();
+        act(action, wallpaper);
+        return;
+      }
+
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       // Answered at the ends too, where the clamp makes it a no-op: the key
       // belongs to this surface whether or not the selection moves.
@@ -204,7 +298,7 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, step]);
+  }, [open, wallpaper, step, act]);
 
   // Whether a `medium` has painted since this was opened, which is the whole
   // question the placeholder below answers: a step has the outgoing picture to
@@ -253,6 +347,23 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
     return () => observer.disconnect();
   }, [open, wallpaper?.id]);
 
+  // Whether the picture is narrower than the row's floor, which is the one
+  // thing that drops the read-out. An unmeasured box is not floored: the row
+  // falls back to the full width there, and the full width holds everything.
+  const floored = painted !== null && painted < ROW_FLOOR;
+
+  // Where the open lands, which is this surface and not a control on it.
+  //
+  // Radix focuses the first tabbable element inside the content, which since
+  // #140 is the first action button — so a lightbox opened to look at a picture
+  // would open with a keep armed under Space and Enter, on the surface whose
+  // whole rule is that `Enter` does nothing because `Enter` is what opened it.
+  // The content itself is focusable (`FocusScope` renders it at `tabIndex=-1`),
+  // so this is the same override with a target: Escape and the five keys are
+  // bound above the focus rather than on it, and the first Tab still reaches
+  // the row.
+  const content = useRef<HTMLDivElement | null>(null);
+
   return (
     <Dialog.Root
       // A wallpaper is what this surface is, so there is no open state without
@@ -279,10 +390,17 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
       <Dialog.Portal container={container}>
         {wallpaper && (
           <Dialog.Content
+            ref={content}
             // By hand, because the primitive writes it only for a modal dialog
             // and the claim is true for a different reason here: the pages
             // behind are `inert`.
             aria-modal
+            // See `content` above: the surface takes the focus, not the first
+            // button on it.
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              content.current?.focus();
+            }}
             // Nothing outside this layer dismisses it, and the two things
             // outside it are both things the curator is meant to reach. The
             // toast viewport sits above this at `z-60` and outside the inerted
@@ -373,13 +491,16 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
                 {/* The row, at the picture's width and absolutely positioned so
                     it cannot affect the layout it is measured against — in flow
                     the two chase each other and the measurement settles short.
-                    #140 puts the buttons on the right of it and gives the row
-                    the floor it needs when a portrait picture paints narrower
-                    than they do; until then nothing here can be cut off. */}
+
+                    `minWidth` is the floor, and what it produces is an overhang
+                    on both sides rather than one, because the row is centred on
+                    the picture rather than aligned to an edge of it. See
+                    `ROW_FLOOR` for the arithmetic and for why nothing tests
+                    it. */}
                 <div
                   data-slot="lightbox-row"
                   className="absolute bottom-0 left-1/2 flex h-11 -translate-x-1/2 items-center gap-4 overflow-hidden"
-                  style={{ width: painted ?? "100%" }}
+                  style={{ width: painted ?? "100%", minWidth: ROW_FLOOR }}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -439,16 +560,24 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
                       The `title` is always where the file is now, which is both
                       the half a Rejected row's line gives up and the full
                       string for a line that truncates.
+
+                      This is what drops on a picture narrower than the row's
+                      floor, and it is the only thing that does: it is the one
+                      part of the row that tells the curator nothing they need
+                      in order to act, which is what makes it the part that can
+                      go (ADR 0022).
                     */}
-                    <p
-                      data-slot="lightbox-readout"
-                      className="truncate font-mono text-[11px] text-white/50"
-                      title={wallpaper.path}
-                    >
-                      {wallpaper.status === "rejected" && wallpaper.origin_path
-                        ? wallpaper.origin_path
-                        : wallpaper.path}
-                    </p>
+                    {!floored && (
+                      <p
+                        data-slot="lightbox-readout"
+                        className="truncate font-mono text-[11px] text-white/50"
+                        title={wallpaper.path}
+                      >
+                        {wallpaper.status === "rejected" && wallpaper.origin_path
+                          ? wallpaper.origin_path
+                          : wallpaper.path}
+                      </p>
+                    )}
                   </div>
 
                   {/*
@@ -464,10 +593,101 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
                     length.
                   */}
                   <div className="shrink-0 text-right text-[11px] tabular-nums text-white/50">
-                    <div>
-                      {counted(wallpaper.comparisons_count, "comparison")}
-                    </div>
+                    {/* The comparison count is read-out and goes with the line
+                        above it on a floored row. The position is not: it is
+                        what clamping made worth printing, and `50 / 50` is the
+                        reason the arrow beside it is unavailable. */}
+                    {!floored && (
+                      <div>
+                        {counted(wallpaper.comparisons_count, "comparison")}
+                      </div>
+                    )}
                     <div>{`${grouped(index + 1)} / ${grouped(length)}`}</div>
+                  </div>
+
+                  {/*
+                    The action set, and the reason a curator can decide while
+                    looking at the thing they are deciding about. Under ADR 0019
+                    it is also the one path to acting without a hover, which is
+                    what a touchscreen has.
+
+                    One button per action the Status offers, off the same
+                    `STATUS_ACTIONS` the card's overlay renders from and the
+                    grid's keys resolve against: Active gets Keep and Reject,
+                    Kept gets Make Active and Reject, Rejected gets Restore.
+                    Nothing here knows which page opened it, so there is no
+                    caller flag and the two action sets cannot drift out of
+                    agreement with ADR 0009's transition table.
+
+                    Nothing is greyed to hold its space. The row's width changes
+                    on every step, because it is measured off a picture and no
+                    two wallpapers in this library share an aspect ratio, so
+                    reserving button space stabilises the wrong axis. The one
+                    control that renders while unavailable is the Restore on an
+                    origin-less row, and it renders because it has a sentence to
+                    deliver.
+                  */}
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {STATUS_ACTIONS[wallpaper.status].map((action) => {
+                      const { label, Icon, destructive } =
+                        ACTION_CONTROLS[action];
+                      // Known before the press, because ADR 0009 put
+                      // `origin_path` on the DTO for exactly this.
+                      const unavailable =
+                        action === "restore" && wallpaper.origin_path === null;
+                      return (
+                        <Button
+                          key={action}
+                          size="xs"
+                          variant={destructive ? "destructive" : undefined}
+                          // Not `disabled`, for ADR 0019's reason: a disabled
+                          // button is not focusable, so the sentence explaining
+                          // why a Rejected wallpaper cannot go back would be
+                          // unreachable by keyboard and silent to a screen
+                          // reader, which is most of the people it is written
+                          // for. `aria-disabled` keeps the control focusable and
+                          // lets it explain itself when pressed.
+                          aria-disabled={unavailable ? true : undefined}
+                          // The verb alone. On a card this carries the filename
+                          // too, because a grid of fifty rows has fifty Keeps in
+                          // it; here there is one wallpaper and the dialog is
+                          // already named by it, so repeating the name on every
+                          // control would be the third time a reader hears it.
+                          // The printed key stays out of the name for the same
+                          // reason it is on the button at all: it is the binding
+                          // shown to an eye, not part of what the control does.
+                          aria-label={label}
+                          // The refusal an origin-less row gets is
+                          // `useCardAction`'s, so pressing Restore in here,
+                          // pressing it on the card, and pressing `R` on either
+                          // are one event with one outcome.
+                          onClick={() => act(action, wallpaper)}
+                          // The card's own treatment, because these sit on the
+                          // same dark ground. Not `flex-1`: on a card the two
+                          // buttons split the overlay's width, and here they are
+                          // the part of the row that never shrinks.
+                          className={cn(
+                            destructive
+                              ? "bg-destructive/90 text-white hover:bg-destructive"
+                              : "bg-white/15 text-white hover:bg-white/25",
+                            unavailable &&
+                              "cursor-not-allowed opacity-40 hover:bg-white/15",
+                          )}
+                        >
+                          <Icon />
+                          {label}
+                          {/* The key, on the control it fires. It survives the
+                              row narrowing because the buttons are what never
+                              drop, which is why the prototype's
+                              `← → navigate · Esc close` hint went and the
+                              arrows and Escape live in the `?` dialog instead
+                              (ADR 0022). */}
+                          <kbd className="rounded border border-white/25 px-1 py-0.5 font-mono text-[10px] leading-none text-white/70">
+                            {printedKey(action)}
+                          </kbd>
+                        </Button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
