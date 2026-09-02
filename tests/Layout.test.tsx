@@ -400,13 +400,27 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
   expect(
     library.getAllByRole("gridcell").map((el) => el.getAttribute("aria-label")),
   ).toEqual(["lowest.jpg, Active", "highest.jpg, Active"]);
-  // Interim, and #130's to replace with the filter chips and the sort control.
-  // What they hold is the state under them, which is why the filter and the
-  // ordering are assertable at all.
-  expect((screen.getByLabelText("Filter") as HTMLSelectElement).value).toBe(
-    "all",
+  // And the bar over it, as #130 built it: the four chips in one named group
+  // with All the current one, and the ordering opening on Score, high to low —
+  // the one view neither Rank nor Review gives (ADR 0014, ADR 0016).
+  const bar = within(
+    document.querySelector(
+      '[data-view="library"] [data-slot="page-bar"]',
+    ) as HTMLElement,
   );
-  expect((screen.getByLabelText("Order by") as HTMLSelectElement).value).toBe(
+  const chips = within(
+    bar.getByRole("group", { name: "Filter by Status" }),
+  ).getAllByRole("button");
+  expect(chips.map((el) => el.textContent)).toEqual([
+    "All",
+    "Active",
+    "Kept",
+    "Rejected",
+  ]);
+  expect(
+    bar.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
+  ).toEqual(["All"]);
+  expect((bar.getByLabelText("Order by") as HTMLSelectElement).value).toBe(
     "score_desc",
   );
 });

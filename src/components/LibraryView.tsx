@@ -1,5 +1,8 @@
 import { PageBar } from "@/components/PageBar";
-import { useRejectDestination } from "@/components/RejectDestination";
+import {
+  RejectDestinationLine,
+  useRejectDestination,
+} from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import type { CardAction } from "@/components/WallpaperCard";
 import { useGridColumns, WallpaperGrid } from "@/components/WallpaperGrid";
@@ -80,7 +83,16 @@ function rowHeight(boxWidth: number, columns: number): number {
   return (cards / columns) * CARD_ASPECT;
 }
 
-/** The four filters, in the order the control offers them (ADR 0016). */
+/**
+ * The four filters, in the order the chips sit in, and All first because the
+ * page's promise is everything the app knows about (ADR 0014).
+ *
+ * Four and not five. There is no Eligible chip: Eligible is a voting-pool term,
+ * and on a browsing surface it reads as "everything I haven't thrown out", which
+ * is what All already shows with the rejects greyed. Putting a word with a
+ * precise domain meaning on a chip invites a looser reading of it (CONTEXT.md,
+ * ADR 0016).
+ */
 const FILTERS: Array<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "All" },
   { value: "active", label: "Active" },
@@ -156,9 +168,9 @@ function EmptyState({
  * The library page: every matching row in one fetch (ADR 0016), drawn as the
  * shared card in the shared grid, inside the scroll container this view owns.
  *
- * What is still interim says so where it stands. The bar's two `<select>`s are
- * #130's to replace with the filter chips, the sort control and the line saying
- * where rejects go.
+ * The bar carries four things and they are all read-outs of the same two pieces
+ * of state or of a setting: the Status filter as four chips, the ordering as one
+ * named control, the line saying where rejects go, and the row count (#130).
  *
  * What this view owns underneath is the state the grid reads: the rows, the
  * filter, the ordering, the scroll position, the window of rows that has cards
@@ -189,8 +201,10 @@ export function LibraryView() {
   // the string `move_wallpaper` is handed, and the boolean the toast reads to
   // decide whether it has a path left to name. One object rather than a value
   // each of them resolves for itself, because `$HOME/bin` looks relative and is
-  // not, so a second `expand_path` call is a second verdict (ADR 0018). The
-  // read-out of it on the bar is #130's to add.
+  // not, so a second `expand_path` call is a second verdict (ADR 0018). The line
+  // on the bar is handed this same object rather than reading the setting for
+  // itself, which is what makes "the toast names the path whenever the bar could
+  // not" a property of the page rather than a hope about two callers.
   const destination = useRejectDestination();
 
   const [filter, setFilter] = useState<StatusFilter>("all");
@@ -517,27 +531,63 @@ export function LibraryView() {
   return (
     <>
       <PageBar>
-        {/* #130 replaces both of these with the designed filter row and sort
-            control. What they are here is the state behind them: the pair of
-            choices that own a refetch and reset the scroll position. */}
-        <select
-          aria-label="Filter"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value as StatusFilter)}
-          className="rounded-md border border-border bg-background px-2 py-1 text-sm"
-        >
-          {FILTERS.map(({ value, label }) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+        {/* The filter, as four chips laid out rather than four entries behind a
+            menu. Every value is one word, all four fit, and a chip row is the
+            one shape where the current filter and the three alternatives are
+            legible without opening anything.
 
+            One group with one accessible name, because four buttons in a row
+            are otherwise four unrelated controls with no word between them
+            saying what they are for, and `aria-pressed` is what makes the
+            current filter the same fact to a screen reader that the fill makes
+            it to an eye.
+
+            Pressed and not checked: a `radiogroup` would put the four on the
+            arrow keys, and this page already spends the arrows on moving the
+            selection through the grid (ADR 0019). */}
+        <div
+          role="group"
+          aria-label="Filter by Status"
+          className="flex shrink-0 items-center gap-1"
+        >
+          {FILTERS.map(({ value, label }) => {
+            const current = filter === value;
+            return (
+              <Button
+                key={value}
+                size="sm"
+                variant={current ? "secondary" : "ghost"}
+                aria-pressed={current}
+                onClick={() => setFilter(value)}
+                className="rounded-full"
+              >
+                {label}
+              </Button>
+            );
+          })}
+        </div>
+
+        {/* ADR 0018's line, and it sits between the two controls because it is
+            the thing that truncates when the bar runs out of width: the chips
+            and the ordering keep their labels and the read-out gives up its
+            tail, which is the order of precedence that ADR names. It is the
+            same component Review's bar carries, on the object this page hands
+            `move_wallpaper`. */}
+        <RejectDestinationLine destination={destination} />
+
+        {/* One control with ADR 0014's four names in it, direction included, so
+            nothing here composes a key and a direction — the frontend picks a
+            name and the backend owns every part of the clause behind it.
+
+            A `<select>`, styled to sit beside the chips. Four fixed entries the
+            curator opens, reads and closes is exactly what the native control
+            is, and a popover would be a menu component, a focus trap and a
+            keyboard model this app does not otherwise have. */}
         <select
           aria-label="Order by"
           value={ordering}
           onChange={(event) => setOrdering(event.target.value as ListOrdering)}
-          className="rounded-md border border-border bg-background px-2 py-1 text-sm"
+          className="h-7 shrink-0 rounded-lg border border-border bg-background px-2 text-[0.8rem] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         >
           {ORDERINGS.map(({ value, label }) => (
             <option key={value} value={value}>
@@ -546,7 +596,10 @@ export function LibraryView() {
           ))}
         </select>
 
-        <span className="ml-auto text-xs text-muted-foreground">
+        {/* The row count, which is the size of the library under this filter and
+            not a page of it: one call returns every matching row, so nothing
+            asks a second question to say how many there are (ADR 0016). */}
+        <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">
           {rows === null
             ? "Loading…"
             : `${rows.length} ${rows.length === 1 ? "wallpaper" : "wallpapers"}`}
@@ -612,12 +665,12 @@ export function LibraryView() {
                domain's proper nouns and `STATUS_LABEL` is where the app agrees
                with itself about them, card pill included (`copy.ts`).
 
-               The way out is the same state setter the control on the bar
-               writes, not the control itself. #130 replaces that `<select>` with
-               the designed filter row and moves it, and an empty state that
-               reached for a DOM node would go with it; going through `setFilter`
-               also means the refetch and the scroll reset are the ones a filter
-               change already owns (ADR 0016). */
+               The way out is the same state setter the chips on the bar write,
+               not a chip itself: #130 turned that control from a `<select>`
+               into four buttons, and an empty state reaching for a DOM node
+               would have gone with it. Going through `setFilter` also means the
+               refetch and the scroll reset are the ones a filter change already
+               owns (ADR 0016). */
             <EmptyState
               icon={Filter}
               action="Show all wallpapers"

@@ -1,7 +1,13 @@
 import { LibraryView } from "@/components/LibraryView";
 import { useApp } from "@/context/AppContext";
 import type { Settings, Wallpaper } from "@/lib/client";
-import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -33,6 +39,8 @@ const HOME = "/home/curator";
 let library: Wallpaper[];
 /** How many times the page asked for the list, since a patch must ask for none. */
 let listCalls: number;
+/** The filter and the ordering of every call, in order, as the wire carries them. */
+let listArgs: Array<[string, string]>;
 
 afterEach(() => {
   cleanup();
@@ -45,12 +53,14 @@ afterEach(() => {
 beforeEach(() => {
   library = [];
   listCalls = 0;
+  listArgs = [];
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
   mockCommand("start_pregen", () => null);
   mockCommand("list_wallpapers", (args) => {
     listCalls++;
     const filter = (args?.filter as string) ?? "all";
+    listArgs.push([filter, args?.ordering as string]);
     return library.filter((w) => filter === "all" || w.status === filter);
   });
   // A reject reads the stored destination and asks whether it is relative, which
@@ -152,12 +162,34 @@ async function click(element: Element) {
 /** The overlay button for one action on one card, by its accessible name. */
 const button = (name: RegExp) => screen.getByRole("button", { name });
 
-async function choose(label: string, value: string) {
+/** The page's own bar, which is where both controls and the read-out live. */
+const bar = () =>
+  within(document.querySelector('[data-slot="page-bar"]') as HTMLElement);
+
+/** Press one filter chip, by the word on it (#130). */
+async function filterBy(label: string) {
+  await click(bar().getByRole("button", { name: label }));
+}
+
+/** The chip the bar marks as the current filter, or `null` for none. */
+const pressedChip = () =>
+  bar()
+    .getAllByRole("button", { pressed: true })
+    .map((el) => el.textContent)[0] ?? null;
+
+/** Choose one of ADR 0014's four orderings, by its wire name. */
+async function orderBy(value: string) {
   await act(async () => {
-    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.change(bar().getByLabelText("Order by"), { target: { value } });
   });
   await flush();
 }
+
+/** ADR 0018's line on the bar, whichever of its two shapes is up. */
+const destinationLine = () =>
+  document.querySelector(
+    "[data-slot='reject-destination']",
+  ) as HTMLElement | null;
 
 const scroller = () =>
   document.querySelector('[data-slot="library-rows"]') as HTMLElement;
@@ -247,6 +279,99 @@ test("moving the selection to the last card scrolls it in and focuses it", async
   // And the window moved rather than grew: the card the curator started on is
   // a hundred rows behind them and has given its node up.
   expect(card(1)).toBeNull();
+});
+
+// The second bar (#130): the Status filter as four chips, the ordering as one
+// control with ADR 0014's four names in it, and the line saying where rejects
+// go. Nothing behind them changed — a filter or an ordering change refetches and
+// returns the list to the top, as it did through the two interim `<select>`s.
+
+test("the filter is four chips in one named group, with the current one pressed", async () => {
+  await openLibraryOf([wallpaper(1)]);
+
+  // One group with one name, because four buttons in a row are otherwise four
+  // unrelated controls with no word between them saying what they filter. There
+  // is no fifth chip: Eligible is a voting-pool term, and what it would mean
+  // here is what All already shows with the rejects greyed (ADR 0016).
+  const chips = within(
+    screen.getByRole("group", { name: "Filter by Status" }),
+  ).getAllByRole("button");
+  expect(chips.map((el) => el.textContent)).toEqual([
+    "All",
+    "Active",
+    "Kept",
+    "Rejected",
+  ]);
+
+  // All is where the page opens, because its promise is everything the app
+  // knows about and a default that hides rejects turns "where did that one go"
+  // into a hunt (ADR 0014).
+  expect(pressedChip()).toBe("All");
+
+  await filterBy("Rejected");
+
+  // The press refetches with that filter and the chip becomes the current one
+  // to a screen reader as well as to an eye.
+  expect(listArgs).toEqual([
+    ["all", "score_desc"],
+    ["rejected", "score_desc"],
+  ]);
+  expect(pressedChip()).toBe("Rejected");
+});
+
+test("the ordering offers four names, and the frontend sends the name", async () => {
+  await openLibraryOf([wallpaper(1)]);
+
+  const ordering = () => bar().getByLabelText("Order by") as HTMLSelectElement;
+  // Each with its direction baked in, which is why Score appears twice and
+  // there is no direction toggle beside it (ADR 0014).
+  expect([...ordering().options].map((el) => el.textContent)).toEqual([
+    "Score, high to low",
+    "Score, low to high",
+    "Filename, A to Z",
+    "Recently added",
+  ]);
+  expect(ordering().value).toBe("score_desc");
+
+  await orderBy("filename_asc");
+
+  // A name and nothing else: no column, no direction and nothing sorted here.
+  // The backend owns every part of the clause behind the name (ADR 0014).
+  expect(listArgs).toEqual([
+    ["all", "score_desc"],
+    ["all", "filename_asc"],
+  ]);
+  expect(ordering().value).toBe("filename_asc");
+});
+
+test("the bar says where rejects go, in the string the curator wrote", async () => {
+  await openLibraryOf([wallpaper(1)], { reject_destination: "~/bin" });
+
+  // The same line Review's bar carries, on the same object this page hands
+  // `move_wallpaper`, and the written string rather than the resolved one:
+  // ADR 0011 put the resolved-path preview on the Settings field (ADR 0018).
+  expect(destinationLine()?.textContent).toBe(
+    "Rejects go to ~/bin · change in Settings",
+  );
+  expect(destinationLine()?.textContent).not.toContain(HOME);
+});
+
+test("a malformed destination replaces the whole line", async () => {
+  mockCommand("expand_path", () =>
+    Promise.reject({
+      kind: "invalid_path_syntax",
+      message: "unknown environment variable HOEM",
+    }),
+  );
+  await openLibraryOf([wallpaper(1)], { reject_destination: "$HOEM/rejected" });
+
+  // It fails every reject the page can fire, so there is no destination left to
+  // describe. Reading the variable's name off the bar before the first overlay
+  // click beats a toast per card after it (ADR 0011, ADR 0018).
+  expect(destinationLine()?.textContent).toBe(
+    "unknown environment variable HOEM",
+  );
+  expect(destinationLine()?.className).toContain("text-destructive");
 });
 
 // The four actions (#132). The page the curator is browsing is the page they act
@@ -353,7 +478,7 @@ test("restore puts the file back and the wallpaper on Active", async () => {
 test("a row whose new Status falls outside the filter leaves the grid", async () => {
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", () => null);
-  await choose("Filter", "active");
+  await filterBy("Active");
   expect(listCalls).toBe(2);
 
   await click(button(/keep wall-1\.jpg/i));
@@ -468,7 +593,7 @@ test("an empty library names the reason and routes to the library root field", a
 
 test("a filter matching nothing names the filter and clears back to All", async () => {
   await openLibraryOf([wallpaper(1)]);
-  await choose("Filter", "kept");
+  await filterBy("Kept");
   expect(listCalls).toBe(2);
 
   // The library is fine and this view of it is not, which is what separates

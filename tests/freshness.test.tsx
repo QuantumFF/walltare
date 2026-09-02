@@ -2,7 +2,14 @@ import App from "@/App";
 import { LibraryView } from "@/components/LibraryView";
 import { useAppEvents } from "@/context/AppEventsContext";
 import type { StatusFilter, Wallpaper } from "@/lib/client";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { flush, renderInApp, settings, stats, wallpaper } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
@@ -188,12 +195,26 @@ function browserDropsScrollOffset() {
   scroller().scrollTop = 0;
 }
 
-const select = (label: string) =>
-  screen.getByLabelText(label) as HTMLSelectElement;
+/**
+ * The library page's own bar, which both of its controls live on.
+ *
+ * Scoped like the card queries above: Review is mounted behind this page and
+ * carries a bar of its own, so an unscoped query would be free to answer about
+ * the wrong view's (#130).
+ */
+const libraryBar = () => within(pageBar("library"));
 
-async function choose(label: string, value: string) {
+/** Press one of the filter chips, by the word on it. */
+async function filterBy(label: string) {
+  await click(libraryBar().getByRole("button", { name: label }));
+}
+
+/** Choose one of ADR 0014's four orderings, by its wire name. */
+async function orderBy(value: string) {
   await act(async () => {
-    fireEvent.change(select(label), { target: { value } });
+    fireEvent.change(libraryBar().getByLabelText("Order by"), {
+      target: { value },
+    });
   });
   await flush();
 }
@@ -270,7 +291,7 @@ test("a reject drops the row from a Library filtered to Active", async () => {
   // looks like or where it would go.
   await openApp();
   await click(tab("Library"));
-  await choose("Filter", "active");
+  await filterBy("Active");
   expect(listFilters).toEqual(["all", "active"]);
   expect(card(1)).not.toBeNull();
 
@@ -408,7 +429,7 @@ test("a refetch makes every Score current again", async () => {
     rating_mu: 33.1,
   });
   await click(tab("Library"));
-  await choose("Order by", "filename_asc");
+  await orderBy("filename_asc");
 
   expect(badge(1)).toBe("33.1");
 });
@@ -432,7 +453,7 @@ test("a filter change puts the list back at the top", async () => {
   await click(tab("Library"));
   await scrollLibraryTo(240);
 
-  await choose("Filter", "kept");
+  await filterBy("Kept");
 
   expect(scroller().scrollTop).toBe(0);
   expect(listFilters).toEqual(["all", "kept"]);
@@ -447,7 +468,7 @@ test("an ordering change puts the list back at the top", async () => {
   await click(tab("Library"));
   await scrollLibraryTo(240);
 
-  await choose("Order by", "recently_added");
+  await orderBy("recently_added");
 
   expect(scroller().scrollTop).toBe(0);
 });
@@ -479,7 +500,7 @@ test("a deferred refetch that finds the same rows keeps the place", async () => 
   // fetch comes back with exactly what it had.
   await openApp();
   await click(tab("Library"));
-  await choose("Filter", "kept");
+  await filterBy("Kept");
   await scrollLibraryTo(240);
   await click(tab("Rank"));
 
