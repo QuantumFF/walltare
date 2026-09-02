@@ -193,6 +193,17 @@ export interface WallpaperGridProps {
    * what a grid outside a scroll container has no way to improve on.
    */
   range?: GridRange;
+  /**
+   * A click on a card that was not on one of its buttons, carrying the
+   * wallpaper it landed on (#134).
+   *
+   * Carried and not answered. The click is a click on the cell, which is the
+   * card's own root, so nothing here listens for it — what the grid adds is the
+   * route to the page, which is where ADR 0022 keeps the lightbox's state for
+   * the same reason it keeps the list here: both change on every action, and
+   * only the page holds them.
+   */
+  onOpen?: (wallpaper: Wallpaper) => void;
   /** Layout the host owns: Review's bottom padding, a page's own gap. */
   className?: string;
 }
@@ -227,6 +238,7 @@ export function WallpaperGrid({
   scoresMoved,
   reveal,
   range,
+  onOpen,
   className,
 }: WallpaperGridProps) {
   const columns = useGridColumns();
@@ -349,6 +361,8 @@ export function WallpaperGrid({
     // two surfaces share; until that exists it does nothing to the wallpaper —
     // no command, no Status change — and it is answered here rather than left to
     // the movement keys' `default` so the binding has one home to arrive at.
+    // The mouse reaches the same lightbox by the cell's own click and the
+    // `onOpen` above, so #80 has one host handler to give this key as well.
     //
     // Nothing is prevented, deliberately. A cell's overlay buttons are still
     // buttons: `Enter` on a focused one activates it, and that activation is a
@@ -453,6 +467,7 @@ export function WallpaperGrid({
             onAction={onAction}
             animated={animated}
             scoreMoved={scoresMoved?.has(wallpaper.id)}
+            onOpen={onOpen}
             cell={{ index: cardIndex, selected: cardIndex === index }}
           />
         );

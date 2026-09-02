@@ -29,10 +29,13 @@ afterEach(() => {
 /** The commands the keys below reached, in order, and what was asked for. */
 let commands: string[];
 let asked: CardAction[];
+/** The wallpapers a click asked to open the lightbox on, in order (#134). */
+let opened: number[];
 
 beforeEach(() => {
   commands = [];
   asked = [];
+  opened = [];
   // The provider's boot gate; the grid itself asks the backend nothing.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
@@ -112,6 +115,7 @@ function Harness({ initial }: { initial: Wallpaper[] }) {
         wallpapers={list}
         label="Wallpapers"
         onAction={handleAction}
+        onOpen={(subject) => opened.push(subject.id)}
       />
       <button type="button">after</button>
     </>
@@ -497,6 +501,47 @@ test("Enter calls no command and changes no Status", async () => {
   expect(asked).toEqual([]);
   expect(cell(1, "Active")).toBeTruthy();
   expect(cell(2, "Kept")).toBeTruthy();
+});
+
+// The click (#134). It reaches the host through the grid because the page is
+// where ADR 0022 keeps the lightbox's state, and it names the card it landed on
+// rather than the one holding the selection, which a click does not move.
+
+test("a click on a card asks to open it, and a click on a button does not", async () => {
+  await mount(mixed());
+
+  await act(async () => {
+    fireEvent.click(cell(2, "Kept"));
+  });
+  expect(opened).toEqual([2]);
+
+  await act(async () => {
+    fireEvent.click(button("Keep wall-1.jpg"));
+  });
+
+  // One press, one outcome: the button stops the click, so a keep is a keep
+  // rather than a keep with the lightbox opening over the card it emptied.
+  expect(commands).toEqual(["keep_wallpaper"]);
+  expect(opened).toEqual([2]);
+});
+
+test("Enter on an overlay button is left to the button", async () => {
+  await mount(mixed());
+
+  const keep = button("Keep wall-1.jpg");
+  let survived = false;
+  await act(async () => {
+    keep.focus();
+    // `fireEvent` answers with whether the event survived, which is the whole
+    // question: the keypress bubbles through the cell to the grid's own
+    // handler, and a handler that cancelled the default action on the way up
+    // would leave `Enter` pressing a control that does nothing. happy-dom
+    // synthesises no activation from it, so the surviving default is what
+    // there is to assert on (ADR 0019).
+    survived = fireEvent.keyDown(keep, { key: "Enter" });
+  });
+
+  expect(survived).toBe(true);
 });
 
 test("a key that removes the selected card leaves the selection at that index", async () => {

@@ -493,6 +493,27 @@ export function LibraryView() {
     void act(action, card);
   };
 
+  /**
+   * What a click on a card asks for: the lightbox, on the wallpaper it was made
+   * on (#134).
+   *
+   * **The lightbox is #80 and does not exist**, so this is the seam and not the
+   * surface. It opens nothing, makes no call and changes no Status — a gesture
+   * that cannot yet do the thing it means must not quietly do something else
+   * instead — and the click is wired now because the card's half of it is what
+   * this ticket builds.
+   *
+   * It is answered on the page rather than in the grid because that is where
+   * ADR 0022 puts the lightbox's state, for the same reason the list and the
+   * selection are here: they change on every action, and a shell holding them
+   * would need them pushed back on each one. The page keeps the state and
+   * portals only the DOM.
+   *
+   * It takes no argument yet. The wallpaper arrives with the click and there is
+   * nowhere on this page to put it until #80 gives it one.
+   */
+  const handleOpen = () => {};
+
   return (
     <>
       <PageBar>
@@ -633,6 +654,7 @@ export function LibraryView() {
             wallpapers={list}
             label="Wallpapers in the library"
             onAction={handleAction}
+            onOpen={handleOpen}
             scoresMoved={scoresMoved}
             reveal={reveal}
             range={range}

@@ -744,3 +744,19 @@ test("a key that fails puts the card back, and the selection with it", async () 
   expect(toast()?.title).toBe("Couldn't keep keeper.jpg");
   expect(selectedCard()).toBe("keeper.jpg, Active");
 });
+
+test("a click on a card is not a keep and not a reject", async () => {
+  // The click that opens the lightbox (#134), which Review has because the card
+  // is shared and which this view wires for itself, since ADR 0022 keeps that
+  // surface's state on the page that mounted the grid. The lightbox is #80, so
+  // what is assertable here is that a click on the card body acts on nothing —
+  // and on this page acting on nothing has a second half: the card is removed
+  // optimistically by a keep or a reject, so a click that quietly meant one
+  // would take the wallpaper out of the list in front of the curator.
+  await openReview([wallpaper(4, { filename: "keeper.jpg" })]);
+
+  await click(inReview().getByRole("gridcell", { name: "keeper.jpg, Active" }));
+
+  expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
+  expect(toast()).toBeNull();
+});

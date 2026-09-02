@@ -14,10 +14,13 @@ afterEach(cleanup);
 
 let asked: Array<{ action: CardAction; id: number }>;
 let restores: number[];
+/** The wallpapers a click asked to look closer at, in order (#134). */
+let opened: number[];
 
 beforeEach(() => {
   asked = [];
   restores = [];
+  opened = [];
   // The provider's boot gate; the card itself asks the backend nothing.
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
@@ -68,6 +71,7 @@ async function mount(w: Wallpaper, animated = false) {
         asked.push({ action, id: subject.id });
         if (action === "restore") void client.restoreWallpaper(subject.id);
       }}
+      onOpen={(subject) => opened.push(subject.id)}
     />,
   );
   await flush();
@@ -251,6 +255,41 @@ test("a Restore with no Origin explains itself when pressed, and calls nothing",
   // trip, and the host is never asked for one.
   expect(asked).toEqual([]);
   expect(restores).toEqual([]);
+});
+
+test("a click on the card asks to look closer, and a click on a button does not", async () => {
+  await mount(card());
+
+  // The picture is most of the card and the click lands on it, which is the
+  // gesture: there is no open control, because the cell is the target
+  // (ADR 0019, ADR 0022). What the host gets is the wallpaper that was pressed.
+  await act(async () => {
+    fireEvent.click(screen.getByAltText("wall-1.jpg"));
+  });
+  expect(opened).toEqual([1]);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Keep wall-1.jpg" }));
+  });
+
+  // The button stopped the click on its way up, so pressing Keep is a keep and
+  // not a keep with the lightbox opening over it.
+  expect(asked).toEqual([{ action: "keep", id: 1 }]);
+  expect(opened).toEqual([1]);
+});
+
+test("a refused Restore is not a way of opening the card either", async () => {
+  await mount(rejected({ origin_path: null }));
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Restore wall-1.jpg" }));
+  });
+
+  // The one button that answers a press with a sentence rather than an action.
+  // It still stops the click, so the card underneath stays where it was: a
+  // refusal that also opened the lightbox would be two answers to one press.
+  expect(toastTitle()).toBe("Can't restore wall-1.jpg");
+  expect(opened).toEqual([]);
 });
 
 test("hover and focus reveal the same overlay", async () => {
