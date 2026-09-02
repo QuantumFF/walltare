@@ -1,7 +1,14 @@
 import { PageBar } from "@/components/PageBar";
+import { useRejectDestination } from "@/components/RejectDestination";
+import { useToaster } from "@/components/ToastSurface";
+import type { CardAction } from "@/components/WallpaperCard";
 import { useGridColumns, WallpaperGrid } from "@/components/WallpaperGrid";
 import { useApp } from "@/context/AppContext";
-import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
+import {
+  useAppEvent,
+  useAppEvents,
+  useRefetchWhenShown,
+} from "@/context/AppEventsContext";
 import {
   client,
   type ListOrdering,
@@ -91,6 +98,20 @@ const ORDERINGS: Array<{ value: ListOrdering; label: string }> = [
   { value: "recently_added", label: "Recently added" },
 ];
 
+/**
+ * What a failed transition is logged as, per action.
+ *
+ * The console line names the command, which is the one thing the toast beside it
+ * does not: that carries the wallpaper and the backend's own sentence, and all
+ * four of these arrive at the curator through the same `failed` row.
+ */
+const FAILURE_LOG: Record<CardAction, string> = {
+  keep: "Failed to keep wallpaper:",
+  "make-active": "Failed to unkeep wallpaper:",
+  reject: "Failed to move wallpaper:",
+  restore: "Failed to restore wallpaper:",
+};
+
 /** Whether a row still belongs in a list filtered this way. */
 function matchesFilter(status: Status, filter: StatusFilter): boolean {
   return filter === "all" || filter === status;
@@ -101,8 +122,8 @@ function matchesFilter(status: Status, filter: StatusFilter): boolean {
  * shared card in the shared grid, inside the scroll container this view owns.
  *
  * What is still interim says so where it stands. The bar's two `<select>`s are
- * #130's to replace with the filter chips and the sort control, and #132 is what
- * answers the four actions a card can ask for.
+ * #130's to replace with the filter chips, the sort control and the line saying
+ * where rejects go.
  *
  * What this view owns underneath is the state the grid reads: the rows, the
  * filter, the ordering, the scroll position, the window of rows that has cards
@@ -117,6 +138,20 @@ function matchesFilter(status: Status, filter: StatusFilter): boolean {
 export function LibraryView() {
   const { view } = useApp();
   const showing = view === "library";
+
+  const { publish } = useAppEvents();
+  // Every transition this page makes reports itself on the shell's one slot, and
+  // this view holds no error state of its own: two error surfaces in one view is
+  // what ADR 0017 removed, and the backend's own message says more than a string
+  // written here would.
+  const { show } = useToaster();
+  // Where a reject goes, read once for the two things that must agree about it:
+  // the string `move_wallpaper` is handed, and the boolean the toast reads to
+  // decide whether it has a path left to name. One object rather than a value
+  // each of them resolves for itself, because `$HOME/bin` looks relative and is
+  // not, so a second `expand_path` call is a second verdict (ADR 0018). The
+  // read-out of it on the bar is #130's to add.
+  const destination = useRejectDestination();
 
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [ordering, setOrdering] = useState<ListOrdering>("score_desc");
@@ -326,13 +361,97 @@ export function LibraryView() {
     [virtualiser, columns],
   );
 
-  // #132 is what turns a press into `keep_wallpaper`, `unkeep_wallpaper`,
-  // `move_wallpaper` or `restore_wallpaper`, with the optimistic patch and the
-  // toast around each. Until then a card's buttons and the grid's direct keys
-  // arrive here and are answered by nothing — except the one refusal that never
-  // gets this far, since `useCardAction` raises the origin-less Restore's toast
-  // itself (ADR 0009, ADR 0019).
-  const handleAction = () => {};
+  /**
+   * The four transitions a card can ask for: one call, one published patch, one
+   * toast (#132).
+   *
+   * **Nothing here is optimistic**, and that is the difference from Review. That
+   * page removes the card on the click and puts it back when the write fails,
+   * because a kept wallpaper leaves its list either way. This page keeps every
+   * row it fetched, so there is no removal to undo: the published patch is the
+   * only thing that edits a row, the subscriber above is what applies it, and a
+   * call that never lands leaves the card exactly where the curator left it.
+   *
+   * The patch is published **after** the write for the same reason. Publishing
+   * ahead of it would grey a row that never changed, and the failure would be
+   * the one thing the page did not hear about.
+   *
+   * Every one of them toasts, success and failure alike. The row does update in
+   * place under the cursor, but a virtualised grid may reorder it or filter it
+   * out from under the click, and a card that vanishes is not a confirmation
+   * (ADR 0016, ADR 0017).
+   *
+   * The origin-less Restore never arrives here. `useCardAction` refuses it with
+   * a pinned toast and makes no call, from the button and from `R` alike, so
+   * that refusal is a property of the action rather than of this host
+   * (ADR 0009, ADR 0019).
+   */
+  const act = async (action: CardAction, card: Wallpaper) => {
+    const { id, filename } = card;
+    try {
+      switch (action) {
+        case "keep":
+          await client.keepWallpaper(id);
+          publish({ type: "status-changed", id, status: "kept" });
+          show({ kind: "kept", view: "library", id, filename });
+          break;
+
+        case "make-active":
+          // The keep inverse: one column write with nothing on disk to move,
+          // which is why it is `unkeep_wallpaper` and not a Restore. It carries
+          // no path and offers no Undo, since Keep is the button that replaces
+          // it on the card it just changed (ADR 0009, ADR 0017).
+          await client.unkeepWallpaper(id);
+          publish({ type: "status-changed", id, status: "active" });
+          show({ kind: "made-active", filename });
+          break;
+
+        case "reject": {
+          // The path the file landed at is read now: `unique_destination`
+          // suffixes ` (n)` on a collision rather than overwriting what is
+          // already there, so this is the only account of what the file is
+          // called on the far side (ADR 0003).
+          const finalPath = await client.moveWallpaper(id, destination.written);
+          publish({ type: "status-changed", id, status: "rejected" });
+          show({
+            kind: "rejected",
+            view: "library",
+            id,
+            filename,
+            // The same read-out the call was handed, so the destination the
+            // toast describes and the one the file went to are one answer.
+            relativeDestination: destination.relative,
+            finalPath,
+          });
+          break;
+        }
+
+        case "restore": {
+          // A Restore lands on Active whichever Status the wallpaper held before
+          // the reject, because Kept is a judgement about a rating and changing
+          // your mind about a reject is not that judgement (CONTEXT.md,
+          // ADR 0009). So Active is what the patch carries, and a row the filter
+          // no longer matches leaves the grid.
+          const finalPath = await client.restoreWallpaper(id);
+          publish({ type: "status-changed", id, status: "active" });
+          show({ kind: "restored", filename, finalPath });
+          break;
+        }
+      }
+    } catch (err) {
+      console.error(FAILURE_LOG[action], err);
+      // The card is untouched and the toast carries the backend's own account of
+      // why. `invalid_transition` goes one step further on the surface itself: it
+      // can only mean this view acted on a row that had already changed
+      // underneath, which no patch can correct, so it asks this view for the
+      // refetch `useRefetchWhenShown` above is registered for (ADR 0017).
+      show({ kind: "failed", view: "library", action, filename, error: err });
+    }
+  };
+
+  const handleAction = (action: CardAction, card: Wallpaper) => {
+    void act(action, card);
+  };
 
   return (
     <>
