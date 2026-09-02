@@ -4,7 +4,7 @@ import { useApp } from "@/context/AppContext";
 import { useLightboxHost } from "@/context/LightboxHostContext";
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
 import { counted, grouped, isEvaluated, score, STATUS_LABEL } from "@/lib/copy";
-import { X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -156,7 +156,72 @@ export interface LightboxProps {
  */
 export function Lightbox({ selection, open, onClose }: LightboxProps) {
   const { container } = useLightboxHost();
-  const { wallpaper, index, length } = selection;
+  const { wallpaper, index, length, moveTo } = selection;
+
+  /**
+   * One step through the list, which is a selection move and nothing else.
+   *
+   * ADR 0022 has this surface render the grid's selection, so a step has no
+   * second cursor to keep in sync and no arithmetic of its own at the ends:
+   * `moveTo` clamps into the list, which is what makes `←` on the first
+   * wallpaper do nothing rather than wrap to the last. The keys and the arrow
+   * buttons both come through here, so "the buttons make the movement the keys
+   * make" is one function rather than two that happen to agree.
+   */
+  const step = useCallback((by: number) => moveTo(index + by), [index, moveTo]);
+
+  const atFirst = index <= 0;
+  const atLast = index >= length - 1;
+
+  // `←` and `→`, bound on `window` rather than on the content below.
+  //
+  // The content's own `onKeyDown` is where ADR 0019 puts a view-local key — the
+  // element that owns the focus answers it — and the arrow buttons are what
+  // rules it out here. A pointer press lands the focus on the button, and
+  // reaching the end of the list disables the button that was just pressed,
+  // which drops the focus to `body` and takes the keys with it. Nothing else
+  // claims a bare arrow while this is up, either: everything behind is `inert`,
+  // and Rank's own arrow listener is bound only while Rank is the view being
+  // shown.
+  //
+  // `defaultPrevented` is the stand-down that listener makes, in the other
+  // direction. An element inside the lightbox that ever answers an arrow itself
+  // marks the event, and this stops behind it.
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      // Answered at the ends too, where the clamp makes it a no-op: the key
+      // belongs to this surface whether or not the selection moves.
+      event.preventDefault();
+      step(event.key === "ArrowLeft" ? -1 : 1);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, step]);
+
+  // Whether a `medium` has painted since this was opened, which is the whole
+  // question the placeholder below answers: a step has the outgoing picture to
+  // hold, and a first open has nothing.
+  //
+  // Not reset per wallpaper, deliberately. Once one has painted there is always
+  // an outgoing frame for the next step to hold, and re-mounting the `small`
+  // would put the *arriving* wallpaper's thumbnail behind the outgoing picture
+  // — visible around the edges wherever two aspect ratios differ, and this
+  // library holds no two the same — and spend a request per step on it. The
+  // close is what resets it, because the element goes with the content and a
+  // re-opened lightbox has nothing painted again.
+  const [arrived, setArrived] = useState(false);
+
+  useEffect(() => {
+    if (!open) setArrived(false);
+  }, [open]);
 
   // The painted picture's width, which is what the row shrink-wraps to.
   //
@@ -241,25 +306,68 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
             className="fixed inset-0 flex flex-col bg-neutral-950 outline-none"
           >
             <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
-              {/* #139 hangs the arrow buttons off the two edges of this box,
-                  and clamps them at the ends of the list. */}
-              <div className="relative flex h-full w-full items-center justify-center pb-14">
+              {/* Both renderings of the wallpaper sit in one grid cell, each
+                  fitted against it with `object-contain`, so the `medium`
+                  arrives exactly where the `small` was and reads as a
+                  sharpening rather than a jump. A cell rather than an overlay
+                  positioned over the picture, because the cell already is the
+                  rectangle they have to share: it is this container less the
+                  height reserved for the row, and an overlay would have to be
+                  handed that height a second time to land on the same box.
+                  Their order in the DOM is the order they paint, and neither is
+                  positioned, so the `medium` covers the `small` with no z-index
+                  in it. */}
+              <div className="relative grid h-full w-full grid-cols-1 grid-rows-1 place-items-center pb-14">
+                {/*
+                  The first frame, and the reason opening this never shows an
+                  empty box. There is nothing painted to hold on a first open,
+                  so the `small` the card the curator just pressed is already
+                  showing paints scaled up while the `medium` arrives: one
+                  element and no request, because under ADR 0016's `max-age=300`
+                  that `small` is in the memory cache. The alternative shows the
+                  curator a spinner instead of their wallpaper on the one path
+                  where the cache is cold, and ADR 0006 measured that path at
+                  386ms mean and 1962ms worst (ADR 0022).
+
+                  Nothing announces it: an empty `alt` keeps it out of the
+                  accessibility tree, because it is the same picture as the
+                  `medium` over it and that one is already named.
+                */}
+                {!arrived && (
+                  <img
+                    data-slot="lightbox-placeholder"
+                    src={wallpaperImageUrl(wallpaper.id, "small")}
+                    alt=""
+                    className="col-start-1 row-start-1 max-h-full max-w-full object-contain"
+                  />
+                )}
+
                 <img
                   ref={image}
+                  data-slot="lightbox-picture"
                   src={wallpaperImageUrl(wallpaper.id, "medium")}
                   alt={wallpaper.filename}
-                  // No `key`, deliberately: a fresh one per wallpaper remounts
-                  // the element and strobes the picture to black on every step,
-                  // which is the prototype's bug and #139's to fix by holding
-                  // the outgoing frame until the next one loads. Nothing steps
-                  // yet, so the only blank here is the one on first open.
+                  // No `key`, deliberately, and this is what it buys: an `<img>`
+                  // whose `src` changes keeps painting the image it has until
+                  // the new one decodes, so the outgoing wallpaper holds the
+                  // frame for the whole of a step. A fresh element per wallpaper
+                  // remounts with nothing painted, which is the prototype's bug
+                  // — a held arrow key strobing to black at a median 376KB a
+                  // frame (ADR 0022).
                   //
+                  // `load` is what retires the placeholder above, and `error`
+                  // counts as arrival for the reason ADR 0006's rank panes count
+                  // it: a missing source file leaves one visibly broken picture,
+                  // which is what ADR 0022 says this surface does about it,
+                  // rather than a thumbnail held up in front of it for good.
+                  onLoad={() => setArrived(true)}
+                  onError={() => setArrived(true)}
                   // Not dimmed and not desaturated, whatever the card does. The
                   // card fades a Rejected `<img>` so it recedes in a mixed
                   // grid; this surface exists to show one picture at full size,
                   // which is the opposite job, and the Status pill below
                   // carries the signal instead (ADR 0019, ADR 0022).
-                  className="max-h-full max-w-full object-contain"
+                  className="col-start-1 row-start-1 max-h-full max-w-full object-contain"
                 />
 
                 {/* The row, at the picture's width and absolutely positioned so
@@ -347,12 +455,13 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
                     How much the Score beside the filename is worth, and where
                     this wallpaper sits in the list being walked.
 
-                    The position stays even though nothing steps yet, because
-                    #139 clamps rather than wrapping and that is what makes the
-                    end of a fifty-row worklist mean something: reaching it is
-                    the moment the sweep is done. It counts against the whole
-                    list rather than the window ADR 0016 mounts cards for, which
-                    is why the selection carries its own length.
+                    The position is worth printing because the arrows clamp
+                    rather than wrapping: reaching the end of a fifty-row
+                    worklist is the moment the sweep is done, and it is also the
+                    reason the arrow beside it has gone unavailable. It counts
+                    against the whole list rather than the window ADR 0016
+                    mounts cards for, which is why the selection carries its own
+                    length.
                   */}
                   <div className="shrink-0 text-right text-[11px] tabular-nums text-white/50">
                     <div>
@@ -362,6 +471,51 @@ export function Lightbox({ selection, open, onClose }: LightboxProps) {
                   </div>
                 </div>
               </div>
+
+              {/*
+                The pointer's step, hung off the two edges of the box the
+                picture is fitted in, and under ADR 0019 the only step a
+                touchscreen has: there is no hover to reveal and no arrow key to
+                press. Both go through `step`, so neither can come to mean a
+                different movement from the keys.
+
+                They are out of the tab order for the reason the card's own
+                overlay buttons are: the keyboard's path is `←` and `→`, listed
+                in the `?` dialog as the grid's own, so a Tab that stops on two
+                arrows before it reaches the way out pays for nothing
+                (ADR 0019).
+
+                `disabled` at the ends, and not ADR 0019's `aria-disabled`. That
+                choice turns on whether the control owes the curator a sentence.
+                An origin-less Restore does, because nothing on screen says why
+                a Rejected wallpaper cannot go back, so it stays focusable in
+                order to say it when pressed. An arrow at the end of the list
+                owes nothing — the position line under the picture already reads
+                `50 / 50`, which is the reason and is the whole of it — and the
+                keys clamp at the same place, so a control nobody can focus
+                takes nothing away from anybody.
+              */}
+              <button
+                type="button"
+                aria-label="Previous wallpaper"
+                tabIndex={-1}
+                disabled={atFirst}
+                onClick={() => step(-1)}
+                className="absolute top-1/2 left-2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-white/10"
+              >
+                <ChevronLeft className="h-6 w-6" />
+              </button>
+
+              <button
+                type="button"
+                aria-label="Next wallpaper"
+                tabIndex={-1}
+                disabled={atLast}
+                onClick={() => step(1)}
+                className="absolute top-1/2 right-2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-white/10"
+              >
+                <ChevronRight className="h-6 w-6" />
+              </button>
 
               {/* The way out for a pointer, and under ADR 0019 the only one a
                   touchscreen has: there is no hover to reveal and no Escape to

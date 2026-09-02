@@ -1,5 +1,5 @@
 import App from "@/App";
-import type { Wallpaper } from "@/lib/client";
+import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
 import {
   act,
   cleanup,
@@ -82,10 +82,31 @@ const toastTitle = () =>
   document.querySelector("[data-slot='toast'] [data-slot='toast-title']")
     ?.textContent ?? null;
 
-/** The picture the lightbox is showing, by the alt text that names it. */
+/** The `medium`: the picture this surface exists to show. */
 function picture(): HTMLImageElement {
-  return screen.getByRole("dialog").querySelector("img") as HTMLImageElement;
+  return document.querySelector(
+    '[data-slot="lightbox-picture"]',
+  ) as HTMLImageElement;
 }
+
+/**
+ * The card's `small`, painted behind the `medium` until that one arrives, or
+ * `null` once it has.
+ */
+function placeholder(): HTMLImageElement | null {
+  return document.querySelector('[data-slot="lightbox-placeholder"]');
+}
+
+/** Every image request the surface has out, in the order they paint. */
+function pictures(): string[] {
+  return Array.from(screen.getByRole("dialog").querySelectorAll("img")).map(
+    (img) => img.getAttribute("src") ?? "",
+  );
+}
+
+const previous = () =>
+  screen.getByRole("button", { name: "Previous wallpaper" });
+const next = () => screen.getByRole("button", { name: "Next wallpaper" });
 
 function cell(name: string): HTMLElement {
   return screen.getByRole("gridcell", { name });
@@ -109,13 +130,32 @@ async function pressKey(key: string) {
   await flush();
 }
 
+/**
+ * An image arriving. happy-dom lays nothing out and loads nothing, so it fires
+ * no `load` of its own — a test that needs a picture to have arrived has to say
+ * so, which is also the only way to reach the frame where one has not.
+ */
+async function loaded(element: Element) {
+  await act(async () => {
+    fireEvent.load(element);
+  });
+  await flush();
+}
+
 async function openApp() {
   render(<App />);
   await flush();
 }
 
-/** Land on Review with its grid up, and focus the first card the way Tab does. */
-async function enterReview() {
+/**
+ * Land on Review with its grid up, and focus the first card the way Tab does.
+ *
+ * The rows are the two the `beforeEach` arranged unless a test hands over its
+ * own; the tests that walk the list want three, so that there is a wallpaper
+ * between the two ends.
+ */
+async function enterReview(rows: Wallpaper[] = reviewRows) {
+  reviewRows = rows;
   await openApp();
   await click(tab("Review"));
   await act(async () => {
@@ -129,6 +169,12 @@ async function enterLibrary(rows: Wallpaper[]) {
   await openApp();
   await click(tab("Library"));
 }
+
+/** The two default rows with a third behind them, for the walking tests. */
+const threeRows = (): Wallpaper[] => [
+  ...reviewRows,
+  wallpaper(9, { filename: "third.jpg", path: "/library/third.jpg" }),
+];
 
 test("Enter on the selected card opens the lightbox on it", async () => {
   await enterReview();
@@ -377,4 +423,123 @@ test("both pages open one, from the same component", async () => {
   expect(screen.getByRole("dialog", { name: "shared.jpg" })).toBeTruthy();
   expect(row().textContent).toContain("Kept");
   expect(row().textContent).toContain("1 / 1");
+});
+
+test("the arrow keys walk the list, and the row follows", async () => {
+  await enterReview(threeRows());
+  await pressKey("Enter");
+
+  // A step is a selection move and nothing else, so what the whole row says
+  // moves with it: the name the dialog is announced by, the read-out and the
+  // position (ADR 0022).
+  await pressKey("ArrowRight");
+  expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
+  expect(readOut().textContent).toBe("/library/second.jpg");
+  expect(row().textContent).toContain("2 / 3");
+
+  await pressKey("ArrowLeft");
+  expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
+  expect(readOut().textContent).toBe("/library/first.jpg");
+  expect(row().textContent).toContain("1 / 3");
+});
+
+test("the ends of the list clamp, and the arrow that would leave it is unavailable", async () => {
+  await enterReview(threeRows());
+  await pressKey("Enter");
+
+  // The prototype wraps. Reaching the end of a worklist is the moment the
+  // sweep is done, and wrapping hides that — at the library's ceiling it means
+  // jumping from wallpaper 5,000 to wallpaper 1. Clamping is also what makes
+  // the position worth printing, which is why it is asserted here.
+  expect(row().textContent).toContain("1 / 3");
+  expect(previous().hasAttribute("disabled")).toBe(true);
+  expect(next().hasAttribute("disabled")).toBe(false);
+
+  await pressKey("ArrowLeft");
+  expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
+  expect(row().textContent).toContain("1 / 3");
+
+  await pressKey("ArrowRight");
+  await pressKey("ArrowRight");
+  expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
+  expect(row().textContent).toContain("3 / 3");
+  expect(next().hasAttribute("disabled")).toBe(true);
+  expect(previous().hasAttribute("disabled")).toBe(false);
+
+  await pressKey("ArrowRight");
+  expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
+  expect(row().textContent).toContain("3 / 3");
+});
+
+test("the arrow buttons make the movement the keys make", async () => {
+  await enterReview(threeRows());
+  await pressKey("Enter");
+
+  await click(next());
+  expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
+  await click(next());
+  expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
+  await click(previous());
+  expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
+
+  // And a key picks up where the pointer left off, because both are the one
+  // selection move rather than two cursors that have to agree.
+  await pressKey("ArrowLeft");
+  expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
+});
+
+test("a first open paints the card's small behind the medium", async () => {
+  await enterReview();
+  await pressKey("Enter");
+
+  // Behind, and not beside: the two sit in one grid cell fitted against the
+  // same rectangle, and the order they are in the DOM is the order they paint.
+  // So what the curator opens onto is a blurry version of the picture they
+  // pressed rather than an empty box or a spinner, and it costs no request —
+  // the card painted that `small` a moment ago (ADR 0022).
+  expect(pictures()).toEqual([
+    wallpaperImageUrl(7, "small"),
+    wallpaperImageUrl(7, "medium"),
+  ]);
+  // Announced by nothing. It is the same picture as the `medium` over it, and
+  // that one is already named by the filename.
+  expect(placeholder()?.getAttribute("alt")).toBe("");
+
+  await loaded(picture());
+
+  expect(placeholder()).toBeNull();
+});
+
+test("a step holds the outgoing picture until the next one has loaded", async () => {
+  await enterReview(threeRows());
+  await pressKey("Enter");
+  const element = picture();
+  await loaded(element);
+
+  await pressKey("ArrowRight");
+
+  // The same element with a new `src`, which is the whole mechanism: an `<img>`
+  // keeps painting the image it has until the new one decodes. A `key` per
+  // wallpaper remounts it with nothing painted, which is the prototype's held
+  // arrow key strobing to black at a median 376KB a frame.
+  expect(picture()).toBe(element);
+  expect(picture().getAttribute("src")).toBe(wallpaperImageUrl(8, "medium"));
+  // And nothing is standing in front of it. The `small` is for the open where
+  // there is no outgoing frame to hold; putting the arriving wallpaper's
+  // thumbnail behind the outgoing picture would show around the edges of it.
+  expect(placeholder()).toBeNull();
+});
+
+test("neither neighbour's medium is requested on a step", async () => {
+  await enterReview(threeRows());
+  await pressKey("Enter");
+  await loaded(picture());
+
+  await pressKey("ArrowRight");
+
+  // One request on the surface, for the wallpaper being looked at. Stepping
+  // back is already free under ADR 0016's `max-age=300`, so only the forward
+  // edge would ever pay, and a speculative request goes into the one pipeline
+  // ADR 0012 gave a dedicated thread to keep clear (ADR 0022).
+  expect(pictures()).toEqual([wallpaperImageUrl(8, "medium")]);
 });
