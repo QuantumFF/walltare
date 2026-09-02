@@ -1,4 +1,5 @@
 import { PageBar } from "@/components/PageBar";
+import { WallpaperGrid } from "@/components/WallpaperGrid";
 import { useApp } from "@/context/AppContext";
 import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
 import {
@@ -8,9 +9,9 @@ import {
   type StatusFilter,
   type Wallpaper,
 } from "@/lib/client";
-// The words for a Status and for a Score, from the file that holds the app's
-// phrasings, so the list below and the card #78 builds spell them alike.
-import { score, STATUS_LABEL } from "@/lib/copy";
+// The words for a Status, from the file that holds the app's phrasings, so the
+// empty state and the card's own pill spell them alike.
+import { STATUS_LABEL } from "@/lib/copy";
 import { Images } from "lucide-react";
 import {
   useCallback,
@@ -48,21 +49,22 @@ function matchesFilter(status: Status, filter: StatusFilter): boolean {
 }
 
 /**
- * Interim, and it is meant to read as one. #79 builds the library page: the
- * virtualised grid ADR 0016 settled on, the card, the designed filter row and
- * the sort control, all of them inside the two seams below — the bar, and the
- * scroll container.
+ * The library page: every matching row in one fetch (ADR 0016), drawn as the
+ * shared card in the shared grid, inside the scroll container this view owns.
  *
- * What lands here is everything the grid will sit on and nothing that looks
- * like it: the row state, the filter, the ordering, the scroll position, and
- * the three events that keep the rows honest while the curator is looking at
- * something else. The list of lines is a read-out of that state rather than a
- * design, because a page that fetched every row and drew none of them could not
- * be told from one that fetched nothing.
+ * What is still interim says so where it stands. The bar's two `<select>`s are
+ * #130's to replace with the filter chips and the sort control; the grid mounts
+ * every row until #131 puts ADR 0016's window of cards in front of it; and #132
+ * is what answers the four actions a card can ask for.
+ *
+ * What this view owns underneath is the state the grid reads: the rows, the
+ * filter, the ordering, the scroll position, and the three events that keep the
+ * rows honest while the curator is looking at something else.
  *
  * The empty state stays, in both of its readings. ADR 0015 disables no tab — a
  * disabled tab is a dead end that explains nothing — so every destination owes
- * a sentence saying why it is empty and where to go instead.
+ * a sentence saying why it is empty and where to go instead. #133 is what
+ * separates the two readings into two screens.
  */
 export function LibraryView() {
   const { view } = useApp();
@@ -180,24 +182,18 @@ export function LibraryView() {
     scroller.current.scrollTop = scrollTop.current;
   }, [showing]);
 
-  /**
-   * The shared wording, with this page's one extra answer in front of it.
-   *
-   * `Score moved` stays here and does not belong in `copy.ts`, because it is not
-   * a way of writing a Score down at all — it is this page saying it no longer
-   * knows one. It comes from `score-changed`, which this view subscribes to and
-   * which names two wallpapers without naming their new numbers, so a card
-   * rendered anywhere else has nothing to say it with.
-   */
-  const scoreLabel = (wallpaper: Wallpaper): string => {
-    if (scoresMoved.has(wallpaper.id)) return "Score moved";
-    return score(wallpaper);
-  };
+  // #132 is what turns a press into `keep_wallpaper`, `unkeep_wallpaper`,
+  // `move_wallpaper` or `restore_wallpaper`, with the optimistic patch and the
+  // toast around each. Until then a card's buttons and the grid's direct keys
+  // arrive here and are answered by nothing — except the one refusal that never
+  // gets this far, since `useCardAction` raises the origin-less Restore's toast
+  // itself (ADR 0009, ADR 0019).
+  const handleAction = () => {};
 
   return (
     <>
       <PageBar>
-        {/* #79 replaces both of these with the designed filter row and sort
+        {/* #130 replaces both of these with the designed filter row and sort
             control. What they are here is the state behind them: the pair of
             choices that own a refetch and reset the scroll position. */}
         <select
@@ -241,10 +237,10 @@ export function LibraryView() {
         </p>
       )}
 
-      {/* The scroll container, which is the other half of what #79 needs: the
-          grid goes in here, and the position the curator left it at is this
-          page's to remember. It scrolls rather than the whole page so that the
-          bar above stays put while the grid moves. */}
+      {/* The scroll container the grid sits in, and the position the curator
+          left it at is this page's to remember. It scrolls rather than the
+          whole page so that the bar above stays put while the grid moves, and
+          it is the element #131's virtualiser measures its window against. */}
       <div
         ref={scroller}
         data-slot="library-rows"
@@ -263,31 +259,34 @@ export function LibraryView() {
             </p>
           </div>
         ) : (
-          <ul className="divide-y divide-border/60">
-            {(rows ?? []).map((wallpaper) => (
-              <li
-                key={wallpaper.id}
-                data-wallpaper-id={wallpaper.id}
-                className="flex items-center gap-4 px-4 py-2 text-sm"
-              >
-                <span className="truncate" title={wallpaper.path}>
-                  {wallpaper.filename}
-                </span>
-                <span
-                  data-slot="score"
-                  className="ml-auto shrink-0 text-xs text-muted-foreground"
-                >
-                  {scoreLabel(wallpaper)}
-                </span>
-                <span
-                  data-slot="status"
-                  className="w-20 shrink-0 text-right text-xs text-muted-foreground"
-                >
-                  {STATUS_LABEL[wallpaper.status]}
-                </span>
-              </li>
-            ))}
-          </ul>
+          /* The grid is the shared one, in the order the fetch returned its
+             rows — the ordering is ADR 0014's and belongs to the backend, so
+             nothing here sorts.
+
+             No `animated`, and that is the decision rather than an omission.
+             ADR 0016 gives this card no animated property and no `will-change`,
+             because a wheel gesture over #131's virtualised grid mounts cards
+             continuously — first paint and first hover become the same moment,
+             which is the moment ADR 0007 was moving the cost away from. That
+             ADR's licence stays scoped to Review's fifty rows, so `animated` is
+             Review's alone.
+
+             The name names the library and not the filter. A composite widget
+             is one tab stop, so the name is all a screen reader gets on the way
+             in (ADR 0019), and the filter is a control they can read for
+             themselves — a name that moved with it would announce a different
+             widget every time the same grid was narrowed.
+
+             No `reveal` yet: every row is mounted, so the default
+             scroll-into-view is the whole of what the selection needs. #131 is
+             what hands the virtualiser in. */
+          <WallpaperGrid
+            wallpapers={rows ?? []}
+            label="Wallpapers in the library"
+            onAction={handleAction}
+            scoresMoved={scoresMoved}
+            className="p-4"
+          />
         )}
       </div>
     </>

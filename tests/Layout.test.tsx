@@ -1,6 +1,13 @@
 import App from "@/App";
 import type { Settings } from "@/lib/client";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -375,24 +382,33 @@ test("Rank's Round headline lives in Rank's own bar", async () => {
   expect(chromeRow().textContent).not.toContain("Round");
 });
 
-test("Library lists what the backend returned, in the bar and the scroll container #79 fills", async () => {
+test("Library draws the shared card in the shared grid, under the bar's two controls", async () => {
   await openApp();
   await click(tab("Library"));
 
-  // Interim: the grid, the card and the designed controls are #79's. What has
-  // to be here now is the state under them, which is why the rows, the filter
-  // and the ordering are assertable at all.
-  const rows = document.querySelectorAll("[data-wallpaper-id]");
-  expect(Array.from(rows).map((el) => el.textContent)).toEqual([
-    "lowest.jpgUnratedActive",
-    "highest.jpg25.0Active",
-  ]);
+  const library = within(
+    document.querySelector('[data-view="library"]') as HTMLElement,
+  );
+  // The grid is one tab stop, so its name is all a screen reader gets on the
+  // way in — and it names the library rather than the filter, which is a
+  // control the curator can read for themselves (ADR 0019).
+  expect(library.getByRole("grid").getAttribute("aria-label")).toBe(
+    "Wallpapers in the library",
+  );
+  // One card per row the fetch returned, in the order it returned them, each
+  // naming its filename and its Status.
   expect(
-    (screen.getByLabelText("Filter") as HTMLSelectElement).value,
-  ).toBe("all");
-  expect(
-    (screen.getByLabelText("Order by") as HTMLSelectElement).value,
-  ).toBe("score_desc");
+    library.getAllByRole("gridcell").map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["lowest.jpg, Active", "highest.jpg, Active"]);
+  // Interim, and #130's to replace with the filter chips and the sort control.
+  // What they hold is the state under them, which is why the filter and the
+  // ordering are assertable at all.
+  expect((screen.getByLabelText("Filter") as HTMLSelectElement).value).toBe(
+    "all",
+  );
+  expect((screen.getByLabelText("Order by") as HTMLSelectElement).value).toBe(
+    "score_desc",
+  );
 });
 
 test("an empty library says so on the page that would have listed it", async () => {

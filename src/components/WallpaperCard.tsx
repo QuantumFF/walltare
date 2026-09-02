@@ -149,6 +149,18 @@ export interface WallpaperCardProps {
    * alone.
    */
   animated?: boolean;
+  /**
+   * Whether the Score on this row is a Comparison out of date, in which case the
+   * badge says so instead of printing a number.
+   *
+   * The library page is the only caller that can know this. `score-changed`
+   * names the two wallpapers in a Comparison and cannot name their new Scores,
+   * so a page subscribed to it knows those two numbers are stale and does not
+   * know what they became — and refetching every row because two Scores moved is
+   * the blunt shape ADR 0015 turned a query library down over. A card mounted
+   * anywhere else is showing the numbers it was handed, which are current.
+   */
+  scoreMoved?: boolean;
   /** See `GridCell`. Absent for a card standing on its own. */
   cell?: GridCell;
 }
@@ -175,6 +187,7 @@ export function WallpaperCard({
   wallpaper,
   onAction,
   animated = false,
+  scoreMoved = false,
   cell,
 }: WallpaperCardProps) {
   // One entry for every press on this card, and the same one #125's keys use.
@@ -249,6 +262,12 @@ export function WallpaperCard({
         is dimmed today and that is correct: σ crosses 4.0 at about seven
         comparisons. The tooltip is what says which state the dimming is, since
         the badge itself may not say `Score`.
+
+        `Score moved` is the one other thing the badge can read, and it is not a
+        way of writing a Score down at all — it is the app saying it no longer
+        knows one, which is why it stays here rather than joining `score()` in
+        `copy.ts`. Only a page subscribed to `score-changed` can hand it over,
+        and only the two wallpapers a Comparison named get it (#129).
       */}
       <div className="pointer-events-none absolute top-1.5 right-1.5">
         <Badge
@@ -260,7 +279,7 @@ export function WallpaperCard({
               : "border-white/30 bg-black/50 text-white/70",
           )}
         >
-          {score(wallpaper)}
+          {scoreMoved ? "Score moved" : score(wallpaper)}
         </Badge>
       </div>
 

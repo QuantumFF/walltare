@@ -136,6 +136,16 @@ export interface WallpaperGridProps {
   /** Review's hover treatment. See `WallpaperCardProps.animated`. */
   animated?: boolean;
   /**
+   * The rows whose Score has moved since they were fetched, by id. Their badges
+   * read `Score moved` rather than a number.
+   *
+   * A set of ids rather than a flag per card, because that is the shape the
+   * event arrives in: `score-changed` names the two wallpapers in a Comparison,
+   * so the page holds a set and the grid is only carrying it the last step to
+   * the card that computes its own badge (#129).
+   */
+  scoresMoved?: ReadonlySet<number>;
+  /**
    * Put the card at `index` on screen. The seam #79 hands its virtualiser to.
    *
    * It is called before the focus move and never after it, because that is the
@@ -186,6 +196,7 @@ export function WallpaperGrid({
   label,
   onAction,
   animated = false,
+  scoresMoved,
   reveal,
   className,
 }: WallpaperGridProps) {
@@ -394,6 +405,7 @@ export function WallpaperGrid({
           wallpaper={wallpaper}
           onAction={onAction}
           animated={animated}
+          scoreMoved={scoresMoved?.has(wallpaper.id)}
           cell={{ index: cardIndex, selected: cardIndex === index }}
         />
       ))}
