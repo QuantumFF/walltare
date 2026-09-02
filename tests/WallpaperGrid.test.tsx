@@ -33,7 +33,10 @@ afterEach(() => {
 /** The commands the keys below reached, in order, and what was asked for. */
 let commands: string[];
 let asked: CardAction[];
-/** The wallpapers a click asked to open the lightbox on, in order (#134). */
+/**
+ * The wallpapers the host was asked to open the lightbox on, in order, whether
+ * that came from a click or from `Enter` (#134, #138).
+ */
 let opened: number[];
 
 beforeEach(() => {
@@ -106,8 +109,8 @@ let setList: (list: Wallpaper[]) => void = () => {};
 /**
  * The selection the host is holding, which is what a page reaches for: the
  * wallpaper on screen, a move, a set to a named id, and the request that puts
- * focus back on the selected card (#137). #80's lightbox is the caller; these
- * tests stand in for it.
+ * focus back on the selected card (#137). The lightbox is the caller; these
+ * tests reach them directly, the way it does.
  */
 let selection: GridSelection;
 
@@ -462,7 +465,7 @@ test("the selection is scrolled into view when it moves", async () => {
   expect(document.activeElement).toBe(cell(9));
 });
 
-// The three things the page holds the selection for (#137). #80's lightbox is
+// The three things the page holds the selection for (#137). The lightbox is
 // what calls them: it renders this same selection, so opening on a card the
 // selection was not on is a move, a failed action puts the selection back on the
 // wallpaper the toast names, and closing asks for the card to take focus again.
@@ -628,17 +631,20 @@ test("R on a row with no Origin explains itself and calls nothing", async () => 
   expect(asked).toEqual([]);
 });
 
-test("Enter calls no command and changes no Status", async () => {
+test("Enter asks to open the selected card, and changes no Status", async () => {
   await mount(mixed());
   await enterGrid();
 
-  // #80 opens the lightbox on the selection. Until then the binding is claimed
-  // and inert, which is the state worth pinning: the card it is pressed on is
-  // the same card afterwards, by the Status in its own accessible name.
+  // The same `onOpen` a click arrives at, so the key and the mouse cannot open
+  // different things — and it names the card holding the selection, which is
+  // the card the key was pressed on (#138).
   await press("Enter");
   await press("ArrowRight");
   await press("Enter");
 
+  expect(opened).toEqual([1, 2]);
+  // And nothing else. `Enter` is a look, not a decision: the two cards it was
+  // pressed on still hold the Status in their own accessible names.
   expect(commands).toEqual([]);
   expect(asked).toEqual([]);
   expect(cell(1, "Active")).toBeTruthy();
@@ -684,6 +690,11 @@ test("Enter on an overlay button is left to the button", async () => {
   });
 
   expect(survived).toBe(true);
+  // And the grid does not answer it either, which is the second half of one
+  // press, one outcome: a keep with the lightbox opening over the card it
+  // emptied is what the buttons' `stopPropagation` refuses for the mouse
+  // (#138).
+  expect(opened).toEqual([]);
 });
 
 test("a key that removes the selected card leaves the selection at that index", async () => {

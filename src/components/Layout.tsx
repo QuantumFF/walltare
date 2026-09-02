@@ -354,8 +354,7 @@ function Shell({
   // doing so disabled `Ctrl+Z` in the one place a reject fires from and hid the
   // shortcut list where it is most wanted. The one binding that looks dangerous,
   // `Ctrl+2` swapping the view under an open lightbox, is answered by the rule
-  // that changing destination closes the lightbox — which #80 wires up along
-  // with the lightbox itself.
+  // that changing destination closes the lightbox, which `useLightbox` holds.
   //
   // Bare arrows are deliberately absent. They belong to whichever element has
   // focus — the tablist above walks with them — and to the view when nothing in
@@ -461,8 +460,10 @@ function Shell({
         </div>
       </LightboxHostProvider>
 
-      {/* The lightbox's pixels, above the pages and below the toast. Empty until
-          #80 portals into it. */}
+      {/* The lightbox's pixels, above the pages and below the toast. Empty
+          whenever no page has one open; a `z-50` stacking context either way,
+          which is what the portalled surface's `position: fixed` paints
+          inside. */}
       <div
         data-slot="lightbox-host"
         ref={setLightboxContainer}

@@ -148,6 +148,17 @@ export interface GridSelection {
    */
   index: number;
   /**
+   * How long that list is, which is the other half of `3 / 50`.
+   *
+   * Carried here rather than left to the page to hand over beside the
+   * selection, because it is the same list: a page reading `wallpapers.length`
+   * for the lightbox could pass a count that the selection was never resolved
+   * against, and the position line is the one place that disagreement would be
+   * legible — as a `51 / 50`. #139's arrow buttons read it for the same reason,
+   * since being at the end of the list is what makes them unavailable.
+   */
+  length: number;
+  /**
    * Select the wallpaper at an index in the whole list, with out of range
    * clamped into it: the arrow arithmetic sits on both sides of this seam — the
    * grid moves by column and by row, the lightbox by one — and neither can
@@ -232,7 +243,15 @@ export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
     [],
   );
 
-  return { wallpaper, index, moveTo, selectId, requestFocus, focusRequest };
+  return {
+    wallpaper,
+    index,
+    length: wallpapers.length,
+    moveTo,
+    selectId,
+    requestFocus,
+    focusRequest,
+  };
 }
 
 /**
@@ -312,14 +331,18 @@ export interface WallpaperGridProps {
    */
   range?: GridRange;
   /**
-   * A click on a card that was not on one of its buttons, carrying the
-   * wallpaper it landed on (#134).
+   * The curator asking to look at a wallpaper properly, carrying the one they
+   * asked about: a click on a card that was not on one of its buttons, or
+   * `Enter` on the selected cell (#134, #138).
    *
-   * Carried and not answered. The click is a click on the cell, which is the
-   * card's own root, so nothing here listens for it — what the grid adds is the
-   * route to the page, which is where ADR 0022 keeps the lightbox's state for
+   * One entry for both, because the lightbox is a second rendering of this
+   * grid's selection and there is only one of it. The click is a click on the
+   * cell, so the card fires that half itself and what the grid adds is the
+   * route to the page — which is where ADR 0022 keeps the lightbox's state for
    * the same reason it keeps the list here: both change on every action, and
-   * only the page holds them.
+   * only the page holds them. The wallpaper travels along because a click can
+   * land on a card the selection is not on, and opening there is a selection
+   * move rather than a second cursor.
    */
   onOpen?: (wallpaper: Wallpaper) => void;
   /** Layout the host owns: Review's bottom padding, a page's own gap. */
@@ -475,17 +498,25 @@ export function WallpaperGrid({
       return;
     }
 
-    // #80's seam. `Enter` opens the lightbox on the selection ADR 0022 has the
-    // two surfaces share; until that exists it does nothing to the wallpaper —
-    // no command, no Status change — and it is answered here rather than left to
-    // the movement keys' `default` so the binding has one home to arrive at.
-    // The mouse reaches the same lightbox by the cell's own click and the
-    // `onOpen` above, so #80 has one host handler to give this key as well.
+    // `Enter` opens the lightbox on the selection the two surfaces share, and
+    // it arrives at the same `onOpen` a click on the cell does: one host
+    // handler for the gesture, so the key and the mouse cannot open different
+    // things (ADR 0022, #138).
     //
-    // Nothing is prevented, deliberately. A cell's overlay buttons are still
-    // buttons: `Enter` on a focused one activates it, and that activation is a
-    // default action this handler would cancel on the way up.
-    if (event.key === "Enter") return;
+    // Only from the cell itself. A cell's overlay buttons are still buttons and
+    // `Enter` on a focused one activates it, so the keypress that keeps a
+    // wallpaper bubbles through here on its way up — and answering it would be
+    // a keep with the lightbox opening over the card it emptied, which is the
+    // same two-answers-to-one-press the buttons' `stopPropagation` refuses for
+    // the mouse.
+    //
+    // Nothing is prevented either way, deliberately: that activation is the
+    // default action this handler would otherwise cancel, and a cell has no
+    // default action of its own to suppress.
+    if (event.key === "Enter") {
+      if (event.target === cellAt(index)) onOpen?.(selected);
+      return;
+    }
 
     let next: number;
     switch (event.key) {

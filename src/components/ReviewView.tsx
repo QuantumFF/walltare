@@ -1,3 +1,4 @@
+import { Lightbox, useLightbox } from "@/components/Lightbox";
 import { PageBar } from "@/components/PageBar";
 import {
   RejectDestinationLine,
@@ -40,11 +41,12 @@ export function ReviewView() {
   const { show } = useToaster();
   // The grid's selection, held here rather than inside the grid because ADR
   // 0022 has the lightbox render this same selection and keeps the lightbox's
-  // state on the page that mounted the grid. Nothing on this page reads it yet;
-  // it is handed straight back down, and #80 is the first caller of any of it —
-  // starting with the failure handler below, which re-inserts a card the
-  // selection has by then moved off (#137).
+  // state on the page that mounted the grid (#137). Both surfaces below read
+  // this one object, which is what makes the lightbox a second rendering of the
+  // grid rather than a cursor of its own: there is no sync rule between them
+  // because there are not two things to sync.
   const selection = useGridSelection(wallpapers);
+  const lightbox = useLightbox(selection);
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
@@ -182,24 +184,6 @@ export function ReviewView() {
     if (action === "reject") void handleMove(card.id);
   };
 
-  /**
-   * A click on a card asks for the lightbox, here as well as on the library
-   * page (#134).
-   *
-   * **The lightbox is #80 and does not exist**, so this opens nothing, calls
-   * nothing and changes no Status. Review is wired for it anyway rather than
-   * left to inherit it later: the card is shared, so the gesture is already on
-   * every card in this grid, and ADR 0022 keeps the state on whichever page
-   * mounted the grid — so the page that shows the fifty needs its own answer to
-   * a click the same way the library page does. The action set inside the
-   * lightbox is read off the Status, so nothing here has to tell it that Review
-   * lists Active wallpapers only.
-   *
-   * It takes no argument yet, for the same reason the library page's does not:
-   * the wallpaper arrives and there is nowhere to put it until #80 lands.
-   */
-  const handleOpen = () => {};
-
   // The destination line, in the bar this page owns below the chrome. The
   // chrome's tab already names the page, so what was a 2xl heading and a
   // subtitle is the sentence that actually carries information: what Review
@@ -242,59 +226,78 @@ export function ReviewView() {
     </>
   );
 
-  if (loading) {
-    return (
-      <>
-        {header}
-        <div className="flex flex-1 items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      </>
-    );
-  }
-
   return (
     <>
       {header}
 
-      <div className="mx-auto flex h-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
-        {/* Content */}
-        {wallpapers.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
-            <Check className="h-12 w-12 opacity-20" />
-            <p>No wallpapers to review.</p>
-            <Button variant="link" onClick={() => setView("rank")}>
-              Return to Ranking
-            </Button>
-          </div>
-        ) : (
-          /* The grid is the shared one, and Review's own `div.grid` went with
-             the card markup it used to hold. One tab stop with a roving
-             selection, so the keyboard reaches every card here the same way it
-             reaches every card on a library page mounting thirty of five
-             thousand — a second interaction model to learn is worse than the
-             one it would save (ADR 0019). Review needs no `reveal`: it mounts
-             every row, so the default scroll-into-view is the whole of it.
+      {/* One branch rather than an early return, because the lightbox below has
+          to outlive it. A `library-scanned` refetch puts this page back in its
+          loading state while the curator is looking at a wallpaper, and an
+          early return would unmount the open dialog — leaving the shell holding
+          an `inert` nothing would ever take back. ADR 0022 reads that rescan as
+          needing no handling, which is only true while a refetch cannot tear
+          the surface down. */}
+      {loading ? (
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
+      ) : (
+        <div className="mx-auto flex h-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
+          {/* Content */}
+          {wallpapers.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
+              <Check className="h-12 w-12 opacity-20" />
+              <p>No wallpapers to review.</p>
+              <Button variant="link" onClick={() => setView("rank")}>
+                Return to Ranking
+              </Button>
+            </div>
+          ) : (
+            /* The grid is the shared one, and Review's own `div.grid` went with
+               the card markup it used to hold. One tab stop with a roving
+               selection, so the keyboard reaches every card here the same way it
+               reaches every card on a library page mounting thirty of five
+               thousand — a second interaction model to learn is worse than the
+               one it would save (ADR 0019). Review needs no `reveal`: it mounts
+               every row, so the default scroll-into-view is the whole of it.
 
-             The confirm dialog that used to hang off Reject went the same way.
-             Act-then-undo is in its place: the reject toast offers an Undo and
-             the shell's `Ctrl+Z` presses it, so one interruption per reject is
-             enough (ADR 0009, ADR 0017).
+               The confirm dialog that used to hang off Reject went the same way.
+               Act-then-undo is in its place: the reject toast offers an Undo and
+               the shell's `Ctrl+Z` presses it, so one interruption per reject is
+               enough (ADR 0009, ADR 0017).
 
-             `animated` is Review's alone. ADR 0016 gives the library's instance
-             of this card no animated property and no `will-change`, and ADR
-             0007's licence stays scoped to the fifty rows it was measured on. */
-          <WallpaperGrid
-            wallpapers={wallpapers}
-            selection={selection}
-            label="Wallpapers to review"
-            onAction={handleAction}
-            onOpen={handleOpen}
-            animated
-            className="pb-8"
-          />
-        )}
-      </div>
+               `animated` is Review's alone. ADR 0016 gives the library's instance
+               of this card no animated property and no `will-change`, and ADR
+               0007's licence stays scoped to the fifty rows it was measured on. */
+            <WallpaperGrid
+              wallpapers={wallpapers}
+              selection={selection}
+              label="Wallpapers to review"
+              onAction={handleAction}
+              onOpen={lightbox.openOn}
+              animated
+              className="pb-8"
+            />
+          )}
+        </div>
+      )}
+
+      {/* The same component the library page mounts, on the same selection the
+          grid above is showing, with no argument saying which page it is: the
+          action set #140 puts in it comes off the wallpaper's Status, and
+          Review's list holds only Active rows, so Restore and Make Active
+          never appear here without anyone configuring that (ADR 0022).
+
+          Outside the two branches above, so an emptied list closes it onto
+          this page's own empty state rather than unmounting it out from under
+          the focus restore. Its pixels land in the shell regardless — the
+          portal is what keeps a `position: fixed` surface from being clipped to
+          the `animate-in` container above. */}
+      <Lightbox
+        selection={selection}
+        open={lightbox.open}
+        onClose={lightbox.close}
+      />
     </>
   );
 }

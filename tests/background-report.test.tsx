@@ -304,9 +304,9 @@ test("a scan started on Settings is silent there and reports where the curator g
   expect(toast()?.title).toBe("Scanning… 1,536 files, 212 new");
 });
 
-// The second suppressed surface is the open lightbox, and it has no test here
-// because nothing opens one yet: #80 builds the lightbox and owns the assertion,
-// against the same flag the shell already puts `inert` on the views with.
+// The second suppressed surface is the open lightbox, against the same flag the
+// shell puts `inert` on the views with. Its assertion is in
+// `lightbox.test.tsx`, beside the surface that raises the flag.
 test("the report is suppressed on Settings rather than dismissed by it", async () => {
   await openApp();
   await emit("pregen-progress", { done: 5, total: 10 });

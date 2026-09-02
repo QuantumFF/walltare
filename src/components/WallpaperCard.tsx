@@ -176,8 +176,8 @@ export interface WallpaperCardProps {
    *
    * The wallpaper travels with the click rather than being read off the grid's
    * selection, which a click does not move. ADR 0022 has the lightbox render
-   * that selection, so the two have to be reconciled where the lightbox is
-   * built; until then what the host is told is which card was pressed.
+   * that selection, so opening on a card the selection was not on is a
+   * selection move, made by the host that holds both (#138).
    */
   onOpen?: (wallpaper: Wallpaper) => void;
   /** See `GridCell`. Absent for a card standing on its own. */
