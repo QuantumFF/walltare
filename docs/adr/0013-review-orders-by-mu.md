@@ -40,6 +40,14 @@ reorders far less than the worked example suggests.
 
 `get_review` keeps `ORDER BY rating_mu ASC`. Nothing in the query changes.
 
+> **[ADR 0028](0028-review-joins-the-listing-vocabulary.md), 2026-09-03.** The
+> freeze is lifted and this sentence no longer holds. Review's clause becomes
+> `comparisons_count = 0, rating_mu ASC, id ASC`, which is the Unrated tail and
+> the `id` tiebreak [ADR 0014](0014-library-page-ordering.md) wrote for the
+> library. The statistic is untouched: μ still orders the list, and the μ
+> against μ − 3σ argument below is not reopened. What changed is what happens
+> underneath it, to ties and to rows with no measurement at all.
+
 **Score is μ.** The card badge shows it to one decimal, the number alone. The
 word Score appears in the hover overlay, the lightbox caption, and the library
 page's sort control, not on the badge itself. Because the ordering is μ, the
@@ -121,6 +129,14 @@ at all. [ADR 0014](0014-library-page-ordering.md) answers this for the library
 page with an unrated tail group and an `id` tiebreak, and records that whether
 `get_review` adopts either is still open.
 
+> **[ADR 0028](0028-review-joins-the-listing-vocabulary.md), 2026-09-03.** No
+> longer open: Review adopts both. Re-measured on the day, the library holds 43
+> Unrated rows rather than 45 and 40 Active rows below 25.0 rather than 38, so
+> the count here is 10 of 50 cards rather than 12. The defect was also worse
+> than "picked by nothing at all" says. The `LIMIT 50` boundary lands inside the
+> tie, so with no tiebreak it is unspecified *which* of the tied rows Review
+> shows, not merely what order they arrive in.
+
 **A Rejected wallpaper's Score freezes.** It sits out of voting, so its μ stops
 moving while the rest of the pool keeps going, and months later the number is a
 standing in a distribution that no longer exists. It renders plainly anyway: any
@@ -129,6 +145,14 @@ count beside it already says how much to trust it.
 
 **`idx_wallpapers_status_rating_mu` keeps covering `get_review`**, which is the
 one thing a computed ordering would have cost.
+
+> **[ADR 0028](0028-review-joins-the-listing-vocabulary.md), 2026-09-03.** The
+> tail costs exactly this, knowingly. A leading `comparisons_count = 0` cannot
+> be served by an index on `(status, rating_mu)`, so the plan goes from `SEARCH
+> ... USING COVERING INDEX` with no sort to the same search plus `USE TEMP
+> B-TREE FOR ORDER BY`. The `LIMIT` then saves no query work at all, only JSON
+> bytes, since SQLite sorts every Active row either way. ADR 0028 accepts the
+> sort on ADR 0016's grounds and records the index that would remove it.
 
 **`CONTEXT.md` gains Score**, so μ has a name that is not a column. Whether
 σ < 4.0 is the right Evaluated threshold is still a ranking-quality question and
