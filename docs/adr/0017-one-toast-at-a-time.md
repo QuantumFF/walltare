@@ -91,6 +91,18 @@ only mean the view is holding a stale row, which ADR 0015's patch events exist
 to prevent, so it is a bug signal rather than a user error. Leaving the row on
 screen means the user's next click reproduces it.
 
+> **Amended by [ADR 0025](0025-the-transition-guard.md), 2026-09-03.**
+> `NotFound` refetches on the same terms. A transition against an id with no row
+> behind it is the same stale row one step further gone, and the reasoning above
+> is written about the situation rather than the kind. ADR 0025 makes `NotFound`
+> the only answer to a missing row, so the two kinds together are the whole of
+> what "the row is not what this view thinks" can arrive as.
+>
+> The two kinds share the copy row below rather than gaining one each.
+> `<filename> has already changed` is true of a row that is gone and a row that
+> refused alike, and the surface already reads a single `stale` boolean, so this
+> is one more kind in that boolean rather than a second branch.
+
 > **Amended by [ADR 0023](0023-a-transition-answers-with-the-row.md),
 > 2026-09-03.** The refetch still happens and it no longer travels through this
 > surface. Every transition now runs inside one module per page, so the module
@@ -192,6 +204,10 @@ ellipsis and carries the full string in `title`. Every toast here is
 | Un-keep | `<filename> is Active again` | none | no |
 | `FileMissing` | `Couldn't restore <filename>` | the backend message | no |
 | `InvalidTransition` | `<filename> has already changed` | none | no |
+
+`NotFound` was added to that last row by
+[ADR 0025](0025-the-transition-guard.md): it is the same sentence about the same
+situation, and it refetches on the same terms.
 
 The asymmetry in the path line is deliberate. Both directions can rename,
 because `unique_destination` suffixes ` (n)` outbound under
