@@ -129,6 +129,20 @@ rows exist, and only it forces a refetch.
 > `score-changed` keeps its id-only shape. The Scores it would carry are not in
 > the publisher's hands, for the reason the table above already gives.
 
+> **Superseded by [ADR 0023](0023-a-transition-answers-with-the-row.md),
+> 2026-09-03.** `status-changed` carries the row: the four transition commands
+> answer with the `db::Wallpaper` they wrote, so the payload is
+> `{ type: "status-changed", wallpaper: Wallpaper }` and the three-column `Pick`
+> above is gone. A whole row replacing a whole row cannot half-wipe an Origin,
+> which is what the completeness rule in the amendment above was defending.
+>
+> The no-insert rule stands and its argument moves. "An event carries an id and
+> not a row" is no longer true, so the bound is the one Review always had:
+> nothing in a row says where it belongs in an ordering by Score, so a wallpaper
+> that just became Active arrives with the next fetch rather than being placed.
+>
+> `score-changed` is untouched, again.
+
 Patches apply immediately whether the view is showing or not, because they cost
 nothing. A refetch defers until the view is next shown.
 [ADR 0012](0012-thumbnail-pre-generation.md) gave pre-generation one dedicated
