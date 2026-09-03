@@ -19,9 +19,8 @@ export type ThumbnailSize = "small" | "medium" | "full";
 export type Status = "active" | "kept" | "rejected";
 
 /**
- * Mirrors voting::Wallpaper and db::Wallpaper, which are the same shape; status
- * is the lowercase DB value (db.rs CHECK constraint). One interface serving both
- * is why a field either DTO sends has to be on both of them.
+ * Mirrors db::Wallpaper, the one row shape the backend hands out — listings and
+ * voting pairs alike. Status is the lowercase DB value (db.rs CHECK constraint).
  */
 export interface Wallpaper {
   id: number;
