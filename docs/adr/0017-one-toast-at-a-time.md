@@ -91,6 +91,21 @@ only mean the view is holding a stale row, which ADR 0015's patch events exist
 to prevent, so it is a bug signal rather than a user error. Leaving the row on
 screen means the user's next click reproduces it.
 
+> **Amended by [ADR 0023](0023-a-transition-answers-with-the-row.md),
+> 2026-09-03.** The refetch still happens and it no longer travels through this
+> surface. Every transition now runs inside one module per page, so the module
+> reads `invalid_transition` off the error and calls its own page's deferred
+> refetch; `AppEventBus.requestRefetch` and `onRefetchRequest` are deleted, and
+> the `view` field leaves the three `ToastRequest` rows that carried it for this
+> one line's benefit.
+>
+> The two Undo closures leave with it. A caller hands `undo` along with the
+> request, so this file stops importing `client` and `publish`, and the rejected
+> request carries `renamed: boolean` instead of re-deriving the rename from a
+> path. All three are facts about what happened, which is what a request says;
+> the copy table, the `once()` double-press guard and the slot precedence stay
+> here. "No view holds toast state of its own" is unchanged.
+
 ### Four transitions, from anywhere
 
 Keep, reject, restore and un-keep each toast, wherever they were triggered,
