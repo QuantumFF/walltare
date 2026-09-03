@@ -313,7 +313,7 @@ function LibraryRootSection() {
   const scanLabel = () => {
     if (!scanning) return libraryTotal ? "Rescan" : "Scan";
     if (!progress) return "Scanning…";
-    return `Scanning… ${progress.scanned.toLocaleString()} scanned, ${progress.added.toLocaleString()} added`;
+    return `Scanning… ${grouped(progress.scanned)} scanned, ${grouped(progress.added)} added`;
   };
 
   return (
@@ -364,8 +364,7 @@ function LibraryRootSection() {
           scan (ADR 0020). */}
       {libraryTotal !== null && (
         <p className="text-xs text-muted-foreground">
-          {libraryTotal.toLocaleString()}{" "}
-          {libraryTotal === 1 ? "wallpaper" : "wallpapers"} in the library
+          {counted(libraryTotal, "wallpaper")} in the library
         </p>
       )}
 
