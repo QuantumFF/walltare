@@ -207,17 +207,6 @@ function mountedCells(): HTMLElement[] {
   return screen.queryAllByRole("gridcell");
 }
 
-/** The title and description of the one toast that is up, or `null` for none. */
-function toast(): { title: string; description: string | null } | null {
-  const root = document.querySelector("[data-slot='toast']");
-  if (!root) return null;
-  return {
-    title: root.querySelector("[data-slot='toast-title']")?.textContent ?? "",
-    description:
-      root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
-  };
-}
-
 function grid(): HTMLElement {
   return screen.getByRole("grid", { name: "Wallpapers" });
 }
@@ -611,7 +600,7 @@ test("R restores a Rejected card with an Origin, and does nothing on an Active o
   expect(asked).toEqual(["restore"]);
 });
 
-test("R on a row with no Origin explains itself and calls nothing", async () => {
+test("R on a row with no Origin reaches the host, the same as its button does", async () => {
   await mount(mixed());
   await enterGrid();
   await press("End");
@@ -619,16 +608,13 @@ test("R on a row with no Origin explains itself and calls nothing", async () => 
 
   await press("r");
 
-  // The same refusal the `aria-disabled` button raises, from the same place:
-  // `origin_path` is on the DTO, so the frontend knows the answer before the
-  // press and the key costs no round trip (ADR 0009, ADR 0019).
-  expect(toast()).toEqual({
-    title: "Can't restore wall-4.jpg",
-    description:
-      "Rejected before Restore existed, so nothing recorded where it came from.",
-  });
-  expect(commands).toEqual([]);
-  expect(asked).toEqual([]);
+  // The key goes where the button goes, which is the whole of what this grid
+  // owes: the origin-less refusal is the host's, held once in the `perform`
+  // both triggers reach, so a key cannot raise a different answer from a click
+  // (ADR 0009, ADR 0019, ADR 0023). This host has no refusal in it, which is
+  // what makes the reach visible; `LibraryView.test.tsx` asserts the sentence.
+  expect(asked).toEqual(["restore"]);
+  expect(commands).toEqual(["restore_wallpaper"]);
 });
 
 test("Enter asks to open the selected card, and changes no Status", async () => {

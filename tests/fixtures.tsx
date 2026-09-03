@@ -12,10 +12,10 @@ import type { ReactNode } from "react";
  * The `path` follows the `filename` rather than the id, so a test that renames a
  * row gets a coherent one: the backend derives the `filename` column it stores
  * as the basename of the path it wrote, and a fixture where the two disagree is
- * a row it could never report. A patch through a file move derives that same
- * column the same way (ADR 0015 as amended by #141), so a test arranged on an
- * incoherent row would be asserting against a filename nothing produces. Pass
- * `path` to override it, which is what a Rejected row does.
+ * a row it could never report. Every transition answers with such a row and the
+ * patch carries it whole (ADR 0023), so a test arranged on an incoherent one
+ * would be asserting against a wallpaper nothing produces. Pass `path` to
+ * override it, which is what a Rejected row does.
  */
 export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper {
   const filename = over.filename ?? `wall-${id}.jpg`;

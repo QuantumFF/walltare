@@ -4,33 +4,24 @@ import {
   RejectDestinationLine,
   useRejectDestination,
 } from "@/components/RejectDestination";
-import { useToaster } from "@/components/ToastSurface";
-import type { CardAction } from "@/components/WallpaperCard";
 import {
   useGridColumns,
   useGridSelection,
   WallpaperGrid,
 } from "@/components/WallpaperGrid";
+import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
-import {
-  useAppEvent,
-  useAppEvents,
-  useRefetchWhenShown,
-} from "@/context/AppEventsContext";
+import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
 import {
   client,
   type ListOrdering,
   type Status,
   type StatusFilter,
-  type Wallpaper,
 } from "@/lib/client";
 // The words for a Status, from the file that holds the app's phrasings, so the
 // empty state and the card's own pill spell them alike.
 import { STATUS_LABEL } from "@/lib/copy";
-// The `filename` column, off the path the command answered with, which is how
-// the backend derives the one it stores (ADR 0015 as amended by #141).
-import { basename } from "@/lib/paths";
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import { Filter, Images, type LucideIcon } from "lucide-react";
 import {
@@ -120,20 +111,6 @@ const ORDERINGS: Array<{ value: ListOrdering; label: string }> = [
   { value: "recently_added", label: "Recently added" },
 ];
 
-/**
- * What a failed transition is logged as, per action.
- *
- * The console line names the command, which is the one thing the toast beside it
- * does not: that carries the wallpaper and the backend's own sentence, and all
- * four of these arrive at the curator through the same `failed` row.
- */
-const FAILURE_LOG: Record<CardAction, string> = {
-  keep: "Failed to keep wallpaper:",
-  "make-active": "Failed to unkeep wallpaper:",
-  reject: "Failed to move wallpaper:",
-  restore: "Failed to restore wallpaper:",
-};
-
 /** Whether a row still belongs in a list filtered this way. */
 function matchesFilter(status: Status, filter: StatusFilter): boolean {
   return filter === "all" || filter === status;
@@ -180,10 +157,12 @@ function EmptyState({
  * of state or of a setting: the Status filter as four chips, the ordering as one
  * named control, the line saying where rejects go, and the row count (#130).
  *
- * What this view owns underneath is the state the grid reads: the rows, the
- * filter, the ordering, the scroll position, the window of rows that has cards
- * in it, and the three events that keep the rows honest while the curator is
- * looking at something else.
+ * What this view owns underneath is the state the grid reads: the filter, the
+ * ordering, the fetch behind them, the scroll position, the window of rows that
+ * has cards in it, and the moved Scores a vote elsewhere leaves behind. The rows
+ * themselves and the four transitions on them are `useWallpaperRows`', which is
+ * where this page and Review differ in one predicate rather than in two
+ * implementations (ADR 0023).
  *
  * There are two empty states and they are two screens: a library nothing has
  * been scanned into, which routes to the Settings field that fixes it, and a
@@ -199,12 +178,6 @@ export function LibraryView() {
   const { view, setView } = useApp();
   const showing = view === "library";
 
-  const { publish } = useAppEvents();
-  // Every transition this page makes reports itself on the shell's one slot, and
-  // this view holds no error state of its own: two error surfaces in one view is
-  // what ADR 0017 removed, and the backend's own message says more than a string
-  // written here would.
-  const { show } = useToaster();
   // Where a reject goes, read once for the two things that must agree about it:
   // the string `move_wallpaper` is handed, and the boolean the toast reads to
   // decide whether it has a path left to name. One object rather than a value
@@ -217,9 +190,6 @@ export function LibraryView() {
 
   const [filter, setFilter] = useState<StatusFilter>("all");
   const [ordering, setOrdering] = useState<ListOrdering>("score_desc");
-  // `null` until the first fetch lands, which is what separates an empty
-  // library from one nobody has asked about yet.
-  const [rows, setRows] = useState<Wallpaper[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Rows whose Score has moved since they were fetched. `score-changed` names
   // the two wallpapers in a Comparison and cannot name their new Scores, so
@@ -255,6 +225,31 @@ export function LibraryView() {
   }, []);
 
   /**
+   * The rows, and the four transitions on them (ADR 0023).
+   *
+   * Nothing here is optimistic, which is the difference from Review and is what
+   * the absent `optimistic` says. This page keeps every row it fetched, so there
+   * is no removal to undo: the published patch is the only thing that edits a
+   * row, and a call that never lands leaves the card exactly where the curator
+   * left it.
+   *
+   * `belongs` is the Status filter, so a row the filter no longer matches leaves
+   * the grid — a wallpaper cannot stay in a list of Rejected ones after a
+   * Restore made it Active. Under the default filter of All nothing is ever
+   * dropped: a Rejected card greys and says what it now is.
+   *
+   * `owe` is a forward reference to `useRefetchWhenShown` below, and the two are
+   * a cycle this page breaks here: the module holds the rows the fetch writes,
+   * and the fetch is the one `useRefetchWhenShown` defers. Nothing reads it
+   * during render — it fires only from a transition the backend refused.
+   */
+  const { rows, setRows, perform } = useWallpaperRows({
+    belongs: (status) => matchesFilter(status, filter),
+    destination,
+    owe: oweRefetch,
+  });
+
+  /**
    * One call, every matching row, no paging: the row count is the size of the
    * library and nothing asks a second question to find that out (ADR 0016).
    *
@@ -282,7 +277,7 @@ export function LibraryView() {
         setError(LOAD_FAILED_ERROR);
       }
     },
-    [filter, ordering, toTop],
+    [filter, ordering, setRows, toTop],
   );
 
   // The first fetch is this view's first mount, which the shell defers to the
@@ -296,42 +291,23 @@ export function LibraryView() {
     void fetchRows(false);
   }, [fetchRows]);
 
-  useRefetchWhenShown("library", refetchAfterScan);
+  const owe = useRefetchWhenShown("library", refetchAfterScan);
 
-  // The two patches, applied whether this view is showing or not, because
-  // editing a row that is already rendered costs nothing: no query, no
-  // thumbnail request, no fetch owed.
+  // See `owe` on the module above: a declaration, so it can be handed over
+  // before the hook that answers it has run.
+  function oweRefetch() {
+    owe();
+  }
+
+  // The one patch left on the page. A moved Score is not a transition, so it
+  // stays here rather than folding into the module with `status-changed`.
   useAppEvent((event) => {
-    if (event.type === "status-changed") {
-      setRows((prev) => {
-        if (!prev?.some((w) => w.id === event.id)) return prev;
-        // Edited in place, and dropped when the new Status falls outside the
-        // filter — a row cannot stay in a list of Rejected wallpapers after a
-        // Restore made it Active. Under the default filter of All nothing is
-        // ever dropped: a Rejected card greys and says what it now is.
-        return prev.flatMap((w) => {
-          if (w.id !== event.id) return [w];
-          if (!matchesFilter(event.status, filter)) return [];
-          // The Status, then the columns the transition wrote by moving the
-          // file. A reject writes four and the patch used to carry one, which
-          // left this row holding the `path` and the Origin it had while Active
-          // — a card naming the folder its file had just left, and a Restore
-          // the row's own Origin check refused (#141).
-          //
-          // Spread over the row rather than merged field by field, and absent
-          // for a keep or an un-keep, which move no file and write no path.
-          return [{ ...w, status: event.status, ...event.changed }];
-        });
-      });
-      return;
-    }
-    if (event.type === "score-changed") {
-      setScoresMoved((prev) => {
-        const next = new Set(prev);
-        for (const id of event.ids) next.add(id);
-        return next;
-      });
-    }
+    if (event.type !== "score-changed") return;
+    setScoresMoved((prev) => {
+      const next = new Set(prev);
+      for (const id of event.ids) next.add(id);
+      return next;
+    });
   });
 
   // Put the curator back where they were, before the frame paints, so the
@@ -445,126 +421,6 @@ export function LibraryView() {
     (index: number) => virtualiser.scrollToIndex(Math.floor(index / columns)),
     [virtualiser, columns],
   );
-
-  /**
-   * The four transitions a card can ask for: one call, one published patch, one
-   * toast (#132).
-   *
-   * **Nothing here is optimistic**, and that is the difference from Review. That
-   * page removes the card on the click and puts it back when the write fails,
-   * because a kept wallpaper leaves its list either way. This page keeps every
-   * row it fetched, so there is no removal to undo: the published patch is the
-   * only thing that edits a row, the subscriber above is what applies it, and a
-   * call that never lands leaves the card exactly where the curator left it.
-   *
-   * The patch is published **after** the write for the same reason. Publishing
-   * ahead of it would grey a row that never changed, and the failure would be
-   * the one thing the page did not hear about.
-   *
-   * Every one of them toasts, success and failure alike. The row does update in
-   * place under the cursor, but a virtualised grid may reorder it or filter it
-   * out from under the click, and a card that vanishes is not a confirmation
-   * (ADR 0016, ADR 0017).
-   *
-   * The origin-less Restore never arrives here. `useCardAction` refuses it with
-   * a pinned toast and makes no call, from the button and from `R` alike, so
-   * that refusal is a property of the action rather than of this host
-   * (ADR 0009, ADR 0019).
-   */
-  const act = async (action: CardAction, card: Wallpaper) => {
-    const { id, filename } = card;
-    try {
-      switch (action) {
-        case "keep":
-          await client.keepWallpaper(id);
-          publish({ type: "status-changed", id, status: "kept" });
-          show({ kind: "kept", view: "library", id, filename });
-          break;
-
-        case "make-active":
-          // The keep inverse: one column write with nothing on disk to move,
-          // which is why it is `unkeep_wallpaper` and not a Restore. It carries
-          // no path and offers no Undo, since Keep is the button that replaces
-          // it on the card it just changed (ADR 0009, ADR 0017).
-          await client.unkeepWallpaper(id);
-          publish({ type: "status-changed", id, status: "active" });
-          show({ kind: "made-active", filename });
-          break;
-
-        case "reject": {
-          // The path the file landed at is read now: `unique_destination`
-          // suffixes ` (n)` on a collision rather than overwriting what is
-          // already there, so this is the only account of what the file is
-          // called on the far side (ADR 0003).
-          const finalPath = await client.moveWallpaper(id, destination.written);
-          publish({
-            type: "status-changed",
-            id,
-            status: "rejected",
-            // The three columns the move wrote, so the row this page patches is
-            // the row the backend now holds: where the file went, what it is
-            // called there, and where it came from. The Origin is the card's own
-            // `path`, read before the patch replaces it, which is the value the
-            // backend stored — it moved the file out of that row (ADR 0009).
-            changed: {
-              path: finalPath,
-              filename: basename(finalPath),
-              origin_path: card.path,
-            },
-          });
-          show({
-            kind: "rejected",
-            view: "library",
-            id,
-            filename,
-            // The same read-out the call was handed, so the destination the
-            // toast describes and the one the file went to are one answer.
-            relativeDestination: destination.relative,
-            finalPath,
-          });
-          break;
-        }
-
-        case "restore": {
-          // A Restore lands on Active whichever Status the wallpaper held before
-          // the reject, because Kept is a judgement about a rating and changing
-          // your mind about a reject is not that judgement (CONTEXT.md,
-          // ADR 0009). So Active is what the patch carries, and a row the filter
-          // no longer matches leaves the grid.
-          const finalPath = await client.restoreWallpaper(id);
-          publish({
-            type: "status-changed",
-            id,
-            status: "active",
-            // Back where it came from, and with no Origin left to go back to: a
-            // wallpaper that is not Rejected has none, which is the same `null`
-            // the backend writes (ADR 0009). A collision at the Origin may have
-            // suffixed the basename on this leg too, so the filename is derived
-            // from the answer here as well.
-            changed: {
-              path: finalPath,
-              filename: basename(finalPath),
-              origin_path: null,
-            },
-          });
-          show({ kind: "restored", filename, finalPath });
-          break;
-        }
-      }
-    } catch (err) {
-      console.error(FAILURE_LOG[action], err);
-      // The card is untouched and the toast carries the backend's own account of
-      // why. `invalid_transition` goes one step further on the surface itself: it
-      // can only mean this view acted on a row that had already changed
-      // underneath, which no patch can correct, so it asks this view for the
-      // refetch `useRefetchWhenShown` above is registered for (ADR 0017).
-      show({ kind: "failed", view: "library", action, filename, error: err });
-    }
-  };
-
-  const handleAction = (action: CardAction, card: Wallpaper) => {
-    void act(action, card);
-  };
 
   return (
     <>
@@ -745,7 +601,7 @@ export function LibraryView() {
             wallpapers={list}
             selection={selection}
             label="Wallpapers in the library"
-            onAction={handleAction}
+            onAction={perform}
             onOpen={lightbox.openOn}
             scoresMoved={scoresMoved}
             reveal={reveal}
@@ -761,8 +617,8 @@ export function LibraryView() {
           rows offer Make Active and Restore in there without the lightbox
           knowing whose grid it opened over (ADR 0022).
 
-          `onAction` is the grid's own handler, so nothing a curator does from
-          in there is optimistic either: the published patch is what edits the
+          `onAction` is the same `perform` the grid behind it is handed, so
+          nothing a curator does from in there is optimistic either: the published patch is what edits the
           row, which is why rejecting under a filter of All leaves the same
           wallpaper up wearing its new Status and its new actions, and rejecting
           under Active takes the row out of the list and advances.
@@ -775,7 +631,7 @@ export function LibraryView() {
         selection={selection}
         open={lightbox.open}
         onClose={lightbox.close}
-        onAction={handleAction}
+        onAction={perform}
       />
     </>
   );

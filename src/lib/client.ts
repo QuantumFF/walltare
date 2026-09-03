@@ -234,6 +234,29 @@ export function isAppError(value: unknown): value is AppError {
 }
 
 /**
+ * Whether a refused transition means the row the caller acted on had already
+ * changed underneath it.
+ *
+ * Two kinds say that, and they say it about the same situation.
+ * `invalid_transition` is a row that is present and refusing; `not_found` is a
+ * row that is gone. Neither can be corrected by a patch — nothing in the answer
+ * says what the row should be instead — and leaving it on screen means the
+ * curator's next click reproduces it. So the page that acted refetches, and one
+ * sentence covers both: `<filename> has already changed` is true of a row that
+ * refused and of a row that is not there (ADR 0017 as amended by ADR 0025).
+ *
+ * One predicate rather than two readings of the same condition: the module that
+ * acts asks it to decide on the refetch, and the toast surface asks it to pick
+ * the copy.
+ */
+export function isStaleRow(error: unknown): boolean {
+  return (
+    isAppError(error) &&
+    (error.kind === "invalid_transition" || error.kind === "not_found")
+  );
+}
+
+/**
  * Builds a `wallpaper://` URL for the custom protocol handler in lib.rs.
  *
  * The `localhost` authority is load-bearing. A custom-scheme URL is parsed as
@@ -338,40 +361,55 @@ export const client = {
     ordering: ListOrdering = "score_desc",
   ) => invoke<Wallpaper[]>("list_wallpapers", { filter, ordering }),
 
-  keepWallpaper: (id: number) => invokeVoid("keep_wallpaper", { id }),
+  /**
+   * Keeps a wallpaper and resolves with the row it wrote.
+   *
+   * All four transitions answer with the row, so a caller edits the row it was
+   * told about rather than predicting one: `origin_path = path` on a reject and
+   * `origin_path = NULL` on a Restore are the backend's rules, and restating
+   * them here would be a prediction however few copies of it there were
+   * (ADR 0023).
+   */
+  keepWallpaper: (id: number) => invoke<Wallpaper>("keep_wallpaper", { id }),
 
   /**
    * Undoes a Keep: the wallpaper lands on Active and comes back into review.
-   * Nothing on disk moves, so there is no path to resolve with. Calling it on an
-   * Active wallpaper succeeds and leaves it Active, so a double click is not an
-   * error — which is also why `keepWallpaper` is not a toggle (ADR 0009).
+   * Nothing on disk moves, so the `status` column is the whole of what the row
+   * it resolves with has changed. Calling it on an Active wallpaper succeeds and
+   * leaves it Active, so a double click is not an error — which is also why
+   * `keepWallpaper` is not a toggle (ADR 0009).
    *
    * Rejects with `invalid_transition` for a Rejected wallpaper: its file is in
    * the reject folder, and `restoreWallpaper` is what moves it back.
    */
-  unkeepWallpaper: (id: number) => invokeVoid("unkeep_wallpaper", { id }),
+  unkeepWallpaper: (id: number) =>
+    invoke<Wallpaper>("unkeep_wallpaper", { id }),
 
   /**
    * Soft-rejects a wallpaper into `destinationFolder`, a Written path the
-   * backend expands. Resolves with the absolute path the file landed at: a
-   * collision suffixes the basename, so comparing it against the wallpaper's
-   * `filename` is how a caller tells a rename from a plain move.
+   * backend expands. Resolves with the row it wrote: a collision suffixes the
+   * basename, so the row's `path` is where the file actually is, its `filename`
+   * is what the file is called there, and its `origin_path` is where the file
+   * came from. Comparing the new `filename` against the one the caller was
+   * holding is how it tells a rename from a plain move.
    */
   moveWallpaper: (id: number, destinationFolder: string) =>
-    invoke<string>("move_wallpaper", { id, destinationFolder }),
+    invoke<Wallpaper>("move_wallpaper", { id, destinationFolder }),
 
   /**
    * Undoes a soft reject: the file goes back to its Origin and the wallpaper
    * lands on Active, whatever Status it held before the reject. Resolves with
-   * the absolute path the file landed back at, which a collision at the Origin
-   * may have suffixed.
+   * the row it wrote, whose `path` is where the file landed back — a collision
+   * at the Origin may have suffixed it — and whose `origin_path` is now `null`,
+   * the Origin being spent.
    *
    * Rejects with `invalid_transition` for a wallpaper that is not Rejected and
    * for one rejected before its Origin was recorded — `origin_path` is `null`
    * on the row, so a caller can tell that second case before it asks — and with
    * `file_missing` when the file has left the reject folder.
    */
-  restoreWallpaper: (id: number) => invoke<string>("restore_wallpaper", { id }),
+  restoreWallpaper: (id: number) =>
+    invoke<Wallpaper>("restore_wallpaper", { id }),
 
   /**
    * Starts the thumbnail pre-generation pass and resolves as soon as it is

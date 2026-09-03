@@ -8,6 +8,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ExtendedColorType, ImageEncoder, ImageReader, Rgb, RgbImage};
 use rusqlite::Connection;
 
+use crate::db::Status;
 use crate::error::AppError;
 
 pub const SMALL_MAX_WIDTH: u32 = 400;
@@ -482,35 +483,6 @@ pub enum Missing {
     Only(Size),
 }
 
-/// A wallpaper's Status, the three of `CONTEXT.md`.
-///
-/// The work list carries the one it saw so the pass can tell a wallpaper that
-/// was already Rejected when it was listed, which is the tail group ADR 0016
-/// put at the end of the queue, from one rejected since, which is a snapshot
-/// gone stale.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Status {
-    Active,
-    Kept,
-    Rejected,
-}
-
-impl Status {
-    /// Reads the `status` column.
-    ///
-    /// The schema's `CHECK` constraint allows only these three spellings, so
-    /// anything else is a database this app never wrote. Such a row reads as
-    /// Active, which is how every other Status read in the codebase treats a
-    /// value that is not `rejected`.
-    pub fn read(column: &str) -> Self {
-        match column {
-            "rejected" => Self::Rejected,
-            "kept" => Self::Kept,
-            _ => Self::Active,
-        }
-    }
-}
-
 /// One wallpaper the pre-generation pass would reach, and what it owes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
@@ -521,6 +493,10 @@ pub struct Pending {
     /// there rather than from this copy.
     pub source: PathBuf,
     /// The Status the list saw, for the pass to compare the row against.
+    ///
+    /// The list carries it so the pass can tell a wallpaper that was already
+    /// Rejected when it was listed — the tail group ADR 0016 put at the end of
+    /// the queue — from one rejected since, which is a snapshot gone stale.
     pub status: Status,
     pub missing: Missing,
 }
@@ -562,7 +538,7 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
+            row.get::<_, Status>(2)?,
             row.get::<_, Option<i64>>(3)?,
             row.get::<_, Option<i64>>(4)?,
         ))
@@ -594,7 +570,7 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
         pending.push(Pending {
             wallpaper_id,
             source,
-            status: Status::read(&status),
+            status,
             missing,
         });
     }
@@ -623,11 +599,10 @@ pub fn still_due(conn: &Connection, pending: &Pending) -> Option<PathBuf> {
         .query_row(
             "SELECT status, path FROM wallpapers WHERE id = ?1",
             [pending.wallpaper_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| Ok((row.get::<_, Status>(0)?, row.get::<_, String>(1)?)),
         )
         .ok()?;
-    let rejected_since =
-        Status::read(&status) == Status::Rejected && pending.status != Status::Rejected;
+    let rejected_since = status == Status::Rejected && pending.status != Status::Rejected;
     (!rejected_since).then(|| PathBuf::from(path))
 }
 

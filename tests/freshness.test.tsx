@@ -1,6 +1,4 @@
 import App from "@/App";
-import { LibraryView } from "@/components/LibraryView";
-import { useAppEvents } from "@/context/AppEventsContext";
 import type { StatusFilter, Wallpaper } from "@/lib/client";
 import {
   act,
@@ -11,7 +9,8 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { flush, renderInApp, settings, stats, wallpaper } from "./fixtures";
+import { expectConsoleError } from "./console-guard";
+import { flush, settings, stats, wallpaper } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // Cross-view freshness, driven the way the curator drives it: the whole app,
@@ -99,9 +98,39 @@ beforeEach(() => {
     return library.filter((w) => filter === "all" || w.status === filter);
   });
 
-  mockCommand("keep_wallpaper", () => null);
-  mockCommand("move_wallpaper", () => "/library/rejected/one.jpg");
+  // Every transition answers with the row it wrote, so these mocks derive one
+  // from the library rather than returning a path: a patch carries that row
+  // whole, and a fixture that dropped the Score or the comparison count would
+  // be a row the backend could never report (ADR 0023).
+  mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
+  mockCommand("move_wallpaper", (args) => {
+    const before = row(args);
+    return {
+      ...before,
+      status: "rejected",
+      path: `/library/rejected/${before.filename}`,
+      // What the backend writes: `origin_path = path`, in the same statement
+      // that overwrites `path`.
+      origin_path: before.path,
+    };
+  });
 });
+
+/** The library row a transition was asked about. */
+function row(args: Record<string, unknown> | undefined): Wallpaper {
+  const id = args?.id as number;
+  const found = library.find((w) => w.id === id);
+  if (!found) throw new Error(`no library row with id ${id}`);
+  return found;
+}
+
+/** That row as a transition rewrote it. */
+function wrote(
+  args: Record<string, unknown> | undefined,
+  over: Partial<Wallpaper>,
+): Wallpaper {
+  return { ...row(args), ...over };
+}
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 
@@ -219,43 +248,88 @@ async function orderBy(value: string) {
   await flush();
 }
 
-/**
- * Stands in for #112's error toast, which is the only caller `requestRefetch`
- * will ever have: `InvalidTransition` means the view acted on a row that had
- * already changed under it, and no patch can say what the row should be
- * instead.
- */
-function RefetchProbe() {
-  const { requestRefetch } = useAppEvents();
-  return (
-    <>
-      <button onClick={() => requestRefetch("review")}>refetch review</button>
-      <button onClick={() => requestRefetch("library")}>refetch library</button>
-    </>
-  );
-}
+/** The toast in the shell's one slot, as it reads. */
+const toastText = () =>
+  screen.queryByRole("status")?.textContent ??
+  screen.queryByRole("alert")?.textContent ??
+  null;
 
-test("a refetch request reaches the one view it names", async () => {
-  // Boot lands on Library, so the view under test is the one being shown and
-  // the request is paid immediately rather than owed.
-  mockCommand("get_stats", () =>
-    stats({ eligible_count: 1, round_participated_count: 0, evaluated_count: 0 }),
-  );
-  await renderInApp(
-    <>
-      <RefetchProbe />
-      <LibraryView />
-    </>,
-  );
-  expect(listCalls).toBe(1);
+test.each([
+  [
+    "invalid_transition",
+    "wallpaper 1 is already rejected",
+  ] as const,
+  ["not_found", "no wallpaper with id 1"] as const,
+])(
+  "a transition refused with %s refetches the page that acted",
+  async (kind, message) => {
+    // Both kinds mean the same thing: the row this page acted on had already
+    // changed underneath it. No patch can say what it should be instead, and
+    // leaving it on screen means the next click reproduces it, so the page
+    // fetches and the toast says the one sentence that is true of both — a row
+    // that refused and a row that is gone (ADR 0017 as amended by ADR 0025).
+    mockCommand("move_wallpaper", () => Promise.reject({ kind, message }));
+    expectConsoleError(/Failed to move wallpaper/);
+    await openApp();
+    await click(tab("Library"));
+    expect(listCalls).toBe(1);
 
-  // Named another view: every other view's rows are as good as they were, and
-  // one failed request is no reason to make them all fetch again.
-  await click(screen.getByRole("button", { name: "refetch review" }));
-  expect(listCalls).toBe(1);
+    await click(within(card(1)!).getByRole("button", { name: /reject/i }));
 
-  await click(screen.getByRole("button", { name: "refetch library" }));
-  expect(listCalls).toBe(2);
+    expect(listCalls).toBe(2);
+    expect(toastText()).toContain("one.jpg has already changed");
+    // The backend's own sentence is not shown for these two: what the curator
+    // has to know is that the row moved, and the refetch is what shows them
+    // what it moved to.
+    expect(toastText()).not.toContain(message);
+  },
+);
+
+test("a refused transition refetches only the page that acted", async () => {
+  // Every other view's rows are as good as they were, and one failed request is
+  // no reason to make them all fetch again. Review is the page acting here, so
+  // the hidden Library must not move.
+  mockCommand("keep_wallpaper", () =>
+    Promise.reject({
+      kind: "invalid_transition",
+      message: "cannot keep rejected wallpaper with id 1",
+    }),
+  );
+  expectConsoleError(/Failed to keep wallpaper/);
+  await openApp();
+  await click(tab("Library"));
+  await click(tab("Review"));
+  expect([getReviewCalls, listCalls]).toEqual([1, 1]);
+
+  await click(screen.getByRole("button", { name: /keep one\.jpg/i }));
+
+  expect([getReviewCalls, listCalls]).toEqual([2, 1]);
+});
+
+test("a refused transition on a hidden page owes the refetch rather than making it", async () => {
+  // The deferral holds for the same reason it holds after a scan: an Undo can
+  // be pressed eight seconds later on a page the curator has left, and fifty
+  // thumbnail requests from a hidden Review are what ADR 0012 gave
+  // pre-generation its own thread to keep off the next pair. The `owe` the
+  // module reaches for is the one `useRefetchWhenShown` already returned.
+  await openApp();
+  await click(tab("Review"));
+  expect(getReviewCalls).toBe(1);
+
+  // Keep, then leave, then press the Undo the keep's toast is still holding —
+  // and refuse it, because the row moved while the curator was away.
+  await click(screen.getByRole("button", { name: /keep one\.jpg/i }));
+  await click(tab("Rank"));
+  mockCommand("unkeep_wallpaper", () =>
+    Promise.reject({ kind: "not_found", message: "no wallpaper with id 1" }),
+  );
+  expectConsoleError(/Failed to unkeep wallpaper/);
+  await click(screen.getByRole("button", { name: "Undo" }));
+
+  expect(getReviewCalls).toBe(1);
+
+  await click(tab("Review"));
+  expect(getReviewCalls).toBe(2);
 });
 
 test("a keep in Review patches the hidden Library, and neither view fetches anything", async () => {
@@ -286,9 +360,9 @@ test("a keep in Review patches the hidden Library, and neither view fetches anyt
 });
 
 test("a reject drops the row from a Library filtered to Active", async () => {
-  // The other half of a Status patch. A row can be edited or dropped and never
-  // inserted: the event carries an id, so nothing here knows what an unseen row
-  // looks like or where it would go.
+  // The other half of a Status patch. A row can be replaced or dropped and
+  // never inserted, and the bound is position rather than ignorance: nothing in
+  // a row says where it belongs in an ordering by Score (ADR 0023).
   await openApp();
   await click(tab("Library"));
   await filterBy("Active");
@@ -312,7 +386,9 @@ test("a reject in Review leaves the Library row it patched restorable", async ()
   const restores: unknown[] = [];
   mockCommand("restore_wallpaper", (args) => {
     restores.push(args?.id);
-    return "/library/one.jpg";
+    // The Origin spent and the file back at it, which is what the backend
+    // writes in the one statement that clears the column.
+    return wrote(args, { status: "active", origin_path: null });
   });
   await openApp();
   await click(tab("Library"));

@@ -324,10 +324,11 @@ fn generate_one(
 mod tests {
     use super::*;
     use crate::db;
+    use crate::db::Status;
     use image::{DynamicImage, Rgba, RgbaImage};
     use std::cell::RefCell;
     use std::path::PathBuf;
-    use thumbnails::{Missing, Pending, Size, Status};
+    use thumbnails::{Missing, Pending, Size};
 
     /// A library the pre-generation pass can be run against: the connection
     /// behind the mutex the pass locks, a folder of source images, and a cache

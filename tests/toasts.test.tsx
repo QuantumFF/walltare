@@ -17,6 +17,24 @@ let unkeeps: number[];
 let moves: Array<{ id: number; destination: string }>;
 let restores: number[];
 let getReviewCalls: number;
+/** The list `get_review` serves, which the transition mocks read rows from. */
+let reviewed: ReturnType<typeof wallpaper>[];
+
+/**
+ * The row a transition answered with (ADR 0023).
+ *
+ * Built from the row the list holds, because every command answers with the row
+ * it wrote and the columns it did not touch come through unchanged.
+ */
+function wrote(
+  args: Record<string, unknown> | undefined,
+  over: Partial<ReturnType<typeof wallpaper>> = {},
+) {
+  const id = args?.id as number;
+  const before = reviewed.find((w) => w.id === id);
+  if (!before) throw new Error(`no review row with id ${id}`);
+  return { ...before, ...over };
+}
 
 afterEach(() => {
   cleanup();
@@ -29,6 +47,10 @@ beforeEach(() => {
   moves = [];
   restores = [];
   getReviewCalls = 0;
+  reviewed = [
+    wallpaper(7, { filename: "wall-7.jpg" }),
+    wallpaper(8, { filename: "wall-8.jpg" }),
+  ];
 
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
@@ -44,29 +66,43 @@ beforeEach(() => {
   mockCommand("list_wallpapers", () => []);
   mockCommand("get_review", () => {
     getReviewCalls++;
-    return [
-      wallpaper(7, { filename: "wall-7.jpg" }),
-      wallpaper(8, { filename: "wall-8.jpg" }),
-    ];
+    return reviewed;
   });
   mockCommand("keep_wallpaper", (args) => {
     keeps.push(args?.id as number);
-    return null;
+    return wrote(args, { status: "kept" });
   });
   mockCommand("unkeep_wallpaper", (args) => {
     unkeeps.push(args?.id as number);
-    return null;
+    return wrote(args, { status: "active" });
   });
   mockCommand("move_wallpaper", (args) => {
     moves.push({
       id: args?.id as number,
       destination: args?.destinationFolder as string,
     });
-    return `/library/rejected/${String(args?.id)}.jpg`;
+    const before = wrote(args);
+    // The file keeps its name, which is what a reject without a collision does:
+    // only `unique_destination` suffixes one, and the tests below that want a
+    // suffix arrange it themselves.
+    //
+    // The Origin is here because the Undo this toast offers is a Restore on the
+    // row the reject answered with, and a row with no Origin is refused before
+    // any call is made (ADR 0009).
+    return {
+      ...before,
+      status: "rejected",
+      path: `/library/rejected/${before.filename}`,
+      origin_path: before.path,
+    };
   });
   mockCommand("restore_wallpaper", (args) => {
     restores.push(args?.id as number);
-    return "/library/wall-7.jpg";
+    return wrote(args, {
+      status: "active",
+      path: "/library/wall-7.jpg",
+      origin_path: null,
+    });
   });
 });
 
@@ -137,7 +173,7 @@ test("a reject names the final path when the destination resolved relative", asy
   // says which one took the file. So the toast says.
   expect(toast()).toEqual({
     title: "Rejected wall-7.jpg",
-    description: "/library/rejected/7.jpg",
+    description: "/library/rejected/wall-7.jpg",
   });
 });
 
@@ -145,7 +181,13 @@ test("a reject with an absolute destination that renamed nothing says no path", 
   // Arranged in the store rather than typed into Review, which is the only
   // place a destination comes from since ADR 0018 moved the field to Settings.
   mockCommand("get_settings", () => settings({ reject_destination: "/rejects" }));
-  mockCommand("move_wallpaper", () => "/rejects/wall-7.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    wrote(args, {
+      status: "rejected",
+      path: "/rejects/wall-7.jpg",
+      origin_path: "/library/wall-7.jpg",
+    }),
+  );
   await openReview();
   await rejectWall7();
 
@@ -158,7 +200,14 @@ test("a reject that renamed the file says so even from an absolute destination",
   // `unique_destination` suffixes ` (n)` rather than overwriting, and that
   // suffix is the one thing the destination read-out cannot have told anyone.
   mockCommand("get_settings", () => settings({ reject_destination: "/rejects" }));
-  mockCommand("move_wallpaper", () => "/rejects/wall-7 (2).jpg");
+  mockCommand("move_wallpaper", (args) =>
+    wrote(args, {
+      status: "rejected",
+      path: "/rejects/wall-7 (2).jpg",
+      filename: "wall-7 (2).jpg",
+      origin_path: "/library/wall-7.jpg",
+    }),
+  );
   await openReview();
   await rejectWall7();
 
@@ -326,7 +375,7 @@ test("a transition toast carries no close button, because it goes on its own", a
 });
 
 test("FileMissing on a Restore says its own sentence, from the backend", async () => {
-  expectConsoleError(/Failed to undo a reject/);
+  expectConsoleError(/Failed to restore wallpaper/);
   await openReview();
   await rejectWall7();
   mockCommand("restore_wallpaper", () =>
@@ -369,11 +418,11 @@ test("InvalidTransition says the row already changed and makes the view refetch"
 });
 
 test("the filename carries its full string for the title that truncates it", async () => {
-  mockCommand("get_review", () => [
+  reviewed = [
     wallpaper(7, {
       filename: "a-very-long-wallpaper-filename-that-will-not-fit.jpg",
     }),
-  ]);
+  ];
   await openReview();
   await click(/keep a-very-long-wallpaper-filename/i);
 

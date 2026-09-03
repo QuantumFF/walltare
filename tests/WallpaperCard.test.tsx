@@ -88,18 +88,6 @@ function badge(): HTMLElement {
   return found;
 }
 
-function toastTitle(): string | null {
-  const root = document.querySelector("[data-slot='toast']");
-  if (!root) return null;
-  return root.querySelector("[data-slot='toast-title']")?.textContent ?? "";
-}
-
-function toastDescription(): string | null {
-  const root = document.querySelector("[data-slot='toast']");
-  if (!root) return null;
-  return root.querySelector("[data-slot='toast-description']")?.textContent ?? null;
-}
-
 const buttonNames = () =>
   screen.getAllByRole("button").map((el) => el.getAttribute("aria-label"));
 
@@ -229,9 +217,14 @@ test("a Rejected card with an Origin offers Restore, and asks for it", async () 
   expect(restores).toEqual([1]);
 });
 
-test("a Restore with no Origin explains itself when pressed, and calls nothing", async () => {
+test("a Restore with no Origin is drawn unavailable and still reaches the host", async () => {
   // The cohort rejected before ADR 0009 recorded an Origin. `origin_path` is on
-  // the DTO, so the frontend knows the answer before the press.
+  // the DTO, so the answer is known before the press — and what this card does
+  // about it is draw the control as unavailable, which is drawing rather than
+  // policy. The refusal itself is the host's, in the one `perform` the button,
+  // the grid's `R` and the lightbox's row all reach, so it cannot disagree with
+  // itself across three triggers (ADR 0023). `LibraryView.test.tsx` is where
+  // the sentence it raises is asserted.
   await mount(rejected({ origin_path: null }));
 
   const restore = screen.getByRole("button", { name: "Restore wall-1.jpg" });
@@ -247,14 +240,8 @@ test("a Restore with no Origin explains itself when pressed, and calls nothing",
     fireEvent.click(restore);
   });
 
-  expect(toastTitle()).toBe("Can't restore wall-1.jpg");
-  expect(toastDescription()).toBe(
-    "Rejected before Restore existed, so nothing recorded where it came from.",
-  );
-  // The point of putting `origin_path` on the DTO: the refusal costs no round
-  // trip, and the host is never asked for one.
-  expect(asked).toEqual([]);
-  expect(restores).toEqual([]);
+  // This host holds no refusal, which is what makes the reach visible here.
+  expect(asked).toEqual([{ action: "restore", id: 1 }]);
 });
 
 test("a click on the card asks to look closer, and a click on a button does not", async () => {
@@ -278,17 +265,17 @@ test("a click on the card asks to look closer, and a click on a button does not"
   expect(opened).toEqual([1]);
 });
 
-test("a refused Restore is not a way of opening the card either", async () => {
+test("an unavailable Restore is not a way of opening the card either", async () => {
   await mount(rejected({ origin_path: null }));
 
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Restore wall-1.jpg" }));
   });
 
-  // The one button that answers a press with a sentence rather than an action.
-  // It still stops the click, so the card underneath stays where it was: a
-  // refusal that also opened the lightbox would be two answers to one press.
-  expect(toastTitle()).toBe("Can't restore wall-1.jpg");
+  // The one button the host answers with a sentence rather than an action. It
+  // still stops the click on its way up, so the card underneath stays where it
+  // was: a refusal that also opened the lightbox would be two answers to one
+  // press.
   expect(opened).toEqual([]);
 });
 

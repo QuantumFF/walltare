@@ -108,7 +108,10 @@ pub fn vote<R: Rng>(
     let winner = fetch_summary(&tx, winner_id)?;
     let loser = fetch_summary(&tx, loser_id)?;
     if winner.id == loser.id {
-        return Err(AppError::UnknownWallpaper(format!(
+        // A caller's mistake rather than a fact about the wallpaper: nothing
+        // about it is unknown, and it is not a Status transition either
+        // (ADR 0025).
+        return Err(AppError::BadRequest(format!(
             "winner and loser must be distinct, got {winner_id} twice"
         )));
     }
@@ -153,12 +156,19 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
     let total_comparisons: u32 =
         conn.query_row("SELECT COUNT(*) FROM comparisons", [], |r| r.get(0))?;
 
+    // Every fraction below is measured against the Eligible pool, and the
+    // fragment that says which rows those are comes from `db::Status` rather
+    // than being spelled here four times (ADR 0024).
+    let eligible = db::Status::ELIGIBLE_SQL;
+
     // `MIN` over no rows is NULL, which is the empty-pool case and reports Round
     // 1: the app is always about to run Round 1, and a null would make every
     // consumer branch on a state that has nothing to say.
     let (eligible_count, floor): (u32, Option<i64>) = conn.query_row(
-        "SELECT COUNT(*), MIN(comparisons_count) FROM wallpapers
-         WHERE status IN ('active', 'kept')",
+        &format!(
+            "SELECT COUNT(*), MIN(comparisons_count) FROM wallpapers
+             WHERE {eligible}"
+        ),
         [],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
@@ -168,14 +178,18 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
     // eligible wallpaper sits at or above it by construction, so the looser
     // comparison would read as a full Round forever.
     let round_participated_count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM wallpapers
-         WHERE status IN ('active', 'kept') AND comparisons_count >= ?1",
+        &format!(
+            "SELECT COUNT(*) FROM wallpapers
+             WHERE {eligible} AND comparisons_count >= ?1"
+        ),
         [round],
         |r| r.get(0),
     )?;
     let evaluated_count: u32 = conn.query_row(
-        "SELECT COUNT(*) FROM wallpapers
-         WHERE status IN ('active', 'kept') AND rating_sigma < 4.0",
+        &format!(
+            "SELECT COUNT(*) FROM wallpapers
+             WHERE {eligible} AND rating_sigma < 4.0"
+        ),
         [],
         |r| r.get(0),
     )?;
@@ -193,10 +207,11 @@ fn eligible_summaries(conn: &Connection) -> Result<Vec<ranking::WallpaperSummary
     // No ORDER BY: `select_pair` scans for a minimum and indexes by RNG draw,
     // so row order isn't load-bearing, and sorting the whole library costs a
     // temp B-tree on every pair fetch.
-    let mut stmt = conn.prepare_cached(
+    let mut stmt = conn.prepare_cached(&format!(
         "SELECT id, rating_mu, rating_sigma, comparisons_count
-         FROM wallpapers WHERE status IN ('active', 'kept')",
-    )?;
+         FROM wallpapers WHERE {}",
+        db::Status::ELIGIBLE_SQL,
+    ))?;
     let rows = stmt.query_map([], |row| {
         Ok(ranking::WallpaperSummary {
             id: row.get(0)?,
@@ -208,30 +223,29 @@ fn eligible_summaries(conn: &Connection) -> Result<Vec<ranking::WallpaperSummary
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
+/// One wallpaper's rating, refused unless it is in the pool voting draws from.
+///
+/// It builds the summary from the shared row read rather than from a query of
+/// its own, which is what lets `Status::is_eligible` apply to a typed column
+/// instead of to a string this selected itself (ADR 0024, ADR 0025). A missing
+/// id therefore answers `NotFound`, the one answer for a row that is not there.
+///
+/// `UnknownWallpaper` survives for the refusal below alone: a wallpaper that
+/// exists, is Rejected, and sits out of voting. That is a refusal about a real
+/// row, so `NotFound` would hide a state — and it is the frontend's signal to
+/// fetch a new pair rather than to correct a row.
 fn fetch_summary(conn: &Connection, id: i64) -> Result<ranking::WallpaperSummary, AppError> {
-    let (status, mu, sigma, count): (String, f64, f64, i64) = conn
-        .query_row(
-            "SELECT status, rating_mu, rating_sigma, comparisons_count
-             FROM wallpapers WHERE id = ?1",
-            [id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                AppError::UnknownWallpaper(format!("wallpaper {id} does not exist"))
-            }
-            other => other.into(),
-        })?;
-    if status == "rejected" {
+    let row = db::get_wallpaper(conn, id)?;
+    if !row.status.is_eligible() {
         return Err(AppError::UnknownWallpaper(format!(
             "wallpaper {id} is rejected and sits out of voting"
         )));
     }
     Ok(ranking::WallpaperSummary {
-        id,
-        rating_mu: mu,
-        rating_sigma: sigma,
-        comparisons_count: count_u32(count),
+        id: row.id,
+        rating_mu: row.rating_mu,
+        rating_sigma: row.rating_sigma,
+        comparisons_count: count_u32(row.comparisons_count),
     })
 }
 
@@ -524,22 +538,55 @@ mod tests {
 
     #[test]
     fn vote_rejects_unknown_and_ineligible_ids_without_mutating() {
+        // Three refusals and three kinds, and which is which is the whole of
+        // ADR 0025's answer for a bad vote. A row that is not there is
+        // `NotFound`, everywhere in the crate. A row that exists and sits out of
+        // voting keeps `UnknownWallpaper`, which is the one surviving use of it:
+        // `NotFound` there would hide a state, and the kind is the frontend's
+        // signal to fetch a new pair rather than to correct a row. The same id
+        // twice is a caller's mistake, so it is a `BadRequest` — nothing about
+        // the wallpaper is unknown.
         let conn = test_conn();
         let a = seed_on(&conn, "active", MU, SIGMA, 0);
         let b = seed_on(&conn, "active", MU, SIGMA, 0);
         let r = seed_on(&conn, "rejected", MU, SIGMA, 2);
 
-        for &(winner, loser) in &[(999, a), (a, 999), (r, a), (a, r), (a, a)] {
+        for &(winner, loser) in &[(999, a), (a, 999)] {
+            match vote(&conn, winner, loser, &[], &mut rng()) {
+                Err(AppError::NotFound(_)) => {}
+                other => panic!("expected NotFound for ({winner}, {loser}), got {other:?}"),
+            }
+        }
+
+        for &(winner, loser) in &[(r, a), (a, r)] {
             match vote(&conn, winner, loser, &[], &mut rng()) {
                 Err(AppError::UnknownWallpaper(_)) => {}
                 other => panic!("expected UnknownWallpaper for ({winner}, {loser}), got {other:?}"),
             }
         }
 
+        match vote(&conn, a, a, &[], &mut rng()) {
+            Err(AppError::BadRequest(_)) => {}
+            other => panic!("expected BadRequest for one id twice, got {other:?}"),
+        }
+
         assert_eq!(ratings(&conn, a), (MU, SIGMA, 0));
         assert_eq!(ratings(&conn, b), (MU, SIGMA, 0));
         assert_eq!(ratings(&conn, r), (MU, SIGMA, 2));
         assert!(comparison_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn get_pair_answers_a_missing_id_with_not_found_rather_than_a_bare_db_error() {
+        // Unreachable in production — both ids come from `eligible_summaries` on
+        // the same connection moments earlier, and nothing deletes a
+        // `wallpapers` row — so this pins the kind rather than a live defect. It
+        // used to be a bare `Db` from `?` running `From<rusqlite::Error>`, and
+        // it closed with no line written here once `get_wallpaper` mapped the
+        // variant itself (ADR 0025).
+        let conn = test_conn();
+        let err = db::get_wallpaper(&conn, 999).unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
     }
 
     #[test]
