@@ -30,9 +30,9 @@ import {
  * That is the point of the whole shell: `wallpaper://` answers
  * `max-age=0, must-revalidate` with no validator, so remounting Review is fifty
  * complete IPC round trips and fifty cache-file reads — the ~25 dropped frames
- * ADR 0006 measured, paid again on every glance at Library and back. `get_review`
- * itself costs 0.3ms, which is why what is worth carrying across a switch is
- * rendered DOM and fetched images rather than JSON.
+ * ADR 0006 measured, paid again on every glance at Library and back. The listing
+ * query itself costs 0.3ms, which is why what is worth carrying across a switch
+ * is rendered DOM and fetched images rather than JSON.
  *
  * Rank earns it twice, because its prefetched pair is state rather than pixels
  * and a remount throws the pair away.

@@ -5,6 +5,7 @@ import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import type { CacheSize, Settings, Stats, Wallpaper } from "@/lib/client";
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { mockCommand } from "./ipc-mocks";
 
 /**
  * One row as `list_wallpapers` would answer with it.
@@ -30,6 +31,26 @@ export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper 
     origin_path: null,
     ...over,
   };
+}
+
+type CommandArgs = Record<string, unknown> | undefined;
+
+/**
+ * Answer `list_wallpapers` for a test that renders both listing pages.
+ *
+ * Review and the library page ask the same command, and the `limit` is the only
+ * thing that tells the two calls apart (ADR 0028): Review passes `REVIEW_LIMIT`,
+ * the library page passes none. Branching here rather than in each `beforeEach`
+ * keeps that rule in one place, so a page that starts sending the wrong
+ * arguments takes the answer meant for the other one and the test says so.
+ */
+export function mockListings(answer: {
+  review: (args: CommandArgs) => Wallpaper[];
+  library: (args: CommandArgs) => Wallpaper[];
+}): void {
+  mockCommand("list_wallpapers", (args) =>
+    args?.limit === undefined ? answer.library(args) : answer.review(args),
+  );
 }
 
 /**

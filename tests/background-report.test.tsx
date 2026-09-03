@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import {
   cacheSize,
   flush,
+  mockListings,
   settings,
   showingView,
   stats,
@@ -54,11 +55,13 @@ beforeEach(() => {
   mockCommand("get_settings", () => settings());
   mockCommand("start_pregen", () => null);
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
-  mockCommand("list_wallpapers", () => []);
-  mockCommand("get_review", () => [
-    wallpaper(7, { filename: "wall-7.jpg" }),
-    wallpaper(8, { filename: "wall-8.jpg" }),
-  ]);
+  mockListings({
+    review: () => [
+      wallpaper(7, { filename: "wall-7.jpg" }),
+      wallpaper(8, { filename: "wall-8.jpg" }),
+    ],
+    library: () => [],
+  });
   // Every transition answers with the row it wrote (ADR 0023), and a keep's row
   // differs from the one it read in the `status` column alone.
   mockCommand("keep_wallpaper", (args) =>

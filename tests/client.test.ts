@@ -151,35 +151,6 @@ describe("client seam", () => {
     });
   });
 
-  test("getReview asks for 50 rows unless told otherwise", async () => {
-    const limits: unknown[] = [];
-    mockCommand("get_review", (args) => {
-      limits.push(args?.limit);
-      return [];
-    });
-    await client.getReview();
-    await client.getReview(5);
-    expect(limits).toEqual([50, 5]);
-  });
-
-  test("getReview carries a row's Origin through as the backend sent it", async () => {
-    // A null Origin and a path are different answers — one is a reject nothing
-    // can put back, the other is where a Restore puts the file — so nothing in
-    // the seam may fold one into the other.
-    mockCommand("get_review", () => [
-      wallpaper(1),
-      wallpaper(2, {
-        status: "rejected",
-        origin_path: "/library/landscapes/dawn.jpg",
-      }),
-    ]);
-    const review = await client.getReview();
-    expect(review.map((w) => w.origin_path)).toEqual([
-      null,
-      "/library/landscapes/dawn.jpg",
-    ]);
-  });
-
   test("listWallpapers asks for every wallpaper by Score, high to low, unless told otherwise", async () => {
     const calls: unknown[] = [];
     mockCommand("list_wallpapers", (args) => {
@@ -191,11 +162,49 @@ describe("client seam", () => {
     await client.listWallpapers("rejected", "filename_asc");
 
     // Snake-case command, one argument per enum: the Rust signature is
-    // `list_wallpapers(filter: StatusFilter, ordering: ListOrdering)`, and each
-    // value is a name the backend maps to a clause it owns.
+    // `list_wallpapers(filter: StatusFilter, ordering: ListOrdering, limit:
+    // Option<i64>)`, and each enum value is a name the backend maps to a clause
+    // it owns.
     expect(calls).toEqual([
-      { filter: "all", ordering: "score_desc" },
-      { filter: "rejected", ordering: "filename_asc" },
+      { filter: "all", ordering: "score_desc", limit: undefined },
+      { filter: "rejected", ordering: "filename_asc", limit: undefined },
+    ]);
+  });
+
+  test("listWallpapers sends a limit only when it is given one", async () => {
+    // Review's worklist and the library page's whole list are the same call
+    // with and without the third argument (ADR 0028). No limit is unlimited
+    // rather than a default count, so the library page cannot be handed a
+    // truncated list by omission.
+    const calls: unknown[] = [];
+    mockCommand("list_wallpapers", (args) => {
+      calls.push(args?.limit);
+      return [];
+    });
+
+    await client.listWallpapers();
+    await client.listWallpapers("active", "score_asc", 50);
+
+    expect(calls).toEqual([undefined, 50]);
+  });
+
+  test("listWallpapers carries a row's Origin through as the backend sent it", async () => {
+    // A null Origin and a path are different answers — one is a reject nothing
+    // can put back, the other is where a Restore puts the file — so nothing in
+    // the seam may fold one into the other.
+    mockCommand("list_wallpapers", () => [
+      wallpaper(1),
+      wallpaper(2, {
+        status: "rejected",
+        origin_path: "/library/landscapes/dawn.jpg",
+      }),
+    ]);
+
+    const rows = await client.listWallpapers("active", "score_asc", 50);
+
+    expect(rows.map((w) => w.origin_path)).toEqual([
+      null,
+      "/library/landscapes/dawn.jpg",
     ]);
   });
 
@@ -210,7 +219,9 @@ describe("client seam", () => {
 
     await client.listWallpapers("active");
 
-    expect(calls).toEqual([{ filter: "active", ordering: "score_desc" }]);
+    expect(calls).toEqual([
+      { filter: "active", ordering: "score_desc", limit: undefined },
+    ]);
   });
 
   test("listWallpapers hands back the rows in the order the backend sent them", async () => {

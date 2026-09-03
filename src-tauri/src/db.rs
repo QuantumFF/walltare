@@ -603,21 +603,6 @@ pub fn get_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppError> 
         })
 }
 
-pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusqlite::Error> {
-    if limit <= 0 {
-        return Ok(Vec::new());
-    }
-    let mut stmt = conn.prepare_cached(&format!(
-        "SELECT {WALLPAPER_COLUMNS}
-         FROM wallpapers
-         WHERE status = 'active'
-         ORDER BY rating_mu ASC
-         LIMIT ?1"
-    ))?;
-    let rows = stmt.query_map(rusqlite::params![limit], wallpaper_from_row)?;
-    rows.collect()
-}
-
 /// Which Statuses a listing returns.
 ///
 /// Eligible is deliberately absent. It is a voting-pool term, and on a browsing
@@ -700,27 +685,42 @@ impl ListOrdering {
     }
 }
 
-/// Every wallpaper matching `filter`, in `ordering`.
+/// Every wallpaper matching `filter`, in `ordering`, at most `limit` of them.
 ///
-/// No limit, no offset and no cursor: at the 5,000-row ceiling the whole list
-/// is about 1MB of JSON and one scan, and fetching everything costs less than a
-/// pagination design would (ADR 0016). Both Score orderings sort in memory,
-/// because a leading `comparisons_count = 0` cannot be served by the index on
-/// `(status, rating_mu)`; ADR 0014 names the index to add if that ever matters.
+/// `limit` is a count and nothing else: no offset, no cursor and no page token,
+/// so none of the pagination questions ADR 0016 deleted come back (ADR 0028). It
+/// has two callers, the library page's `None` and Review's `Some(50)`. `Some(n)`
+/// with `n <= 0` returns an empty list. At the 5,000-row ceiling an unlimited
+/// list is about 1MB of JSON and one scan, which is what makes fetching
+/// everything cheaper than a pagination design.
+///
+/// Both Score orderings sort in memory, because a leading `comparisons_count =
+/// 0` cannot be served by the index on `(status, rating_mu)`; ADR 0028 names the
+/// expression index that would cover it, and why it is not added.
 pub fn list_wallpapers(
     conn: &Connection,
     filter: StatusFilter,
     ordering: ListOrdering,
+    limit: Option<i64>,
 ) -> Result<Vec<Wallpaper>, rusqlite::Error> {
+    // A limit that asks for nothing gets nothing. Guarded rather than passed
+    // through, because SQLite reads a negative limit as unlimited and a caller
+    // asking for -5 rows means the same thing as one asking for 0.
+    if limit.is_some_and(|n| n <= 0) {
+        return Ok(Vec::new());
+    }
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {WALLPAPER_COLUMNS}
          FROM wallpapers
          {}
-         ORDER BY {}",
+         ORDER BY {}
+         LIMIT ?1",
         filter.where_clause(),
         ordering.order_by(),
     ))?;
-    let rows = stmt.query_map([], wallpaper_from_row)?;
+    // -1 because SQLite reads a negative limit as unlimited, so `None` and
+    // `Some(n)` share one SQL string, one `prepare_cached` entry and one path.
+    let rows = stmt.query_map(rusqlite::params![limit.unwrap_or(-1)], wallpaper_from_row)?;
     rows.collect()
 }
 
@@ -1146,54 +1146,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn get_review_returns_active_ordered_by_mu_ascending() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        let hi = seed_wallpaper(&conn, "/w/hi.jpg", "active", 30.0);
-        let lo = seed_wallpaper(&conn, "/w/lo.jpg", "active", 10.0);
-        let mid = seed_wallpaper(&conn, "/w/mid.png", "active", 20.0);
-        seed_wallpaper(&conn, "/w/kept.jpg", "kept", 5.0);
-        seed_wallpaper(&conn, "/w/rej.jpg", "rejected", 1.0);
-
-        let review = get_review(&conn, 50).unwrap();
-        let ids: Vec<i64> = review.iter().map(|w| w.id).collect();
-        assert_eq!(ids, vec![lo, mid, hi]);
-
-        assert_eq!(review[0].status, Status::Active);
-        assert_eq!(review[0].rating_mu, 10.0);
-    }
-
-    #[test]
-    fn get_review_respects_limit() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        for (i, mu) in [30.0, 10.0, 20.0].iter().enumerate() {
-            seed_wallpaper(&conn, &format!("/w/{i}.jpg"), "active", *mu);
-        }
-
-        assert_eq!(get_review(&conn, 2).unwrap().len(), 2);
-        assert_eq!(get_review(&conn, 10).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn get_review_limit_at_most_one_returns_empty() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
-
-        assert_eq!(get_review(&conn, 0).unwrap(), Vec::new());
-        assert_eq!(get_review(&conn, -5).unwrap(), Vec::new());
-    }
-
-    #[test]
-    fn get_review_empty_library_returns_empty_list() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-
-        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
-    }
-
     /// A wallpaper with Comparisons behind its Score. `comparisons_count` is
     /// what separates a rated row from an Unrated one, and it leads both Score
     /// orderings, so a listing test that never sets it tests half the clause.
@@ -1214,7 +1166,16 @@ mod tests {
     }
 
     fn list_ids(conn: &Connection, filter: StatusFilter, ordering: ListOrdering) -> Vec<i64> {
-        list_wallpapers(conn, filter, ordering)
+        limited_ids(conn, filter, ordering, None)
+    }
+
+    fn limited_ids(
+        conn: &Connection,
+        filter: StatusFilter,
+        ordering: ListOrdering,
+        limit: Option<i64>,
+    ) -> Vec<i64> {
+        list_wallpapers(conn, filter, ordering, limit)
             .unwrap()
             .iter()
             .map(|w| w.id)
@@ -1342,6 +1303,99 @@ mod tests {
     }
 
     #[test]
+    fn the_review_listing_is_active_lowest_score_first_with_the_unrated_tail() {
+        // What Review asks for, spelled the way `ReviewView` spells it. The
+        // Unrated row sits at the end rather than between `mid` and `top` where
+        // its starting Score would put it: Unrated belongs to Rank, and a card
+        // whose position claims "one of the worst" while its badge admits no
+        // measurement is the contradiction ADR 0028 removed.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (top, mid, low, unrated) = seed_scored_library(&conn);
+        seed_rated_wallpaper(&conn, "/w/kept.jpg", "kept", 5.0, 2);
+        seed_rated_wallpaper(&conn, "/w/rej.jpg", "rejected", 1.0, 2);
+
+        let review = list_wallpapers(
+            &conn,
+            StatusFilter::Active,
+            ListOrdering::ScoreAsc,
+            Some(50),
+        )
+        .unwrap();
+
+        let ids: Vec<i64> = review.iter().map(|w| w.id).collect();
+        assert_eq!(ids, vec![low, mid, top, unrated]);
+        assert_eq!(review[0].status, Status::Active);
+        assert_eq!(review[0].rating_mu, 10.0);
+    }
+
+    #[test]
+    fn list_wallpapers_returns_at_most_the_limit_and_everything_without_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (top, mid, low, unrated) = seed_scored_library(&conn);
+
+        let asc = |limit| limited_ids(&conn, StatusFilter::Active, ListOrdering::ScoreAsc, limit);
+        assert_eq!(asc(Some(2)), vec![low, mid]);
+        assert_eq!(asc(Some(10)), vec![low, mid, top, unrated]);
+        // No limit is unlimited rather than a default count.
+        assert_eq!(asc(None), vec![low, mid, top, unrated]);
+    }
+
+    #[test]
+    fn list_wallpapers_limit_of_at_most_zero_returns_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        let asc = |limit| list_wallpapers(&conn, StatusFilter::All, ListOrdering::ScoreAsc, limit);
+        assert_eq!(asc(Some(0)).unwrap(), Vec::new());
+        assert_eq!(asc(Some(-5)).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn list_wallpapers_empty_library_returns_empty_list() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        assert_eq!(
+            list_wallpapers(
+                &conn,
+                StatusFilter::Active,
+                ListOrdering::ScoreAsc,
+                Some(50)
+            )
+            .unwrap(),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_limit_cutting_a_score_tie_takes_the_same_rows_across_calls() {
+        // The property the tiebreak exists for on a limited listing. Review's
+        // fifty is larger than a young library's supply of rated rows, so the
+        // boundary lands inside a tie group, and there the tiebreak decides
+        // membership rather than order: without it SQLite may return tied rows
+        // in any order and a plan change can swap which of them Review shows at
+        // all (ADR 0028).
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let worst = seed_rated_wallpaper(&conn, "/w/worst.jpg", "active", 10.0, 3);
+        let tied_c = seed_rated_wallpaper(&conn, "/w/c.jpg", "active", 29.2052, 1);
+        let tied_a = seed_rated_wallpaper(&conn, "/w/a.jpg", "active", 29.2052, 1);
+        let tied_b = seed_rated_wallpaper(&conn, "/w/b.jpg", "active", 29.2052, 1);
+
+        let take_three =
+            || limited_ids(&conn, StatusFilter::Active, ListOrdering::ScoreAsc, Some(3));
+
+        // Three of the four rows, so the boundary sits between `tied_a` and
+        // `tied_b`: lowest `id` first inside the tie group.
+        assert_eq!(take_three(), vec![worst, tied_c, tied_a]);
+        assert_eq!(take_three(), vec![worst, tied_c, tied_a]);
+        assert!(!take_three().contains(&tied_b));
+    }
+
+    #[test]
     fn list_wallpapers_carries_a_rejected_rows_origin() {
         // So the page can say where the file came from without a second call,
         // and can tell a restorable reject from one that predates the column.
@@ -1356,10 +1410,11 @@ mod tests {
 
         let answered = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
 
-        let rejected = list_wallpapers(&conn, StatusFilter::Rejected, ListOrdering::default())
-            .unwrap()
-            .pop()
-            .expect("the rejected wallpaper is the one row this filter returns");
+        let rejected =
+            list_wallpapers(&conn, StatusFilter::Rejected, ListOrdering::default(), None)
+                .unwrap()
+                .pop()
+                .expect("the rejected wallpaper is the one row this filter returns");
         assert_eq!(rejected.id, id);
         assert_eq!(rejected.status, Status::Rejected);
         assert_eq!(rejected.origin_path, Some(origin));
@@ -1552,12 +1607,7 @@ mod tests {
         let b = seed_wallpaper(&conn, "/w/b.jpg", "active", 15.0);
 
         keep_wallpaper(&conn, b).unwrap();
-        let ids: Vec<i64> = get_review(&conn, 50)
-            .unwrap()
-            .iter()
-            .map(|w| w.id)
-            .collect();
-        assert_eq!(ids, vec![a]);
+        assert_eq!(review_ids(&conn), vec![a]);
     }
 
     #[test]
@@ -1619,8 +1669,10 @@ mod tests {
         assert_eq!(review_ids(&conn), vec![kept, other]);
     }
 
+    /// The listing Review asks for, as ids: what the curator's worklist holds
+    /// after a transition has moved a wallpaper into or out of it.
     fn review_ids(conn: &Connection) -> Vec<i64> {
-        get_review(conn, 50).unwrap().iter().map(|w| w.id).collect()
+        limited_ids(conn, StatusFilter::Active, ListOrdering::ScoreAsc, Some(50))
     }
 
     #[test]
@@ -1772,7 +1824,7 @@ mod tests {
         let found = crate::scanner::collect_images(std::slice::from_ref(&library));
         assert_eq!(insert_new_wallpapers(&conn, &found).unwrap(), 0);
         assert_eq!(count_wallpapers(&conn), 1);
-        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+        assert_eq!(review_ids(&conn), Vec::<i64>::new());
     }
 
     #[test]
@@ -1885,7 +1937,7 @@ mod tests {
         assert_eq!(status, "rejected");
         assert_eq!(PathBuf::from(&path), dest_dir.join("a.jpg"));
 
-        assert!(get_review(&conn, 50).unwrap().is_empty());
+        assert!(review_ids(&conn).is_empty());
     }
 
     #[test]
@@ -2068,7 +2120,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM wallpapers", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total, 1);
-        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+        assert_eq!(review_ids(&conn), Vec::<i64>::new());
 
         let found2 = crate::scanner::collect_images(&[dest.path().to_path_buf()]);
         insert_new_wallpapers(&conn, &found2).unwrap();
@@ -2083,7 +2135,7 @@ mod tests {
                 dest.path().join("d.jpg").display().to_string()
             )
         );
-        assert_eq!(get_review(&conn, 50).unwrap(), Vec::new());
+        assert_eq!(review_ids(&conn), Vec::<i64>::new());
     }
 
     #[test]
@@ -2165,14 +2217,7 @@ mod tests {
         // Restore could move again.
         assert_eq!(origin_path_of(&conn, id), None);
         // And it is back in the pool the curator draws from.
-        assert_eq!(
-            get_review(&conn, 50)
-                .unwrap()
-                .iter()
-                .map(|w| w.id)
-                .collect::<Vec<_>>(),
-            vec![id]
-        );
+        assert_eq!(review_ids(&conn), vec![id]);
     }
 
     #[test]

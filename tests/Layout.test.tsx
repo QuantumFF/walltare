@@ -1,5 +1,5 @@
 import App from "@/App";
-import type { Settings } from "@/lib/client";
+import type { Settings, Wallpaper } from "@/lib/client";
 import {
   act,
   cleanup,
@@ -16,6 +16,7 @@ import {
   emptyStats,
   flush,
   hiddenViews,
+  mockListings,
   mountedViews,
   settings,
   showingView,
@@ -31,7 +32,11 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 const PICK_FEEDBACK_MS = 300;
 
 let getPairCalls = 0;
-let getReviewCalls = 0;
+let reviewFetches = 0;
+/** The worklist Review is serving, which one test below narrows. */
+let reviewRows: Wallpaper[];
+/** The library the listing page is serving, which two tests below replace. */
+let libraryRows: Wallpaper[];
 let pregenStarts = 0;
 let scannedPaths: string[];
 let votes: Array<[number, number]>;
@@ -43,7 +48,12 @@ afterEach(() => {
 
 beforeEach(() => {
   getPairCalls = 0;
-  getReviewCalls = 0;
+  reviewFetches = 0;
+  reviewRows = [wallpaper(90, { filename: "lowest.jpg" })];
+  libraryRows = [
+    wallpaper(90, { filename: "lowest.jpg" }),
+    wallpaper(91, { filename: "highest.jpg", comparisons_count: 4 }),
+  ];
   pregenStarts = 0;
   scannedPaths = [];
   votes = [];
@@ -72,16 +82,16 @@ beforeEach(() => {
     getPairCalls++;
     return [wallpaper(getPairCalls * 2 - 1), wallpaper(getPairCalls * 2)];
   });
-  mockCommand("get_review", () => {
-    getReviewCalls++;
-    return [wallpaper(90, { filename: "lowest.jpg" })];
-  });
   // Library fetches its rows on the curator's first visit to it, which is what
-  // the shell's mount-on-first-visit rule defers it to.
-  mockCommand("list_wallpapers", () => [
-    wallpaper(90, { filename: "lowest.jpg" }),
-    wallpaper(91, { filename: "highest.jpg", comparisons_count: 4 }),
-  ]);
+  // the shell's mount-on-first-visit rule defers it to. Review asks the same
+  // command with a limit.
+  mockListings({
+    review: () => {
+      reviewFetches++;
+      return reviewRows;
+    },
+    library: () => libraryRows,
+  });
   mockCommand("vote", (args) => {
     votes.push([args?.winnerId as number, args?.loserId as number]);
     return { next_pair: [wallpaper(80), wallpaper(81)], stats: stats() };
@@ -172,7 +182,7 @@ test("a view switched away from is still in the DOM, and costs nothing to come b
   expect(getPairCalls).toBe(2); // the shown pair, plus the prefetch slot
 
   await click(tab("Review"));
-  expect(getReviewCalls).toBe(1);
+  expect(reviewFetches).toBe(1);
 
   // The assertion that pins hide-and-show rather than remount: Rank's pair is
   // still rendered, hidden, holding the images the browser already fetched.
@@ -186,7 +196,7 @@ test("a view switched away from is still in the DOM, and costs nothing to come b
   // Three switches and not one refetch. Remounting Review is fifty IPC round
   // trips and fifty cache-file reads, which is what this buys back.
   expect(getPairCalls).toBe(2);
-  expect(getReviewCalls).toBe(1);
+  expect(reviewFetches).toBe(1);
   expect(hiddenViews()).toEqual(["review"]);
 });
 
@@ -257,13 +267,10 @@ test("arrows pressed while Review is showing move the selection and cast no vote
   // is holding down the key Rank votes with — and Rank is still mounted behind
   // it under `display: none` (ADR 0015, ADR 0019).
   jest.useFakeTimers();
-  mockCommand("get_review", () => {
-    getReviewCalls++;
-    return [
-      wallpaper(90, { filename: "lowest.jpg" }),
-      wallpaper(91, { filename: "next.jpg" }),
-    ];
-  });
+  reviewRows = [
+    wallpaper(90, { filename: "lowest.jpg" }),
+    wallpaper(91, { filename: "next.jpg" }),
+  ];
   await openApp();
   await panesArrive();
 
@@ -426,7 +433,7 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
 });
 
 test("an empty library says so on the page that would have listed it", async () => {
-  mockCommand("list_wallpapers", () => []);
+  libraryRows = [];
   await openApp();
   await click(tab("Library"));
 
@@ -579,7 +586,7 @@ test("a first scan that turns up a single wallpaper lands on Library", async () 
       total_comparisons: 0,
     }),
   );
-  mockCommand("list_wallpapers", () => [wallpaper(1)]);
+  libraryRows = [wallpaper(1)];
   await act(async () => {
     emitEvent("scan-complete", { added_count: 1, scanned_count: 1 });
   });
