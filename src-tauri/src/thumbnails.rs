@@ -601,6 +601,36 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
     Ok(pending)
 }
 
+/// Where a listed wallpaper's file sits now, or `None` if the pass must leave it
+/// alone.
+///
+/// Read immediately before generating, under the same lock, because the work
+/// list is a snapshot: a reject can land in the middle of a pass over it, and it
+/// rewrites both the Status and the path.
+///
+/// The Status is compared against the one the list saw rather than against
+/// Eligible. A wallpaper listed as Rejected is the tail group ADR 0016 put at
+/// the end of the queue so it would be generated last, not dropped, and the
+/// library page defaults to a filter of All. A wallpaper listed as Active or
+/// Kept and Rejected now is the stale snapshot, and is skipped. A row that is no
+/// longer there is skipped too, rather than failed.
+///
+/// The path comes from this read as well, so a file that moved between the list
+/// and its turn is generated where it landed. [`plan`] already re-reads it for
+/// the one-size case.
+pub fn still_due(conn: &Connection, pending: &Pending) -> Option<PathBuf> {
+    let (status, path) = conn
+        .query_row(
+            "SELECT status, path FROM wallpapers WHERE id = ?1",
+            [pending.wallpaper_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .ok()?;
+    let rejected_since =
+        Status::read(&status) == Status::Rejected && pending.status != Status::Rejected;
+    (!rejected_since).then(|| PathBuf::from(path))
+}
+
 /// The cache directory's filenames as a set, so freshness costs one directory
 /// read for the whole library instead of two `exists` calls per wallpaper.
 ///

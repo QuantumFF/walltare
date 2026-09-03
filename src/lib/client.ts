@@ -138,7 +138,7 @@ export interface ScanFailed {
 }
 
 /**
- * Payload of the `pregen-progress` event (lib.rs PregenProgress).
+ * Payload of the `pregen-progress` event (pregen.rs Progress).
  *
  * `total` rides along on every emission rather than arriving once in a start
  * event, so a listener needs no start event and survives a missed one. The
@@ -149,7 +149,7 @@ export interface PregenProgress {
   total: number;
 }
 
-/** Payload of the `pregen-complete` event (lib.rs PregenComplete) */
+/** Payload of the `pregen-complete` event (pregen.rs Complete) */
 export interface PregenComplete {
   generated: number;
   /** Wallpapers whose source was gone or would not decode; one bad file stops nothing. */
