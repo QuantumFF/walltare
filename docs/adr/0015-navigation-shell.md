@@ -101,6 +101,34 @@ now Rejected and Library edits that row in place: no query, no thumbnail
 request, and the card is already rendered. Only `library-scanned` changes which
 rows exist, and only it forces a refetch.
 
+> **Amended by [#141](https://github.com/QuantumFF/walltare/issues/141),
+> 2026-09-03.** A patch may carry the columns its transition changed, and still
+> cannot insert a row, because nothing in the payload says where an absent row
+> belongs. The rule this section shipped was "an id and not a row", which is
+> wider than the argument for it: what bounds a patch is that it cannot place a
+> row the view does not hold, and columns for a row the view already holds do
+> not touch that bound.
+>
+> A soft reject writes four columns and `status-changed` carried one, so a
+> Library row patched through a reject kept the `path`, `filename` and Origin it
+> had while Active. Two things then misread it. The Restore control reads the
+> Origin to decide whether a Restore can be offered without asking the backend,
+> which [ADR 0009](0009-reject-is-reversible.md) put on the DTO for exactly
+> that, so a wallpaper that did have an Origin got the `aria-disabled` control
+> and the refusal written for the cohort that has none. And the card names the
+> folder its file now sits in from the row's own `path`, so it named the folder
+> the file had just left.
+>
+> So `status-changed` carries the three columns a file move writes alongside the
+> Status, complete when present and absent for the two transitions that move no
+> file. The values are the publisher's: the command answers with the path the
+> file landed at, the Origin is the row's pre-transition `path`, and the
+> filename is that path's basename, which is how the backend derives the column
+> it stores. Deriving it a second time cannot disagree.
+>
+> `score-changed` keeps its id-only shape. The Scores it would carry are not in
+> the publisher's hands, for the reason the table above already gives.
+
 Patches apply immediately whether the view is showing or not, because they cost
 nothing. A refetch defers until the view is next shown.
 [ADR 0012](0012-thumbnail-pre-generation.md) gave pre-generation one dedicated
