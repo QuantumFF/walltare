@@ -13,6 +13,10 @@ import { useAppEvents } from "@/context/AppEventsContext";
 // The counts these toasts print are the counts ADR 0020's Thumbnails line
 // prints, so both read them out of one file (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
+// The rename test below and the `filename` column the Undo publishes want the
+// same segment of the same kind of string, so one helper answers both (ADR 0015
+// as amended by #141).
+import { basename } from "@/lib/paths";
 import {
   client,
   isAppError,
@@ -231,11 +235,6 @@ export interface Toaster {
 
 const ToasterContext = createContext<Toaster | undefined>(undefined);
 
-/** The last segment of an absolute path, which is the name the file ended up with. */
-function basename(path: string): string {
-  return path.slice(path.lastIndexOf("/") + 1);
-}
-
 /**
  * The reject's path line: the final path when the file was renamed or when the
  * destination resolved relative, which is "name the path whenever the read-out
@@ -428,7 +427,20 @@ export function ToastSurface({
               void client
                 .restoreWallpaper(id)
                 .then((restoredTo) => {
-                  publish({ type: "status-changed", id, status: "active" });
+                  publish({
+                    type: "status-changed",
+                    id,
+                    status: "active",
+                    // The same patch pressing Restore on the card publishes,
+                    // because it is the same transition: the file is back where
+                    // it came from and there is no Origin left to go back to
+                    // (#141).
+                    changed: {
+                      path: restoredTo,
+                      filename: basename(restoredTo),
+                      origin_path: null,
+                    },
+                  });
                   show({ kind: "restored", filename, finalPath: restoredTo });
                 })
                 .catch((error: unknown) => {

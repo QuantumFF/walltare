@@ -28,6 +28,9 @@ import {
 // The words for a Status, from the file that holds the app's phrasings, so the
 // empty state and the card's own pill spell them alike.
 import { STATUS_LABEL } from "@/lib/copy";
+// The `filename` column, off the path the command answered with, which is how
+// the backend derives the one it stores (ADR 0015 as amended by #141).
+import { basename } from "@/lib/paths";
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import { Filter, Images, type LucideIcon } from "lucide-react";
 import {
@@ -309,7 +312,15 @@ export function LibraryView() {
         return prev.flatMap((w) => {
           if (w.id !== event.id) return [w];
           if (!matchesFilter(event.status, filter)) return [];
-          return [{ ...w, status: event.status }];
+          // The Status, then the columns the transition wrote by moving the
+          // file. A reject writes four and the patch used to carry one, which
+          // left this row holding the `path` and the Origin it had while Active
+          // — a card naming the folder its file had just left, and a Restore
+          // the row's own Origin check refused (#141).
+          //
+          // Spread over the row rather than merged field by field, and absent
+          // for a keep or an un-keep, which move no file and write no path.
+          return [{ ...w, status: event.status, ...event.changed }];
         });
       });
       return;
@@ -486,7 +497,21 @@ export function LibraryView() {
           // already there, so this is the only account of what the file is
           // called on the far side (ADR 0003).
           const finalPath = await client.moveWallpaper(id, destination.written);
-          publish({ type: "status-changed", id, status: "rejected" });
+          publish({
+            type: "status-changed",
+            id,
+            status: "rejected",
+            // The three columns the move wrote, so the row this page patches is
+            // the row the backend now holds: where the file went, what it is
+            // called there, and where it came from. The Origin is the card's own
+            // `path`, read before the patch replaces it, which is the value the
+            // backend stored — it moved the file out of that row (ADR 0009).
+            changed: {
+              path: finalPath,
+              filename: basename(finalPath),
+              origin_path: card.path,
+            },
+          });
           show({
             kind: "rejected",
             view: "library",
@@ -507,7 +532,21 @@ export function LibraryView() {
           // ADR 0009). So Active is what the patch carries, and a row the filter
           // no longer matches leaves the grid.
           const finalPath = await client.restoreWallpaper(id);
-          publish({ type: "status-changed", id, status: "active" });
+          publish({
+            type: "status-changed",
+            id,
+            status: "active",
+            // Back where it came from, and with no Origin left to go back to: a
+            // wallpaper that is not Rejected has none, which is the same `null`
+            // the backend writes (ADR 0009). A collision at the Origin may have
+            // suffixed the basename on this leg too, so the filename is derived
+            // from the answer here as well.
+            changed: {
+              path: finalPath,
+              filename: basename(finalPath),
+              origin_path: null,
+            },
+          });
           show({ kind: "restored", filename, finalPath });
           break;
         }
