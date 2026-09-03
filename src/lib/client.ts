@@ -250,15 +250,30 @@ export function wallpaperImageUrl(
   return `wallpaper://localhost/image/${id}?size=${size}`;
 }
 
-export interface Client {
+async function invokeVoid(name: string, args?: Record<string, unknown>) {
+  await invoke<null>(name, args);
+}
+
+/**
+ * Every call the frontend makes into the backend, named the way the frontend
+ * reads best and holding the few decisions that are not the backend's.
+ *
+ * A plain object with no interface over it, because nothing substitutes for it:
+ * the tests swap `@tauri-apps/api` one level down (`tests/preload.ts`), which is
+ * where the real seam is. Calling this module the seam invited a second
+ * implementation that never arrived.
+ */
+export const client = {
   /** `path` is a Written path; the backend expands it. */
-  startScan(path: string): Promise<void>;
+  startScan: (path: string) => invokeVoid("start_scan", { path }),
+
   /**
    * Resolves a Written path without touching it: no folder is created, and
    * nothing is stored. Rejects with `invalid_path_syntax` when the input is
    * malformed, so there is no resolved path to show.
    */
-  expandPath(input: string): Promise<Expanded>;
+  expandPath: (input: string) => invoke<Expanded>("expand_path", { input }),
+
   /**
    * Opens the desktop's folder picker and resolves with the folder the curator
    * chose, or with `null` when they dismissed the dialog. A dismissal is an
@@ -270,32 +285,45 @@ export interface Client {
    * `~/Wallpapers` overwrites it with `/home/qdes/Wallpapers` and discards the
    * portability the `~` was there for. Nothing warns about that, because the
    * curator has just pointed at the folder they meant.
+   *
+   * `multiple` is spelled out rather than left to the plugin's default, because
+   * it is what decides between one path and a list of them, and a path field
+   * holds exactly one folder.
    */
-  pickFolder(): Promise<string | null>;
+  pickFolder: (): Promise<string | null> =>
+    open({ directory: true, multiple: false }),
+
   /**
    * `exclude` names wallpapers that must stay out of the draw — the ones
    * already on screen or queued in the prefetch slot. Honoured only while at
    * least two candidates remain, so a small library still ranks.
    */
-  getPair(exclude?: number[]): Promise<[Wallpaper, Wallpaper]>;
+  getPair: (exclude?: number[]) =>
+    invoke<[Wallpaper, Wallpaper]>("get_pair", { exclude }),
+
   /** `exclude` applies to the returned `next_pair`; the two voted on are always excluded. */
-  vote(
-    winnerId: number,
-    loserId: number,
-    exclude?: number[],
-  ): Promise<VoteOutcome>;
-  getStats(): Promise<Stats>;
-  getSettings(): Promise<Settings>;
+  vote: (winnerId: number, loserId: number, exclude?: number[]) =>
+    invoke<VoteOutcome>("vote", { winnerId, loserId, exclude }),
+
+  getStats: () => invoke<Stats>("get_stats"),
+
+  getSettings: () => invoke<Settings>("get_settings"),
+
   /**
    * Writes one setting and answers with all of them, so a stale read cannot
    * survive a write. Keyed on `keyof Settings` so a caller cannot invent a key
    * the backend would refuse, or pair a key with the wrong kind of value.
+   *
+   * A value crosses as a string because a string is what the column holds. This
+   * is the only stringify of a setting in the app: callers hand over a typed
+   * value and never build the IPC payload themselves.
    */
-  setSetting<K extends keyof Settings>(
-    key: K,
-    value: Settings[K],
-  ): Promise<Settings>;
-  getReview(limit?: number): Promise<Wallpaper[]>;
+  setSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
+    return invoke<Settings>("set_setting", { key, value: String(value) });
+  },
+
+  getReview: (limit = 50) => invoke<Wallpaper[]>("get_review", { limit }),
+
   /**
    * Every wallpaper matching `filter`, in `ordering`. One call, no paging: the
    * row count is the size of the library, so nothing asks a second question to
@@ -305,11 +333,13 @@ export interface Client {
    * middle on their starting Score, and every ordering breaks its ties by id,
    * so a vote does not reshuffle the list under the user (ADR 0014).
    */
-  listWallpapers(
-    filter?: StatusFilter,
-    ordering?: ListOrdering,
-  ): Promise<Wallpaper[]>;
-  keepWallpaper(id: number): Promise<void>;
+  listWallpapers: (
+    filter: StatusFilter = "all",
+    ordering: ListOrdering = "score_desc",
+  ) => invoke<Wallpaper[]>("list_wallpapers", { filter, ordering }),
+
+  keepWallpaper: (id: number) => invokeVoid("keep_wallpaper", { id }),
+
   /**
    * Undoes a Keep: the wallpaper lands on Active and comes back into review.
    * Nothing on disk moves, so there is no path to resolve with. Calling it on an
@@ -319,14 +349,17 @@ export interface Client {
    * Rejects with `invalid_transition` for a Rejected wallpaper: its file is in
    * the reject folder, and `restoreWallpaper` is what moves it back.
    */
-  unkeepWallpaper(id: number): Promise<void>;
+  unkeepWallpaper: (id: number) => invokeVoid("unkeep_wallpaper", { id }),
+
   /**
    * Soft-rejects a wallpaper into `destinationFolder`, a Written path the
    * backend expands. Resolves with the absolute path the file landed at: a
    * collision suffixes the basename, so comparing it against the wallpaper's
    * `filename` is how a caller tells a rename from a plain move.
    */
-  moveWallpaper(id: number, destinationFolder: string): Promise<string>;
+  moveWallpaper: (id: number, destinationFolder: string) =>
+    invoke<string>("move_wallpaper", { id, destinationFolder }),
+
   /**
    * Undoes a soft reject: the file goes back to its Origin and the wallpaper
    * lands on Active, whatever Status it held before the reject. Resolves with
@@ -338,35 +371,40 @@ export interface Client {
    * on the row, so a caller can tell that second case before it asks — and with
    * `file_missing` when the file has left the reject folder.
    */
-  restoreWallpaper(id: number): Promise<string>;
+  restoreWallpaper: (id: number) => invoke<string>("restore_wallpaper", { id }),
+
   /**
    * Starts the thumbnail pre-generation pass and resolves as soon as it is
    * spawned, so a launch pass costs the boot nothing. A second call cancels and
    * joins the first, so calling it again is a restart rather than a race.
    *
-   * A warm library is silent: the work list comes back empty and neither event
-   * below is ever emitted (ADR 0012).
+   * A warm library is silent: the work list comes back empty and neither
+   * pregen event is ever emitted (ADR 0012).
    */
-  startPregen(): Promise<void>;
+  startPregen: () => invokeVoid("start_pregen"),
+
   /**
    * Stands the running pass down and resolves without waiting for it, so a
    * cancel lands up to one wallpaper's decode late. Everything already
    * generated stays; the pass runs again next launch.
    */
-  cancelPregen(): Promise<void>;
+  cancelPregen: () => invokeVoid("cancel_pregen"),
+
   /**
    * Counts the thumbnail cache: one directory read and a `metadata` per entry,
    * about 10,000 stats on the largest library. So read it on mount, on
    * `pregen-complete` and after a clear, never per progress event (ADR 0020).
    */
-  getCacheSize(): Promise<CacheSize>;
+  getCacheSize: () => invoke<CacheSize>("get_cache_size"),
+
   /**
    * Cancels any running pass, empties the cache directory and forgets every
    * thumbnail row. Nothing restarts: clearing is a rebuild the next launch pays
    * for rather than a way to reclaim disk, so a caller wanting the cache back
    * calls `startPregen` itself (ADR 0012).
    */
-  clearCache(): Promise<void>;
+  clearCache: () => invokeVoid("clear_cache"),
+
   /**
    * Hands `handler` every emission of one backend event, resolving with the
    * unsubscribe once the listener is actually registered.
@@ -375,68 +413,12 @@ export interface Client {
    * settles has to unsubscribe anyway, and forgetting to leaks a listener that
    * fires into a dead component for the life of the window. No component calls
    * this — `useBackendEvents` does, once, and it is what holds that rule.
+   *
+   * One event name, one cast: `listen` returns Promise<UnlistenFn>, not
+   * Promise<() => void>, and UnlistenFn is a branded type that isn't nominally
+   * assignable, so it becomes the plain function type callers get. The event
+   * map is what keeps the payload type tied to the name.
    */
-  subscribe<E extends keyof BackendEvents>(
-    event: E,
-    handler: (payload: BackendEvents[E]) => void,
-  ): Promise<() => void>;
-}
-
-async function invokeVoid(name: string, args?: Record<string, unknown>) {
-  await invoke<null>(name, args);
-}
-
-export const client: Client = {
-  startScan: (path) => invokeVoid("start_scan", { path }),
-
-  expandPath: (input) => invoke<Expanded>("expand_path", { input }),
-
-  // `multiple` is spelled out rather than left to the plugin's default, because
-  // it is what decides between one path and a list of them, and a path field
-  // holds exactly one folder.
-  pickFolder: () => open({ directory: true, multiple: false }),
-
-  getPair: (exclude) => invoke<[Wallpaper, Wallpaper]>("get_pair", { exclude }),
-
-  vote: (winnerId, loserId, exclude) =>
-    invoke<VoteOutcome>("vote", { winnerId, loserId, exclude }),
-
-  getStats: () => invoke<Stats>("get_stats"),
-
-  getSettings: () => invoke<Settings>("get_settings"),
-
-  // A value crosses as a string because a string is what the column holds. This
-  // is the only stringify of a setting in the app: callers hand over a typed
-  // value and never build the IPC payload themselves.
-  setSetting: (key, value) =>
-    invoke<Settings>("set_setting", { key, value: String(value) }),
-
-  getReview: (limit = 50) => invoke<Wallpaper[]>("get_review", { limit }),
-
-  listWallpapers: (filter = "all", ordering = "score_desc") =>
-    invoke<Wallpaper[]>("list_wallpapers", { filter, ordering }),
-
-  keepWallpaper: (id) => invokeVoid("keep_wallpaper", { id }),
-
-  unkeepWallpaper: (id) => invokeVoid("unkeep_wallpaper", { id }),
-
-  moveWallpaper: (id, destinationFolder) =>
-    invoke<string>("move_wallpaper", { id, destinationFolder }),
-
-  restoreWallpaper: (id) => invoke<string>("restore_wallpaper", { id }),
-
-  startPregen: () => invokeVoid("start_pregen"),
-
-  cancelPregen: () => invokeVoid("cancel_pregen"),
-
-  getCacheSize: () => invoke<CacheSize>("get_cache_size"),
-
-  clearCache: () => invokeVoid("clear_cache"),
-
-  // One event name, one cast: `listen` returns Promise<UnlistenFn>, not
-  // Promise<() => void>, and UnlistenFn is a branded type that isn't nominally
-  // assignable, so it becomes the plain function type the interface promises.
-  // The event map is what keeps the payload type tied to the name.
   subscribe<E extends keyof BackendEvents>(
     event: E,
     handler: (payload: BackendEvents[E]) => void,
