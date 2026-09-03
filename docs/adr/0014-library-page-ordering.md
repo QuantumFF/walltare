@@ -133,6 +133,15 @@ so both Score orderings sort in memory. At the design target of a few thousand
 rows this is not worth an index; if it becomes one, the index is on
 `(status, comparisons_count, rating_mu, id)`.
 
+> **[ADR 0028](0028-review-joins-the-listing-vocabulary.md), 2026-09-03.** That
+> index is the wrong one and was never tested. Measured, it still plans `USE
+> TEMP B-TREE FOR ORDER BY`, because the clause sorts the expression
+> `comparisons_count = 0` while the index holds the column, and the two do not
+> order rows the same way. The index that covers the query fully, with no sort,
+> is the expression index `(status, comparisons_count = 0, rating_mu, id)`. The
+> judgement above stands: it is still not worth adding, and ADR 0028 declined to
+> add it for Review as well.
+
 **A young library opens on a tie.** The first 27 cards all read 29.2 and sit in
 `id` order. That is true, and the badges say so.
 
@@ -143,10 +152,22 @@ two orderings Review then gets. This ADR does not decide that.
 ([ADR 0016](0016-library-page-scale.md) declined to fold them, so the question
 does not arise: Review keeps its own page and `get_review` is untouched.)
 
+> **[ADR 0028](0028-review-joins-the-listing-vocabulary.md), 2026-09-03.** It
+> arose anyway, from the other direction. The pages are still not folded, but
+> the clause builder behind them is, so Review's ordering had to be settled
+> before the two `ORDER BY` tables could become one. It takes both differences,
+> the tail and the tiebreak, so this clause and Review's are now the same
+> clause. `get_review` is gone; `list_wallpapers` grew an optional limit.
+
 **ADR 0013's claim that Unrated is invisible on the review list is wrong**, and
 is corrected there. Only 38 Active rows sit below μ = 25.0, so slots 39 to 50 of
 today's review list are filled from the 45-row tie at exactly 25.0, in an order
 nothing chose. 12 of 50 review cards read `Unrated`.
+
+> **[ADR 0028](0028-review-joins-the-listing-vocabulary.md), 2026-09-03.**
+> Re-measured: 40 rows below 25.0, a 43-row tie, and 10 of 50 cards. "In an
+> order nothing chose" understates it, because the boundary cuts the tie, so
+> which of the 43 appear is unspecified too. Fixed there.
 
 **The default filter of All means a Score sort mixes live and frozen numbers.**
 A Rejected wallpaper sits out of voting, so its Score is its standing at the

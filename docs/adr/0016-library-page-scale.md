@@ -164,6 +164,20 @@ ranking-quality change arriving through a UI merge. Review is a fifty-row
 worklist with a destination bar; the library is an unbounded browsing surface
 with three statuses.
 
+> **[ADR 0028](0028-review-joins-the-listing-vocabulary.md), 2026-09-03.** The
+> page survives, the command does not. Review still has its own page and the
+> fold this section refused is still refused, but `get_review` is deleted and
+> both listings go through `list_wallpapers(filter, ordering, limit)`. The
+> reasoning above is what made that possible rather than what it contradicts:
+> the ranking-quality choice was made on its own terms, in its own ADR, with the
+> ten changed cards counted, instead of arriving as a side effect of a UI merge.
+> The count is ten rather than twelve, re-measured.
+>
+> The optional limit is not the pagination this ADR declined. No offset, no
+> cursor, no page token, and one caller passing one constant. One property here
+> does narrow: the row count is the size of the library only when the caller
+> passes no limit, which Library does and Review does not.
+
 The shared card carries the library's constraint in the library and Review's
 `will-change` in Review, so `the_two_hover_animated_elements_declare_will_change`
 keeps pinning Review and gains no library equivalent.
