@@ -20,7 +20,7 @@ import { createContext, useContext, type ReactNode } from "react";
  * Portalling also makes `inert` safe: the lightbox is provably outside the
  * container being inerted rather than depending on where someone mounted it.
  *
- * #80 builds the lightbox and is the first caller of either field.
+ * `useLightbox` is what reads both fields, once per page that mounts a grid.
  */
 export interface LightboxHost {
   /** `Dialog.Portal`'s container. `null` until the shell's first paint. */

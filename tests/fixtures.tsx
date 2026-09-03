@@ -1,6 +1,7 @@
 import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
+import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import type { CacheSize, Settings, Stats, Wallpaper } from "@/lib/client";
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -177,14 +178,26 @@ export function currentView(): string | null {
  * it throws on the first click; but the shell's `Ctrl+Z` is not in this tree, so
  * what the surface does with a keyboard is `toasts.test.tsx`'s to assert against
  * the whole app.
+ *
+ * The lightbox host is the third, and its limit is the sharpest. Any page that
+ * mounts a grid reads it, so a view mounted without it throws before it
+ * renders; what it holds here is a `null` container, which Radix's `Portal`
+ * answers by falling back to `document.body`, and a `setOpen` nothing listens
+ * to. So the surface opens and is assertable, while the shell's half of it —
+ * the `inert` on the pages behind and ADR 0021's suppressed report — belongs to
+ * `Layout.test.tsx` and `background-report.test.tsx`, which render the app.
  */
+const LIGHTBOX_HOST = { container: null, setOpen: () => {} };
+
 export async function renderInApp(ui: ReactNode) {
   const rendered = render(
     <AppProvider>
       <AppEventsProvider>
         <ToastSurface>
-          <ViewProbe />
-          {ui}
+          <LightboxHostProvider value={LIGHTBOX_HOST}>
+            <ViewProbe />
+            {ui}
+          </LightboxHostProvider>
         </ToastSurface>
       </AppEventsProvider>
     </AppProvider>,

@@ -21,13 +21,13 @@ import { Dialog } from "radix-ui";
  * outside one. Review mounts that grid today and the library page mounts the
  * same one (#79), so the heading names the grid rather than either page.
  *
- * `Enter` is deliberately absent. The grid answers it today by doing nothing to
- * the wallpaper, because it is #80's seam for opening the lightbox, and a list
- * that promises a key nothing reads is worse than a short list. The rest of
- * ADR 0022's lightbox keys are already here as the grid's: that ADR gives the
- * lightbox the grid's own `←`, `→`, `K`, `Delete` and `R` rather than a
- * vocabulary of its own, so what #80 adds to this list is `Enter` and the
- * lightbox's Escape.
+ * The lightbox contributes two entries and no more, and that is ADR 0022
+ * showing through rather than a gap: it walks with the grid's own `←` and `→`
+ * and acts with the grid's `K`, `Delete` and `R`, so the only keys that are
+ * its alone are the `Enter` that opens it and the Escape that closes it. `←`
+ * and `→` are already listed twice, for Rank and for the grid; a third copy
+ * saying the same thing about a third surface would make the list longer
+ * without making it truer.
  */
 const GROUPS = [
   {
@@ -55,6 +55,7 @@ const GROUPS = [
       { keys: ["↓"], action: "Select the wallpaper a row down" },
       { keys: ["Home"], action: "Select the first wallpaper" },
       { keys: ["End"], action: "Select the last wallpaper" },
+      { keys: ["Enter"], action: "Open the selected wallpaper" },
       {
         keys: ["K"],
         action: "Keep the selected wallpaper, or make a Kept one Active",
@@ -62,6 +63,10 @@ const GROUPS = [
       { keys: ["Delete"], action: "Reject the selected wallpaper" },
       { keys: ["R"], action: "Restore the selected wallpaper" },
     ],
+  },
+  {
+    heading: "Lightbox",
+    bindings: [{ keys: ["Esc"], action: "Close, back to the grid" }],
   },
   {
     heading: "Settings",
@@ -98,9 +103,13 @@ function Key({ children }: { children: string }) {
  * list of shortcuts is a surface the curator opened on purpose and dismisses
  * before doing anything else.
  *
- * Built on the primitive directly rather than through a `ui/dialog.tsx`, because
- * this is the app's only plain dialog until #80 brings the lightbox, which is
- * the caller that will want the wrapper.
+ * Built on the primitive directly rather than through a `ui/dialog.tsx`. The
+ * lightbox was expected to be the second caller that wanted the wrapper and it
+ * turned out not to be: it is non-modal where this is modal, full-screen and
+ * opaque where this is a centred card over a blurred overlay, portalled into a
+ * shell-owned container rather than the body, and it refuses the outside
+ * interactions this one dismisses on. What the two share is `Root`, `Portal`
+ * and `Content`, which is the primitive itself (ADR 0022).
  */
 export function ShortcutsDialog({
   open,

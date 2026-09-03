@@ -681,9 +681,11 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     "↓",
     "Home",
     "End",
+    "Enter",
     "K",
     "Delete",
     "R",
+    "Esc",
     "Esc",
     "Ctrl",
     "Z",
@@ -694,12 +696,15 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     expect(dialog.textContent).toContain(action);
   }
 
-  // The grid's keys say what they do to the selected wallpaper, and Enter is out
-  // until #80 builds the lightbox it opens.
+  // The grid's keys say what they do to the selected wallpaper, and the two the
+  // lightbox adds are the two that are its alone: it walks and acts with the
+  // grid's own keys, so `Enter` and its Escape are the whole of what it
+  // contributes (ADR 0022).
   expect(dialog.textContent).toContain("Keep the selected wallpaper");
   expect(dialog.textContent).toContain("Reject the selected wallpaper");
   expect(dialog.textContent).toContain("Restore the selected wallpaper");
-  expect(keys).not.toContain("Enter");
+  expect(dialog.textContent).toContain("Open the selected wallpaper");
+  expect(dialog.textContent).toContain("Close, back to the grid");
 
   // It is a dialog rather than a page, so it closes and leaves the curator
   // exactly where they were.
@@ -716,14 +721,16 @@ test("the lightbox's portal node sits above the pages and below where the toast 
   expect(host).not.toBeNull();
 
   // After the view container, so a lightbox paints over the pages rather than
-  // inside one, and last in the shell for now: #112's toast viewport goes after
-  // it and takes the top of the stack.
+  // inside one, and last in the shell root: the toast viewport is rendered
+  // outside that root by the surface wrapping it, which is what takes the top
+  // of the stack (#112, ADR 0017).
   expect(
     container.compareDocumentPosition(host as Node) &
       Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(host?.parentElement?.lastElementChild).toBe(host as Element);
 
-  // Nothing has opened one, so nothing behind it is inert yet.
+  // Nothing has opened one, so nothing behind it is inert. What a page portalled
+  // into this node does to that attribute is `lightbox.test.tsx`'s.
   expect(container.hasAttribute("inert")).toBe(false);
 });

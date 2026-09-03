@@ -556,15 +556,15 @@ test("the direct keys act on the selected card, the same as its buttons", async 
   expect(toast()?.title).toBe("Kept wall-1.jpg");
 });
 
-test("a click on a card opens nothing yet, and acts on nothing", async () => {
-  // The gesture that opens the lightbox (#134). The lightbox is #80 and does
-  // not exist, so what this page can be held to is the half it owns: the click
-  // arrives, and on the way it makes no call and changes no Status. A gesture
-  // that cannot yet do what it means must not quietly do something else.
+test("a click on a card opens the lightbox, and acts on nothing", async () => {
+  // The gesture that opens the lightbox (#134, #138). What the surface then
+  // shows is `lightbox.test.tsx`'s; what this page owes is that the click makes
+  // no call and changes no Status on the way there — a look is not a decision.
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
 
   await click(screen.getByRole("gridcell", { name: "wall-1.jpg, Active" }));
 
+  expect(screen.getByRole("dialog", { name: "wall-1.jpg" })).toBeTruthy();
   expect(cardName(1)).toBe("wall-1.jpg, Active");
   expect(listCalls).toBe(1);
   expect(toast()).toBeNull();

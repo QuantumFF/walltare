@@ -7,6 +7,7 @@ import {
 import type { Status, Wallpaper } from "@/lib/client";
 import { cn } from "@/lib/utils";
 import {
+  useCallback,
   useLayoutEffect,
   useRef,
   useState,
@@ -107,7 +108,34 @@ const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
 };
 
 /**
- * What a key means on a card of this Status, or `null` for nothing at all.
+ * How each key is written on the control that fires it: `Keep K`, `Reject Del`,
+ * `Restore R`, and `Make Active K` for the other end of the keep slot (#140).
+ *
+ * `Del` is the one abbreviation, because the key's own name is wider than the
+ * verb in front of it on a row that has a floor to fit inside, and because it
+ * is what the key is printed as on the keyboard the curator is looking at.
+ */
+const KEY_NAMES: Record<string, string> = { k: "K", delete: "Del", r: "R" };
+
+/**
+ * The key that fires an action, spelled as the control firing it prints it.
+ *
+ * Read out of the table above rather than written a second time beside the
+ * labels, so a rebinding takes the print with it: a button carrying a key that
+ * no longer works is worse than a button carrying no key at all, and #140 puts
+ * the key on the button precisely because that is the copy that survives the
+ * row narrowing. Every action is bound, so the empty string is what a future
+ * unbound one would print rather than a case the app reaches.
+ */
+export function printedKey(action: CardAction): string {
+  const bound = Object.entries(KEY_ACTIONS).find(([, actions]) =>
+    actions.includes(action),
+  );
+  return bound ? KEY_NAMES[bound[0]] : "";
+}
+
+/**
+ * What a key means on a wallpaper of this Status, or `null` for nothing at all.
  *
  * The answer is an intersection rather than a second table: the key names
  * candidates, and `STATUS_ACTIONS` — the same table the card's buttons render
@@ -118,11 +146,146 @@ const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
  *
  * The key is lowercased so that a curator with Caps Lock on still keeps and
  * still restores.
+ *
+ * Exported because #140's lightbox answers the same three keys on the wallpaper
+ * it is showing. It resolves them here rather than carrying its own copy, which
+ * is the same reason its buttons render from `STATUS_ACTIONS` and act through
+ * `useCardAction`: one action vocabulary in the app, and no surface that can
+ * offer a curator one set with the mouse and another with the keyboard
+ * (ADR 0022).
  */
-function actionFor(key: string, status: Status): CardAction | null {
+export function actionFor(key: string, status: Status): CardAction | null {
   const offered = STATUS_ACTIONS[status];
   const candidates = KEY_ACTIONS[key.toLowerCase()] ?? [];
   return candidates.find((action) => offered.includes(action)) ?? null;
+}
+
+/**
+ * The grid's selection, held by the page that mounts the grid.
+ *
+ * It lives up there because ADR 0022 has the lightbox render this same
+ * selection rather than a cursor of its own, and the lightbox's state is the
+ * page's. From here the page can read which wallpaper is up and where it sits
+ * in the list, step it, put it back on the wallpaper a failed action
+ * re-inserted, and ask for the card to take focus again when the lightbox
+ * closes. A selection private to the grid answers none of those, and a second
+ * cursor beside it would need a sync rule in both directions plus an answer for
+ * a refetch landing between them (#137).
+ */
+export interface GridSelection {
+  /** The selected Wallpaper, or `null` when the list is empty. */
+  wallpaper: Wallpaper | null;
+  /**
+   * Where it sits in the whole list, and `-1` when nothing is selected. The
+   * whole list and not the window a virtualising host mounted, which is what
+   * lets the lightbox's position line read `3 / 50` (ADR 0016, ADR 0022).
+   */
+  index: number;
+  /**
+   * How long that list is, which is the other half of `3 / 50`.
+   *
+   * Carried here rather than left to the page to hand over beside the
+   * selection, because it is the same list: a page reading `wallpapers.length`
+   * for the lightbox could pass a count that the selection was never resolved
+   * against, and the position line is the one place that disagreement would be
+   * legible — as a `51 / 50`. #139's arrow buttons read it for the same reason,
+   * since being at the end of the list is what makes them unavailable.
+   */
+  length: number;
+  /**
+   * Select the wallpaper at an index in the whole list, with out of range
+   * clamped into it: the arrow arithmetic sits on both sides of this seam — the
+   * grid moves by column and by row, the lightbox by one — and neither can
+   * select a wallpaper that is not there.
+   */
+  moveTo: (index: number) => void;
+  /**
+   * Select a wallpaper by id, whether or not the list holds it yet. Review's
+   * failure handler is the caller: it re-inserts the card it removed
+   * optimistically, by which time the selection has already moved on to the
+   * next wallpaper (ADR 0022).
+   */
+  selectId: (id: number) => void;
+  /**
+   * Ask the grid to put the selected card on screen and focus it.
+   *
+   * A request rather than a `focus()` the page makes for itself, because the
+   * card may have no node: under a window its row has to be revealed first and
+   * the node arrives a commit later. It is also the only way in from outside,
+   * since the grid moves focus only while focus is already inside it — a list
+   * changing under a curator who is elsewhere must not steal it — and closing
+   * the lightbox is the one case that has to override that, onto the card for
+   * the *current* selection rather than the one it was opened from (ADR 0022).
+   */
+  requestFocus: () => void;
+  /**
+   * The grid's half of `requestFocus`: how many the page has made. The grid
+   * answers one on the first commit where the selected card has a node to take
+   * the focus, and counts it answered only then.
+   */
+  focusRequest: number;
+}
+
+/**
+ * The selection rule, in the one place both sides of the seam read it from:
+ * track the wallpaper by id, fall back to the same position clamped to the new
+ * length when that id is gone from the list, and fall back to nothing at all
+ * when the list empties (ADR 0019).
+ *
+ * Resolved from the list on every render rather than stored as an index,
+ * because the list is what moves: a vote reorders it, a filter change replaces
+ * it, and an action removes a row from it. Index-only is simpler and wrong in
+ * the case that matters — a curator who switches filter or ordering mid-sweep
+ * would find the selection on whatever now occupies that slot.
+ *
+ * The id is kept even when it resolves to nothing, which is what brings the
+ * selection back when a failed action re-inserts the card it removed
+ * optimistically (ADR 0022).
+ */
+export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  // Where the selection was, for the fall back below. Also the initial stop:
+  // with nothing selected yet the first card holds the tab stop, because a grid
+  // where every cell is `tabindex="-1"` cannot be entered by keyboard at all.
+  const positionRef = useRef(0);
+  const [focusRequest, setFocusRequest] = useState(0);
+
+  let index = wallpapers.findIndex((w) => w.id === selectedId);
+  if (index === -1 && wallpapers.length > 0) {
+    index = Math.min(positionRef.current, wallpapers.length - 1);
+  }
+  if (wallpapers.length === 0) index = -1;
+  const wallpaper = index === -1 ? null : wallpapers[index];
+  if (index !== -1) positionRef.current = index;
+
+  const moveTo = useCallback(
+    (to: number) => {
+      if (wallpapers.length === 0) return;
+      const at = Math.max(0, Math.min(to, wallpapers.length - 1));
+      positionRef.current = at;
+      setSelectedId(wallpapers[at].id);
+    },
+    [wallpapers],
+  );
+
+  const selectId = useCallback((id: number) => setSelectedId(id), []);
+
+  // A counter and not a flag, so a second request while the first is still
+  // being answered is still a request rather than a set bit nobody cleared.
+  const requestFocus = useCallback(
+    () => setFocusRequest((made) => made + 1),
+    [],
+  );
+
+  return {
+    wallpaper,
+    index,
+    length: wallpapers.length,
+    moveTo,
+    selectId,
+    requestFocus,
+    focusRequest,
+  };
 }
 
 /**
@@ -148,6 +311,14 @@ export interface GridRange {
 
 export interface WallpaperGridProps {
   wallpapers: Wallpaper[];
+  /**
+   * The selection, from the page's own `useGridSelection` over this same list.
+   *
+   * Required, and there is no fallback to a selection of the grid's own: the
+   * rule has one home, and a grid that could resolve its own would be the
+   * second copy of it the moment a page held one too (#137).
+   */
+  selection: GridSelection;
   /**
    * The grid's accessible name. A composite widget is one stop in the tab order,
    * so the name is all a screen reader gets on the way in (ADR 0019).
@@ -194,14 +365,18 @@ export interface WallpaperGridProps {
    */
   range?: GridRange;
   /**
-   * A click on a card that was not on one of its buttons, carrying the
-   * wallpaper it landed on (#134).
+   * The curator asking to look at a wallpaper properly, carrying the one they
+   * asked about: a click on a card that was not on one of its buttons, or
+   * `Enter` on the selected cell (#134, #138).
    *
-   * Carried and not answered. The click is a click on the cell, which is the
-   * card's own root, so nothing here listens for it — what the grid adds is the
-   * route to the page, which is where ADR 0022 keeps the lightbox's state for
+   * One entry for both, because the lightbox is a second rendering of this
+   * grid's selection and there is only one of it. The click is a click on the
+   * cell, so the card fires that half itself and what the grid adds is the
+   * route to the page — which is where ADR 0022 keeps the lightbox's state for
    * the same reason it keeps the list here: both change on every action, and
-   * only the page holds them.
+   * only the page holds them. The wallpaper travels along because a click can
+   * land on a card the selection is not on, and opening there is a selection
+   * move rather than a second cursor.
    */
   onOpen?: (wallpaper: Wallpaper) => void;
   /** Layout the host owns: Review's bottom padding, a page's own gap. */
@@ -232,6 +407,7 @@ export interface WallpaperGridProps {
  */
 export function WallpaperGrid({
   wallpapers,
+  selection,
   label,
   onAction,
   animated = false,
@@ -247,34 +423,21 @@ export function WallpaperGrid({
   // written once and not once per trigger.
   const act = useCardAction(onAction);
   const gridRef = useRef<HTMLDivElement>(null);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  // Where the selection was, for the fall back below. Also the initial stop:
-  // with nothing selected yet the first card holds the tab stop, because a grid
-  // where every cell is `tabindex="-1"` cannot be entered by keyboard at all.
-  const positionRef = useRef(0);
+  // The selection follows the wallpaper, then the position, and the rule that
+  // says so is the page's `useGridSelection` over this same list (ADR 0019).
+  // What is left here is the focus bookkeeping below, which is the grid's own
+  // business: nothing above this component knows which node holds the focus or
+  // whether a row has been mounted yet.
+  const { wallpaper: selected, index, moveTo, focusRequest } = selection;
   // What the last commit put focus on, so a re-render that changes nothing does
   // not re-focus and re-scroll.
   const focusedRef = useRef<number | null>(null);
   const holdsFocusRef = useRef(false);
-
-  // The selection follows the wallpaper, then the position (ADR 0019).
-  //
-  // Resolved from the list on every render rather than stored as an index,
-  // because the list is what moves: a vote reorders it, a filter change replaces
-  // it, and an action removes a row from it. Index-only is simpler and wrong in
-  // the case that matters — a curator who switches filter or ordering mid-sweep
-  // would find the selection on whatever now occupies that slot.
-  //
-  // The id is kept even when it resolves to nothing, which is what brings the
-  // selection back when a failed action re-inserts the card it removed
-  // optimistically (ADR 0022).
-  let index = wallpapers.findIndex((w) => w.id === selectedId);
-  if (index === -1 && wallpapers.length > 0) {
-    index = Math.min(positionRef.current, wallpapers.length - 1);
-  }
-  if (wallpapers.length === 0) index = -1;
-  const selected = index === -1 ? null : wallpapers[index];
-  if (index !== -1) positionRef.current = index;
+  // The last request from the page this grid answered. One is outstanding while
+  // it differs from the count the page holds, and it is marked answered only
+  // once a card has actually taken the focus — a reveal that has not mounted the
+  // row yet leaves it outstanding for the commit that follows.
+  const answeredRef = useRef(focusRequest);
 
   // What this commit puts in the DOM, which is every row until a host says
   // otherwise. Nothing above this line reads it: the selection, the arrow keys
@@ -295,11 +458,17 @@ export function WallpaperGrid({
   // returns on the first comparison.
   useLayoutEffect(() => {
     const target = selected ? selected.id : null;
+    // Whether the page has asked for the selected card back, which is the one
+    // route in from outside the grid. Closing the lightbox is the caller, and it
+    // needs the override below because the card it has to land on is the one for
+    // the current selection, which after two hundred steps is neither where
+    // focus is nor a card that has a node (ADR 0022).
+    const requested = focusRequest !== answeredRef.current;
 
     // Moving the selection must not steal focus. When the curator is somewhere
     // else in the app, a list that changes underneath updates the selection and
     // the tab stop that goes with it, and leaves focus where they put it.
-    if (!holdsFocusRef.current) {
+    if (!holdsFocusRef.current && !requested) {
       focusedRef.current = target;
       return;
     }
@@ -310,10 +479,14 @@ export function WallpaperGrid({
     // insertion as far as the engine is concerned, so a reorder that keeps the
     // selected wallpaper can still drop focus to `body`. Re-homing it is what
     // makes "the selection follows the wallpaper" survive a vote landing under
-    // the curator's hands.
+    // the curator's hands. A request that arrives while that card already holds
+    // the focus is answered by that fact and nothing moves.
     const active = document.activeElement;
     const holds = active instanceof Node && gridRef.current?.contains(active);
-    if (target === focusedRef.current && holds) return;
+    if (target === focusedRef.current && holds) {
+      answeredRef.current = focusRequest;
+      return;
+    }
 
     // The list emptied under a selection that had focus, so the container takes
     // it: the alternative is focus on `body`, where the next Tab starts from the
@@ -321,6 +494,7 @@ export function WallpaperGrid({
     if (target === null || index === -1) {
       gridRef.current?.focus();
       focusedRef.current = null;
+      answeredRef.current = focusRequest;
       return;
     }
 
@@ -330,6 +504,7 @@ export function WallpaperGrid({
     const cell = cellAt(index);
     if (!cell) return;
     focusedRef.current = target;
+    answeredRef.current = focusRequest;
     cell.focus();
   });
 
@@ -357,17 +532,25 @@ export function WallpaperGrid({
       return;
     }
 
-    // #80's seam. `Enter` opens the lightbox on the selection ADR 0022 has the
-    // two surfaces share; until that exists it does nothing to the wallpaper —
-    // no command, no Status change — and it is answered here rather than left to
-    // the movement keys' `default` so the binding has one home to arrive at.
-    // The mouse reaches the same lightbox by the cell's own click and the
-    // `onOpen` above, so #80 has one host handler to give this key as well.
+    // `Enter` opens the lightbox on the selection the two surfaces share, and
+    // it arrives at the same `onOpen` a click on the cell does: one host
+    // handler for the gesture, so the key and the mouse cannot open different
+    // things (ADR 0022, #138).
     //
-    // Nothing is prevented, deliberately. A cell's overlay buttons are still
-    // buttons: `Enter` on a focused one activates it, and that activation is a
-    // default action this handler would cancel on the way up.
-    if (event.key === "Enter") return;
+    // Only from the cell itself. A cell's overlay buttons are still buttons and
+    // `Enter` on a focused one activates it, so the keypress that keeps a
+    // wallpaper bubbles through here on its way up — and answering it would be
+    // a keep with the lightbox opening over the card it emptied, which is the
+    // same two-answers-to-one-press the buttons' `stopPropagation` refuses for
+    // the mouse.
+    //
+    // Nothing is prevented either way, deliberately: that activation is the
+    // default action this handler would otherwise cancel, and a cell has no
+    // default action of its own to suppress.
+    if (event.key === "Enter") {
+      if (event.target === cellAt(index)) onOpen?.(selected);
+      return;
+    }
 
     let next: number;
     switch (event.key) {
@@ -408,8 +591,7 @@ export function WallpaperGrid({
     // Comparison between two wallpapers the curator cannot see (ADR 0015 as
     // amended, ADR 0019).
     event.preventDefault();
-    positionRef.current = next;
-    setSelectedId(wallpapers[next].id);
+    moveTo(next);
   };
 
   const handleFocus = () => {

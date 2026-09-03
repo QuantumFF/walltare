@@ -42,16 +42,22 @@ export const STATUS_ACTIONS: Record<Status, readonly CardAction[]> = {
 };
 
 /**
- * How each action reads in the overlay, and the accessible name it takes:
- * `<label> <filename>`, so a screen reader hears which card the control belongs
- * to on a grid full of identical rows.
+ * How each action reads on the control that makes it, and the accessible name it
+ * takes here: `<label> <filename>`, so a screen reader hears which card the
+ * control belongs to on a grid full of identical rows.
  *
  * **Make Active** is the keep inverse's label, naming the resulting Status
  * rather than coining a noun — not "Un-keep", and not the prototype's "Return to
  * voting", which is wrong against the glossary: a Kept wallpaper already votes,
  * and what un-keeping restores is appearance in Review (ADR 0017, ADR 0019).
+ *
+ * Exported because #140 puts the same four in the lightbox's row. That surface
+ * has its own layout and its own accessible name — one wallpaper, already named
+ * by the dialog — and none of that is the wording, which is the half that must
+ * not differ: the label above is the one ADR 0019 argued three alternatives down
+ * to, and a second copy of it is where "Un-keep" comes back.
  */
-const CONTROLS: Record<
+export const ACTION_CONTROLS: Record<
   CardAction,
   { label: string; Icon: LucideIcon; destructive?: boolean }
 > = {
@@ -176,8 +182,8 @@ export interface WallpaperCardProps {
    *
    * The wallpaper travels with the click rather than being read off the grid's
    * selection, which a click does not move. ADR 0022 has the lightbox render
-   * that selection, so the two have to be reconciled where the lightbox is
-   * built; until then what the host is told is which card was pressed.
+   * that selection, so opening on a card the selection was not on is a
+   * selection move, made by the host that holds both (#138).
    */
   onOpen?: (wallpaper: Wallpaper) => void;
   /** See `GridCell`. Absent for a card standing on its own. */
@@ -376,7 +382,7 @@ export function WallpaperCard({
           */}
           <div className="flex gap-1.5">
             {STATUS_ACTIONS[wallpaper.status].map((action) => {
-              const { label, Icon, destructive } = CONTROLS[action];
+              const { label, Icon, destructive } = ACTION_CONTROLS[action];
               // Only Restore has a row it cannot act on, and only because
               // ADR 0009's migration left one behind.
               const unavailable = action === "restore" && !restorable;

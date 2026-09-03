@@ -1,3 +1,4 @@
+import { Lightbox, useLightbox } from "@/components/Lightbox";
 import { PageBar } from "@/components/PageBar";
 import {
   RejectDestinationLine,
@@ -5,7 +6,11 @@ import {
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import type { CardAction } from "@/components/WallpaperCard";
-import { useGridColumns, WallpaperGrid } from "@/components/WallpaperGrid";
+import {
+  useGridColumns,
+  useGridSelection,
+  WallpaperGrid,
+} from "@/components/WallpaperGrid";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import {
@@ -402,6 +407,21 @@ export function LibraryView() {
       : { start: 0, end: 0, before: 0, after: 0 };
 
   /**
+   * The grid's selection, held here rather than inside the grid because ADR
+   * 0022 has the lightbox render this same selection and keeps the lightbox's
+   * state on the page that mounted the grid — for the same reason the rows are
+   * here, that both change on every action.
+   *
+   * Both surfaces below read this one object, which is what makes the lightbox
+   * a second rendering of the grid rather than a cursor of its own: there is no
+   * sync rule between them because there are not two things to sync. It is
+   * resolved against `list` and not against the `range` above, so wallpaper
+   * 3,000 can hold the selection whichever thirty cards have nodes (#137).
+   */
+  const selection = useGridSelection(list);
+  const lightbox = useLightbox(selection);
+
+  /**
    * Put the card the selection moved to on screen, which under a window means
    * mounting its row first.
    *
@@ -506,27 +526,6 @@ export function LibraryView() {
   const handleAction = (action: CardAction, card: Wallpaper) => {
     void act(action, card);
   };
-
-  /**
-   * What a click on a card asks for: the lightbox, on the wallpaper it was made
-   * on (#134).
-   *
-   * **The lightbox is #80 and does not exist**, so this is the seam and not the
-   * surface. It opens nothing, makes no call and changes no Status — a gesture
-   * that cannot yet do the thing it means must not quietly do something else
-   * instead — and the click is wired now because the card's half of it is what
-   * this ticket builds.
-   *
-   * It is answered on the page rather than in the grid because that is where
-   * ADR 0022 puts the lightbox's state, for the same reason the list and the
-   * selection are here: they change on every action, and a shell holding them
-   * would need them pushed back on each one. The page keeps the state and
-   * portals only the DOM.
-   *
-   * It takes no argument yet. The wallpaper arrives with the click and there is
-   * nowhere on this page to put it until #80 gives it one.
-   */
-  const handleOpen = () => {};
 
   return (
     <>
@@ -705,9 +704,10 @@ export function LibraryView() {
              lands outside it gets one (#131). */
           <WallpaperGrid
             wallpapers={list}
+            selection={selection}
             label="Wallpapers in the library"
             onAction={handleAction}
-            onOpen={handleOpen}
+            onOpen={lightbox.openOn}
             scoresMoved={scoresMoved}
             reveal={reveal}
             range={range}
@@ -715,6 +715,29 @@ export function LibraryView() {
           />
         )}
       </div>
+
+      {/* The same component Review mounts, on the same selection the grid above
+          is showing, with no argument saying which page it is: the action set in
+          it comes off the wallpaper's Status, so this page's Kept and Rejected
+          rows offer Make Active and Restore in there without the lightbox
+          knowing whose grid it opened over (ADR 0022).
+
+          `onAction` is the grid's own handler, so nothing a curator does from
+          in there is optimistic either: the published patch is what edits the
+          row, which is why rejecting under a filter of All leaves the same
+          wallpaper up wearing its new Status and its new actions, and rejecting
+          under Active takes the row out of the list and advances.
+
+          Outside the empty-state branch, so a filter that empties the list
+          closes it onto that state rather than unmounting it out from under the
+          focus restore. Its pixels land in the shell regardless, above the
+          pages and below the toast. */}
+      <Lightbox
+        selection={selection}
+        open={lightbox.open}
+        onClose={lightbox.close}
+        onAction={handleAction}
+      />
     </>
   );
 }
