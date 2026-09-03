@@ -61,6 +61,7 @@ src-tauri/src/
   voting.rs           pair fetching, vote application, stats
   ranking.rs          TrueSkill and pair selection, no I/O
   thumbnails.rs       generate, cache, invalidate
+  pregen.rs           the pre-generation pass: its thread, cancel and events
   scanner.rs          recursive image walk
 tests/                frontend tests (bun + testing-library)
 docs/adr/             decisions and why they went that way
