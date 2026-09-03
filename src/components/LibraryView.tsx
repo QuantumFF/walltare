@@ -5,9 +5,10 @@ import {
   useRejectDestination,
 } from "@/components/RejectDestination";
 import {
-  useGridColumns,
   useGridSelection,
+  useGridWindow,
   WallpaperGrid,
+  type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,6 @@ import {
 // The words for a Status, from the file that holds the app's phrasings, so the
 // empty state and the card's own pill spell them alike.
 import { STATUS_LABEL } from "@/lib/copy";
-import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import { Filter, Images, type LucideIcon } from "lucide-react";
 import {
   type ReactNode,
@@ -34,53 +34,6 @@ import {
 } from "react";
 
 const LOAD_FAILED_ERROR = "Failed to load the library.";
-
-/**
- * The grid's own spacing, as numbers, because the virtualiser has to know how
- * tall a row is before the row exists and the CSS is the only place that says.
- * `gap-6` between the cards, `p-4` around the grid, and an `aspect-video` card
- * (`WallpaperCard`).
- *
- * Three classes and three constants, and the duplication costs something when
- * it drifts: a window positioned against a row height nothing has puts the
- * wrong cards on screen. The alternative is measuring a card once it is laid
- * out and feeding the height back, which is what happy-dom rules out — it does
- * no layout, so the measurement is zero, the window collapses and the tests
- * that pin it have nothing to assert against (#131).
- */
-const GRID_GAP = 24;
-const GRID_PADDING = 16;
-const CARD_ASPECT = 9 / 16;
-
-/**
- * What a box that measures zero is taken to be: a row about as tall as a card
- * in the default 1280x800 window, inside a viewport about as tall as that
- * window.
- *
- * A zero-sized box is not an edge case here, and a window with no fallback is
- * no window at all — the virtualiser answers a viewport of zero with an empty
- * range, so every card would be unmounted rather than thirty of them mounted.
- * happy-dom does no layout and reports every rect as zero, which is what would
- * otherwise leave the two windowing tests asserting about an empty grid (#131);
- * and ADR 0015 keeps this view mounted under `display: none` while another view
- * is showing, which zeroes the box in a real browser too.
- */
-const UNMEASURED_ROW = 130;
-const UNMEASURED_BOX = 800;
-
-/**
- * How tall one row of cards is, from the width the row has to fill and the
- * number of cards sharing it.
- *
- * Derived from the width rather than measured off a laid-out card, for the same
- * reason `useGridColumns` reads the media queries rather than the cards: a size
- * taken from a rect is zero under test, and a window built on it degenerates.
- */
-function rowHeight(boxWidth: number, columns: number): number {
-  const cards = boxWidth - 2 * GRID_PADDING - GRID_GAP * (columns - 1);
-  if (cards <= 0) return UNMEASURED_ROW;
-  return (cards / columns) * CARD_ASPECT;
-}
 
 /**
  * The four filters, in the order the chips sit in, and All first because the
@@ -158,11 +111,12 @@ function EmptyState({
  * named control, the line saying where rejects go, and the row count (#130).
  *
  * What this view owns underneath is the state the grid reads: the filter, the
- * ordering, the fetch behind them, the scroll position, the window of rows that
- * has cards in it, and the moved Scores a vote elsewhere leaves behind. The rows
- * themselves and the four transitions on them are `useWallpaperRows`', which is
- * where this page and Review differ in one predicate rather than in two
- * implementations (ADR 0023).
+ * ordering, the fetch behind them, the scroll position, and the moved Scores a
+ * vote elsewhere leaves behind. The rows themselves and the four transitions on
+ * them are `useWallpaperRows`', and the window of rows that has cards in it is
+ * `useGridWindow`'s — which is where this page and Review differ in one
+ * predicate and one hook rather than in two implementations (ADR 0023,
+ * ADR 0027).
  *
  * There are two empty states and they are two screens: a library nothing has
  * been scanned into, which routes to the Settings field that fixes it, and a
@@ -200,12 +154,6 @@ export function LibraryView() {
   const [scoresMoved, setScoresMoved] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
-
-  // The same count the grid moves the selection by, read from the same table
-  // rather than computed a second time: a virtualiser that disagreed with the
-  // arrow keys about how many cards are in a row would scroll one row in and
-  // focus a card in another (#131).
-  const columns = useGridColumns();
 
   const scroller = useRef<HTMLDivElement | null>(null);
   // Where the curator was, for the lifetime of the run and no longer.
@@ -321,77 +269,14 @@ export function LibraryView() {
   }, [showing]);
 
   const list = rows ?? [];
-  // The scroll box as last measured, and the width the row height is derived
-  // from. The last non-zero measurement is kept, so a view the shell has hidden
-  // — which zeroes the box — keeps the size it had rather than rebuilding its
-  // whole window on the way back (ADR 0015).
-  const measured = useRef({ width: 0, height: 0 });
-  const [boxWidth, setBoxWidth] = useState(0);
-  const rowSize = rowHeight(boxWidth, columns);
 
   /**
-   * The window of rows (ADR 0016). Thirty cards in the DOM out of five
-   * thousand fetched, because 5,000 images and 5,000 overlays is a page that
-   * scrolls badly whatever the card is made of.
-   *
-   * It counts rows and not cards, which is why `columns` above has to be the
-   * grid's own count: one virtual item is one row of the CSS grid, and the gap
-   * and the padding are the grid's, told to the virtualiser rather than folded
-   * into the row height so the offsets it hands back are the offsets the CSS
-   * produces.
+   * The window of rows and the way a selection outside it gets a node, both the
+   * grid's own (ADR 0027). What this page owns about the scroll box is the
+   * position the curator left it at; how tall a row is and which of them have
+   * cards in them is arithmetic over the grid's CSS, and it went back there.
    */
-  const virtualiser = useVirtualizer({
-    count: Math.ceil(list.length / columns),
-    getScrollElement: () => scroller.current,
-    estimateSize: () => rowSize,
-    // One row above and one below. Two rows doubles the in-flight image
-    // requests to buy a margin the memory cache already provides after the
-    // first pass (ADR 0016).
-    overscan: 1,
-    gap: GRID_GAP,
-    paddingStart: GRID_PADDING,
-    paddingEnd: GRID_PADDING,
-    // The measurement, with the fallback above under it. The virtualiser's own
-    // observer does the observing — this wraps it rather than replacing it, so
-    // the resize handling stays theirs — and what the wrapper adds is that a
-    // rect of zero never reaches the window calculation, and that the width the
-    // row height is derived from comes off the same measurement rather than a
-    // second one taken somewhere else.
-    observeElementRect: (instance, report) =>
-      observeElementRect(instance, ({ width, height }) => {
-        const box = {
-          width: width || measured.current.width,
-          height: height || measured.current.height,
-        };
-        measured.current = box;
-        setBoxWidth(box.width);
-        report({ width: box.width, height: box.height || UNMEASURED_BOX });
-      }),
-  });
-
-  // A changed estimate does not re-measure by itself: the virtualiser caches
-  // what it measured and rebuilds when the row count changes, not when the
-  // function behind the estimate starts answering differently. So the first
-  // real measurement after a mount, and a resize that does not cross a
-  // breakpoint, say so here.
-  useLayoutEffect(() => {
-    virtualiser.measure();
-  }, [virtualiser, rowSize]);
-
-  const mountedRows = virtualiser.getVirtualItems();
-  const firstRow = mountedRows[0];
-  const lastRow = mountedRows[mountedRows.length - 1];
-  // The mounted range, as indexes into the whole list, and the empty space that
-  // holds the rest of the scroll height open above and below it.
-  const range =
-    firstRow && lastRow
-      ? {
-          start: firstRow.index * columns,
-          end: Math.min((lastRow.index + 1) * columns, list.length),
-          before: firstRow.start,
-          after: virtualiser.getTotalSize() - lastRow.end,
-        }
-      : { start: 0, end: 0, before: 0, after: 0 };
+  const { range, reveal } = useGridWindow(list.length, scroller);
 
   /**
    * The grid's selection, held here rather than inside the grid because ADR
@@ -406,21 +291,10 @@ export function LibraryView() {
    * 3,000 can hold the selection whichever thirty cards have nodes (#137).
    */
   const selection = useGridSelection(list);
-  const lightbox = useLightbox(selection);
-
-  /**
-   * Put the card the selection moved to on screen, which under a window means
-   * mounting its row first.
-   *
-   * The grid calls this before it moves focus and never after, because a card
-   * an arrow key selected may have no node yet and asking the virtualiser to
-   * scroll the row in is what creates one. Focusing a node that does not exist
-   * is the one way that pattern breaks (ADR 0019).
-   */
-  const reveal = useCallback(
-    (index: number) => virtualiser.scrollToIndex(Math.floor(index / columns)),
-    [virtualiser, columns],
-  );
+  // The grid's handle, passed twice: to the grid as its `ref`, and to the
+  // lightbox as the way it hands focus back on the way down (ADR 0029).
+  const grid = useRef<WallpaperGridHandle | null>(null);
+  const lightbox = useLightbox(selection, grid);
 
   return (
     <>
@@ -598,6 +472,7 @@ export function LibraryView() {
              nodes; `range` is the slice, and `reveal` is how a selection that
              lands outside it gets one (#131). */
           <WallpaperGrid
+            ref={grid}
             wallpapers={list}
             selection={selection}
             label="Wallpapers in the library"
@@ -606,7 +481,6 @@ export function LibraryView() {
             scoresMoved={scoresMoved}
             reveal={reveal}
             range={range}
-            className="p-4"
           />
         )}
       </div>

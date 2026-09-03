@@ -501,6 +501,25 @@ test("changing destination closes it", async () => {
   expect(viewContainer().hasAttribute("inert")).toBe(false);
 });
 
+test("changing destination leaves the page it hid alone", async () => {
+  // A row on the page being gone to, so that page's own grid is an ordinary one
+  // rather than the empty-list case that takes the container focus itself.
+  libraryRows = [wallpaper(9, { filename: "other.jpg" })];
+  await enterReview();
+  await pressKey("Enter");
+
+  await click(tab("Library"));
+
+  expect(lightbox()).toBeNull();
+  // The third close, and the one that hands nothing back: `Ctrl+2` hides Review
+  // with `display: none` in the same pass (ADR 0015), where a card cannot hold
+  // the focus in a browser and happy-dom would let it. So no card has it, which
+  // is what stops a `covered` flag the grid watches for itself from creeping
+  // back in — that flag cannot tell this close from the curator's own
+  // (ADR 0029).
+  expect(document.activeElement?.getAttribute("role")).not.toBe("gridcell");
+});
+
 test("both pages open one, from the same component", async () => {
   await enterLibrary([
     wallpaper(9, { filename: "shared.jpg", status: "kept" }),
@@ -915,6 +934,16 @@ test("acting on the only row closes it onto the page's own empty state", async (
   // And the shell takes its `inert` back, which is the half of the close that
   // nobody pressed still owes the page behind.
   expect(viewContainer().hasAttribute("inert")).toBe(false);
+
+  // The other half it owes is the focus, and this is the one close that has
+  // nowhere to put it. `useLightbox` asks the grid for it (ADR 0029), and the
+  // page has already swapped that grid for the empty state above — so there is
+  // no container left to take it and focus stays on `body`. ADR 0029 read this
+  // path as the grid's effect declining to act; what actually happens is that
+  // the grid is not there to be asked, which is a fact about the page's empty
+  // state rather than about the focus rule.
+  expect(screen.queryByRole("grid")).toBeNull();
+  expect(document.activeElement).toBe(document.body);
 });
 
 test("the origin-less Restore explains itself and calls nothing", async () => {

@@ -5,14 +5,18 @@ import {
   useRejectDestination,
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
-import { useGridSelection, WallpaperGrid } from "@/components/WallpaperGrid";
+import {
+  useGridSelection,
+  WallpaperGrid,
+  type WallpaperGridHandle,
+} from "@/components/WallpaperGrid";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
 import { client } from "@/lib/client";
 import { ArrowLeft, Check, Loader2, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * How many cards the worklist holds. The only `limit` the listing is given —
@@ -70,7 +74,10 @@ export function ReviewView() {
   // grid rather than a cursor of its own: there is no sync rule between them
   // because there are not two things to sync.
   const selection = useGridSelection(wallpapers);
-  const lightbox = useLightbox(selection);
+  // The grid's handle, passed twice: to the grid as its `ref`, and to the
+  // lightbox as the way it hands focus back on the way down (ADR 0029).
+  const grid = useRef<WallpaperGridHandle | null>(null);
+  const lightbox = useLightbox(selection, grid);
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
@@ -197,6 +204,7 @@ export function ReviewView() {
                of this card no animated property and no `will-change`, and ADR
                0007's licence stays scoped to the fifty rows it was measured on. */
             <WallpaperGrid
+              ref={grid}
               wallpapers={wallpapers}
               selection={selection}
               label="Wallpapers to review"

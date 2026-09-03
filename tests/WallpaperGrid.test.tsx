@@ -1,13 +1,15 @@
 import type { CardAction } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
 import {
+  rowHeight,
   useGridSelection,
   WallpaperGrid,
   type GridSelection,
+  type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { useState } from "react";
+import { useRef, useState, type RefObject } from "react";
 import {
   flush,
   renderInApp,
@@ -108,11 +110,15 @@ function handleAction(action: CardAction, subject: Wallpaper): void {
 let setList: (list: Wallpaper[]) => void = () => {};
 /**
  * The selection the host is holding, which is what a page reaches for: the
- * wallpaper on screen, a move, a set to a named id, and the request that puts
- * focus back on the selected card (#137). The lightbox is the caller; these
- * tests reach them directly, the way it does.
+ * wallpaper on screen, a move, and a set to a named id (#137). The lightbox is
+ * the caller; these tests reach them directly, the way it does.
  */
 let selection: GridSelection;
+/**
+ * The grid's handle, which is the other thing a page holds: the one way in from
+ * outside, and what `useLightbox` calls on the way down (ADR 0029).
+ */
+let gridHandle: RefObject<WallpaperGridHandle | null>;
 
 /**
  * The grid between two other tab stops, so a test can walk into it and out the
@@ -145,10 +151,12 @@ function Harness({
   const [start, setStart] = useState(0);
   setList = set;
   selection = useGridSelection(list);
+  gridHandle = useRef<WallpaperGridHandle | null>(null);
   return (
     <>
       <button type="button">before</button>
       <WallpaperGrid
+        ref={gridHandle}
         wallpapers={list}
         selection={selection}
         label="Wallpapers"
@@ -253,6 +261,38 @@ async function enterGrid(): Promise<void> {
     pressTab();
   });
 }
+
+// The row height, which is the one piece of the window that is arithmetic over
+// the grid's own CSS rather than a question about the DOM (ADR 0027). It is
+// reachable as a function because both of its inputs are arguments; through a
+// mounted page it is reachable only at a box that measures zero.
+
+test("a row is as tall as the cards sharing its width, at every column count", () => {
+  // The four breakpoints, each against the width the cards actually get: the
+  // box less `p-4` at both ends, less a `gap-6` between every pair, divided by
+  // the count and shaped by `aspect-video`.
+  const height = (boxWidth: number, columns: number) =>
+    ((boxWidth - 32 - 24 * (columns - 1)) / columns) * (9 / 16);
+
+  expect(rowHeight(700, 2)).toBeCloseTo(height(700, 2));
+  expect(rowHeight(900, 3)).toBeCloseTo(height(900, 3));
+  expect(rowHeight(1200, 4)).toBeCloseTo(height(1200, 4));
+  expect(rowHeight(1500, 5)).toBeCloseTo(height(1500, 5));
+
+  // And it falls with the width rather than with the count: five cards in the
+  // box four were sharing are five narrower cards, so the row is shorter.
+  expect(rowHeight(1200, 5)).toBeLessThan(rowHeight(1200, 4));
+});
+
+test("a box that measures nothing falls back to a row about a card tall", () => {
+  // The branch every happy-dom run takes, and the one a real browser takes for
+  // a view the shell is hiding under `display: none` (ADR 0015). Without it the
+  // virtualiser is handed a row height of zero or less and mounts nothing.
+  expect(rowHeight(0, 4)).toBe(130);
+  // Not only at exactly zero: a box narrower than its own padding and gaps
+  // leaves the cards no width at all, which is the same nothing to divide.
+  expect(rowHeight(100, 5)).toBe(130);
+});
 
 test("Tab reaches the grid once, and Tab again leaves it", async () => {
   // Nine cards over however many rows: the count is what must not matter. Every
@@ -496,7 +536,7 @@ test("a focus request from the page puts focus on the selected card", async () =
   // the card for the current selection, not the one it was opened from
   // (ADR 0022).
   await act(async () => {
-    selection.requestFocus();
+    gridHandle.current?.focusSelection();
   });
   expect(document.activeElement).toBe(cell(3));
 });
@@ -522,7 +562,7 @@ test("a focus request reveals a card with no node before focusing it", async () 
   expect(mounted(9)).toBe(false);
 
   await act(async () => {
-    selection.requestFocus();
+    gridHandle.current?.focusSelection();
   });
 
   // The row was asked for before the focus move: the reveal moves the window,

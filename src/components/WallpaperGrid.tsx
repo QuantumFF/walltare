@@ -5,14 +5,19 @@ import {
 } from "@/components/WallpaperCard";
 import type { Status, Wallpaper } from "@/lib/client";
 import { cn } from "@/lib/utils";
+import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import {
   useCallback,
+  useImperativeHandle,
   useLayoutEffect,
+  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
   type FocusEvent,
   type KeyboardEvent,
+  type Ref,
+  type RefObject,
 } from "react";
 
 /**
@@ -37,9 +42,7 @@ const COLUMNS = [
 ] as const;
 
 /** What the grid container wears, and the other half of the table above. */
-export const GRID_COLUMN_CLASSES = COLUMNS.map((step) => step.className).join(
-  " ",
-);
+const GRID_COLUMN_CLASSES = COLUMNS.map((step) => step.className).join(" ");
 
 /** The widest breakpoint the window has reached, as a number of cards. */
 function columnsNow(): number {
@@ -72,17 +75,73 @@ function subscribeToWidth(onChange: () => void): () => void {
  * viewport, which a test sets the way `desktopColorScheme` sets the theme — the
  * real query, arranged.
  *
- * Exported because #79's virtualiser needs it too: rows are cards over columns,
- * and a library page that computed its own would be the second copy this table
- * exists to prevent.
- *
  * `resize` is the one subscription. happy-dom fires it from `setViewport` and a
  * real window fires it on every viewport change, while a `MediaQueryList`
  * `change` listener would need one subscription per breakpoint and is not fired
  * by happy-dom at all.
  */
-export function useGridColumns(): number {
+function useGridColumns(): number {
   return useSyncExternalStore(subscribeToWidth, columnsNow);
+}
+
+/**
+ * The grid's own spacing, as numbers beside the classes they restate, because
+ * `useGridWindow` below has to know how tall a row is before the row exists and
+ * the CSS is the only place that says.
+ *
+ * The same pair `COLUMNS` is: the number and the class are one statement, and
+ * two copies of it drift. What it costs when they do is a window positioned
+ * against a row height nothing has, which puts the wrong cards on screen. The
+ * alternative is measuring a card once it is laid out and feeding the height
+ * back, which is what happy-dom rules out — it does no layout, so the
+ * measurement is zero, the window collapses and the tests that pin it have
+ * nothing to assert against (#131).
+ *
+ * `className` is the cross-reference and not always the thing that gets worn:
+ * `aspect-video` stays literal on `WallpaperCard`, which is the element wearing
+ * it, and this field is how a reader of either file finds the other. The other
+ * two are worn by the container below (ADR 0027).
+ */
+const GAP = { px: 24, className: "gap-6" };
+const CARD_ASPECT = { ratio: 9 / 16, className: "aspect-video" };
+const PADDING = { px: 16, className: "p-4" };
+
+/**
+ * What a box that measures zero is taken to be: a row about as tall as a card
+ * in the default 1280x800 window, inside a viewport about as tall as that
+ * window.
+ *
+ * A zero-sized box is not an edge case here, and a window with no fallback is
+ * no window at all — the virtualiser answers a viewport of zero with an empty
+ * range, so every card would be unmounted rather than thirty of them mounted.
+ * happy-dom does no layout and reports every rect as zero, which is what would
+ * otherwise leave the two windowing tests asserting about an empty grid (#131);
+ * and ADR 0015 keeps the library view mounted under `display: none` while
+ * another view is showing, which zeroes the box in a real browser too.
+ */
+const UNMEASURED_ROW = 130;
+const UNMEASURED_BOX = 800;
+
+/**
+ * How tall one row of cards is, from the width the row has to fill and the
+ * number of cards sharing it.
+ *
+ * Derived from the width rather than measured off a laid-out card, for the same
+ * reason `useGridColumns` reads the media queries rather than the cards: a size
+ * taken from a rect is zero under test, and a window built on it degenerates.
+ *
+ * Both numbers are arguments rather than read from `columnsNow` and a box, so
+ * this is a pure function of two numbers that one test can drive over the four
+ * column counts — including the zero-width branch every happy-dom run takes.
+ * That test is the reason for the `export`, which is the whole of what it is
+ * for: nothing in the app calls this from outside the hook below, and the
+ * arithmetic is otherwise reachable only through a mounted page whose box
+ * measures zero (ADR 0027).
+ */
+export function rowHeight(boxWidth: number, columns: number): number {
+  const cards = boxWidth - 2 * PADDING.px - GAP.px * (columns - 1);
+  if (cards <= 0) return UNMEASURED_ROW;
+  return (cards / columns) * CARD_ASPECT.ratio;
 }
 
 /**
@@ -165,11 +224,14 @@ export function actionFor(key: string, status: Status): CardAction | null {
  * It lives up there because ADR 0022 has the lightbox render this same
  * selection rather than a cursor of its own, and the lightbox's state is the
  * page's. From here the page can read which wallpaper is up and where it sits
- * in the list, step it, put it back on the wallpaper a failed action
- * re-inserted, and ask for the card to take focus again when the lightbox
- * closes. A selection private to the grid answers none of those, and a second
- * cursor beside it would need a sync rule in both directions plus an answer for
- * a refetch landing between them (#137).
+ * in the list, step it, and put it back on the wallpaper a failed action
+ * re-inserted. A selection private to the grid answers none of those, and a
+ * second cursor beside it would need a sync rule in both directions plus an
+ * answer for a refetch landing between them (#137).
+ *
+ * Five members and not seven. Where the focus is used to be two of them, and it
+ * is the grid's own — `WallpaperGridHandle` below is what a page asks through
+ * now (ADR 0029).
  */
 export interface GridSelection {
   /** The selected Wallpaper, or `null` when the list is empty. */
@@ -205,24 +267,25 @@ export interface GridSelection {
    * next wallpaper (ADR 0022).
    */
   selectId: (id: number) => void;
-  /**
-   * Ask the grid to put the selected card on screen and focus it.
-   *
-   * A request rather than a `focus()` the page makes for itself, because the
-   * card may have no node: under a window its row has to be revealed first and
-   * the node arrives a commit later. It is also the only way in from outside,
-   * since the grid moves focus only while focus is already inside it — a list
-   * changing under a curator who is elsewhere must not steal it — and closing
-   * the lightbox is the one case that has to override that, onto the card for
-   * the *current* selection rather than the one it was opened from (ADR 0022).
-   */
-  requestFocus: () => void;
-  /**
-   * The grid's half of `requestFocus`: how many the page has made. The grid
-   * answers one on the first commit where the selected card has a node to take
-   * the focus, and counts it answered only then.
-   */
-  focusRequest: number;
+}
+
+/**
+ * The one thing the grid can be asked to do from outside it.
+ *
+ * A handle rather than a pair on `GridSelection`, because where the focus is
+ * belongs to the grid: it already holds what the last commit focused and whether
+ * the curator is inside, and a request the page held too made "does the
+ * selection have focus" a question with four answers across a seam (ADR 0029).
+ *
+ * There is no reader for the fact. Nothing outside asks whether the selection
+ * has focus, because the only use for the answer is deciding whether to move it,
+ * and that is what the method below is for. The DOM carries it twice anyway —
+ * `document.activeElement` is the cell, and that cell is the one at
+ * `tabindex="0"`.
+ */
+export interface WallpaperGridHandle {
+  /** Put the selected card on screen and focus it, revealing its row first. */
+  focusSelection: () => void;
 }
 
 /**
@@ -247,7 +310,6 @@ export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
   // with nothing selected yet the first card holds the tab stop, because a grid
   // where every cell is `tabindex="-1"` cannot be entered by keyboard at all.
   const positionRef = useRef(0);
-  const [focusRequest, setFocusRequest] = useState(0);
 
   let index = wallpapers.findIndex((w) => w.id === selectedId);
   if (index === -1 && wallpapers.length > 0) {
@@ -269,22 +331,7 @@ export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
 
   const selectId = useCallback((id: number) => setSelectedId(id), []);
 
-  // A counter and not a flag, so a second request while the first is still
-  // being answered is still a request rather than a set bit nobody cleared.
-  const requestFocus = useCallback(
-    () => setFocusRequest((made) => made + 1),
-    [],
-  );
-
-  return {
-    wallpaper,
-    index,
-    length: wallpapers.length,
-    moveTo,
-    selectId,
-    requestFocus,
-    focusRequest,
-  };
+  return { wallpaper, index, length: wallpapers.length, moveTo, selectId };
 }
 
 /**
@@ -306,6 +353,110 @@ export interface GridRange {
   end: number;
   before: number;
   after: number;
+}
+
+/**
+ * The window over a list too long to mount (ADR 0016), and the way in to a card
+ * that has no node yet.
+ *
+ * Thirty cards in the DOM out of five thousand fetched, because 5,000 images and
+ * 5,000 overlays is a page that scrolls badly whatever the card is made of. It
+ * counts rows and not cards, and the count it divides by is the grid's own:
+ * one virtual item is one row of the CSS grid, and the gap and the padding above
+ * are told to the virtualiser rather than folded into the row height, so the
+ * offsets it hands back are the offsets the CSS produces.
+ *
+ * It lives here rather than on the page because every number behind it is this
+ * module's own CSS. A host that computed its own window would import three
+ * constants to work out one, which is the shallow shape ADR 0027 set out to fix
+ * — and after this no geometry leaves the file.
+ *
+ * `count` and not the list: the arithmetic needs the length and nothing else, so
+ * the hook never holds the rows. The scroller arrives as a ref the host already
+ * owns, because the page needs that same element for its own scroll position and
+ * a hook that created it would have to hand it back.
+ */
+export function useGridWindow(
+  count: number,
+  scroller: RefObject<HTMLDivElement | null>,
+): { range: GridRange; reveal: (index: number) => void } {
+  const columns = useGridColumns();
+  // The scroll box as last measured, and the width the row height is derived
+  // from. The last non-zero measurement is kept, so a view the shell has hidden
+  // — which zeroes the box — keeps the size it had rather than rebuilding its
+  // whole window on the way back (ADR 0015).
+  const measured = useRef({ width: 0, height: 0 });
+  const [boxWidth, setBoxWidth] = useState(0);
+  const rowSize = rowHeight(boxWidth, columns);
+
+  const virtualiser = useVirtualizer({
+    count: Math.ceil(count / columns),
+    getScrollElement: () => scroller.current,
+    estimateSize: () => rowSize,
+    // One row above and one below. Two rows doubles the in-flight image
+    // requests to buy a margin the memory cache already provides after the
+    // first pass (ADR 0016).
+    overscan: 1,
+    gap: GAP.px,
+    paddingStart: PADDING.px,
+    paddingEnd: PADDING.px,
+    // The measurement, with the fallback above under it. The virtualiser's own
+    // observer does the observing — this wraps it rather than replacing it, so
+    // the resize handling stays theirs — and what the wrapper adds is that a
+    // rect of zero never reaches the window calculation, and that the width the
+    // row height is derived from comes off the same measurement rather than a
+    // second one taken somewhere else.
+    observeElementRect: (instance, report) =>
+      observeElementRect(instance, ({ width, height }) => {
+        const box = {
+          width: width || measured.current.width,
+          height: height || measured.current.height,
+        };
+        measured.current = box;
+        setBoxWidth(box.width);
+        report({ width: box.width, height: box.height || UNMEASURED_BOX });
+      }),
+  });
+
+  // A changed estimate does not re-measure by itself: the virtualiser caches
+  // what it measured and rebuilds when the row count changes, not when the
+  // function behind the estimate starts answering differently. So the first
+  // real measurement after a mount, and a resize that does not cross a
+  // breakpoint, say so here.
+  useLayoutEffect(() => {
+    virtualiser.measure();
+  }, [virtualiser, rowSize]);
+
+  const mountedRows = virtualiser.getVirtualItems();
+  const firstRow = mountedRows[0];
+  const lastRow = mountedRows[mountedRows.length - 1];
+  // The mounted range, as indexes into the whole list, and the empty space that
+  // holds the rest of the scroll height open above and below it.
+  const range =
+    firstRow && lastRow
+      ? {
+          start: firstRow.index * columns,
+          end: Math.min((lastRow.index + 1) * columns, count),
+          before: firstRow.start,
+          after: virtualiser.getTotalSize() - lastRow.end,
+        }
+      : { start: 0, end: 0, before: 0, after: 0 };
+
+  /**
+   * Put the card the selection moved to on screen, which under a window means
+   * mounting its row first.
+   *
+   * The grid calls this before it moves focus and never after, because a card
+   * an arrow key selected may have no node yet and asking the virtualiser to
+   * scroll the row in is what creates one. Focusing a node that does not exist
+   * is the one way that pattern breaks (ADR 0019).
+   */
+  const reveal = useCallback(
+    (index: number) => virtualiser.scrollToIndex(Math.floor(index / columns)),
+    [virtualiser, columns],
+  );
+
+  return { range, reveal };
 }
 
 export interface WallpaperGridProps {
@@ -380,6 +531,16 @@ export interface WallpaperGridProps {
   onOpen?: (wallpaper: Wallpaper) => void;
   /** Layout the host owns: Review's bottom padding, a page's own gap. */
   className?: string;
+  /**
+   * The handle, for the page that has to hand focus back: a
+   * `useRef<WallpaperGridHandle | null>(null)` it also passes to `useLightbox`.
+   *
+   * React 19 takes `ref` as an ordinary prop on a function component, so there
+   * is no `forwardRef` in the way. A ref and not a callback the page wraps,
+   * because a callback's identity changes every render and `close`'s
+   * `useCallback` deps would churn on it (ADR 0029).
+   */
+  ref?: Ref<WallpaperGridHandle>;
 }
 
 /**
@@ -415,6 +576,7 @@ export function WallpaperGrid({
   range,
   onOpen,
   className,
+  ref,
 }: WallpaperGridProps) {
   const columns = useGridColumns();
   const gridRef = useRef<HTMLDivElement>(null);
@@ -423,16 +585,31 @@ export function WallpaperGrid({
   // What is left here is the focus bookkeeping below, which is the grid's own
   // business: nothing above this component knows which node holds the focus or
   // whether a row has been mounted yet.
-  const { wallpaper: selected, index, moveTo, focusRequest } = selection;
+  const { wallpaper: selected, index, moveTo } = selection;
   // What the last commit put focus on, so a re-render that changes nothing does
   // not re-focus and re-scroll.
   const focusedRef = useRef<number | null>(null);
   const holdsFocusRef = useRef(false);
-  // The last request from the page this grid answered. One is outstanding while
-  // it differs from the count the page holds, and it is marked answered only
-  // once a card has actually taken the focus — a reveal that has not mounted the
-  // row yet leaves it outstanding for the commit that follows.
-  const answeredRef = useRef(focusRequest);
+  // Whether the page has asked for the selected card back. It stays set until a
+  // card has actually taken the focus — a reveal that has not mounted the row
+  // yet leaves it outstanding for the commit that follows.
+  //
+  // A flag and not the counter this was while the page held it: two requests in
+  // a row want the same card focused, and once the asking and the answering are
+  // in one component a flag that is already set is already asking for it
+  // (ADR 0029).
+  const wantsFocusRef = useRef(false);
+  // The commit the flag is answered on. Setting a ref renders nothing, and the
+  // effect that reads it runs on a render — so the ask schedules one. Its value
+  // is never read, which is what keeps it a nudge rather than a second counter.
+  const [, askedForFocus] = useReducer((asks: number) => asks + 1, 0);
+
+  useImperativeHandle(ref, () => ({
+    focusSelection: () => {
+      wantsFocusRef.current = true;
+      askedForFocus();
+    },
+  }));
 
   // What this commit puts in the DOM, which is every row until a host says
   // otherwise. Nothing above this line reads it: the selection, the arrow keys
@@ -458,7 +635,7 @@ export function WallpaperGrid({
     // needs the override below because the card it has to land on is the one for
     // the current selection, which after two hundred steps is neither where
     // focus is nor a card that has a node (ADR 0022).
-    const requested = focusRequest !== answeredRef.current;
+    const requested = wantsFocusRef.current;
 
     // Moving the selection must not steal focus. When the curator is somewhere
     // else in the app, a list that changes underneath updates the selection and
@@ -479,7 +656,7 @@ export function WallpaperGrid({
     const active = document.activeElement;
     const holds = active instanceof Node && gridRef.current?.contains(active);
     if (target === focusedRef.current && holds) {
-      answeredRef.current = focusRequest;
+      wantsFocusRef.current = false;
       return;
     }
 
@@ -489,7 +666,7 @@ export function WallpaperGrid({
     if (target === null || index === -1) {
       gridRef.current?.focus();
       focusedRef.current = null;
-      answeredRef.current = focusRequest;
+      wantsFocusRef.current = false;
       return;
     }
 
@@ -499,7 +676,7 @@ export function WallpaperGrid({
     const cell = cellAt(index);
     if (!cell) return;
     focusedRef.current = target;
-    answeredRef.current = focusRequest;
+    wantsFocusRef.current = false;
     cell.focus();
   });
 
@@ -622,7 +799,18 @@ export function WallpaperGrid({
       onKeyDown={handleKeyDown}
       onFocus={handleFocus}
       onBlur={handleBlur}
-      className={cn("grid gap-6", GRID_COLUMN_CLASSES, className)}
+      // A windowed grid wears the padding its window was measured against, which
+      // is what keeps every geometry number inside this file: `PADDING.px` is
+      // told to the virtualiser and `PADDING.className` is worn here, off the
+      // one pair. Review passes no `range` and its own `pb-8` reaches this same
+      // element (ADR 0027).
+      className={cn(
+        "grid",
+        GAP.className,
+        range && PADDING.className,
+        GRID_COLUMN_CLASSES,
+        className,
+      )}
       // The window's position inside the scroller, and the reason the class
       // above can still carry a `p-4`: an inline `padding-top` replaces only the
       // top of that shorthand, so the host's horizontal padding survives being
