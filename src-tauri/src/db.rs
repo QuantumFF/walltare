@@ -438,7 +438,9 @@ fn move_file(source: &Path, dest: &Path) -> Result<(), AppError> {
     }
 }
 
-#[derive(Debug, PartialEq, serde::Serialize)]
+/// The one wallpaper row shape the backend hands out, listings and voting pairs
+/// alike, mirrored by the single `Wallpaper` interface in `client.ts`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Wallpaper {
     pub id: i64,
     pub filename: String,
@@ -454,9 +456,9 @@ pub struct Wallpaper {
     pub origin_path: Option<String>,
 }
 
-/// The columns every listing selects, in the order [`wallpaper_from_row`] reads
-/// them. One copy, because a query that selects its own list and a mapper that
-/// indexes by position drift apart silently.
+/// The columns every query returning a [`Wallpaper`] selects, in the order
+/// [`wallpaper_from_row`] reads them. One copy, because a query that selects its
+/// own list and a mapper that indexes by position drift apart silently.
 const WALLPAPER_COLUMNS: &str =
     "id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path";
 
@@ -471,6 +473,15 @@ fn wallpaper_from_row(row: &rusqlite::Row) -> Result<Wallpaper, rusqlite::Error>
         comparisons_count: row.get(6)?,
         origin_path: row.get(7)?,
     })
+}
+
+/// One wallpaper by id. `QueryReturnedNoRows` when there is no such row, which
+/// callers with something better to say about a missing id map themselves.
+pub fn get_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, rusqlite::Error> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {WALLPAPER_COLUMNS} FROM wallpapers WHERE id = ?1"
+    ))?;
+    stmt.query_row(rusqlite::params![id], wallpaper_from_row)
 }
 
 pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusqlite::Error> {
@@ -903,6 +914,28 @@ mod tests {
         )
         .unwrap();
         conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn get_wallpaper_reads_one_row_and_reports_a_missing_id_as_no_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        // The same reader the listings use, so a column added to one of them
+        // reaches every caller including the voting pair.
+        let w = get_wallpaper(&conn, id).unwrap();
+        assert_eq!(w.id, id);
+        assert_eq!(w.filename, "a.jpg");
+        assert_eq!(w.path, "/w/a.jpg");
+        assert_eq!(w.status, "active");
+        assert_eq!(w.comparisons_count, 0);
+        assert_eq!(w.origin_path, None);
+
+        assert!(matches!(
+            get_wallpaper(&conn, 999),
+            Err(rusqlite::Error::QueryReturnedNoRows)
+        ));
     }
 
     #[test]

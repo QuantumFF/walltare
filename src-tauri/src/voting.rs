@@ -9,26 +9,15 @@
 
 use rusqlite::Connection;
 
+use crate::db;
 use crate::error::AppError;
 use crate::ranking::{self, Rng};
 
-/// A wallpaper as serialized over the IPC surface (locked in #4).
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct Wallpaper {
-    pub id: i64,
-    pub filename: String,
-    pub path: String,
-    pub status: String,
-    pub rating_mu: f64,
-    pub rating_sigma: f64,
-    pub comparisons_count: u32,
-    /// Always `None` on a pair: only a Rejected wallpaper has an Origin, and a
-    /// pair only ever holds an eligible one. It rides along because `client.ts`
-    /// has a single `Wallpaper` interface serving this DTO and `db::Wallpaper`,
-    /// so leaving it off here would make the field a lie on half the values
-    /// arriving under that type.
-    pub origin_path: Option<String>,
-}
+/// A pair holds two rows of the shape every listing already serves, so it uses
+/// `db`'s type and `db`'s reader rather than a second copy of the column list.
+/// `origin_path` is structurally `None` on both — only a Rejected wallpaper has
+/// an Origin, and a pair only ever holds eligible ones.
+pub use crate::db::Wallpaper;
 
 /// Progress snapshot for the rank headline. Every fraction is measured against
 /// the Eligible pool, so rejecting wallpapers cannot drag progress down.
@@ -98,8 +87,8 @@ pub fn get_pair<R: Rng>(
         (second, first)
     };
     Ok([
-        fetch_wallpaper(conn, first.id)?,
-        fetch_wallpaper(conn, second.id)?,
+        db::get_wallpaper(conn, first.id)?,
+        db::get_wallpaper(conn, second.id)?,
     ])
 }
 
@@ -246,27 +235,6 @@ fn fetch_summary(conn: &Connection, id: i64) -> Result<ranking::WallpaperSummary
     })
 }
 
-fn fetch_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppError> {
-    conn.query_row(
-        "SELECT id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path
-         FROM wallpapers WHERE id = ?1",
-        [id],
-        |row| {
-            Ok(Wallpaper {
-                id: row.get(0)?,
-                filename: row.get(1)?,
-                path: row.get(2)?,
-                status: row.get(3)?,
-                rating_mu: row.get(4)?,
-                rating_sigma: row.get(5)?,
-                comparisons_count: count_u32(row.get::<_, i64>(6)?),
-                origin_path: row.get(7)?,
-            })
-        },
-    )
-    .map_err(AppError::from)
-}
-
 fn count_u32(v: i64) -> u32 {
     v.try_into().unwrap_or(u32::MAX)
 }
@@ -305,7 +273,6 @@ impl Rng for SystemRng {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
     use crate::ranking::{MU, SIGMA};
     use rusqlite::params;
     use std::sync::atomic::{AtomicU64, Ordering};
