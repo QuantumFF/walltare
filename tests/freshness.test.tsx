@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import { flush, settings, stats, wallpaper } from "./fixtures";
+import { flush, mockListings, settings, stats, wallpaper } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // Cross-view freshness, driven the way the curator drives it: the whole app,
@@ -29,7 +29,7 @@ const VOTED_STATS = stats({
 });
 
 let getPairCalls = 0;
-let getReviewCalls = 0;
+let reviewFetches = 0;
 let listCalls = 0;
 let listFilters: StatusFilter[];
 let votes: Array<[number, number]>;
@@ -43,7 +43,7 @@ afterEach(() => {
 
 beforeEach(() => {
   getPairCalls = 0;
-  getReviewCalls = 0;
+  reviewFetches = 0;
   listCalls = 0;
   listFilters = [];
   votes = [];
@@ -81,21 +81,26 @@ beforeEach(() => {
     return { next_pair: [wallpaper(8), wallpaper(9)], stats: VOTED_STATS };
   });
 
-  mockCommand("get_review", () => {
-    getReviewCalls++;
-    return [
-      wallpaper(1, { filename: "one.jpg" }),
-      wallpaper(2, { filename: "two.jpg" }),
-    ];
-  });
-
-  // The filter is honoured, because two of these tests turn on a scan adding
-  // rows the current filter does not show.
-  mockCommand("list_wallpapers", (args) => {
-    listCalls++;
-    const filter = (args?.filter as StatusFilter) ?? "all";
-    listFilters.push(filter);
-    return library.filter((w) => filter === "all" || w.status === filter);
+  // The two pages ask the same command, and the limit is what tells them apart
+  // (ADR 0028). Review's fetches and the library page's are counted separately
+  // here, because which of the two a refetch reaches is the whole subject of
+  // this file.
+  mockListings({
+    review: () => {
+      reviewFetches++;
+      return [
+        wallpaper(1, { filename: "one.jpg" }),
+        wallpaper(2, { filename: "two.jpg" }),
+      ];
+    },
+    // The filter is honoured, because two of these tests turn on a scan adding
+    // rows the current filter does not show.
+    library: (args) => {
+      listCalls++;
+      const filter = (args?.filter as StatusFilter) ?? "all";
+      listFilters.push(filter);
+      return library.filter((w) => filter === "all" || w.status === filter);
+    },
   });
 
   // Every transition answers with the row it wrote, so these mocks derive one
@@ -299,11 +304,11 @@ test("a refused transition refetches only the page that acted", async () => {
   await openApp();
   await click(tab("Library"));
   await click(tab("Review"));
-  expect([getReviewCalls, listCalls]).toEqual([1, 1]);
+  expect([reviewFetches, listCalls]).toEqual([1, 1]);
 
   await click(screen.getByRole("button", { name: /keep one\.jpg/i }));
 
-  expect([getReviewCalls, listCalls]).toEqual([2, 1]);
+  expect([reviewFetches, listCalls]).toEqual([2, 1]);
 });
 
 test("a refused transition on a hidden page owes the refetch rather than making it", async () => {
@@ -314,7 +319,7 @@ test("a refused transition on a hidden page owes the refetch rather than making 
   // module reaches for is the one `useRefetchWhenShown` already returned.
   await openApp();
   await click(tab("Review"));
-  expect(getReviewCalls).toBe(1);
+  expect(reviewFetches).toBe(1);
 
   // Keep, then leave, then press the Undo the keep's toast is still holding —
   // and refuse it, because the row moved while the curator was away.
@@ -326,10 +331,10 @@ test("a refused transition on a hidden page owes the refetch rather than making 
   expectConsoleError(/Failed to unkeep wallpaper/);
   await click(screen.getByRole("button", { name: "Undo" }));
 
-  expect(getReviewCalls).toBe(1);
+  expect(reviewFetches).toBe(1);
 
   await click(tab("Review"));
-  expect(getReviewCalls).toBe(2);
+  expect(reviewFetches).toBe(2);
 });
 
 test("a keep in Review patches the hidden Library, and neither view fetches anything", async () => {
@@ -343,12 +348,12 @@ test("a keep in Review patches the hidden Library, and neither view fetches anyt
   expect(cardName(1)).toBe("one.jpg, Active");
 
   await click(tab("Review"));
-  expect(getReviewCalls).toBe(1);
+  expect(reviewFetches).toBe(1);
 
   await click(screen.getByRole("button", { name: /keep one\.jpg/i }));
 
   expect(listCalls).toBe(1);
-  expect(getReviewCalls).toBe(1);
+  expect(reviewFetches).toBe(1);
   // Patched while nobody was looking at it, so the answer is already right when
   // the curator arrives rather than fetched once they do. The card's own name
   // is where the Status is legible, since otherwise it is a pill and a dimming.
@@ -419,7 +424,7 @@ test("a library-scanned refetch waits until the view is shown", async () => {
   await click(tab("Review"));
   await click(tab("Library"));
   await click(tab("Rank"));
-  expect([getReviewCalls, listCalls]).toEqual([1, 1]);
+  expect([reviewFetches, listCalls]).toEqual([1, 1]);
 
   library.push(wallpaper(4, { filename: "four.jpg" }));
   await act(async () => {
@@ -428,13 +433,13 @@ test("a library-scanned refetch waits until the view is shown", async () => {
   await flush();
 
   // Both views owe a fetch and neither has made one.
-  expect([getReviewCalls, listCalls]).toEqual([1, 1]);
+  expect([reviewFetches, listCalls]).toEqual([1, 1]);
 
   await click(tab("Review"));
-  expect([getReviewCalls, listCalls]).toEqual([2, 1]);
+  expect([reviewFetches, listCalls]).toEqual([2, 1]);
 
   await click(tab("Library"));
-  expect([getReviewCalls, listCalls]).toEqual([2, 2]);
+  expect([reviewFetches, listCalls]).toEqual([2, 2]);
   expect(card(4)).not.toBeNull();
 
   // And the debt is settled, not standing: coming back a second time fetches

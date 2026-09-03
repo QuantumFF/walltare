@@ -13,6 +13,7 @@ import {
   cacheSize,
   deferred,
   flush,
+  mockListings,
   settings,
   stats,
   wallpaper,
@@ -61,8 +62,7 @@ beforeEach(() => {
     exists: true,
   }));
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
-  mockCommand("get_review", () => reviewRows);
-  mockCommand("list_wallpapers", () => libraryRows);
+  mockListings({ review: () => reviewRows, library: () => libraryRows });
   mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
 });
 

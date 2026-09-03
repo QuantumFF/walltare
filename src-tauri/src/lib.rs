@@ -372,23 +372,20 @@ fn set_setting(
     settings::set(&conn, &key, &value)
 }
 
-#[tauri::command]
-fn get_review(limit: i64, state: tauri::State<Db>) -> Result<Vec<db::Wallpaper>, error::AppError> {
-    let conn = lock_conn(state);
-    db::get_review(&conn, limit).map_err(Into::into)
-}
-
-/// Every wallpaper matching a named filter, in a named ordering.
+/// Every wallpaper matching a named filter, in a named ordering, at most `limit`
+/// of them.
 ///
-/// No limit and no cursor: the library page takes the whole list in one call
-/// (ADR 0016). Both arguments arrive as enums, so an unknown name fails at
-/// deserialization and never reaches the query — the caller picks a name, and
-/// the backend owns every part of the `ORDER BY` (ADR 0014). Omitting either
-/// argument lands on its default, All and Score high to low.
+/// An optional count and no cursor: the library page omits it and takes the
+/// whole list in one call (ADR 0016), Review passes fifty and takes a bounded
+/// worklist (ADR 0028). The filter and the ordering arrive as enums, so an
+/// unknown name fails at deserialization and never reaches the query — the
+/// caller picks a name, and the backend owns every part of the `ORDER BY` (ADR
+/// 0014). Omitting either lands on its default, All and Score high to low.
 #[tauri::command]
 fn list_wallpapers(
     filter: Option<db::StatusFilter>,
     ordering: Option<db::ListOrdering>,
+    limit: Option<i64>,
     state: tauri::State<Db>,
 ) -> Result<Vec<db::Wallpaper>, error::AppError> {
     let conn = lock_conn(state);
@@ -396,6 +393,7 @@ fn list_wallpapers(
         &conn,
         filter.unwrap_or_default(),
         ordering.unwrap_or_default(),
+        limit,
     )
     .map_err(Into::into)
 }
@@ -577,7 +575,6 @@ pub fn run() {
             get_pair,
             vote,
             get_stats,
-            get_review,
             list_wallpapers,
             keep_wallpaper,
             unkeep_wallpaper,

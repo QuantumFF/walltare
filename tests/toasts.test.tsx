@@ -2,7 +2,7 @@ import App from "@/App";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import { flush, settings, stats, wallpaper } from "./fixtures";
+import { flush, mockListings, settings, stats, wallpaper } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
 // The toast lives in the shell, so every test here renders the whole app and
@@ -16,8 +16,8 @@ let keeps: number[];
 let unkeeps: number[];
 let moves: Array<{ id: number; destination: string }>;
 let restores: number[];
-let getReviewCalls: number;
-/** The list `get_review` serves, which the transition mocks read rows from. */
+let reviewFetches: number;
+/** The worklist Review is serving, which the transition mocks read rows from. */
 let reviewed: ReturnType<typeof wallpaper>[];
 
 /**
@@ -46,7 +46,7 @@ beforeEach(() => {
   unkeeps = [];
   moves = [];
   restores = [];
-  getReviewCalls = 0;
+  reviewFetches = 0;
   reviewed = [
     wallpaper(7, { filename: "wall-7.jpg" }),
     wallpaper(8, { filename: "wall-8.jpg" }),
@@ -63,10 +63,12 @@ beforeEach(() => {
   }));
   mockCommand("start_pregen", () => null);
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
-  mockCommand("list_wallpapers", () => []);
-  mockCommand("get_review", () => {
-    getReviewCalls++;
-    return reviewed;
+  mockListings({
+    review: () => {
+      reviewFetches++;
+      return reviewed;
+    },
+    library: () => [],
   });
   mockCommand("keep_wallpaper", (args) => {
     keeps.push(args?.id as number);
@@ -399,7 +401,7 @@ test("FileMissing on a Restore says its own sentence, from the backend", async (
 test("InvalidTransition says the row already changed and makes the view refetch", async () => {
   expectConsoleError(/Failed to keep wallpaper/);
   await openReview();
-  const fetchesBefore = getReviewCalls;
+  const fetchesBefore = reviewFetches;
   mockCommand("keep_wallpaper", () =>
     Promise.reject({ kind: "invalid_transition", message: "already kept" }),
   );
@@ -414,7 +416,7 @@ test("InvalidTransition says the row already changed and makes the view refetch"
   });
   // The view that acted refetches. Leaving the stale row on screen means the
   // curator's next click reproduces the same refusal.
-  expect(getReviewCalls).toBe(fetchesBefore + 1);
+  expect(reviewFetches).toBe(fetchesBefore + 1);
 });
 
 test("the filename carries its full string for the title that truncates it", async () => {

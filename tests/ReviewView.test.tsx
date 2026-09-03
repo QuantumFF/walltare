@@ -33,7 +33,7 @@ const HOME = "/home/curator";
 
 /** Every string the read-out asked `expand_path` about, in order. */
 let expansions: string[];
-/** The list `get_review` is serving, which the transition mocks read rows from. */
+/** The worklist Review is serving, which the transition mocks read rows from. */
 let reviewed: Wallpaper[];
 
 /** The row the review list holds for an id, which every transition mock starts from. */
@@ -182,14 +182,15 @@ async function openApp() {
 /** Mount the app with the given list already served, and open Review. */
 async function openReview(list: Wallpaper[], stored: Partial<Settings> = {}) {
   reviewed = list;
-  mockCommand("get_review", () => list);
+  mockCommand("list_wallpapers", () => list);
   mockCommand("get_settings", () => settings(stored));
   return openApp();
 }
 
 test("renders the rows the backend returned, in the order it returned them", async () => {
   // Deliberately not sorted: ordering and the Active-only filter belong to
-  // db.rs (`get_review_returns_active_ordered_by_mu_ascending`). This view is
+  // db.rs (`the_review_listing_is_active_lowest_score_first_with_the_unrated_tail`).
+  // This view is
   // a bare map, and the test says so.
   // Each one past a Comparison, so the badge is a Score rather than the
   // `Unrated` a wallpaper the app knows nothing about reads (ADR 0013).
@@ -273,16 +274,20 @@ test("the two hover-animated elements declare will-change, so no card promotes m
   }
 });
 
-test("asks the backend for 50 rows", async () => {
-  const limits: unknown[] = [];
-  mockCommand("get_review", (args) => {
-    limits.push(args?.limit);
+test("asks the listing for the 50 Active wallpapers with the lowest Scores", async () => {
+  // Review has no command of its own: it is the one listing, filtered to
+  // Active, ordered lowest Score first, and bounded to a worklist (ADR 0028).
+  const calls: unknown[] = [];
+  mockCommand("list_wallpapers", (args) => {
+    calls.push(args);
     return [];
   });
 
   await openApp();
 
-  expect(limits).toEqual([50]);
+  expect(calls).toEqual([
+    { filter: "active", ordering: "score_asc", limit: 50 },
+  ]);
 });
 
 test("keep records the decision and removes the card without waiting for a refetch", async () => {
@@ -316,7 +321,7 @@ test("refresh renders whatever the backend returns next", async () => {
     [wallpaper(4, { filename: "keeper.jpg" })],
     [wallpaper(9, { filename: "fresh.jpg" })],
   ];
-  mockCommand("get_review", () => responses[Math.min(fetches++, 1)]);
+  mockCommand("list_wallpapers", () => responses[Math.min(fetches++, 1)]);
 
   await openApp();
   expect(fetches).toBe(1);
@@ -400,7 +405,7 @@ test("a move that fails puts the card back and says so", async () => {
 test("a successful fetch does not clear the previous failure", async () => {
   expectConsoleError(/Failed to fetch review list/);
   let broken = true;
-  mockCommand("get_review", () =>
+  mockCommand("list_wallpapers", () =>
     broken
       ? Promise.reject({ kind: "db", message: "locked database" })
       : [wallpaper(2, { filename: "a.jpg" })],
@@ -452,7 +457,7 @@ test("the list can't be refetched while a fetch is in flight", async () => {
   const second = deferred<Wallpaper[]>();
   const responses = [first.promise, second.promise];
   let fetches = 0;
-  mockCommand("get_review", () => responses[fetches++]);
+  mockCommand("list_wallpapers", () => responses[fetches++]);
 
   await openApp();
 
@@ -639,7 +644,7 @@ test("back returns to ranking", async () => {
 
 test("a load failure surfaces readably instead of console-only", async () => {
   expectConsoleError(/Failed to fetch review list/);
-  mockCommand("get_review", () =>
+  mockCommand("list_wallpapers", () =>
     Promise.reject({ kind: "db", message: "locked database" }),
   );
 

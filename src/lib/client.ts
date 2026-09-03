@@ -345,12 +345,13 @@ export const client = {
     return invoke<Settings>("set_setting", { key, value: String(value) });
   },
 
-  getReview: (limit = 50) => invoke<Wallpaper[]>("get_review", { limit }),
-
   /**
-   * Every wallpaper matching `filter`, in `ordering`. One call, no paging: the
-   * row count is the size of the library, so nothing asks a second question to
-   * find that out (ADR 0016).
+   * Every wallpaper matching `filter`, in `ordering`, at most `limit` of them.
+   * One call and no paging: no offset, no cursor and no page token (ADR 0028).
+   *
+   * Without a `limit` the row count is the size of the library, so nothing asks
+   * a second question to find that out (ADR 0016). With one it is a bounded
+   * worklist and says nothing about how many rows exist behind it.
    *
    * Unrated wallpapers tail both Score orderings rather than sorting into the
    * middle on their starting Score, and every ordering breaks its ties by id,
@@ -359,7 +360,8 @@ export const client = {
   listWallpapers: (
     filter: StatusFilter = "all",
     ordering: ListOrdering = "score_desc",
-  ) => invoke<Wallpaper[]>("list_wallpapers", { filter, ordering }),
+    limit?: number,
+  ) => invoke<Wallpaper[]>("list_wallpapers", { filter, ordering, limit }),
 
   /**
    * Keeps a wallpaper and resolves with the row it wrote.

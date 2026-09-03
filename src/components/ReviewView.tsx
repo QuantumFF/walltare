@@ -14,6 +14,10 @@ import { client } from "@/lib/client";
 import { ArrowLeft, Check, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
+/**
+ * How many cards the worklist holds. The only `limit` the listing is given —
+ * the library page asks for everything (ADR 0028).
+ */
 export const REVIEW_LIMIT = 50;
 
 export function ReviewView() {
@@ -71,7 +75,11 @@ export function ReviewView() {
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await client.getReview(REVIEW_LIMIT);
+      const list = await client.listWallpapers(
+        "active",
+        "score_asc",
+        REVIEW_LIMIT,
+      );
       setRows(list);
     } catch (err) {
       console.error("Failed to fetch review list:", err);

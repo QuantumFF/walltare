@@ -101,7 +101,6 @@ beforeEach(() => {
     return null;
   });
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
-  mockCommand("get_review", () => []);
   mockCommand("list_wallpapers", () => []);
   // A Written path resolves the way ADR 0011 says it does, and the folder is
   // there. The status-line tests replace this with the answer they are about.
