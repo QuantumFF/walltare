@@ -50,6 +50,15 @@ Legal transitions:
 
 Everything else returns `AppError::InvalidTransition` and changes nothing.
 
+**Amended by [ADR 0025](0025-the-transition-guard.md), 2026-09-03.** The table
+above becomes `Status::may_become(self, to) -> bool`, an exhaustive `match` on
+the pair, and one test walks all nine combinations against these seven rows. It
+had lived as four separate guards, three of which were the same
+`status == "rejected"` check, so a fourth Status would have needed all four
+found by hand. The refusal messages stay with their commands, since each says
+something specific that a predicate cannot, and `restore_wallpaper`'s
+origin-less refusal stays there too: no table over Statuses can see a column.
+
 A restore lands on Active, never on whatever status the wallpaper held before
 the reject. Kept means the user decided to keep this one despite its rating,
 and a restore is not that decision. The cost is real but small: a wallpaper
