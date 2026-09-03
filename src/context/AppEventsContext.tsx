@@ -1,5 +1,5 @@
 import { useApp, type View } from "@/context/AppContext";
-import type { Stats, Status } from "@/lib/client";
+import type { Stats, Status, Wallpaper } from "@/lib/client";
 import {
   createContext,
   useCallback,
@@ -25,12 +25,19 @@ import {
  * thumbnail request, and the card is already rendered. A patch applies
  * immediately whether the view is showing or not, because it costs nothing.
  *
- * A patch carries an id rather than a row, which bounds what one can do: a view
- * can edit a row it already holds or drop it, and can never insert one, because
- * nothing in the payload says where the missing row would go or what it looks
- * like. Only `library-scanned` changes which rows exist, and only it forces a
- * refetch — deferred until the view is next shown, which is what
- * `useRefetchWhenShown` is for.
+ * A patch may carry the columns its transition changed, and still cannot insert
+ * a row: nothing in the payload says where an absent row would go. So a view can
+ * edit a row it already holds or drop it, and never place one it does not have.
+ * Only `library-scanned` changes which rows exist, and only it forces a refetch
+ * — deferred until the view is next shown, which is what `useRefetchWhenShown`
+ * is for.
+ *
+ * That is ADR 0015 as amended by #141. The rule shipped as "an id and not a
+ * row", which is wider than the argument given for it, and #141 is what the
+ * wider version cost: a soft reject writes four columns and the patch carried
+ * one, so a Library row patched through a reject kept the `path` and the Origin
+ * it held while Active, and then offered a Restore its own Origin check
+ * refused.
  *
  * A query library was considered for this and turned down. It caches JSON worth
  * 0.3ms and does nothing for DOM, scroll, or the fifty image requests that are
@@ -40,7 +47,27 @@ import {
  */
 export type AppEvent =
   /** Review and Library both hold rows keyed on Status, so both listen. */
-  | { type: "status-changed"; id: number; status: Status }
+  | {
+      type: "status-changed";
+      id: number;
+      status: Status;
+      /**
+       * The columns a file move wrote beside the Status, from the publisher's
+       * own hands: the path the command answered with, that path's basename, and
+       * the Origin — the row's pre-transition `path` for a reject, `null` for a
+       * Restore.
+       *
+       * Absent for the two transitions that move no file. Keep and un-keep write
+       * the Status column and nothing else, so there is nothing here for them to
+       * say.
+       *
+       * A complete `Pick` rather than a `Partial`. Both file-moving transitions
+       * set all three, and a partial would let an explicitly-`undefined` Origin
+       * wipe a good one when the patch is spread over the row, which is the same
+       * bug this field is here to fix (#141).
+       */
+      changed?: Pick<Wallpaper, "path" | "filename" | "origin_path">;
+    }
   /**
    * The two wallpapers in a Comparison, which is every wallpaper whose Score
    * just moved. The new Scores are deliberately not in here: a Comparison

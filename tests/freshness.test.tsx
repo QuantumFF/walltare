@@ -303,6 +303,37 @@ test("a reject drops the row from a Library filtered to Active", async () => {
   expect(card(2)).not.toBeNull();
 });
 
+test("a reject in Review leaves the Library row it patched restorable", async () => {
+  // The case #141 shipped through. The reject test above asserts the filter
+  // where the row is *dropped*, so its stale columns never render; under All the
+  // row stays, and every column the reject wrote is one this page is now showing
+  // — including the Origin its Restore reads to decide whether it can be pressed
+  // at all (ADR 0009).
+  const restores: unknown[] = [];
+  mockCommand("restore_wallpaper", (args) => {
+    restores.push(args?.id);
+    return "/library/one.jpg";
+  });
+  await openApp();
+  await click(tab("Library"));
+  expect(cardName(1)).toBe("one.jpg, Active");
+
+  await click(tab("Review"));
+  await click(screen.getByRole("button", { name: /reject one\.jpg/i }));
+
+  await click(tab("Library"));
+  expect(listCalls).toBe(1);
+  expect(cardName(1)).toBe("one.jpg, Rejected");
+
+  // No refetch stood between the reject and this press, which is the whole of
+  // what made the bug invisible: navigating away and back fixed the row.
+  await click(within(card(1)!).getByRole("button", { name: /restore/i }));
+
+  expect(restores).toEqual([1]);
+  expect(cardName(1)).toBe("one.jpg, Active");
+  expect(listCalls).toBe(1);
+});
+
 test("a library-scanned refetch waits until the view is shown", async () => {
   // A scan is the one thing that changes which rows exist, so it is the one
   // event a view answers with a fetch. It waits: a hidden Library pulling a

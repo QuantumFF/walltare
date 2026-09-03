@@ -754,6 +754,70 @@ test("rejecting in Library under All keeps the same wallpaper up, with its new a
   expect(row().textContent).toContain("Rejected");
   expect(row().textContent).toContain("1 / 2");
   expect(actions()).toEqual(["Restore R"]);
+
+  // And it can be pressed, which the list above cannot show. This is the
+  // surface that put the bad Restore in front of the curator rather than behind
+  // a hover: the reject keeps the same wallpaper up and shows its new action
+  // set, and what that set was offering was a Restore that refused itself
+  // (#141).
+  expect(action("Restore").getAttribute("aria-disabled")).toBeNull();
+  // The Origin, which is what this row prints for a Rejected wallpaper and what
+  // the Restore beside it acts on. The reject that just ran is where it came
+  // from, and a patch carrying only the Status left this line reading the path
+  // the file no longer sits at.
+  expect(readOut().textContent).toBe("/library/one.jpg");
+  expect(readOut().getAttribute("title")).toBe("/library/rejected/one.jpg");
+});
+
+test("restoring in the lightbox reaches the backend and puts the row back", async () => {
+  const restored: unknown[] = [];
+  mockCommand("move_wallpaper", () => "/library/rejected/one.jpg");
+  mockCommand("restore_wallpaper", (args) => {
+    restored.push(args?.id);
+    return "/library/one.jpg";
+  });
+  await enterLibrary([
+    wallpaper(11, { filename: "one.jpg" }),
+    wallpaper(12, { filename: "two.jpg" }),
+  ]);
+
+  await click(cell("one.jpg, Active"));
+  await pressKey("Delete");
+  await pressKey("r");
+
+  // Both legs from in here, on one row, with no fetch between them: the reject
+  // wrote the Origin the Restore then read, and the Restore wrote the path the
+  // row is left on. `R` and the button are one entry, so this is what the button
+  // does too (ADR 0019).
+  expect(restored).toEqual([11]);
+  expect(row().textContent).toContain("Active");
+  expect(actions()).toEqual(["Keep K", "Reject Del"]);
+  expect(readOut().textContent).toBe("/library/one.jpg");
+});
+
+test("undoing a reject from its toast leaves the row where its Restore would", async () => {
+  const restored: unknown[] = [];
+  mockCommand("move_wallpaper", () => "/library/rejected/one.jpg");
+  mockCommand("restore_wallpaper", (args) => {
+    restored.push(args?.id);
+    return "/library/one.jpg";
+  });
+  await enterLibrary([wallpaper(11, { filename: "one.jpg" })]);
+
+  await click(cell("one.jpg, Active"));
+  await pressKey("Delete");
+  expect(toastTitle()).toBe("Rejected one.jpg");
+
+  await pressChord("z");
+
+  // The third route to a Restore, and the furthest from the row it edits: the
+  // Undo fires from the shell, over whatever page the curator has wandered to,
+  // eight seconds after the reject. It is the same call, so it publishes the
+  // same patch and leaves the row in the state the test above leaves it.
+  expect(restored).toEqual([11]);
+  expect(row().textContent).toContain("Active");
+  expect(actions()).toEqual(["Keep K", "Reject Del"]);
+  expect(readOut().textContent).toBe("/library/one.jpg");
 });
 
 test("rejecting in Library under Active advances", async () => {

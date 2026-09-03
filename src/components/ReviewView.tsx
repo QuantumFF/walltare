@@ -15,6 +15,9 @@ import {
   useRefetchWhenShown,
 } from "@/context/AppEventsContext";
 import { client, type Wallpaper } from "@/lib/client";
+// The `filename` column, off the path `move_wallpaper` answered with, which is
+// how the backend derives the one it stores (ADR 0015 as amended by #141).
+import { basename } from "@/lib/paths";
 import { ArrowLeft, Check, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -153,8 +156,26 @@ export function ReviewView() {
       // called on the far side, and the toast decides whether it has anything
       // to say (ADR 0003, ADR 0017).
       const finalPath = await client.moveWallpaper(id, destination.written);
-      publish({ type: "status-changed", id, status: "rejected" });
+      // The publish moves inside the guard the toast already sat in, because a
+      // complete patch needs the removed card's own `path` for the Origin.
+      // `undefined` there means this handler was called for an id its own lookup
+      // missed, which should not happen; what the guard costs in that case is a
+      // Library that hears nothing, and what it buys is never publishing a patch
+      // that wipes the row's Origin (#141).
       if (removed) {
+        publish({
+          type: "status-changed",
+          id,
+          status: "rejected",
+          // The three columns the move wrote. Library holds this row under a
+          // filter of All and turns it Rejected in place, so the Origin is what
+          // decides whether the Restore it now offers can be pressed (#141).
+          changed: {
+            path: finalPath,
+            filename: basename(finalPath),
+            origin_path: removed.path,
+          },
+        });
         show({
           kind: "rejected",
           view: "review",
