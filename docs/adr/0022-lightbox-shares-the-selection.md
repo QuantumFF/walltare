@@ -274,6 +274,19 @@ The grid does not scroll while the lightbox is open. Mounting cards behind an
 opaque backdrop paints nothing and fires `small` requests that compete with the
 `medium` the lightbox is waiting on.
 
+> **Amended by [ADR 0029](0029-the-grid-owns-the-focus.md), 2026-09-03.** The
+> mechanism is unchanged and the switch moves. Closing asked for the card
+> through two members of `GridSelection`, a counter the page bumped and the
+> count the grid acknowledged; it now calls `focusSelection()` on the grid's own
+> handle, and the request lives entirely inside the component that already held
+> the other three refs deciding where focus goes.
+>
+> The rule also widens by one case. Three things close this surface and only
+> `close()` handed focus back, so keeping the last row from inside the lightbox
+> left focus on `body`. A close that happens while its page stays hands focus
+> back, which is the curator's own exit and the list emptying underneath them.
+> The destination change stays silent, because that page is being hidden.
+
 ### The mouse opens it from the card body
 
 Clicking anywhere on the card that is not a button opens the lightbox. There is
