@@ -13,11 +13,37 @@ const handlers = new Map<string, Set<EventHandler>>();
 // Deliberate backend failures are written as `Promise.reject(...)` instead.
 const mockFailures: unknown[] = [];
 
+/**
+ * Resolvers for `listen` calls being held open, or `null` when they resolve
+ * straight away. See `deferListen`.
+ */
+let held: Array<() => void> | null = null;
+
 /** Replace every registered command and event listener. */
 export function resetIpcMocks(): void {
   commands.clear();
   handlers.clear();
   mockFailures.length = 0;
+  held = null;
+}
+
+/**
+ * Hold every `listen` promise open until the returned function is called, so a
+ * test can act in the window between asking to subscribe and being handed the
+ * unsubscribe — which is where the cleanup race lives.
+ *
+ * The listener itself is registered immediately, as the real plugin's is: what
+ * arrives late is only the means to take it back off again. So a subscriber
+ * that unmounted while its promise was held has a listener still attached, and
+ * whether `emitEvent` reaches it after the release is the whole question.
+ */
+export function deferListen(): () => void {
+  const waiting: Array<() => void> = [];
+  held = waiting;
+  return () => {
+    if (held === waiting) held = null;
+    for (const resolve of waiting.splice(0)) resolve();
+  };
 }
 
 /**
@@ -115,8 +141,13 @@ export function registerIpcMocks(): void {
         handlers.set(event, set);
       }
       set.add(handler);
-      return Promise.resolve(() => {
+      const unlisten = () => {
         set?.delete(handler);
+      };
+      if (!held) return Promise.resolve(unlisten);
+      const waiting = held;
+      return new Promise<() => void>((resolve) => {
+        waiting.push(() => resolve(unlisten));
       });
     },
   }));

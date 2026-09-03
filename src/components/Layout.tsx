@@ -8,9 +8,11 @@ import { useApp, type View } from "@/context/AppContext";
 import { useAppEvents } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { client } from "@/lib/client";
+import { useBackendEvents } from "@/lib/useBackendEvents";
 import { cn } from "@/lib/utils";
 import { Images, Settings as SettingsIcon } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -277,6 +279,27 @@ function Shell({
 
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
+  // The frontend owns the trigger for pre-generation, the way it already owns
+  // the scan: spawning the pass from Tauri's `setup()` would start decoding
+  // before the window paints, competing with WebKit for the first frame
+  // (ADR 0012). Mounting is the gate — `AppProvider` renders nothing until
+  // both boot reads have settled — so this runs after the boot rule has
+  // picked a view, and again after every scan, which is what gets freshly
+  // scanned files warmed first.
+  //
+  // A pass that will not start leaves the cache cold and nothing else: the
+  // views it warms for all still generate on demand, so this is logged the
+  // way a failed boot read is and the app carries on.
+  const startPregen = useCallback(() => {
+    void client.startPregen().catch((error: unknown) => {
+      console.error("Failed to start thumbnail pre-generation:", error);
+    });
+  }, []);
+
+  useEffect(() => {
+    startPregen();
+  }, [startPregen]);
+
   // The scan subscription, above the view swap.
   //
   // It cannot live in the page that starts the scan. A scan now starts from
@@ -293,54 +316,20 @@ function Shell({
   // the four endings, and the `Stats` refetch that says whether the Round moved
   // backwards — is `ToastSurface`'s, so that every word the app puts in a toast
   // is written in one file.
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    // The frontend owns the trigger for pre-generation, the way it already owns
-    // the scan: spawning the pass from Tauri's `setup()` would start decoding
-    // before the window paints, competing with WebKit for the first frame
-    // (ADR 0012). Mounting is the gate — `AppProvider` renders nothing until
-    // both boot reads have settled — so this runs after the boot rule has
-    // picked a view, and again after every scan, which is what gets freshly
-    // scanned files warmed first.
-    //
-    // A pass that will not start leaves the cache cold and nothing else: the
-    // views it warms for all still generate on demand, so this is logged the
-    // way a failed boot read is and the app carries on.
-    const startPregen = () => {
-      void client.startPregen().catch((error: unknown) => {
-        console.error("Failed to start thumbnail pre-generation:", error);
-      });
-    };
-
-    startPregen();
-    void client
-      .onScanComplete((payload) => {
-        startPregen();
-        // A scan is the one mutation that changes which rows exist, so this is
-        // the one event of the four that a mounted view answers with a fetch
-        // rather than with a patch. The count rides along because zero of it is
-        // the answer "nothing changed": a scan inserts and never deletes.
-        publish({ type: "library-scanned", added: payload.added_count });
-        // The count the Library root section prints, and the boot rule's one
-        // exception — the only navigation left on this event. It decides for
-        // itself whether this scan is the one that filled an empty library.
-        readLibraryAfterScan();
-      })
-      .then((off) => {
-        if (cancelled) {
-          off();
-          return;
-        }
-        unlisten = off;
-      });
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [publish, readLibraryAfterScan]);
+  useBackendEvents({
+    scanComplete: (payload) => {
+      startPregen();
+      // A scan is the one mutation that changes which rows exist, so this is
+      // the one event of the four that a mounted view answers with a fetch
+      // rather than with a patch. The count rides along because zero of it is
+      // the answer "nothing changed": a scan inserts and never deletes.
+      publish({ type: "library-scanned", added: payload.added_count });
+      // The count the Library root section prints, and the boot rule's one
+      // exception — the only navigation left on this event. It decides for
+      // itself whether this scan is the one that filled an empty library.
+      readLibraryAfterScan();
+    },
+  });
 
   // One keyboard handler for the whole app, on `window` because the shell is
   // always mounted and there is exactly one of it — the view-scoped gate
