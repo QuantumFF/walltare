@@ -1,6 +1,5 @@
 import {
   STATUS_ACTIONS,
-  useCardAction,
   WallpaperCard,
   type CardAction,
 } from "@/components/WallpaperCard";
@@ -149,10 +148,10 @@ export function printedKey(action: CardAction): string {
  *
  * Exported because #140's lightbox answers the same three keys on the wallpaper
  * it is showing. It resolves them here rather than carrying its own copy, which
- * is the same reason its buttons render from `STATUS_ACTIONS` and act through
- * `useCardAction`: one action vocabulary in the app, and no surface that can
- * offer a curator one set with the mouse and another with the keyboard
- * (ADR 0022).
+ * is the same reason its buttons render from `STATUS_ACTIONS` and its presses
+ * reach the host's own `perform`: one action vocabulary in the app, and no
+ * surface that can offer a curator one set with the mouse and another with the
+ * keyboard (ADR 0022).
  */
 export function actionFor(key: string, status: Status): CardAction | null {
   const offered = STATUS_ACTIONS[status];
@@ -418,10 +417,6 @@ export function WallpaperGrid({
   className,
 }: WallpaperGridProps) {
   const columns = useGridColumns();
-  // The same entry a card's own buttons go through, so a key and a click take
-  // one path — including the refusal an origin-less Restore raises, which is
-  // written once and not once per trigger.
-  const act = useCardAction(onAction);
   const gridRef = useRef<HTMLDivElement>(null);
   // The selection follows the wallpaper, then the position, and the rule that
   // says so is the page's `useGridSelection` over this same list (ADR 0019).
@@ -525,10 +520,13 @@ export function WallpaperGrid({
     // focus stays here while that toast is up, so the next card is already
     // selected. It does mean a stray `Delete` on a focused grid moves a file,
     // which ADR 0019 wrote down as the cost rather than as an oversight.
+    // The same entry a card's own buttons go through, so a key and a click take
+    // one path — the origin-less refusal included, which the host's `perform`
+    // holds once rather than once per trigger (ADR 0023).
     const action = actionFor(event.key, selected.status);
     if (action) {
       event.preventDefault();
-      act(action, selected);
+      onAction(action, selected);
       return;
     }
 

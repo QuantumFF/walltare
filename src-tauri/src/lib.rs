@@ -400,25 +400,32 @@ fn list_wallpapers(
     .map_err(Into::into)
 }
 
+/// Keeps a wallpaper and answers with the row it wrote.
+///
+/// All four transitions answer with the row rather than with a path or with
+/// nothing, so the frontend edits the row it is told about instead of predicting
+/// one (ADR 0023).
 #[tauri::command]
-fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppError> {
+fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
     let conn = lock_conn(state);
     db::keep_wallpaper(&conn, id)
 }
 
-/// Undoes a Keep, putting the wallpaper back into review.
+/// Undoes a Keep, putting the wallpaper back into review, and answers with the
+/// row it wrote.
 ///
-/// Nothing on disk moves, so there is nothing to answer with. A Rejected
-/// wallpaper is refused: its file sits in the reject folder, and `restore_wallpaper`
-/// is what brings it back.
+/// Nothing on disk moves, so the `status` column is the whole of what changed. A
+/// Rejected wallpaper is refused: its file sits in the reject folder, and
+/// `restore_wallpaper` is what brings it back.
 #[tauri::command]
-fn unkeep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<(), error::AppError> {
+fn unkeep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
     let conn = lock_conn(state);
     db::unkeep_wallpaper(&conn, id)
 }
 
-/// Soft-rejects a wallpaper and answers with the absolute path its file landed
-/// at, which a collision may have suffixed.
+/// Soft-rejects a wallpaper and answers with the row it wrote: the path its file
+/// landed at, which a collision may have suffixed, that path's basename, and the
+/// Origin the reject recorded.
 ///
 /// The thumbnails stay. A Rejected wallpaper used to be out of voting, out of
 /// review and out of reach, so its cache was dead weight; now the library page
@@ -430,19 +437,20 @@ fn move_wallpaper(
     id: i64,
     destination_folder: String,
     state: tauri::State<Db>,
-) -> Result<String, error::AppError> {
+) -> Result<db::Wallpaper, error::AppError> {
     let conn = lock_conn(state);
     db::move_wallpaper(&conn, id, &destination_folder)
 }
 
-/// Undoes a soft reject and answers with the absolute path the file landed back
-/// at, which a collision at the Origin may have suffixed.
+/// Undoes a soft reject and answers with the row it wrote: the file is back at
+/// its Origin, which a collision there may have suffixed, and the Origin is
+/// spent.
 ///
 /// No pre-generation follows. A wallpaper rejected since the purge went still
 /// has its cache, and one rejected before that has no Origin and cannot be
 /// restored at all (ADR 0012).
 #[tauri::command]
-fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<String, error::AppError> {
+fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
     let conn = lock_conn(state);
     db::restore_wallpaper(&conn, id)
 }

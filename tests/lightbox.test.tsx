@@ -63,8 +63,58 @@ beforeEach(() => {
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockCommand("get_review", () => reviewRows);
   mockCommand("list_wallpapers", () => libraryRows);
-  mockCommand("keep_wallpaper", () => null);
+  mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
 });
+
+/** The row whichever page is serving it holds for an id. */
+function served(args: Record<string, unknown> | undefined): Wallpaper {
+  const id = args?.id as number;
+  const found = [...reviewRows, ...libraryRows].find((w) => w.id === id);
+  if (!found) throw new Error(`no row with id ${id}`);
+  return found;
+}
+
+/**
+ * The row a transition answered with (ADR 0023).
+ *
+ * Built from the row the page is holding, because every command answers with
+ * the row it wrote and the columns it did not touch come through unchanged.
+ */
+function wrote(
+  args: Record<string, unknown> | undefined,
+  over: Partial<Wallpaper> = {},
+): Wallpaper {
+  return { ...served(args), ...over };
+}
+
+/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
+function rejectedTo(
+  args: Record<string, unknown> | undefined,
+  landedAt: string,
+): Wallpaper {
+  const before = served(args);
+  return {
+    ...before,
+    status: "rejected",
+    path: landedAt,
+    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
+    origin_path: before.path,
+  };
+}
+
+/** The row a Restore wrote: the file back at `landedAt`, and the Origin spent. */
+function restoredTo(
+  args: Record<string, unknown> | undefined,
+  landedAt: string,
+): Wallpaper {
+  return {
+    ...served(args),
+    status: "active",
+    path: landedAt,
+    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
+    origin_path: null,
+  };
+}
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 
@@ -638,7 +688,7 @@ test("K keeps the wallpaper on screen", async () => {
   const kept: unknown[] = [];
   mockCommand("keep_wallpaper", (args) => {
     kept.push(args?.id);
-    return null;
+    return wrote(args, { status: "kept" });
   });
   await enterReview(threeRows());
   await pressKey("Enter");
@@ -656,7 +706,7 @@ test("Delete rejects the wallpaper on screen", async () => {
   const moved: unknown[] = [];
   mockCommand("move_wallpaper", (args) => {
     moved.push(args?.id);
-    return "/library/rejected/first.jpg";
+    return rejectedTo(args, "/library/rejected/first.jpg");
   });
   await enterReview();
   await pressKey("Enter");
@@ -674,7 +724,7 @@ test("R restores the wallpaper on screen", async () => {
   const restored: unknown[] = [];
   mockCommand("restore_wallpaper", (args) => {
     restored.push(args?.id);
-    return "/library/gone.jpg";
+    return restoredTo(args, "/library/gone.jpg");
   });
   await enterLibrary([
     wallpaper(4, {
@@ -696,7 +746,7 @@ test("Enter does nothing in here", async () => {
   const kept: unknown[] = [];
   mockCommand("keep_wallpaper", (args) => {
     kept.push(args?.id);
-    return null;
+    return wrote(args, { status: "kept" });
   });
   await enterReview();
 
@@ -720,7 +770,9 @@ test("Enter does nothing in here", async () => {
 // selection resolves against it, and what is on screen follows.
 
 test("keeping or rejecting in Review advances to the next wallpaper", async () => {
-  mockCommand("move_wallpaper", () => "/library/rejected/second.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, "/library/rejected/second.jpg"),
+  );
   await enterReview(threeRows());
   await pressKey("Enter");
 
@@ -737,7 +789,9 @@ test("keeping or rejecting in Review advances to the next wallpaper", async () =
 });
 
 test("rejecting in Library under All keeps the same wallpaper up, with its new actions", async () => {
-  mockCommand("move_wallpaper", () => "/library/rejected/one.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, "/library/rejected/one.jpg"),
+  );
   await enterLibrary([
     wallpaper(11, { filename: "one.jpg", path: "/library/one.jpg" }),
     wallpaper(12, { filename: "two.jpg", path: "/library/two.jpg" }),
@@ -759,22 +813,24 @@ test("rejecting in Library under All keeps the same wallpaper up, with its new a
   // surface that put the bad Restore in front of the curator rather than behind
   // a hover: the reject keeps the same wallpaper up and shows its new action
   // set, and what that set was offering was a Restore that refused itself
-  // (#141).
+  // (#141, now answered by the row the command hands back — ADR 0023).
   expect(action("Restore").getAttribute("aria-disabled")).toBeNull();
   // The Origin, which is what this row prints for a Rejected wallpaper and what
-  // the Restore beside it acts on. The reject that just ran is where it came
-  // from, and a patch carrying only the Status left this line reading the path
-  // the file no longer sits at.
+  // the Restore beside it acts on. It comes off the row the reject answered
+  // with; a patch carrying only the Status left this line reading the path the
+  // file no longer sits at.
   expect(readOut().textContent).toBe("/library/one.jpg");
   expect(readOut().getAttribute("title")).toBe("/library/rejected/one.jpg");
 });
 
 test("restoring in the lightbox reaches the backend and puts the row back", async () => {
   const restored: unknown[] = [];
-  mockCommand("move_wallpaper", () => "/library/rejected/one.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, "/library/rejected/one.jpg"),
+  );
   mockCommand("restore_wallpaper", (args) => {
     restored.push(args?.id);
-    return "/library/one.jpg";
+    return restoredTo(args, "/library/one.jpg");
   });
   await enterLibrary([
     wallpaper(11, { filename: "one.jpg" }),
@@ -797,10 +853,12 @@ test("restoring in the lightbox reaches the backend and puts the row back", asyn
 
 test("undoing a reject from its toast leaves the row where its Restore would", async () => {
   const restored: unknown[] = [];
-  mockCommand("move_wallpaper", () => "/library/rejected/one.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, "/library/rejected/one.jpg"),
+  );
   mockCommand("restore_wallpaper", (args) => {
     restored.push(args?.id);
-    return "/library/one.jpg";
+    return restoredTo(args, "/library/one.jpg");
   });
   await enterLibrary([wallpaper(11, { filename: "one.jpg" })]);
 
@@ -821,7 +879,9 @@ test("undoing a reject from its toast leaves the row where its Restore would", a
 });
 
 test("rejecting in Library under Active advances", async () => {
-  mockCommand("move_wallpaper", () => "/library/rejected/one.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, "/library/rejected/one.jpg"),
+  );
   await enterLibrary([
     wallpaper(11, { filename: "one.jpg", path: "/library/one.jpg" }),
     wallpaper(12, { filename: "two.jpg", path: "/library/two.jpg" }),
@@ -900,7 +960,7 @@ test("the origin-less Restore explains itself and calls nothing", async () => {
 
 test("a failed action puts the lightbox back on the wallpaper the toast names", async () => {
   expectConsoleError(/Failed to keep wallpaper/);
-  const call = deferred<null>();
+  const call = deferred<Wallpaper>();
   mockCommand("keep_wallpaper", () => call.promise);
   await enterReview(threeRows());
   await pressKey("Enter");
@@ -930,7 +990,7 @@ test("Ctrl+Z presses the visible toast's Undo from inside the lightbox", async (
   const unkept: unknown[] = [];
   mockCommand("unkeep_wallpaper", (args) => {
     unkept.push(args?.id);
-    return null;
+    return wrote(args, { status: "active" });
   });
   await enterReview(threeRows());
   await pressKey("Enter");

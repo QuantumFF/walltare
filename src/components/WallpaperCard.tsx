@@ -1,4 +1,3 @@
-import { NO_ORIGIN_REASON, useToaster } from "@/components/ToastSurface";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { wallpaperImageUrl, type Status, type Wallpaper } from "@/lib/client";
@@ -11,7 +10,6 @@ import {
   Undo2,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback } from "react";
 
 /**
  * The four transitions a card can offer, named after the resulting Status where
@@ -66,43 +64,6 @@ export const ACTION_CONTROLS: Record<
   reject: { label: "Reject", Icon: FolderInput, destructive: true },
   restore: { label: "Restore", Icon: RotateCcw },
 };
-
-/**
- * Ask the host for a transition, from the overlay's buttons and from the grid's
- * direct keys alike.
- *
- * The origin-less refusal lives here rather than on the button, because #125
- * gives the same Restore a second trigger and a refusal written twice is a
- * refusal that will eventually disagree with itself: `R` on a row rejected
- * before ADR 0009 recorded an Origin has to raise the same pinned toast the
- * `aria-disabled` button raises, and make the same absence of a call. Putting it
- * on the one path both go through is what makes "no IPC call" a property of the
- * action rather than of the control that happened to be pressed.
- *
- * No round trip, because `origin_path` is on the DTO for exactly this, and the
- * sentence is the frontend's own — the one place ADR 0017's "the title is ours
- * and the detail is the backend's" does not apply, because there is no backend
- * in it (ADR 0009, ADR 0019).
- */
-export function useCardAction(
-  onAction: (action: CardAction, wallpaper: Wallpaper) => void,
-): (action: CardAction, wallpaper: Wallpaper) => void {
-  const { show } = useToaster();
-  return useCallback(
-    (action: CardAction, wallpaper: Wallpaper) => {
-      if (action === "restore" && wallpaper.origin_path === null) {
-        show({
-          kind: "refused",
-          filename: wallpaper.filename,
-          reason: NO_ORIGIN_REASON,
-        });
-        return;
-      }
-      onAction(action, wallpaper);
-    },
-    [onAction, show],
-  );
-}
 
 /**
  * Where this card sits in the grid that mounted it, and whether it is the one
@@ -216,8 +177,6 @@ export function WallpaperCard({
   onOpen,
   cell,
 }: WallpaperCardProps) {
-  // One entry for every press on this card, and the same one #125's keys use.
-  const act = useCardAction(onAction);
   const rejected = wallpaper.status === "rejected";
   const evaluated = isEvaluated(wallpaper);
   // Known before the press, because ADR 0009 put `origin_path` on the DTO for
@@ -400,9 +359,10 @@ export function WallpaperCard({
                   aria-disabled={unavailable ? true : undefined}
                   aria-label={`${label} ${wallpaper.filename}`}
                   tabIndex={buttonTabIndex}
-                  // The refusal an origin-less row gets is `useCardAction`'s and
-                  // not this button's, so pressing Restore and pressing `R` are
-                  // the same event with the same outcome.
+                  // The refusal an origin-less row gets is the host's, inside
+                  // the one `perform` every trigger reaches, so pressing Restore
+                  // and pressing `R` are the same event with the same outcome
+                  // (ADR 0023).
                   onClick={(event) => {
                     // Where the card's own click handler stops. The cell
                     // underneath opens the lightbox, and a press on one of
@@ -413,7 +373,7 @@ export function WallpaperCard({
                     // it here would leave the keyboard pressing a control that
                     // does nothing.
                     event.stopPropagation();
-                    act(action, wallpaper);
+                    onAction(action, wallpaper);
                   }}
                   className={cn(
                     destructive

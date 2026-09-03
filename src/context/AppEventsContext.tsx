@@ -1,5 +1,5 @@
 import { useApp, type View } from "@/context/AppContext";
-import type { Stats, Status, Wallpaper } from "@/lib/client";
+import type { Stats, Wallpaper } from "@/lib/client";
 import {
   createContext,
   useCallback,
@@ -20,24 +20,24 @@ import {
  * Round headline, and with the shell keeping all three views mounted there is no
  * remount left to make either of those true by accident (ADR 0015).
  *
- * Three of the four are **patches**. `status-changed` tells Library that
- * wallpaper 7 is now Rejected and Library edits that row in place: no query, no
- * thumbnail request, and the card is already rendered. A patch applies
- * immediately whether the view is showing or not, because it costs nothing.
+ * Three of the four are **patches**. `status-changed` tells Library what
+ * wallpaper 7 now is and Library replaces that row: no query, no thumbnail
+ * request, and the card is already rendered. A patch applies immediately whether
+ * the view is showing or not, because it costs nothing.
  *
- * A patch may carry the columns its transition changed, and still cannot insert
- * a row: nothing in the payload says where an absent row would go. So a view can
- * edit a row it already holds or drop it, and never place one it does not have.
- * Only `library-scanned` changes which rows exist, and only it forces a refetch
- * — deferred until the view is next shown, which is what `useRefetchWhenShown`
- * is for.
+ * A patch carries a whole row and still cannot insert one: nothing in a row says
+ * where it belongs in an ordering by Score, so a view can replace a row it
+ * already holds or drop it, and never place one it does not have. Only
+ * `library-scanned` changes which rows exist, and only it forces a refetch —
+ * deferred until the view is next shown, which is what `useRefetchWhenShown` is
+ * for.
  *
- * That is ADR 0015 as amended by #141. The rule shipped as "an id and not a
- * row", which is wider than the argument given for it, and #141 is what the
- * wider version cost: a soft reject writes four columns and the patch carried
- * one, so a Library row patched through a reject kept the `path` and the Origin
- * it held while Active, and then offered a Restore its own Origin check
- * refused.
+ * That bound is position, not ignorance, and re-arguing it is what ADR 0023
+ * owed. The rule shipped as "an event carries an id and not a row", which is the
+ * premise this payload retires; what survives is the leg that was always the
+ * real one. A wallpaper that just became Active arrives with Review's next
+ * fetch because Review is ordered by Score and the row does not say where it
+ * falls.
  *
  * A query library was considered for this and turned down. It caches JSON worth
  * 0.3ms and does nothing for DOM, scroll, or the fifty image requests that are
@@ -46,28 +46,19 @@ import {
  * told what changed.
  */
 export type AppEvent =
-  /** Review and Library both hold rows keyed on Status, so both listen. */
-  | {
-      type: "status-changed";
-      id: number;
-      status: Status;
-      /**
-       * The columns a file move wrote beside the Status, from the publisher's
-       * own hands: the path the command answered with, that path's basename, and
-       * the Origin — the row's pre-transition `path` for a reject, `null` for a
-       * Restore.
-       *
-       * Absent for the two transitions that move no file. Keep and un-keep write
-       * the Status column and nothing else, so there is nothing here for them to
-       * say.
-       *
-       * A complete `Pick` rather than a `Partial`. Both file-moving transitions
-       * set all three, and a partial would let an explicitly-`undefined` Origin
-       * wipe a good one when the patch is spread over the row, which is the same
-       * bug this field is here to fix (#141).
-       */
-      changed?: Pick<Wallpaper, "path" | "filename" | "origin_path">;
-    }
+  /**
+   * Review and Library both hold rows keyed on Status, so both listen — through
+   * the one module that owns a page's rows and every transition on them.
+   *
+   * The whole row, as the command that wrote it answered. A `Pick` of the
+   * columns a file move touched came before it, and the complete-or-absent
+   * reasoning that `Pick` needed goes with it: a whole row replacing a whole row
+   * cannot half-wipe an Origin, which is the bug #141 was (ADR 0023).
+   *
+   * `stats-changed` already carries a whole `Stats`, so nothing about the bus is
+   * new here.
+   */
+  | { type: "status-changed"; wallpaper: Wallpaper }
   /**
    * The two wallpapers in a Comparison, which is every wallpaper whose Score
    * just moved. The new Scores are deliberately not in here: a Comparison
@@ -85,25 +76,21 @@ export type AppEvent =
   | { type: "library-scanned"; added: number };
 
 /**
- * The shell's publish/subscribe seam. Views reach it through `useAppEvents`,
- * `useAppEvent` and `useRefetchWhenShown` rather than through these members
- * directly; `subscribe` and `onRefetchRequest` exist for those hooks.
+ * The shell's publish/subscribe seam, and the whole of it.
+ *
+ * Views reach it through `useAppEvents`, `useAppEvent` and
+ * `useRefetchWhenShown` rather than through these members directly;
+ * `subscribe` exists for those hooks.
+ *
+ * A `requestRefetch(view)` channel stood beside these two, with an
+ * `onRefetchRequest` to receive it. It spent two of four members delivering one
+ * message read at one line, and the module that would now be publishing it is
+ * the module that reads it — so the stale-row refetch is the page's own fetch,
+ * asked for through the `owe` that `useRefetchWhenShown` returns (ADR 0023).
  */
 export interface AppEventBus {
   publish: (event: AppEvent) => void;
   subscribe: (handler: (event: AppEvent) => void) => () => void;
-  /**
-   * Make one view refetch, with no event to explain why.
-   *
-   * The seam #112 needs and the only thing outside the four events that may
-   * cause a fetch: `InvalidTransition` can only mean the view acted on a row
-   * that had already changed under it, so the row it is showing is wrong and no
-   * patch can say what it should be instead. It is a view name rather than a
-   * broadcast because exactly one view made the failed request, and every other
-   * view's rows are as good as they were. Nothing calls it yet.
-   */
-  requestRefetch: (view: View) => void;
-  onRefetchRequest: (view: View, handler: () => void) => () => void;
 }
 
 const AppEventsContext = createContext<AppEventBus | undefined>(undefined);
@@ -118,7 +105,6 @@ const AppEventsContext = createContext<AppEventBus | undefined>(undefined);
  */
 export function AppEventsProvider({ children }: { children: ReactNode }) {
   const listeners = useRef<Set<(event: AppEvent) => void>>(new Set());
-  const refetchers = useRef<Map<View, Set<() => void>>>(new Map());
 
   const bus = useMemo<AppEventBus>(
     () => ({
@@ -132,22 +118,6 @@ export function AppEventsProvider({ children }: { children: ReactNode }) {
         listeners.current.add(handler);
         return () => {
           listeners.current.delete(handler);
-        };
-      },
-      requestRefetch: (view) => {
-        for (const handler of [...(refetchers.current.get(view) ?? [])]) {
-          handler();
-        }
-      },
-      onRefetchRequest: (view, handler) => {
-        let registered = refetchers.current.get(view);
-        if (!registered) {
-          registered = new Set();
-          refetchers.current.set(view, registered);
-        }
-        registered.add(handler);
-        return () => {
-          registered.delete(handler);
         };
       },
     }),
@@ -188,7 +158,7 @@ export function useAppEvent(handler: (event: AppEvent) => void): void {
 }
 
 /**
- * Refetch when the view is next shown, for the two things that can change which
+ * Refetch when the view is next shown, for the things that can change which
  * rows exist.
  *
  * A hidden view refetching straight away is the one thing this whole
@@ -202,9 +172,17 @@ export function useAppEvent(handler: (event: AppEvent) => void): void {
  * `refetch` is called at most once per thing owed. Being shown when the news
  * arrives is not a special case: the debt is settled immediately, because
  * "showing" is the only condition there is.
+ *
+ * It **returns that `owe`**, which is what lets a stale row ask for the same
+ * deferral without a channel on the bus. A transition refused because the row
+ * had already changed underneath is the caller: it owes the page a fetch, and
+ * the deferral still holds for an Undo pressed eight seconds later on a page the
+ * curator has left (ADR 0023).
  */
-export function useRefetchWhenShown(view: View, refetch: () => void): void {
-  const bus = useAppEvents();
+export function useRefetchWhenShown(
+  view: View,
+  refetch: () => void,
+): () => void {
   const showing = useApp().view === view;
   const owed = useRef(false);
 
@@ -230,11 +208,11 @@ export function useRefetchWhenShown(view: View, refetch: () => void): void {
     owe();
   });
 
-  useEffect(() => bus.onRefetchRequest(view, owe), [bus, owe, view]);
-
   useEffect(() => {
     if (!showing || !owed.current) return;
     owed.current = false;
     refetch();
   }, [showing, refetch]);
+
+  return owe;
 }

@@ -165,13 +165,14 @@ pub fn insert_new_wallpapers(
 const MAX_COLLISION_SUFFIXES: u32 = 1000;
 
 /// Soft-rejects a wallpaper: moves its file to `destination_folder`, marks the
-/// row Rejected, records the Origin, and answers with the absolute path the
-/// file ended up at.
+/// row Rejected, records the Origin, and answers with the row it wrote.
 ///
-/// The returned path is not the destination folder joined with the old
-/// filename: a collision suffixes the basename, so `wall.jpg` can land as
-/// `wall (2).jpg`, and only the caller that is told so can say where the file
-/// went.
+/// The row rather than the path, so the caller predicts nothing: a collision
+/// suffixes the basename, so `wall.jpg` can land as `wall (2).jpg`, and the
+/// `path`, the `filename` and the `origin_path` this reports are the three
+/// columns the move rewrote (ADR 0023). It is read after the commit, through the
+/// same [`get_wallpaper`] the guard above used, for the reason
+/// [`WALLPAPER_COLUMNS`] is one copy.
 ///
 /// The database write happens first, inside a transaction, and the file move
 /// last. That ordering matters: a `UNIQUE(path)` collision or any other DB
@@ -181,22 +182,11 @@ pub fn move_wallpaper(
     conn: &Connection,
     wallpaper_id: i64,
     destination_folder: &str,
-) -> Result<String, AppError> {
+) -> Result<Wallpaper, AppError> {
     let tx = conn.unchecked_transaction()?;
-    let (path, filename, status): (String, String, String) = tx
-        .query_row(
-            "SELECT path, filename, status FROM wallpapers WHERE id = ?1",
-            rusqlite::params![wallpaper_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
-            }
-            other => other.into(),
-        })?;
+    let row = get_wallpaper(&tx, wallpaper_id)?;
 
-    if status == "rejected" {
+    if !row.status.may_become(Status::Rejected) {
         // Re-rejecting would move the file again, nesting the destination folder
         // inside itself (`rejected/rejected/x.jpg`).
         return Err(AppError::InvalidTransition(format!(
@@ -204,14 +194,14 @@ pub fn move_wallpaper(
         )));
     }
 
-    let source = PathBuf::from(&path);
+    let source = PathBuf::from(&row.path);
     let dest_dir = resolve_destination_dir(&source, destination_folder)?;
-    if dest_dir.join(&filename) == source {
+    if dest_dir.join(&row.filename) == source {
         return Err(AppError::InvalidPath(format!(
             "destination {destination_folder:?} is the folder wallpaper {wallpaper_id} already lives in"
         )));
     }
-    let dest_path = unique_destination(&dest_dir, &filename)?;
+    let dest_path = unique_destination(&dest_dir, &row.filename)?;
 
     let dest_str = dest_path
         .to_str()
@@ -227,20 +217,20 @@ pub fn move_wallpaper(
     // and no window where the Origin is half written.
     tx.execute(
         "UPDATE wallpapers
-         SET status = 'rejected', path = ?1, filename = ?2, origin_path = path
-         WHERE id = ?3",
-        rusqlite::params![dest_str, dest_name, wallpaper_id],
+         SET status = ?1, path = ?2, filename = ?3, origin_path = path
+         WHERE id = ?4",
+        rusqlite::params![Status::Rejected, dest_str, dest_name, wallpaper_id],
     )?;
 
     // Anything below that fails drops `tx` unread, rolling the row back.
     move_file(&source, &dest_path)?;
     tx.commit()?;
-    Ok(dest_str.to_string())
+    get_wallpaper(conn, wallpaper_id)
 }
 
 /// Restores a soft-rejected wallpaper: moves its file back to the Origin the
 /// reject recorded, lands the row on Active with the Origin cleared, and answers
-/// with the absolute path the file ended up at.
+/// with the row it wrote.
 ///
 /// A Restore always lands on Active, never on whatever Status the wallpaper held
 /// before the reject. Kept is the curator's judgement about a rating, and
@@ -256,38 +246,32 @@ pub fn move_wallpaper(
 /// inside a transaction and the file moves last, so a `UNIQUE(path)` collision
 /// or any other database error aborts while the disk is still untouched, and
 /// dropping the transaction rolls the row back.
-pub fn restore_wallpaper(conn: &Connection, wallpaper_id: i64) -> Result<String, AppError> {
+pub fn restore_wallpaper(conn: &Connection, wallpaper_id: i64) -> Result<Wallpaper, AppError> {
     let tx = conn.unchecked_transaction()?;
-    let (path, status, origin_path): (String, String, Option<String>) = tx
-        .query_row(
-            "SELECT path, status, origin_path FROM wallpapers WHERE id = ?1",
-            rusqlite::params![wallpaper_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
-            }
-            other => other.into(),
-        })?;
+    let row = get_wallpaper(&tx, wallpaper_id)?;
 
-    if status != "rejected" {
+    // The mirror of `unkeep_wallpaper`'s guard, and for the same reason: Kept to
+    // Active and Active to Active are legal pairs too, and they are the
+    // un-keep's, so `may_become(Active)` is true of a wallpaper a Restore has
+    // nothing to put back (see [`Status::may_become`]).
+    if row.status != Status::Rejected {
         return Err(AppError::InvalidTransition(format!(
-            "wallpaper {wallpaper_id} is {status}, so there is no reject to undo"
+            "wallpaper {wallpaper_id} is {}, so there is no reject to undo",
+            row.status.as_str()
         )));
     }
-    let Some(origin) = origin_path else {
+    let Some(origin) = row.origin_path else {
         return Err(AppError::InvalidTransition(format!(
             "wallpaper {wallpaper_id} was rejected before its Origin was recorded, so there is nowhere to put it back"
         )));
     };
 
-    let source = PathBuf::from(&path);
+    let source = PathBuf::from(&row.path);
     if !source.is_file() {
         // Not what makes this safe — the write ordering below does that. It is
         // here so a curator who emptied the reject folder by hand reads a
         // sentence about the reject folder instead of whatever `rename` says.
-        return Err(AppError::FileMissing(path));
+        return Err(AppError::FileMissing(row.path));
     }
 
     // The Origin is the file's own pre-reject path, so the folder to put it back
@@ -322,15 +306,15 @@ pub fn restore_wallpaper(conn: &Connection, wallpaper_id: i64) -> Result<String,
     // a fresh one.
     tx.execute(
         "UPDATE wallpapers
-         SET status = 'active', path = ?1, filename = ?2, origin_path = NULL
-         WHERE id = ?3",
-        rusqlite::params![dest_str, dest_name, wallpaper_id],
+         SET status = ?1, path = ?2, filename = ?3, origin_path = NULL
+         WHERE id = ?4",
+        rusqlite::params![Status::Active, dest_str, dest_name, wallpaper_id],
     )?;
 
     // Anything below that fails drops `tx` unread, rolling the row back.
     move_file(&source, &dest_path)?;
     tx.commit()?;
-    Ok(dest_str.to_string())
+    get_wallpaper(conn, wallpaper_id)
 }
 
 /// Expands `destination_folder`, resolves it against the wallpaper's own folder
@@ -438,6 +422,122 @@ fn move_file(source: &Path, dest: &Path) -> Result<(), AppError> {
     }
 }
 
+/// A wallpaper's Status, the three of `CONTEXT.md`: Active, Kept, Rejected.
+///
+/// It lives here because [`wallpaper_from_row`] is the only place in the crate
+/// that reads the `status` column into the row shape, and the `CHECK` constraint
+/// fixing the three legal spellings is at the top of [`DDL`]. [`StatusFilter`]
+/// is the same vocabulary and sits below (ADR 0024).
+///
+/// The wire stays `"active" | "kept" | "rejected"`, which is what
+/// `rename_all` is doing and what one test asserts directly: the frontend suite
+/// drives the real components against a mocked IPC seam whose fixtures are
+/// TypeScript, so an edit to this attribute would change the wire and break
+/// nothing that runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    Active,
+    Kept,
+    Rejected,
+}
+
+impl Status {
+    /// Eligible as a `WHERE` fragment: the voting pool, which is Active or Kept
+    /// (`CONTEXT.md`).
+    ///
+    /// One of Eligible's two forms, because the code asks the question in two
+    /// places that cannot share one answer. The four aggregate queries in
+    /// `voting.rs` take this; `fetch_summary` asks [`Self::is_eligible`] of a row
+    /// it already holds. A test seeds all three Statuses and asserts the two
+    /// agree (ADR 0024).
+    pub const ELIGIBLE_SQL: &'static str = "status IN ('active', 'kept')";
+
+    /// Reads the `status` column.
+    ///
+    /// The schema's `CHECK` constraint allows only these three spellings, so
+    /// anything else is a database this app never wrote. Such a row reads as
+    /// Active, which is the leniency this has always had.
+    pub fn read(column: &str) -> Self {
+        match column {
+            "rejected" => Self::Rejected,
+            "kept" => Self::Kept,
+            _ => Self::Active,
+        }
+    }
+
+    /// The spelling the column holds, for the `WHERE` fragments
+    /// [`StatusFilter::where_clause`] builds and for the sentence a refusal
+    /// prints.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Kept => "kept",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    /// Whether a wallpaper of this Status is in the pool voting draws from.
+    ///
+    /// [`Self::ELIGIBLE_SQL`]'s in-memory half. Not a fourth variant: `CONTEXT.md`
+    /// is explicit that the three are mutually exclusive and that Eligible
+    /// describes two of them, so a fourth arm would make a `match` on a Status
+    /// ambiguous about whether a row is Active or Kept.
+    pub fn is_eligible(self) -> bool {
+        matches!(self, Self::Active | Self::Kept)
+    }
+
+    /// ADR 0009's transition table, as one object.
+    ///
+    /// An exhaustive `match` on the pair, so a fourth Status breaks the build in
+    /// both positions — which is the property typing the column paid for, and
+    /// this is the first thing to spend it on. One test walks all nine pairs
+    /// against ADR 0009's seven rows (ADR 0025).
+    ///
+    /// The identity pairs are legal because a double click on a button is not an
+    /// error: re-keeping a Kept wallpaper and un-keeping an Active one are both
+    /// no-op successes, which is also why [`keep_wallpaper`] is not a toggle.
+    ///
+    /// **It answers for the table and not for a command**, which is what limits
+    /// it to two of the four guards. Kept and Rejected each have one door into
+    /// them, so [`keep_wallpaper`] and [`move_wallpaper`] read their whole guard
+    /// off `may_become(Kept)` and `may_become(Rejected)`. Active has two —
+    /// Rejected to Active is a Restore, Kept or Active to Active is an un-keep —
+    /// and a pair says nothing about which command owns it, so
+    /// [`unkeep_wallpaper`] and [`restore_wallpaper`] test the one Status that
+    /// tells those two doors apart. Asking `may_become(Active)` there would
+    /// un-keep a Rejected wallpaper without moving its file.
+    pub fn may_become(self, to: Status) -> bool {
+        match (self, to) {
+            (Self::Active, Self::Active) => true,
+            (Self::Active, Self::Kept) => true,
+            (Self::Active, Self::Rejected) => true,
+            (Self::Kept, Self::Active) => true,
+            (Self::Kept, Self::Kept) => true,
+            (Self::Kept, Self::Rejected) => true,
+            (Self::Rejected, Self::Active) => true,
+            (Self::Rejected, Self::Kept) => false,
+            (Self::Rejected, Self::Rejected) => false,
+        }
+    }
+}
+
+/// Makes `row.get(3)?` in [`wallpaper_from_row`] answer with a `Status`, with no
+/// change at the call site.
+impl rusqlite::types::FromSql for Status {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        value.as_str().map(Status::read)
+    }
+}
+
+/// Makes `params![Status::Rejected]` work for the `SET status = ?` writes in the
+/// four transitions, so no transition spells a Status as a literal.
+impl rusqlite::ToSql for Status {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
 /// The one wallpaper row shape the backend hands out, listings and voting pairs
 /// alike, mirrored by the single `Wallpaper` interface in `client.ts`.
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -445,7 +545,7 @@ pub struct Wallpaper {
     pub id: i64,
     pub filename: String,
     pub path: String,
-    pub status: String,
+    pub status: Status,
     pub rating_mu: f64,
     pub rating_sigma: f64,
     pub comparisons_count: i64,
@@ -475,13 +575,32 @@ fn wallpaper_from_row(row: &rusqlite::Row) -> Result<Wallpaper, rusqlite::Error>
     })
 }
 
-/// One wallpaper by id. `QueryReturnedNoRows` when there is no such row, which
-/// callers with something better to say about a missing id map themselves.
-pub fn get_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, rusqlite::Error> {
+/// One wallpaper by id, and [`AppError::NotFound`] when there is no such row.
+///
+/// The one read six sites share: the four transitions' guards, the row each of
+/// them answers with after its commit, and `get_pair`. `voting::fetch_summary`
+/// joins them, which is what leaves one `QueryReturnedNoRows` closure in the
+/// crate where there were five (ADR 0025).
+///
+/// It maps the missing row itself because no caller has anything better to say
+/// about a missing id: `NotFound` already meant that at five of the six sites,
+/// `error_response` maps it to 404, and ADR 0001's distinction survives —
+/// `NotFound` for a row that is absent, `InvalidTransition` for one that is
+/// present and refusing.
+///
+/// `get_wallpaper(&tx, id)` works unchanged inside the two transactional
+/// commands, because `Transaction` derefs to `Connection`.
+pub fn get_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppError> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT {WALLPAPER_COLUMNS} FROM wallpapers WHERE id = ?1"
     ))?;
     stmt.query_row(rusqlite::params![id], wallpaper_from_row)
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                AppError::NotFound(format!("no wallpaper with id {id}"))
+            }
+            other => other.into(),
+        })
 }
 
 pub fn get_review(conn: &Connection, limit: i64) -> Result<Vec<Wallpaper>, rusqlite::Error> {
@@ -517,15 +636,20 @@ pub enum StatusFilter {
 }
 
 impl StatusFilter {
-    /// The one `WHERE` fragment this variant stands for. `&'static str` is the
-    /// point: no caller-supplied string reaches the SQL.
-    fn where_clause(self) -> &'static str {
-        match self {
-            Self::All => "",
-            Self::Active => "WHERE status = 'active'",
-            Self::Kept => "WHERE status = 'kept'",
-            Self::Rejected => "WHERE status = 'rejected'",
-        }
+    /// The one `WHERE` fragment this variant stands for.
+    ///
+    /// Built from [`Status::as_str`] rather than spelling the three values a
+    /// fifth time (ADR 0024). Still no caller-supplied string in the SQL: a
+    /// variant is the only thing that can reach here, and the deserialization
+    /// boundary is what keeps an unknown name out.
+    fn where_clause(self) -> String {
+        let status = match self {
+            Self::All => return String::new(),
+            Self::Active => Status::Active,
+            Self::Kept => Status::Kept,
+            Self::Rejected => Status::Rejected,
+        };
+        format!("WHERE status = '{}'", status.as_str())
     }
 }
 
@@ -600,41 +724,36 @@ pub fn list_wallpapers(
     rows.collect()
 }
 
-/// Transitions a wallpaper to Kept. Re-keeping a Kept one is a no-op success.
+/// Transitions a wallpaper to Kept and answers with the row it wrote.
+/// Re-keeping a Kept one is a no-op success.
 ///
 /// Keeping a Rejected wallpaper is refused: per CONTEXT.md a reject is a
 /// transition, not a flag, so this would silently un-reject a file that no
 /// longer sits where the row says it does.
-pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<(), AppError> {
-    let status: String = conn
-        .query_row(
-            "SELECT status FROM wallpapers WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                AppError::NotFound(format!("no wallpaper with id {id}"))
-            }
-            other => other.into(),
-        })?;
+///
+/// Nothing on disk moves, so the row it answers with differs from the one it
+/// read in the `status` column alone. It answers with the row anyway, because a
+/// transition that reports what it wrote leaves the caller nothing to predict
+/// (ADR 0023).
+pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppError> {
+    let row = get_wallpaper(conn, id)?;
 
-    if status == "rejected" {
+    if !row.status.may_become(Status::Kept) {
         return Err(AppError::InvalidTransition(format!(
             "cannot keep rejected wallpaper with id {id}"
         )));
     }
 
     conn.execute(
-        "UPDATE wallpapers SET status = 'kept' WHERE id = ?1",
-        rusqlite::params![id],
+        "UPDATE wallpapers SET status = ?1 WHERE id = ?2",
+        rusqlite::params![Status::Kept, id],
     )?;
-    Ok(())
+    get_wallpaper(conn, id)
 }
 
-/// Transitions a wallpaper to Active, undoing a Keep. Un-keeping an Active one
-/// is a no-op success, for the same reason re-keeping a Kept one is: a double
-/// click on a button is not an error.
+/// Transitions a wallpaper to Active, undoing a Keep, and answers with the row
+/// it wrote. Un-keeping an Active one is a no-op success, for the same reason
+/// re-keeping a Kept one is: a double click on a button is not an error.
 ///
 /// [`keep_wallpaper`] stays a one-way transition rather than becoming a toggle,
 /// which is what makes that idempotence worth having: a toggle would turn the
@@ -644,31 +763,24 @@ pub fn keep_wallpaper(conn: &Connection, id: i64) -> Result<(), AppError> {
 /// folder, and moving it back is what a Restore does; succeeding here would
 /// leave an Active row pointing inside the reject folder, still carrying the
 /// Origin the Restore was going to spend.
-pub fn unkeep_wallpaper(conn: &Connection, id: i64) -> Result<(), AppError> {
-    let status: String = conn
-        .query_row(
-            "SELECT status FROM wallpapers WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        )
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                AppError::NotFound(format!("no wallpaper with id {id}"))
-            }
-            other => other.into(),
-        })?;
+pub fn unkeep_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppError> {
+    let row = get_wallpaper(conn, id)?;
 
-    if status == "rejected" {
+    // Not `may_become(Active)`: Rejected to Active is a legal pair, and it is
+    // `restore_wallpaper`'s. Which door into Active applies is decided by the
+    // one Status the table cannot discriminate on, so this is where the un-keep
+    // says so (see [`Status::may_become`]).
+    if row.status == Status::Rejected {
         return Err(AppError::InvalidTransition(format!(
             "wallpaper {id} is rejected, so a Restore is what brings it back"
         )));
     }
 
     conn.execute(
-        "UPDATE wallpapers SET status = 'active' WHERE id = ?1",
-        rusqlite::params![id],
+        "UPDATE wallpapers SET status = ?1 WHERE id = ?2",
+        rusqlite::params![Status::Active, id],
     )?;
-    Ok(())
+    get_wallpaper(conn, id)
 }
 
 #[cfg(test)]
@@ -917,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn get_wallpaper_reads_one_row_and_reports_a_missing_id_as_no_rows() {
+    fn get_wallpaper_reads_one_row_and_answers_a_missing_id_with_not_found() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
@@ -928,14 +1040,110 @@ mod tests {
         assert_eq!(w.id, id);
         assert_eq!(w.filename, "a.jpg");
         assert_eq!(w.path, "/w/a.jpg");
-        assert_eq!(w.status, "active");
+        assert_eq!(w.status, Status::Active);
         assert_eq!(w.comparisons_count, 0);
         assert_eq!(w.origin_path, None);
 
-        assert!(matches!(
-            get_wallpaper(&conn, 999),
-            Err(rusqlite::Error::QueryReturnedNoRows)
-        ));
+        // The one answer for a missing row, mapped here rather than by six
+        // callers, and the reason none of them carries a
+        // `QueryReturnedNoRows` closure any more (ADR 0025).
+        let err = get_wallpaper(&conn, 999).unwrap_err();
+        assert!(
+            matches!(err, AppError::NotFound(ref m) if m.contains("999")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_status_crosses_the_ipc_as_the_three_strings_the_column_holds() {
+        // The `rename_all` attribute is the only thing keeping four IPC
+        // payloads stable, and this is the only thing watching it. The frontend
+        // suite cannot stand in for it: it drives the real components against a
+        // mocked IPC seam whose fixtures are written in TypeScript, so an edit
+        // here would change the wire and break nothing that runs (ADR 0024).
+        for (status, wire) in [
+            (Status::Active, "active"),
+            (Status::Kept, "kept"),
+            (Status::Rejected, "rejected"),
+        ] {
+            assert_eq!(serde_json::to_value(status).unwrap(), wire);
+            // And the column spelling is the same string, so a row read back
+            // and a row serialized out agree.
+            assert_eq!(status.as_str(), wire);
+        }
+
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "kept", 25.0);
+        let json = serde_json::to_value(get_wallpaper(&conn, id).unwrap()).unwrap();
+        assert_eq!(json["status"], "kept");
+    }
+
+    #[test]
+    fn eligible_selects_exactly_the_rows_the_predicate_returns_true_for() {
+        // `CONTEXT.md`'s Eligible entry, made checkable. The two forms exist
+        // because the code asks the question in SQL four times and in memory
+        // once, and this is what holds them together (ADR 0024).
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let active = seed_wallpaper(&conn, "/w/active.jpg", "active", 25.0);
+        let kept = seed_wallpaper(&conn, "/w/kept.jpg", "kept", 25.0);
+        let rejected = seed_wallpaper(&conn, "/w/rejected.jpg", "rejected", 25.0);
+
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT id FROM wallpapers WHERE {} ORDER BY id",
+                Status::ELIGIBLE_SQL
+            ))
+            .unwrap();
+        let selected: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        let by_predicate: Vec<i64> = [
+            (active, Status::Active),
+            (kept, Status::Kept),
+            (rejected, Status::Rejected),
+        ]
+        .into_iter()
+        .filter(|(_, status)| status.is_eligible())
+        .map(|(id, _)| id)
+        .collect();
+
+        assert_eq!(selected, by_predicate);
+        assert_eq!(selected, vec![active, kept]);
+    }
+
+    #[test]
+    fn may_become_answers_adr_0009s_table_and_nothing_else() {
+        // All nine pairs against the seven rows ADR 0009 lists, so the table
+        // stops being prose that four functions each implement a slice of. The
+        // two false pairs are Rejected as a one-way door: only a Restore leads
+        // back out, and it leads to Active.
+        let legal = [
+            (Status::Active, Status::Kept),
+            (Status::Kept, Status::Kept),
+            (Status::Active, Status::Rejected),
+            (Status::Kept, Status::Rejected),
+            (Status::Rejected, Status::Active),
+            (Status::Kept, Status::Active),
+            (Status::Active, Status::Active),
+        ];
+
+        for from in [Status::Active, Status::Kept, Status::Rejected] {
+            for to in [Status::Active, Status::Kept, Status::Rejected] {
+                let expected = legal.contains(&(from, to));
+                assert_eq!(
+                    from.may_become(to),
+                    expected,
+                    "{} may become {}",
+                    from.as_str(),
+                    to.as_str()
+                );
+            }
+        }
     }
 
     #[test]
@@ -952,7 +1160,7 @@ mod tests {
         let ids: Vec<i64> = review.iter().map(|w| w.id).collect();
         assert_eq!(ids, vec![lo, mid, hi]);
 
-        assert_eq!(review[0].status, "active");
+        assert_eq!(review[0].status, Status::Active);
         assert_eq!(review[0].rating_mu, 10.0);
     }
 
@@ -1146,17 +1354,21 @@ mod tests {
         let id = seed_real_wallpaper(&conn, &library, "dawn.jpg");
         let origin = library.join("dawn.jpg").to_str().unwrap().to_string();
 
-        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let answered = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
 
         let rejected = list_wallpapers(&conn, StatusFilter::Rejected, ListOrdering::default())
             .unwrap()
             .pop()
             .expect("the rejected wallpaper is the one row this filter returns");
         assert_eq!(rejected.id, id);
-        assert_eq!(rejected.status, "rejected");
+        assert_eq!(rejected.status, Status::Rejected);
         assert_eq!(rejected.origin_path, Some(origin));
         // And `path` follows the file, so the two are different answers.
-        assert_eq!(rejected.path, landed);
+        assert_ne!(rejected.path, rejected.origin_path.clone().unwrap());
+        // The reject answered with this row and not with a path, so the listing
+        // and the transition are one account of the wallpaper rather than two
+        // (ADR 0023).
+        assert_eq!(answered, rejected);
     }
 
     #[test]
@@ -1442,7 +1654,9 @@ mod tests {
         init_schema(&conn).unwrap();
         let (id, origin) = seed_for_restore(&conn, tmp.path(), "regretted.jpg");
         keep_wallpaper(&conn, id).unwrap();
-        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap())
+            .unwrap()
+            .path;
         let before = row_status_and_path(&conn, id);
 
         let err = unkeep_wallpaper(&conn, id).unwrap_err();
@@ -1462,7 +1676,10 @@ mod tests {
 
         // And the transition it was asking for is still available under the
         // command that moves the file with it.
-        assert_eq!(PathBuf::from(restore_wallpaper(&conn, id).unwrap()), origin);
+        assert_eq!(
+            PathBuf::from(restore_wallpaper(&conn, id).unwrap().path),
+            origin
+        );
     }
 
     #[test]
@@ -1499,8 +1716,8 @@ mod tests {
         let id_b = id_of(&conn, b_dir.join("wall.jpg").to_str().unwrap());
 
         let out = dest.path().to_str().unwrap();
-        let landed_a = move_wallpaper(&conn, id_a, out).unwrap();
-        let landed_b = move_wallpaper(&conn, id_b, out).unwrap();
+        let landed_a = move_wallpaper(&conn, id_a, out).unwrap().path;
+        let landed_b = move_wallpaper(&conn, id_b, out).unwrap().path;
 
         // Each reject answers with the path its file is actually at, suffix and
         // all, which is the only way a caller can tell the curator that their
@@ -1657,7 +1874,9 @@ mod tests {
         let id = seed_real_wallpaper(&conn, tmp.path(), "a.jpg");
 
         let dest_dir = dest.path().join("out");
-        let landed = move_wallpaper(&conn, id, dest_dir.to_str().unwrap()).unwrap();
+        let landed = move_wallpaper(&conn, id, dest_dir.to_str().unwrap())
+            .unwrap()
+            .path;
 
         assert_eq!(PathBuf::from(&landed), dest_dir.join("a.jpg"));
         assert!(dest_dir.join("a.jpg").is_file());
@@ -1682,7 +1901,9 @@ mod tests {
         let (id, origin) = seed_for_restore(&conn, tmp.path(), "kept-then-cut.jpg");
         keep_wallpaper(&conn, id).unwrap();
 
-        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap())
+            .unwrap()
+            .path;
 
         assert_eq!(landed, path_string(dest.path().join("kept-then-cut.jpg")));
         assert!(PathBuf::from(&landed).is_file());
@@ -1736,7 +1957,9 @@ mod tests {
         let id = seed_real_wallpaper(&conn, tmp.path(), "wall.jpg");
         let origin = tmp.path().join("wall.jpg").to_str().unwrap().to_string();
 
-        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let landed = move_wallpaper(&conn, id, dest.path().to_str().unwrap())
+            .unwrap()
+            .path;
 
         assert_eq!(landed, path_string(dest.path().join("wall (2).jpg")));
         assert_eq!(origin_path_of(&conn, id), Some(origin));
@@ -1921,10 +2144,12 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let (id, origin) = seed_for_restore(&conn, tmp.path(), "dawn.jpg");
-        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap())
+            .unwrap()
+            .path;
         assert!(PathBuf::from(&rejected_at).is_file());
 
-        let landed = restore_wallpaper(&conn, id).unwrap();
+        let landed = restore_wallpaper(&conn, id).unwrap().path;
 
         // The filesystem first: the row saying Active means nothing if the file
         // is still sitting in the reject folder.
@@ -1985,7 +2210,9 @@ mod tests {
         move_wallpaper(&conn, id, first.path().to_str().unwrap()).unwrap();
         assert_eq!(origin_path_of(&conn, id), Some(origin_string.clone()));
         restore_wallpaper(&conn, id).unwrap();
-        let landed = move_wallpaper(&conn, id, second.path().to_str().unwrap()).unwrap();
+        let landed = move_wallpaper(&conn, id, second.path().to_str().unwrap())
+            .unwrap()
+            .path;
 
         assert_eq!(landed, path_string(second.path().join("twice.jpg")));
         assert!(PathBuf::from(&landed).is_file());
@@ -1996,7 +2223,10 @@ mod tests {
         assert_eq!(status_of(&conn, id), "rejected");
 
         // And the second reject reverses as readily as the first.
-        assert_eq!(PathBuf::from(restore_wallpaper(&conn, id).unwrap()), origin);
+        assert_eq!(
+            PathBuf::from(restore_wallpaper(&conn, id).unwrap().path),
+            origin
+        );
         assert!(origin.is_file());
         assert_eq!(count_wallpapers(&conn), 1);
     }
@@ -2039,7 +2269,7 @@ mod tests {
         std::fs::remove_dir_all(&origin_dir).unwrap();
         assert!(!origin_dir.exists());
 
-        let landed = restore_wallpaper(&conn, id).unwrap();
+        let landed = restore_wallpaper(&conn, id).unwrap().path;
 
         assert_eq!(PathBuf::from(&landed), origin);
         assert!(origin.is_file());
@@ -2061,7 +2291,7 @@ mod tests {
         move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
         std::fs::write(&origin, b"SQUATTER").unwrap();
 
-        let landed = restore_wallpaper(&conn, id).unwrap();
+        let landed = restore_wallpaper(&conn, id).unwrap().path;
 
         let suffixed = origin.parent().unwrap().join("wall (2).jpg");
         assert_eq!(PathBuf::from(&landed), suffixed);
@@ -2086,7 +2316,9 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let (id, origin) = seed_for_restore(&conn, tmp.path(), "vanished.jpg");
-        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        let rejected_at = move_wallpaper(&conn, id, dest.path().to_str().unwrap())
+            .unwrap()
+            .path;
         let before = row_status_and_path(&conn, id);
         std::fs::remove_file(&rejected_at).unwrap();
 

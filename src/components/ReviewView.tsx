@@ -5,26 +5,18 @@ import {
   useRejectDestination,
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
-import type { CardAction } from "@/components/WallpaperCard";
 import { useGridSelection, WallpaperGrid } from "@/components/WallpaperGrid";
+import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
-import {
-  useAppEvent,
-  useAppEvents,
-  useRefetchWhenShown,
-} from "@/context/AppEventsContext";
-import { client, type Wallpaper } from "@/lib/client";
-// The `filename` column, off the path `move_wallpaper` answered with, which is
-// how the backend derives the one it stores (ADR 0015 as amended by #141).
-import { basename } from "@/lib/paths";
+import { useRefetchWhenShown } from "@/context/AppEventsContext";
+import { client } from "@/lib/client";
 import { ArrowLeft, Check, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 export const REVIEW_LIMIT = 50;
 
 export function ReviewView() {
-  const [wallpapers, setWallpapers] = useState<Wallpaper[]>([]);
   const [loading, setLoading] = useState(true);
   const { setView } = useApp();
   // Where a reject goes, read once for the line on the bar, for the string
@@ -34,14 +26,39 @@ export function ReviewView() {
   // consumes it, defaulted to a hardcoded `./rejected` and reset on every launch
   // (ADR 0010, ADR 0018).
   const destination = useRejectDestination();
-  const { publish } = useAppEvents();
-  // Every failure this view can have now goes to the shell's one slot, and the
-  // `role="alert"` paragraph that used to hold them is gone with the `error`
-  // state behind it. Two error surfaces in one view is what ADR 0017 set out to
-  // remove, and the generic strings it also removed — "Failed to keep
-  // wallpaper. Please try again." — said less than the backend message that
-  // replaces them.
+  // The only toast this page still raises itself: a list that will not load is
+  // not a transition, and the four that are belong to the module below. The
+  // `role="alert"` paragraph that used to hold this is gone with the `error`
+  // state behind it — two error surfaces in one view is what ADR 0017 set out
+  // to remove.
   const { show } = useToaster();
+
+  /**
+   * The rows, and the four transitions on them (ADR 0023).
+   *
+   * `belongs` is Active, because Kept and Rejected never appear in review
+   * (CONTEXT.md): a wallpaper that changed Status anywhere else leaves the list.
+   * The other direction is not a patch this page can make — nothing in a row
+   * says where it belongs in an ordering by Score — so a wallpaper that just
+   * became Active arrives with the next fetch.
+   *
+   * `optimistic` is what makes this page's reject feel like one keystroke: the
+   * card goes on the click and comes back with the selection if the write fails.
+   *
+   * Both of the fields below are forward references to hooks further down, and
+   * neither is read during render. The selection is resolved over the rows this
+   * module holds, and the module's re-insert is what puts the selection back on
+   * the card it re-inserted; the fetch writes through `setRows`, and `owe` is
+   * the deferral of that fetch.
+   */
+  const { rows, setRows, perform } = useWallpaperRows({
+    belongs: (status) => status === "active",
+    destination,
+    owe: oweRefetch,
+    optimistic: { selectId },
+  });
+  const wallpapers = rows ?? [];
+
   // The grid's selection, held here rather than inside the grid because ADR
   // 0022 has the lightbox render this same selection and keeps the lightbox's
   // state on the page that mounted the grid (#137). Both surfaces below read
@@ -55,14 +72,14 @@ export function ReviewView() {
     setLoading(true);
     try {
       const list = await client.getReview(REVIEW_LIMIT);
-      setWallpapers(list);
+      setRows(list);
     } catch (err) {
       console.error("Failed to fetch review list:", err);
       show({ kind: "load-failed", noun: "the review list", error: err });
     } finally {
       setLoading(false);
     }
-  }, [show]);
+  }, [setRows, show]);
 
   useEffect(() => {
     void fetchReviewList();
@@ -72,150 +89,19 @@ export function ReviewView() {
   // the fetch waits until Review is the view being shown: fifty thumbnail
   // requests from a hidden page are exactly what ADR 0012's dedicated
   // pre-generation thread exists to keep off the rank view's next pair.
-  useRefetchWhenShown("review", fetchReviewList);
+  const owe = useRefetchWhenShown("review", fetchReviewList);
 
-  // Kept and Rejected never appear in review (CONTEXT.md), so a wallpaper that
-  // changed Status anywhere else leaves the list, and the card is the one thing
-  // that has to move. The other direction is not a patch this view can make: an
-  // event carries an id and not a row, so nothing here knows what a wallpaper
-  // that just became Active looks like or where it belongs in an ordering by
-  // Score. It arrives with the next fetch.
-  useAppEvent((event) => {
-    if (event.type !== "status-changed" || event.status === "active") return;
-    setWallpapers((prev) => prev.filter((w) => w.id !== event.id));
-  });
+  // The two forward references the module above takes, as declarations so they
+  // can be handed over before the hooks that answer them have run. Both fire
+  // only from a transition: `selectId` from a failed one, `oweRefetch` from one
+  // the backend refused over a stale row.
+  function selectId(id: number) {
+    selection.selectId(id);
+  }
 
-  // Puts one card back where it was after a failed action, and the selection
-  // back on it.
-  //
-  // Restoring a whole snapshot of the list would resurrect any *other* card
-  // that was successfully removed while this action was in flight — the
-  // snapshot is captured at render time and goes stale the moment a second
-  // action starts. Re-inserting only the affected card cannot do that.
-  //
-  // The selection comes back with it because the removal moved it on: under ADR
-  // 0022 the lightbox is a second rendering of that selection, so a reject
-  // whose file move fails would otherwise leave the picture on wallpaper N+1
-  // while the error toast names wallpaper N. Usually the id is still the one
-  // held — the rule keeps it through a list that no longer has it, which is what
-  // makes the fall back to the position temporary — and the call is what makes
-  // this true as well when the curator stepped on while the write was in
-  // flight. Waiting for the call instead would stall every reject on a file
-  // move during a sweep, which is the two-keystrokes-over-four ADR 0019 chose.
-  const restoreCard = (index: number, wallpaper: Wallpaper) => {
-    setWallpapers((prev) => {
-      if (prev.some((w) => w.id === wallpaper.id)) return prev;
-      const next = [...prev];
-      next.splice(Math.min(index, next.length), 0, wallpaper);
-      return next;
-    });
-    selection.selectId(wallpaper.id);
-  };
-
-  const handleKeep = async (id: number) => {
-    // Optimistic removal; restore the card if the persist fails.
-    const index = wallpapers.findIndex((w) => w.id === id);
-    const removed = wallpapers[index];
-    setWallpapers((prev) => prev.filter((w) => w.id !== id));
-    try {
-      await client.keepWallpaper(id);
-      // After the write and not before it: a card removed optimistically comes
-      // back if the write fails, and a Library that had already greyed the row
-      // would be the one place the failure did not reach.
-      publish({ type: "status-changed", id, status: "kept" });
-      // The card is already gone by the time this lands, which is the whole
-      // reason it toasts: a card that vanishes is not a confirmation, and the
-      // Undo is what replaces the confirm step (ADR 0009, ADR 0017).
-      if (removed) {
-        show({ kind: "kept", view: "review", id, filename: removed.filename });
-      }
-    } catch (err) {
-      console.error("Failed to keep wallpaper:", err);
-      // The card goes back in the grid and the toast reports why. Both: the
-      // toast is replaceable and the grid is the durable evidence.
-      if (removed) {
-        restoreCard(index, removed);
-        show({
-          kind: "failed",
-          view: "review",
-          action: "keep",
-          filename: removed.filename,
-          error: err,
-        });
-      }
-    }
-  };
-
-  const handleMove = async (id: number) => {
-    const index = wallpapers.findIndex((w) => w.id === id);
-    const removed = wallpapers[index];
-    setWallpapers((prev) => prev.filter((w) => w.id !== id));
-    try {
-      // The path the file landed at is read now: `unique_destination` suffixes
-      // ` (n)` on a collision, so this is the only account of what the file is
-      // called on the far side, and the toast decides whether it has anything
-      // to say (ADR 0003, ADR 0017).
-      const finalPath = await client.moveWallpaper(id, destination.written);
-      // The publish moves inside the guard the toast already sat in, because a
-      // complete patch needs the removed card's own `path` for the Origin.
-      // `undefined` there means this handler was called for an id its own lookup
-      // missed, which should not happen; what the guard costs in that case is a
-      // Library that hears nothing, and what it buys is never publishing a patch
-      // that wipes the row's Origin (#141).
-      if (removed) {
-        publish({
-          type: "status-changed",
-          id,
-          status: "rejected",
-          // The three columns the move wrote. Library holds this row under a
-          // filter of All and turns it Rejected in place, so the Origin is what
-          // decides whether the Restore it now offers can be pressed (#141).
-          changed: {
-            path: finalPath,
-            filename: basename(finalPath),
-            origin_path: removed.path,
-          },
-        });
-        show({
-          kind: "rejected",
-          view: "review",
-          id,
-          filename: removed.filename,
-          // The read-out's own boolean, handed over rather than worked out
-          // again from the string. It is what decides whether the toast has a
-          // path to name, and a second answer computed somewhere else would
-          // disagree with the bar on exactly the destinations the string cannot
-          // be asked about — `$HOME/bin` looks relative and is not (ADR 0018).
-          relativeDestination: destination.relative,
-          finalPath,
-        });
-      }
-    } catch (err) {
-      console.error("Failed to move wallpaper:", err);
-      if (removed) {
-        restoreCard(index, removed);
-        show({
-          kind: "failed",
-          view: "review",
-          action: "reject",
-          filename: removed.filename,
-          error: err,
-        });
-      }
-    }
-  };
-
-  // What a card asks for, routed to the two handlers that already existed.
-  //
-  // Review lists Active wallpapers only (CONTEXT.md), so Keep and Reject are
-  // the only two that can arrive here; Make Active and Restore are offered by
-  // the same card on the library page, which is the page that mounts a Kept or
-  // a Rejected row. Nothing branches on the wallpaper: the card decides what to
-  // offer from the Status it was handed, and this only says who answers.
-  const handleAction = (action: CardAction, card: Wallpaper) => {
-    if (action === "keep") void handleKeep(card.id);
-    if (action === "reject") void handleMove(card.id);
-  };
+  function oweRefetch() {
+    owe();
+  }
 
   // The destination line, in the bar this page owns below the chrome. The
   // chrome's tab already names the page, so what was a 2xl heading and a
@@ -306,7 +192,7 @@ export function ReviewView() {
               wallpapers={wallpapers}
               selection={selection}
               label="Wallpapers to review"
-              onAction={handleAction}
+              onAction={perform}
               onOpen={lightbox.openOn}
               animated
               className="pb-8"
@@ -321,8 +207,8 @@ export function ReviewView() {
           holds only Active rows, so Restore and Make Active never appear here
           without anyone configuring that (ADR 0022).
 
-          `onAction` is the grid's own handler, so a keep from inside the
-          lightbox is this page's keep — the optimistic removal, the published
+          `onAction` is the same `perform` the grid behind it is handed, so a
+          keep from inside the lightbox is this page's keep — the optimistic removal, the published
           patch and the toast — and the advance the curator sees is that removal
           resolving through the shared selection rather than anything the
           lightbox decided.
@@ -336,7 +222,7 @@ export function ReviewView() {
         selection={selection}
         open={lightbox.open}
         onClose={lightbox.close}
-        onAction={handleAction}
+        onAction={perform}
       />
     </>
   );

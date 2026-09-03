@@ -1,7 +1,6 @@
 import {
   ACTION_CONTROLS,
   STATUS_ACTIONS,
-  useCardAction,
   type CardAction,
 } from "@/components/WallpaperCard";
 import {
@@ -224,12 +223,6 @@ export function Lightbox({
 }: LightboxProps) {
   const { container } = useLightboxHost();
   const { wallpaper, index, length, moveTo } = selection;
-  // The same entry the card's buttons and the grid's keys go through, so the
-  // three triggers are one path. What it adds is ADR 0019's refusal for a row
-  // with no Origin: the pinned `Can't restore <filename>` and the absence of an
-  // IPC call are properties of the action rather than of whichever control was
-  // pressed, which is why nothing about them is written again here (#140).
-  const act = useCardAction(onAction);
 
   /**
    * One step through the list, which is a selection move and nothing else.
@@ -285,7 +278,7 @@ export function Lightbox({
       const action = actionFor(event.key, wallpaper.status);
       if (action) {
         event.preventDefault();
-        act(action, wallpaper);
+        onAction(action, wallpaper);
         return;
       }
 
@@ -298,7 +291,7 @@ export function Lightbox({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, wallpaper, step, act]);
+  }, [open, wallpaper, step, onAction]);
 
   // Whether a `medium` has painted since this was opened, which is the whole
   // question the placeholder below answers: a step has the outgoing picture to
@@ -657,11 +650,11 @@ export function Lightbox({
                           // reason it is on the button at all: it is the binding
                           // shown to an eye, not part of what the control does.
                           aria-label={label}
-                          // The refusal an origin-less row gets is
-                          // `useCardAction`'s, so pressing Restore in here,
-                          // pressing it on the card, and pressing `R` on either
-                          // are one event with one outcome.
-                          onClick={() => act(action, wallpaper)}
+                          // The refusal an origin-less row gets is the host's
+                          // `perform`, so pressing Restore in here, pressing it
+                          // on the card, and pressing `R` on either are one
+                          // event with one outcome (ADR 0023).
+                          onClick={() => onAction(action, wallpaper)}
                           // The card's own treatment, because these sit on the
                           // same dark ground. Not `flex-1`: on a card the two
                           // buttons split the overlay's width, and here they are

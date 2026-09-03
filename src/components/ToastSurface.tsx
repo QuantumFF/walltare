@@ -8,18 +8,15 @@ import {
   ToastTitle,
   ToastViewport,
 } from "@/components/ui/toast";
-import { useApp, type View } from "@/context/AppContext";
+import { useApp } from "@/context/AppContext";
 import { useAppEvents } from "@/context/AppEventsContext";
 // The counts these toasts print are the counts ADR 0020's Thumbnails line
 // prints, so both read them out of one file (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
-// The rename test below and the `filename` column the Undo publishes want the
-// same segment of the same kind of string, so one helper answers both (ADR 0015
-// as amended by #141).
-import { basename } from "@/lib/paths";
 import {
   client,
   isAppError,
+  isStaleRow,
   type PregenProgress,
   type ScanProgress,
 } from "@/lib/client";
@@ -49,23 +46,36 @@ type TransitionAction = "keep" | "reject" | "restore" | "make-active";
  */
 export type ToastRequest =
   /**
-   * A Keep that persisted. `view` rides along for the failure path rather than
-   * for this toast: Undo can be pressed eight seconds later from a different
-   * page, so the view that owes a refetch is the one that acted and not the one
-   * the curator is looking at when it goes wrong.
+   * A Keep that persisted, with the un-keep that undoes it.
+   *
+   * `undo` is the caller's closure over the transition it already owns, so
+   * pressing it makes the keep inverse the same way a card's Make Active does —
+   * the published patch, the toast, and the failure handling included. What
+   * stays here is the copy, the `once()` guard below and the slot precedence
+   * (ADR 0017, ADR 0023).
    */
-  | { kind: "kept"; view: View; id: number; filename: string }
+  | { kind: "kept"; filename: string; undo: () => void }
   /**
-   * A soft reject that persisted. `finalPath` is the absolute path
-   * `move_wallpaper` answered with, and `relativeDestination` is the caller's
-   * read-out saying whether its bar could name the folder; between them they
-   * decide whether the path line has anything to say.
+   * A soft reject that persisted. `finalPath` is the `path` the row it wrote
+   * carries, `renamed` says whether a collision suffixed the basename, and
+   * `relativeDestination` is the caller's read-out saying whether its bar could
+   * name the folder; between them the last two decide whether the path line has
+   * anything to say.
    */
   | {
       kind: "rejected";
-      view: View;
-      id: number;
       filename: string;
+      /**
+       * Whether the file landed under a different name, which
+       * `unique_destination` does on a collision.
+       *
+       * A fact about what happened rather than copy, handed over rather than
+       * re-derived here from the returned path: the caller is holding the row
+       * the reject wrote and the row it replaced, so the comparison is the
+       * backend's own `filename` column against the one the page had
+       * (ADR 0003, ADR 0023).
+       */
+      renamed: boolean;
       /**
        * Whether the destination resolved relative, taken from the same
        * `useRejectDestination` the caller's bar renders from rather than worked
@@ -79,8 +89,10 @@ export type ToastRequest =
        */
       relativeDestination: boolean;
       finalPath: string;
+      /** The Restore that undoes it. See `kept`. */
+      undo: () => void;
     }
-  /** A Restore that persisted, with the absolute path `restore_wallpaper` answered with. */
+  /** A Restore that persisted, with the `path` the row it wrote carries. */
   | { kind: "restored"; filename: string; finalPath: string }
   /**
    * The keep inverse. CONTEXT.md gives it no noun — "by undoing the keep, Active
@@ -94,10 +106,13 @@ export type ToastRequest =
    * detail is the backend's, which is what lets `InvalidPathSyntax` name the
    * variable the curator mistyped while `FileMissing` still says its own
    * sentence (ADR 0011, ADR 0009).
+   *
+   * No `view`. The refetch a stale row asks for is the acting page's own, made
+   * by the module that acted rather than routed through this surface, so
+   * nothing here needs to know which page it was (ADR 0023).
    */
   | {
       kind: "failed";
-      view: View;
       action: TransitionAction;
       filename: string;
       error: unknown;
@@ -247,16 +262,17 @@ const ToasterContext = createContext<Toaster | undefined>(undefined);
  * two inches away, and repeating it on every reject of a fast pass is the noise
  * ADR 0017 was right to avoid.
  *
- * Whether a rename happened needs no flag from the backend:
- * `unique_destination` suffixes ` (n)` on a collision, so comparing the returned
- * basename against the wallpaper's own filename is the whole test.
+ * Whether a rename happened arrives on the request rather than being worked out
+ * here. It is a fact about what happened, and the caller is holding both rows —
+ * so the division holds: this surface still decides that
+ * `renamed || relativeDestination` is what gives the path line something to say
+ * (ADR 0023).
  */
 function rejectPathLine(
-  filename: string,
+  renamed: boolean,
   relativeDestination: boolean,
   finalPath: string,
 ): string | undefined {
-  const renamed = basename(finalPath) !== filename;
   if (renamed || relativeDestination) return finalPath;
   return undefined;
 }
@@ -323,7 +339,10 @@ export function ToastSurface({
   lightboxOpen?: boolean;
 }) {
   const { view, setView } = useApp();
-  const { publish, requestRefetch } = useAppEvents();
+  // For ADR 0021's report alone: `scan-complete` reads the Round the scan left
+  // behind and publishes `stats-changed` with it. The transitions' own IPC and
+  // their `status-changed` patches left with the Undo closures (ADR 0023).
+  const { publish } = useAppEvents();
   const [transient, setTransient] = useState<Transient | null>(null);
   const [background, setBackground] = useState<Background | null>(null);
   /** The run the curator said "stop telling me" about; `null` for none. */
@@ -372,92 +391,36 @@ export function ToastSurface({
   );
 
   const show = useCallback(
-    // A named function expression, so the Undo closures below can raise the
-    // toast that answers them without a ref to break the cycle.
-    function show(request: ToastRequest) {
+    (request: ToastRequest) => {
       const key = String(++keys.current);
 
       switch (request.kind) {
-        case "kept": {
-          const { view, id, filename } = request;
+        case "kept":
           setTransient({
             key,
             prefix: "Kept ",
-            filename,
+            filename: request.filename,
             suffix: "",
             pinned: false,
-            // The keep inverse is one column write with nothing on disk to move,
-            // which is why it is `unkeep_wallpaper` and not a Restore.
-            undo: once(() => {
-              void client
-                .unkeepWallpaper(id)
-                .then(() => {
-                  publish({ type: "status-changed", id, status: "active" });
-                  show({ kind: "made-active", filename });
-                })
-                .catch((error: unknown) => {
-                  console.error("Failed to undo a keep:", error);
-                  show({
-                    kind: "failed",
-                    view,
-                    action: "make-active",
-                    filename,
-                    error,
-                  });
-                });
-            }),
+            undo: once(request.undo),
           });
           return;
-        }
 
-        case "rejected": {
-          const { view, id, filename, relativeDestination, finalPath } =
-            request;
+        case "rejected":
           setTransient({
             key,
             prefix: "Rejected ",
-            filename,
+            filename: request.filename,
             suffix: "",
             description: rejectPathLine(
-              filename,
-              relativeDestination,
-              finalPath,
+              request.renamed,
+              request.relativeDestination,
+              request.finalPath,
             ),
             pinned: false,
-            undo: once(() => {
-              void client
-                .restoreWallpaper(id)
-                .then((restoredTo) => {
-                  publish({
-                    type: "status-changed",
-                    id,
-                    status: "active",
-                    // The same patch pressing Restore on the card publishes,
-                    // because it is the same transition: the file is back where
-                    // it came from and there is no Origin left to go back to
-                    // (#141).
-                    changed: {
-                      path: restoredTo,
-                      filename: basename(restoredTo),
-                      origin_path: null,
-                    },
-                  });
-                  show({ kind: "restored", filename, finalPath: restoredTo });
-                })
-                .catch((error: unknown) => {
-                  console.error("Failed to undo a reject:", error);
-                  show({
-                    kind: "failed",
-                    view,
-                    action: "restore",
-                    filename,
-                    error,
-                  });
-                });
-            }),
+            undo: once(request.undo),
           });
           return;
-        }
 
         case "restored":
           setTransient({
@@ -483,14 +446,14 @@ export function ToastSurface({
           return;
 
         case "failed": {
-          const { view, action, filename, error } = request;
-          // A stale row and not a user error: the view acted on something that
+          const { action, filename, error } = request;
+          // A stale row and not a user error: the page acted on something that
           // had already changed under it, which ADR 0015's patch events exist to
-          // prevent. No patch can say what the row should be instead, and
-          // leaving it on screen means the curator's next click reproduces it,
-          // so the view that acted refetches (ADR 0017).
-          const stale = isAppError(error) && error.kind === "invalid_transition";
-          if (stale) requestRefetch(view);
+          // prevent. Two kinds say that and they share this one sentence,
+          // because it is true of a row that refused and of a row that is gone
+          // alike. The refetch that goes with it is the acting page's own, made
+          // where the action was (ADR 0017 as amended by ADR 0025).
+          const stale = isStaleRow(error);
           setTransient({
             key,
             prefix: stale ? "" : FAILED_TITLE[action].prefix,
@@ -525,7 +488,10 @@ export function ToastSurface({
           return;
       }
     },
-    [publish, requestRefetch],
+    // Nothing outside this component: every request now arrives holding
+    // whatever acting on it would take, the two Undos included, so `show` is
+    // stable for the life of the shell.
+    [],
   );
 
   const scanStarted = useCallback(

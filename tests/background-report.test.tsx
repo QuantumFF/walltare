@@ -59,7 +59,14 @@ beforeEach(() => {
     wallpaper(7, { filename: "wall-7.jpg" }),
     wallpaper(8, { filename: "wall-8.jpg" }),
   ]);
-  mockCommand("keep_wallpaper", () => null);
+  // Every transition answers with the row it wrote (ADR 0023), and a keep's row
+  // differs from the one it read in the `status` column alone.
+  mockCommand("keep_wallpaper", (args) =>
+    wallpaper(args?.id as number, {
+      filename: `wall-${String(args?.id)}.jpg`,
+      status: "kept",
+    }),
+  );
   mockCommand("start_scan", (args) => {
     scannedPaths.push(args?.path as string);
     return null;

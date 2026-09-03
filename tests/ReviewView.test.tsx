@@ -33,6 +33,47 @@ const HOME = "/home/curator";
 
 /** Every string the read-out asked `expand_path` about, in order. */
 let expansions: string[];
+/** The list `get_review` is serving, which the transition mocks read rows from. */
+let reviewed: Wallpaper[];
+
+/** The row the review list holds for an id, which every transition mock starts from. */
+function row(args: Record<string, unknown> | undefined): Wallpaper {
+  const id = args?.id as number;
+  const found = reviewed.find((w) => w.id === id);
+  if (!found) throw new Error(`no review row with id ${id}`);
+  return found;
+}
+
+/**
+ * The row a transition answered with (ADR 0023).
+ *
+ * Built from the row the list holds, because a command answers with the row it
+ * wrote and every column it did not touch comes through unchanged. A mock
+ * returning `null` or a path would be a backend this app no longer has.
+ */
+function wrote(
+  args: Record<string, unknown> | undefined,
+  over: Partial<Wallpaper> = {},
+): Wallpaper {
+  return { ...row(args), ...over };
+}
+
+/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
+function rejectedTo(
+  args: Record<string, unknown> | undefined,
+  landedAt: string,
+): Wallpaper {
+  const before = row(args);
+  return {
+    ...before,
+    status: "rejected",
+    path: landedAt,
+    // The basename of the path the backend wrote, which is how it derives the
+    // `filename` column it stores.
+    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
+    origin_path: before.path,
+  };
+}
 
 const reviewView = () =>
   document.querySelector(
@@ -107,6 +148,7 @@ afterEach(cleanup);
 
 beforeEach(() => {
   expansions = [];
+  reviewed = [];
 
   // A library with wallpapers in it, so boot lands on Rank and Review is
   // reached the way the curator reaches it.
@@ -139,6 +181,7 @@ async function openApp() {
 
 /** Mount the app with the given list already served, and open Review. */
 async function openReview(list: Wallpaper[], stored: Partial<Settings> = {}) {
+  reviewed = list;
   mockCommand("get_review", () => list);
   mockCommand("get_settings", () => settings(stored));
   return openApp();
@@ -244,7 +287,7 @@ test("asks the backend for 50 rows", async () => {
 
 test("keep records the decision and removes the card without waiting for a refetch", async () => {
   const keptIds: unknown[] = [];
-  const pending = deferred<null>();
+  const pending = deferred<Wallpaper>();
   await openReview([
     wallpaper(4, { filename: "keeper.jpg" }),
     wallpaper(5, { filename: "stay.jpg" }),
@@ -262,7 +305,7 @@ test("keep records the decision and removes the card without waiting for a refet
   expect(inReview().queryByAltText("stay.jpg")).not.toBeNull();
 
   await act(async () => {
-    pending.resolve(null);
+    pending.resolve(wallpaper(4, { filename: "keeper.jpg", status: "kept" }));
   });
   expect(alerts()).toEqual([]);
 });
@@ -317,9 +360,9 @@ test("a keep that fails does not resurrect a card kept while it was in flight", 
   // The first keep is still in flight when the second one succeeds. Rolling
   // the first one back by restoring a whole list snapshot would put the
   // second card back too, undoing a decision that actually persisted.
-  const doomed = deferred<null>();
+  const doomed = deferred<Wallpaper>();
   mockCommand("keep_wallpaper", (args) =>
-    args?.id === 1 ? doomed.promise : null,
+    args?.id === 1 ? doomed.promise : wrote(args, { status: "kept" }),
   );
 
   await click(inReview().getByRole("button", { name: /keep doomed\.jpg/i }));
@@ -386,8 +429,10 @@ test("a successful keep replaces the previous failure", async () => {
     wallpaper(5, { filename: "stay.jpg" }),
   ]);
   let broken = true;
-  mockCommand("keep_wallpaper", () =>
-    broken ? Promise.reject({ kind: "db", message: "disk on fire" }) : null,
+  mockCommand("keep_wallpaper", (args) =>
+    broken
+      ? Promise.reject({ kind: "db", message: "disk on fire" })
+      : wrote(args, { status: "kept" }),
   );
 
   await click(inReview().getByRole("button", { name: /keep keeper\.jpg/i }));
@@ -446,7 +491,7 @@ test("a reject asks nothing and soft-rejects to the stored destination", async (
   // reports it, and a card that leaves the list is what this test is about.
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
-    return `${HOME}/bin/reject-me.jpg`;
+    return rejectedTo(args, `${HOME}/bin/reject-me.jpg`);
   });
 
   await click(
@@ -542,7 +587,7 @@ test("the destination is resolved once per value, not once per render", async ()
     wallpaper(4, { filename: "keeper.jpg" }),
     wallpaper(5, { filename: "stay.jpg" }),
   ]);
-  mockCommand("keep_wallpaper", () => null);
+  mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
 
   // Three rounds of renders that have nothing to do with the setting: a card
   // leaving the list, a toast arriving over it, and a refetch replacing the
@@ -616,9 +661,8 @@ test("a load failure surfaces readably instead of console-only", async () => {
 
 test("a reject into a relative destination names the path the file landed at", async () => {
   await openReview([wallpaper(6, { filename: "reject-me.jpg" })]);
-  mockCommand(
-    "move_wallpaper",
-    () => "/library/holiday/rejected/reject-me.jpg",
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, "/library/holiday/rejected/reject-me.jpg"),
   );
 
   await click(
@@ -638,7 +682,9 @@ test("a reject into an absolute destination repeats nothing the bar said", async
   await openReview([wallpaper(6, { filename: "reject-me.jpg" })], {
     reject_destination: "~/bin",
   });
-  mockCommand("move_wallpaper", () => `${HOME}/bin/reject-me.jpg`);
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, `${HOME}/bin/reject-me.jpg`),
+  );
 
   await click(
     inReview().getByRole("button", { name: /reject reject-me\.jpg/i }),
@@ -660,7 +706,9 @@ test("a rename is named wherever the destination pointed", async () => {
   // already sitting there (ADR 0003), and the returned basename is the only
   // account of it — no flag rides along, because the frontend holds the
   // wallpaper's own filename to compare against (ADR 0018).
-  mockCommand("move_wallpaper", () => `${HOME}/bin/reject-me (1).jpg`);
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, `${HOME}/bin/reject-me (1).jpg`),
+  );
 
   await click(
     inReview().getByRole("button", { name: /reject reject-me\.jpg/i }),
@@ -685,7 +733,7 @@ test("K keeps the selected card, the same as pressing Keep", async () => {
   ]);
   mockCommand("keep_wallpaper", (args) => {
     keptIds.push(args?.id);
-    return null;
+    return wrote(args, { status: "kept" });
   });
 
   await enterGrid();
@@ -709,7 +757,7 @@ test("Delete rejects the selected card, with no confirm in the way", async () =>
   ]);
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
-    return "/library/rejected/reject-me.jpg";
+    return rejectedTo(args, "/library/rejected/reject-me.jpg");
   });
 
   await enterGrid();

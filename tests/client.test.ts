@@ -232,44 +232,78 @@ describe("client seam", () => {
     expect(rows[1].origin_path).toBe("/library/landscapes/dawn.jpg");
   });
 
-  test("moveWallpaper sends the id and the destination and resolves with where the file landed", async () => {
+  test("moveWallpaper sends the id and the destination and resolves with the row it wrote", async () => {
     let received: Record<string, unknown> | undefined;
+    const rejected = wallpaper(3, {
+      filename: "dawn.jpg",
+      path: "/bin/walls/dawn.jpg",
+      status: "rejected",
+      origin_path: "/library/dawn.jpg",
+    });
     mockCommand("move_wallpaper", (args) => {
       received = args;
-      return "/bin/walls/dawn.jpg";
+      return rejected;
     });
 
-    const landed = await client.moveWallpaper(3, "/bin/walls");
+    const wrote = await client.moveWallpaper(3, "/bin/walls");
 
     // Snake-case command, camel-case arguments: the Rust signature is
     // `move_wallpaper(id: i64, destination_folder: String)`.
     expect(received).toEqual({ id: 3, destinationFolder: "/bin/walls" });
-    expect(landed).toBe("/bin/walls/dawn.jpg");
+    // The whole row, not a path. `origin_path = path` is the backend's rule and
+    // a caller restating it in TypeScript would be predicting the row rather
+    // than being told it (ADR 0023).
+    expect(wrote).toEqual(rejected);
   });
 
-  test("moveWallpaper resolves with the suffixed path a collision produced", async () => {
-    // The seam returns a path, not a folder plus the filename it went in with:
-    // a destination that already holds `dawn.jpg` suffixes the basename, and a
-    // caller rebuilding the path from its own `wallpaper.filename` would name a
-    // file that is not there.
-    mockCommand("move_wallpaper", () => "/bin/walls/dawn (2).jpg");
-
-    expect(await client.moveWallpaper(3, "/bin/walls")).toBe(
-      "/bin/walls/dawn (2).jpg",
+  test("moveWallpaper resolves with the suffixed name a collision produced", async () => {
+    // The row reports where the file actually is, not the folder plus the
+    // filename it went in with: a destination that already holds `dawn.jpg`
+    // suffixes the basename, and the backend derives the `filename` column it
+    // stores from the path it wrote — so the two agree here by construction
+    // where a caller rebuilding either would not.
+    mockCommand("move_wallpaper", () =>
+      wallpaper(3, {
+        filename: "dawn (2).jpg",
+        path: "/bin/walls/dawn (2).jpg",
+        status: "rejected",
+        origin_path: "/library/dawn.jpg",
+      }),
     );
+
+    const wrote = await client.moveWallpaper(3, "/bin/walls");
+    expect(wrote.path).toBe("/bin/walls/dawn (2).jpg");
+    expect(wrote.filename).toBe("dawn (2).jpg");
   });
 
-  test("unkeepWallpaper sends the id and resolves with nothing", async () => {
+  test("keepWallpaper sends the id and resolves with the row it wrote", async () => {
+    let received: Record<string, unknown> | undefined;
+    mockCommand("keep_wallpaper", (args) => {
+      received = args;
+      return wallpaper(3, { status: "kept" });
+    });
+
+    // Snake-case command, one argument: the Rust signature is
+    // `keep_wallpaper(id: i64)`. Nothing on disk moves, so the `status` column
+    // is the whole of what the row it answers with has changed — and it answers
+    // with the row anyway, so all four transitions read alike.
+    expect((await client.keepWallpaper(3)).status).toBe("kept");
+    expect(received).toEqual({ id: 3 });
+  });
+
+  test("unkeepWallpaper sends the id and resolves with the row it wrote", async () => {
     let received: Record<string, unknown> | undefined;
     mockCommand("unkeep_wallpaper", (args) => {
       received = args;
-      return null;
+      return wallpaper(3, { status: "active" });
     });
 
     // Snake-case command, one argument: the Rust signature is
     // `unkeep_wallpaper(id: i64)`. Nothing on disk moves, so unlike a Restore
-    // there is no landing path to hand back.
-    expect(await client.unkeepWallpaper(3)).toBeUndefined();
+    // the row's `path` is where it always was.
+    const wrote = await client.unkeepWallpaper(3);
+    expect(wrote.status).toBe("active");
+    expect(wrote.path).toBe("/library/wall-3.jpg");
     expect(received).toEqual({ id: 3 });
   });
 
@@ -289,29 +323,40 @@ describe("client seam", () => {
     });
   });
 
-  test("restoreWallpaper sends the id and resolves with where the file landed back", async () => {
+  test("restoreWallpaper sends the id and resolves with the row it wrote", async () => {
     let received: Record<string, unknown> | undefined;
     mockCommand("restore_wallpaper", (args) => {
       received = args;
-      return "/library/landscapes/dawn.jpg";
+      return wallpaper(3, {
+        filename: "dawn.jpg",
+        path: "/library/landscapes/dawn.jpg",
+        status: "active",
+      });
     });
 
-    const landed = await client.restoreWallpaper(3);
+    const wrote = await client.restoreWallpaper(3);
 
     // Snake-case command, one argument: the Rust signature is
     // `restore_wallpaper(id: i64)`. The Origin comes off the row, so no caller
     // gets to say where the file goes back to.
     expect(received).toEqual({ id: 3 });
-    expect(landed).toBe("/library/landscapes/dawn.jpg");
+    expect(wrote.path).toBe("/library/landscapes/dawn.jpg");
+    // Spent, and by the backend rather than by a `null` written here.
+    expect(wrote.origin_path).toBeNull();
+    expect(wrote.status).toBe("active");
   });
 
-  test("restoreWallpaper resolves with the suffixed path a collision at the Origin produced", async () => {
+  test("restoreWallpaper resolves with the suffixed name a collision at the Origin produced", async () => {
     // Something took the name while the wallpaper was away, so the path the
     // file is at is not the Origin the row advertised. A caller reporting the
     // Origin instead would name a file that is not the restored one.
-    mockCommand("restore_wallpaper", () => "/library/dawn (2).jpg");
+    mockCommand("restore_wallpaper", () =>
+      wallpaper(3, { filename: "dawn (2).jpg", path: "/library/dawn (2).jpg" }),
+    );
 
-    expect(await client.restoreWallpaper(3)).toBe("/library/dawn (2).jpg");
+    const wrote = await client.restoreWallpaper(3);
+    expect(wrote.path).toBe("/library/dawn (2).jpg");
+    expect(wrote.filename).toBe("dawn (2).jpg");
   });
 
   test("restoreWallpaper surfaces a refusal untouched", async () => {

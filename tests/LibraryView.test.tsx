@@ -71,6 +71,49 @@ beforeEach(() => {
   });
 });
 
+/** The row the library holds for an id, which every transition mock starts from. */
+function row(id: number): Wallpaper {
+  const found = library.find((w) => w.id === id);
+  if (!found) throw new Error(`no library row with id ${id}`);
+  return found;
+}
+
+/**
+ * The row a transition answered with (ADR 0023).
+ *
+ * Derived from the row the library holds rather than written out, because a
+ * command answers with the row it wrote and every column it did not touch comes
+ * through unchanged. A mock returning a path — which is what these returned
+ * before — would be a backend this app no longer has.
+ */
+function wrote(id: number, over: Partial<Wallpaper>): Wallpaper {
+  return { ...row(id), ...over };
+}
+
+/** The last segment of a path, which is the `filename` column the backend stores. */
+const basenameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
+/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
+function rejectedTo(id: number, landedAt: string): Wallpaper {
+  return wrote(id, {
+    status: "rejected",
+    path: landedAt,
+    filename: basenameOf(landedAt),
+    // `origin_path = path`, in the same statement that overwrites `path`.
+    origin_path: row(id).path,
+  });
+}
+
+/** The row a Restore wrote: the file back at `landedAt`, and the Origin spent. */
+function restoredTo(id: number, landedAt: string): Wallpaper {
+  return wrote(id, {
+    status: "active",
+    path: landedAt,
+    filename: basenameOf(landedAt),
+    origin_path: null,
+  });
+}
+
 /** A library of `count` wallpapers, on the page and fetched. */
 async function openLibrary(count: number) {
   await openLibraryOf(
@@ -384,7 +427,7 @@ test("keep records the decision and the row changes where it sits", async () => 
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) => {
     keptIds.push(args?.id);
-    return null;
+    return wrote(args?.id as number, { status: "kept" });
   });
 
   await click(button(/keep wall-1\.jpg/i));
@@ -406,7 +449,7 @@ test("make active undoes a keep and says which Status it landed on", async () =>
   await openLibraryOf([wallpaper(1, { status: "kept" })]);
   mockCommand("unkeep_wallpaper", (args) => {
     unkeptIds.push(args?.id);
-    return null;
+    return wrote(args?.id as number, { status: "active" });
   });
 
   await click(button(/make active wall-1\.jpg/i));
@@ -428,7 +471,7 @@ test("reject moves the file to the stored destination and names where it went", 
   await openLibraryOf([wallpaper(1)], { reject_destination: "~/bin" });
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
-    return `${HOME}/bin/wall-1 (1).jpg`;
+    return rejectedTo(args?.id as number, `${HOME}/bin/wall-1 (1).jpg`);
   });
 
   await click(button(/reject wall-1\.jpg/i));
@@ -437,10 +480,10 @@ test("reject moves the file to the stored destination and names where it went", 
   // whether the destination is relative and never asked to rewrite it.
   expect(moveArgs).toEqual([{ id: 1, destinationFolder: "~/bin" }]);
   // `unique_destination` suffixed the name rather than overwriting what was
-  // already sitting there, and the returned path is the only account of it
-  // (ADR 0003, ADR 0018). The row takes its `filename` column off that same
-  // answer, the way the backend derives the one it stores, so the card names
-  // the file as it landed rather than as it was asked for (#141).
+  // already sitting there, and the row the command answered with is the only
+  // account of it (ADR 0003, ADR 0018). That row's `filename` is the column the
+  // backend stored rather than one derived again here, so the card names the
+  // file as it landed rather than as it was asked for (ADR 0023).
   expect(cardName(1)).toBe("wall-1 (1).jpg, Rejected");
   expect(button(/restore wall-1 \(1\)\.jpg/i)).toBeTruthy();
   // The toast names the file the curator acted on, which is the name they read
@@ -463,7 +506,7 @@ test("restore puts the file back and the wallpaper on Active", async () => {
   ]);
   mockCommand("restore_wallpaper", (args) => {
     restoredIds.push(args?.id);
-    return "/library/wall-1.jpg";
+    return restoredTo(args?.id as number, "/library/wall-1.jpg");
   });
 
   await click(button(/restore wall-1\.jpg/i));
@@ -481,26 +524,28 @@ test("restore puts the file back and the wallpaper on Active", async () => {
   });
 });
 
-// What a patch carries beside the Status, which is the columns its transition
-// wrote (ADR 0015 as amended by #141). Every one of these acts twice on one row
-// without a fetch in between, because a row patched from half a transition is
-// only wrong until the next refetch covers for it — which is what let #141 ship.
+// What a patch carries, which is the whole row its transition wrote (ADR 0023).
+// Every one of these acts twice on one row without a fetch in between, because a
+// row patched from half a transition is only wrong until the next refetch covers
+// for it — which is what let #141 ship.
 
 test("a row rejected in place is restorable straight away, with no refetch between", async () => {
   const restoredIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { path: "/library/photos/wall-1.jpg" })]);
-  mockCommand("move_wallpaper", () => "/library/photos/rejected/wall-1.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+  );
   mockCommand("restore_wallpaper", (args) => {
     restoredIds.push(args?.id);
-    return "/library/photos/wall-1.jpg";
+    return restoredTo(args?.id as number, "/library/photos/wall-1.jpg");
   });
 
   await click(button(/reject wall-1\.jpg/i));
   expect(cardName(1)).toBe("wall-1.jpg, Rejected");
 
-  // The reject that just ran recorded an Origin, so the Restore it put on the
-  // card has one to act on. Patching the Status alone left the row holding the
-  // `null` it carried while Active, which is the cohort `useCardAction` refuses
+  // The reject that just ran recorded an Origin, and the row it answered with is
+  // the row this page now holds. Patching the Status alone left the row on the
+  // `null` it carried while Active, which is the cohort a Restore is refused for
   // — a greyed Restore on a wallpaper that could go back, indistinguishable on
   // screen from one that cannot (#141).
   await click(button(/restore wall-1\.jpg/i));
@@ -514,13 +559,16 @@ test("a row rejected in place names the folder its file went into, not the one i
   await openLibraryOf([
     wallpaper(1, { path: "/library/photos/wall-1.jpg", comparisons_count: 14 }),
   ]);
-  mockCommand("move_wallpaper", () => "/library/photos/rejected/wall-1.jpg");
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+  );
 
   await click(button(/reject wall-1\.jpg/i));
 
-  // The card reads this clause off the row's own `path`, so a row patched
-  // without one names where the file used to be — `now in photos/`, pointing at
-  // the folder the reject had just emptied (ADR 0019, #141).
+  // The card reads this clause off the row's own `path`, which arrives from the
+  // command rather than being derived here: a row patched without it names where
+  // the file used to be — `now in photos/`, pointing at the folder the reject
+  // had just emptied (ADR 0019, #141).
   const line = screen.getByText("14 comparisons · now in rejected/");
   expect(line.getAttribute("title")).toBe("/library/photos/rejected/wall-1.jpg");
 });
@@ -534,7 +582,9 @@ test("a restore leaves the row on the path the file landed back at", async () =>
       comparisons_count: 14,
     }),
   ]);
-  mockCommand("restore_wallpaper", () => "/library/photos/wall-1 (1).jpg");
+  mockCommand("restore_wallpaper", (args) =>
+    restoredTo(args?.id as number, "/library/photos/wall-1 (1).jpg"),
+  );
 
   await click(button(/restore wall-1\.jpg/i));
 
@@ -546,27 +596,34 @@ test("a restore leaves the row on the path the file landed back at", async () =>
   expect(listCalls).toBe(1);
 });
 
-test("a keep patches the Status and leaves the row's other columns alone", async () => {
+test("a keep leaves the row's other columns alone, and the reject after it still has an Origin", async () => {
   const restoredIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { path: "/library/photos/wall-1.jpg" })]);
-  mockCommand("keep_wallpaper", () => null);
-  mockCommand("unkeep_wallpaper", () => null);
-  mockCommand("move_wallpaper", () => "/library/photos/rejected/wall-1.jpg");
+  mockCommand("keep_wallpaper", (args) =>
+    wrote(args?.id as number, { status: "kept" }),
+  );
+  mockCommand("unkeep_wallpaper", (args) =>
+    wrote(args?.id as number, { status: "active" }),
+  );
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+  );
   mockCommand("restore_wallpaper", (args) => {
     restoredIds.push(args?.id);
-    return "/library/photos/wall-1.jpg";
+    return restoredTo(args?.id as number, "/library/photos/wall-1.jpg");
   });
 
-  // Keep and un-keep move no file, so their patch carries nothing beyond the
-  // Status and this row's `path` has to survive both of them.
+  // Keep and un-keep move no file, so the row each answers with differs from the
+  // one it read in the `status` column alone — and this row's `path` has to come
+  // through both of them.
   await click(button(/keep wall-1\.jpg/i));
   expect(cardName(1)).toBe("wall-1.jpg, Kept");
   await click(button(/make active wall-1\.jpg/i));
   expect(cardName(1)).toBe("wall-1.jpg, Active");
 
-  // Which the reject after them is what proves: it reads the row's `path` as
-  // the Origin it publishes, so a patch that had wiped that column would leave
-  // the Restore below with nothing to act on and no call to make.
+  // Which the reject after them is what proves: the backend reads that `path` as
+  // the Origin it records, so a row that had lost the column would leave the
+  // Restore below with nothing to act on and no call to make.
   await click(button(/reject wall-1\.jpg/i));
   await click(button(/restore wall-1\.jpg/i));
 
@@ -577,16 +634,18 @@ test("a keep patches the Status and leaves the row's other columns alone", async
 
 test("a row whose new Status falls outside the filter leaves the grid", async () => {
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
-  mockCommand("keep_wallpaper", () => null);
+  mockCommand("keep_wallpaper", (args) =>
+    wrote(args?.id as number, { status: "kept" }),
+  );
   await filterBy("Active");
   expect(listCalls).toBe(2);
 
   await click(button(/keep wall-1\.jpg/i));
 
-  // Dropped rather than edited, because a row cannot stay in a list of Active
+  // Dropped rather than replaced, because a row cannot stay in a list of Active
   // wallpapers after a keep. The other direction is not a patch this page can
-  // make: an event carries an id and not a row, so nothing here knows what a
-  // missing wallpaper looks like or where it belongs in the ordering.
+  // make, and the bound is position rather than ignorance: nothing in a row says
+  // where it belongs in an ordering by Score (ADR 0023).
   expect(cardFor(1)).toBeNull();
   expect(cardFor(2)).not.toBeNull();
   expect(listCalls).toBe(2);
@@ -638,7 +697,7 @@ test("the direct keys act on the selected card, the same as its buttons", async 
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) => {
     keptIds.push(args?.id);
-    return null;
+    return wrote(args?.id as number, { status: "kept" });
   });
 
   await act(async () => {
