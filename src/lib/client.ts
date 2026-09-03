@@ -157,6 +157,23 @@ export interface PregenComplete {
 }
 
 /**
+ * Every event the backend emits, under the name it emits it with, mapped to
+ * what rides on it.
+ *
+ * The names are the wire names — `emit` in `lib.rs` and `pregen.rs` — so this
+ * is the one place in the frontend where a hyphenated string has to match Rust,
+ * and `subscribe` below is the one call that reads it. Adding a backend event
+ * means a line here and a handler name in `useBackendEvents`.
+ */
+export interface BackendEvents {
+  "scan-progress": ScanProgress;
+  "scan-complete": ScanComplete;
+  "scan-failed": ScanFailed;
+  "pregen-progress": PregenProgress;
+  "pregen-complete": PregenComplete;
+}
+
+/**
  * Mirrors thumbnails::CacheSize: what a walk of the cache directory found.
  *
  * Both are zero for a cache with nothing in it, which is also the answer for a
@@ -350,14 +367,18 @@ export interface Client {
    * calls `startPregen` itself (ADR 0012).
    */
   clearCache(): Promise<void>;
-  onScanProgress(handler: (payload: ScanProgress) => void): Promise<() => void>;
-  onScanComplete(handler: (payload: ScanComplete) => void): Promise<() => void>;
-  onScanFailed(handler: (payload: ScanFailed) => void): Promise<() => void>;
-  onPregenProgress(
-    handler: (payload: PregenProgress) => void,
-  ): Promise<() => void>;
-  onPregenComplete(
-    handler: (payload: PregenComplete) => void,
+  /**
+   * Hands `handler` every emission of one backend event, resolving with the
+   * unsubscribe once the listener is actually registered.
+   *
+   * Resolving late is the whole difficulty: an effect that unmounts before this
+   * settles has to unsubscribe anyway, and forgetting to leaks a listener that
+   * fires into a dead component for the life of the window. No component calls
+   * this — `useBackendEvents` does, once, and it is what holds that rule.
+   */
+  subscribe<E extends keyof BackendEvents>(
+    event: E,
+    handler: (payload: BackendEvents[E]) => void,
   ): Promise<() => void>;
 }
 
@@ -412,31 +433,16 @@ export const client: Client = {
 
   clearCache: () => invokeVoid("clear_cache"),
 
-  // `listen` returns Promise<UnlistenFn>, not Promise<() => void>; UnlistenFn
-  // is a branded type that isn't nominally assignable, so cast to the plain
-  // function type the Client interface promises.
-  onScanProgress: (handler) =>
-    listen<ScanProgress>("scan-progress", (event) =>
-      handler(event.payload),
-    ) as Promise<() => void>,
-
-  onScanComplete: (handler) =>
-    listen<ScanComplete>("scan-complete", (event) =>
-      handler(event.payload),
-    ) as Promise<() => void>,
-
-  onScanFailed: (handler) =>
-    listen<ScanFailed>("scan-failed", (event) =>
-      handler(event.payload),
-    ) as Promise<() => void>,
-
-  onPregenProgress: (handler) =>
-    listen<PregenProgress>("pregen-progress", (event) =>
-      handler(event.payload),
-    ) as Promise<() => void>,
-
-  onPregenComplete: (handler) =>
-    listen<PregenComplete>("pregen-complete", (event) =>
-      handler(event.payload),
-    ) as Promise<() => void>,
+  // One event name, one cast: `listen` returns Promise<UnlistenFn>, not
+  // Promise<() => void>, and UnlistenFn is a branded type that isn't nominally
+  // assignable, so it becomes the plain function type the interface promises.
+  // The event map is what keeps the payload type tied to the name.
+  subscribe<E extends keyof BackendEvents>(
+    event: E,
+    handler: (payload: BackendEvents[E]) => void,
+  ) {
+    return listen<BackendEvents[E]>(event, (received) =>
+      handler(received.payload),
+    ) as Promise<() => void>;
+  },
 };

@@ -23,6 +23,7 @@ import {
   type PregenProgress,
   type ScanProgress,
 } from "@/lib/client";
+import { useBackendEvents } from "@/lib/useBackendEvents";
 import {
   createContext,
   useCallback,
@@ -561,128 +562,115 @@ export function ToastSurface({
    * own `scan-complete` listener for what a scan *does* — restart pre-generation,
    * publish `library-scanned`, rerun the boot rule — and the two never overlap.
    *
-   * Registered once for the life of the shell, which is what a report of work
-   * that outlives any page needs: a pass is running before the first view mounts
-   * and a scan finishes wherever the curator has wandered to since.
+   * `useBackendEvents` registers them once for the life of the shell, which is
+   * what a report of work that outlives any page needs: a pass is running
+   * before the first view mounts and a scan finishes wherever the curator has
+   * wandered to since. These handlers close over `publish` and `raise` and are
+   * re-read on each emission, so neither has to stay referentially stable to
+   * keep a running scan's events arriving.
    */
-  useEffect(() => {
-    let cancelled = false;
-    const unlistens: Array<() => void> = [];
+  /** Empty the lower slot, but only if the work that filled it is the work that ended. */
+  const clear = (kind: Background["kind"]) => {
+    setBackground((prev) => (prev?.kind === kind ? null : prev));
+  };
 
-    /** Empty the lower slot, but only if the work that filled it is the work that ended. */
-    const clear = (kind: Background["kind"]) => {
-      setBackground((prev) => (prev?.kind === kind ? null : prev));
-    };
+  useBackendEvents({
+    scanProgress: (progress) => {
+      // The run is spent outside the updater, which has to stay pure. A
+      // counter's only job is to differ, so one burnt on a run that turns out
+      // to be already open costs nothing.
+      const run = String(++keys.current);
+      setBackground((prev) =>
+        prev?.kind === "scan"
+          ? { ...prev, progress }
+          : { run, kind: "scan", progress },
+      );
+    },
 
-    void Promise.all([
-      client.onScanProgress((progress) => {
-        // The run is spent outside the updater, which has to stay pure. A
-        // counter's only job is to differ, so one burnt on a run that turns out
-        // to be already open costs nothing.
-        const run = String(++keys.current);
-        setBackground((prev) =>
-          prev?.kind === "scan"
-            ? { ...prev, progress }
-            : { run, kind: "scan", progress },
-        );
-      }),
+    scanComplete: ({ added_count, scanned_count }) => {
+      clear("scan");
 
-      client.onScanComplete(({ added_count, scanned_count }) => {
-        clear("scan");
-
-        // Only a walk that turned up nothing at all is an empty folder, and it
-        // pins with the folder named, because a mistyped Library root is
-        // something the curator has to see and fix. A rescan that adds nothing
-        // is the common case and is the row below.
-        if (scanned_count === 0) {
-          raise(
-            "No supported images found",
-            scanFolder.current || undefined,
-            true,
-          );
-          return;
-        }
-
-        if (added_count === 0) {
-          raise(
-            "No new wallpapers",
-            `${counted(scanned_count, "file")} scanned, all already in your library.`,
-            false,
-          );
-          return;
-        }
-
-        const before = roundBeforeScan.current;
-        roundBeforeScan.current = null;
-        // The message waits on the read rather than being amended by it. A
-        // number moving backwards on Rank's headline needs its explanation in
-        // the same sentence the curator reads once, and `get_stats` costs 0.3ms.
-        void client
-          .getStats()
-          .then((stats) => {
-            // The headline moves through the bus, so Rank hears about the Round
-            // a scan just sent it back to without knowing a scan happened.
-            publish({ type: "stats-changed", stats });
-            raise(
-              `${counted(added_count, "wallpaper")} added`,
-              before !== null && stats.round < before
-                ? `Back to Round ${grouped(stats.round)}. The new wallpapers have no comparisons yet.`
-                : undefined,
-              false,
-            );
-          })
-          .catch((error: unknown) => {
-            console.error("Failed to read the Round a scan left behind:", error);
-            raise(`${counted(added_count, "wallpaper")} added`, undefined, false);
-          });
-      }),
-
-      client.onScanFailed(({ message }) => {
-        clear("scan");
-        raise("Couldn't finish the scan", message, true);
-      }),
-
-      client.onPregenProgress((progress) => {
-        const run = String(++keys.current);
-        setBackground((prev) => {
-          // A scan outranks the pass underneath it: it is the work the curator
-          // asked for, it is the shorter of the two, and `scan-complete`
-          // restarts the pass anyway, so what is dropped here is a run that is
-          // about to be replaced.
-          if (prev?.kind === "scan") return prev;
-          if (prev?.kind === "pregen") return { ...prev, progress };
-          return { run, kind: "pregen", progress };
-        });
-      }),
-
-      client.onPregenComplete(({ generated, failed, cancelled: byRequest }) => {
-        clear("pregen");
-        // Two of the three endings say nothing at all, and that is the decision
-        // rather than an omission. Nobody acts on "1,204 thumbnails ready", the
-        // pass runs on essentially every launch, and a notification whose only
-        // content is that a background task stopped is what trains people to
-        // dismiss notifications unread. A cancel says it more directly still,
-        // since the curator pressed the button.
-        if (byRequest || failed === 0) return;
+      // Only a walk that turned up nothing at all is an empty folder, and it
+      // pins with the folder named, because a mistyped Library root is
+      // something the curator has to see and fix. A rescan that adds nothing
+      // is the common case and is the row below.
+      if (scanned_count === 0) {
         raise(
-          `${counted(generated, "thumbnail")} ready, ${grouped(failed)} failed`,
-          undefined,
-          false,
+          "No supported images found",
+          scanFolder.current || undefined,
+          true,
         );
-      }),
-    ]).then((offs) => {
-      if (cancelled) {
-        for (const off of offs) off();
         return;
       }
-      unlistens.push(...offs);
-    });
 
-    return () => {
-      cancelled = true;
-      for (const off of unlistens) off();
-    };
-  }, [publish, raise]);
+      if (added_count === 0) {
+        raise(
+          "No new wallpapers",
+          `${counted(scanned_count, "file")} scanned, all already in your library.`,
+          false,
+        );
+        return;
+      }
+
+      const before = roundBeforeScan.current;
+      roundBeforeScan.current = null;
+      // The message waits on the read rather than being amended by it. A
+      // number moving backwards on Rank's headline needs its explanation in
+      // the same sentence the curator reads once, and `get_stats` costs 0.3ms.
+      void client
+        .getStats()
+        .then((stats) => {
+          // The headline moves through the bus, so Rank hears about the Round
+          // a scan just sent it back to without knowing a scan happened.
+          publish({ type: "stats-changed", stats });
+          raise(
+            `${counted(added_count, "wallpaper")} added`,
+            before !== null && stats.round < before
+              ? `Back to Round ${grouped(stats.round)}. The new wallpapers have no comparisons yet.`
+              : undefined,
+            false,
+          );
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to read the Round a scan left behind:", error);
+          raise(`${counted(added_count, "wallpaper")} added`, undefined, false);
+        });
+    },
+
+    scanFailed: ({ message }) => {
+      clear("scan");
+      raise("Couldn't finish the scan", message, true);
+    },
+
+    pregenProgress: (progress) => {
+      const run = String(++keys.current);
+      setBackground((prev) => {
+        // A scan outranks the pass underneath it: it is the work the curator
+        // asked for, it is the shorter of the two, and `scan-complete`
+        // restarts the pass anyway, so what is dropped here is a run that is
+        // about to be replaced.
+        if (prev?.kind === "scan") return prev;
+        if (prev?.kind === "pregen") return { ...prev, progress };
+        return { run, kind: "pregen", progress };
+      });
+    },
+
+    pregenComplete: ({ generated, failed, cancelled: byRequest }) => {
+      clear("pregen");
+      // Two of the three endings say nothing at all, and that is the decision
+      // rather than an omission. Nobody acts on "1,204 thumbnails ready", the
+      // pass runs on essentially every launch, and a notification whose only
+      // content is that a background task stopped is what trains people to
+      // dismiss notifications unread. A cancel says it more directly still,
+      // since the curator pressed the button.
+      if (byRequest || failed === 0) return;
+      raise(
+        `${counted(generated, "thumbnail")} ready, ${grouped(failed)} failed`,
+        undefined,
+        false,
+      );
+    },
+  });
 
   // Read by `pressUndo`, which is registered once for the life of the shell and
   // would otherwise press the first render's toast forever.

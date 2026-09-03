@@ -29,6 +29,7 @@ import { bytes, counted, grouped } from "@/lib/copy";
 // Both fields below resolve their string through the same hook the rejecting
 // bars read the destination with, so "is this path relative" has one answer and
 // one `expand_path` call behind it (ADR 0018).
+import { useBackendEvents } from "@/lib/useBackendEvents";
 import { isAbsolute, useExpansion } from "@/lib/useExpansion";
 import { ArrowLeft, FolderOpen } from "lucide-react";
 import {
@@ -209,32 +210,16 @@ function LibraryRootSection() {
   // it and reach them on whatever page they wandered to during a walk that takes
   // minutes. What is left to this section is a button that has a scan to stop
   // presenting as running.
-  useEffect(() => {
-    let cancelled = false;
-    const unlistens: Array<() => void> = [];
+  const finished = () => {
+    setScanning(false);
+    setProgress(null);
+  };
 
-    const finished = () => {
-      setScanning(false);
-      setProgress(null);
-    };
-
-    void Promise.all([
-      client.onScanProgress(setProgress),
-      client.onScanComplete(finished),
-      client.onScanFailed(finished),
-    ]).then((unlisten) => {
-      if (cancelled) {
-        for (const fn of unlisten) fn();
-        return;
-      }
-      unlistens.push(...unlisten);
-    });
-
-    return () => {
-      cancelled = true;
-      for (const fn of unlistens) fn();
-    };
-  }, []);
+  useBackendEvents({
+    scanProgress: setProgress,
+    scanComplete: finished,
+    scanFailed: finished,
+  });
 
   // Typing is not committing, and the value moving is what clears a stale Scan
   // error off the line: the sentence was about a path that is no longer in the
@@ -688,31 +673,15 @@ function ThumbnailsSection() {
   // is the toast's, and it says nothing for the two clean endings (ADR 0021);
   // what is left here is a line with a count to keep and a button with a verb to
   // change back.
-  useEffect(() => {
-    let cancelled = false;
-    const unlistens: Array<() => void> = [];
-
-    void Promise.all([
-      client.onPregenProgress(setProgress),
-      client.onPregenComplete(() => {
-        setProgress(null);
-        // The one refresh that is not a click: a pass that has stopped is the
-        // moment the number on the line is furthest from the truth.
-        readSize();
-      }),
-    ]).then((offs) => {
-      if (cancelled) {
-        for (const off of offs) off();
-        return;
-      }
-      unlistens.push(...offs);
-    });
-
-    return () => {
-      cancelled = true;
-      for (const off of unlistens) off();
-    };
-  }, [readSize]);
+  useBackendEvents({
+    pregenProgress: setProgress,
+    pregenComplete: () => {
+      setProgress(null);
+      // The one refresh that is not a click: a pass that has stopped is the
+      // moment the number on the line is furthest from the truth.
+      readSize();
+    },
+  });
 
   const running = progress !== null;
 

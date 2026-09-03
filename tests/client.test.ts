@@ -417,11 +417,11 @@ describe("client seam", () => {
     });
   });
 
-  test("onPregenProgress unwraps the payload, total included", async () => {
+  test("subscribe unwraps a pregen-progress payload, total included", async () => {
     // `total` arrives on every emission rather than in a start event, so a
     // listener that missed the first one still knows what it is a fraction of.
     const seen: unknown[] = [];
-    const unlisten = await client.onPregenProgress((payload) =>
+    const unlisten = await client.subscribe("pregen-progress", (payload) =>
       seen.push(payload),
     );
 
@@ -436,9 +436,9 @@ describe("client seam", () => {
     expect(emitEvent("pregen-progress", { done: 2, total: 42 })).toBe(0);
   });
 
-  test("onPregenComplete unwraps the payload, cancelled flag included", async () => {
+  test("subscribe unwraps a pregen-complete payload, cancelled flag included", async () => {
     const seen: unknown[] = [];
-    const unlisten = await client.onPregenComplete((payload) =>
+    const unlisten = await client.subscribe("pregen-complete", (payload) =>
       seen.push(payload),
     );
 
@@ -455,7 +455,7 @@ describe("client seam", () => {
 
   test("event subscriptions unwrap tauri payloads", async () => {
     const seen: unknown[] = [];
-    const unlisten = await client.onScanProgress((payload) =>
+    const unlisten = await client.subscribe("scan-progress", (payload) =>
       seen.push(payload),
     );
     const delivered = emitEvent("scan-progress", { scanned: 10, added: 3 });
@@ -465,7 +465,7 @@ describe("client seam", () => {
   });
 
   test("unlisten stops delivery", async () => {
-    const unlisten = await client.onScanFailed(() => {});
+    const unlisten = await client.subscribe("scan-failed", () => {});
     expect(emitEvent("scan-failed", { message: "boom" })).toBe(1);
     unlisten();
     expect(emitEvent("scan-failed", { message: "boom" })).toBe(0);
