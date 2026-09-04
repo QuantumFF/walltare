@@ -37,8 +37,8 @@ let expansions: string[];
 let reviewed: Wallpaper[];
 
 /** The row the review list holds for an id, which every transition mock starts from. */
-function row(args: Record<string, unknown> | undefined): Wallpaper {
-  const id = args?.id as number;
+function row(args: { id: number }): Wallpaper {
+  const id = args.id;
   const found = reviewed.find((w) => w.id === id);
   if (!found) throw new Error(`no review row with id ${id}`);
   return found;
@@ -52,7 +52,7 @@ function row(args: Record<string, unknown> | undefined): Wallpaper {
  * returning `null` or a path would be a backend this app no longer has.
  */
 function wrote(
-  args: Record<string, unknown> | undefined,
+  args: { id: number },
   over: Partial<Wallpaper> = {},
 ): Wallpaper {
   return { ...row(args), ...over };
@@ -60,7 +60,7 @@ function wrote(
 
 /** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
 function rejectedTo(
-  args: Record<string, unknown> | undefined,
+  args: { id: number },
   landedAt: string,
 ): Wallpaper {
   const before = row(args);
@@ -165,7 +165,7 @@ beforeEach(() => {
   // The read-out resolves the stored destination, because whether it is
   // relative cannot be read off the string (ADR 0018).
   mockCommand("expand_path", (args) => {
-    const input = String(args?.input);
+    const input = args.input;
     expansions.push(input);
     return { resolved: input.replace(/^~/, HOME), exists: true };
   });
@@ -298,7 +298,7 @@ test("keep records the decision and removes the card without waiting for a refet
     wallpaper(5, { filename: "stay.jpg" }),
   ]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
+    keptIds.push(args.id);
     return pending.promise;
   });
 
@@ -367,7 +367,7 @@ test("a keep that fails does not resurrect a card kept while it was in flight", 
   // second card back too, undoing a decision that actually persisted.
   const doomed = deferred<Wallpaper>();
   mockCommand("keep_wallpaper", (args) =>
-    args?.id === 1 ? doomed.promise : wrote(args, { status: "kept" }),
+    args.id === 1 ? doomed.promise : wrote(args, { status: "kept" }),
   );
 
   await click(inReview().getByRole("button", { name: /keep doomed\.jpg/i }));
@@ -554,7 +554,7 @@ test("whether the destination is relative is not read off the string", async () 
   // `$HOME/bin` looks relative and expands absolute, which is why the clause
   // waits on `expand_path` rather than on a leading character (ADR 0018).
   mockCommand("expand_path", (args) => {
-    const input = String(args?.input);
+    const input = args.input;
     expansions.push(input);
     return { resolved: input.replace(/^\$HOME/, HOME), exists: true };
   });
@@ -737,7 +737,7 @@ test("K keeps the selected card, the same as pressing Keep", async () => {
     wallpaper(5, { filename: "next.jpg" }),
   ]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
+    keptIds.push(args.id);
     return wrote(args, { status: "kept" });
   });
 

@@ -65,19 +65,19 @@ beforeEach(() => {
   // Every transition answers with the row it wrote (ADR 0023), and a keep's row
   // differs from the one it read in the `status` column alone.
   mockCommand("keep_wallpaper", (args) =>
-    wallpaper(args?.id as number, {
-      filename: `wall-${String(args?.id)}.jpg`,
+    wallpaper(args.id, {
+      filename: `wall-${String(args.id)}.jpg`,
       status: "kept",
     }),
   );
   mockCommand("start_scan", (args) => {
-    scannedPaths.push(args?.path as string);
+    scannedPaths.push(args.path);
     return null;
   });
   // What the Settings page does around the scan it starts: it resolves the path
   // under the field as it is typed, and stores it before the walk begins.
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("set_setting", () => settings());

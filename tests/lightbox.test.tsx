@@ -58,7 +58,7 @@ beforeEach(() => {
   mockCommand("get_cache_size", () => cacheSize());
   // Both rejecting pages read where a reject goes for the line on their bar.
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
@@ -67,8 +67,8 @@ beforeEach(() => {
 });
 
 /** The row whichever page is serving it holds for an id. */
-function served(args: Record<string, unknown> | undefined): Wallpaper {
-  const id = args?.id as number;
+function served(args: { id: number }): Wallpaper {
+  const id = args.id;
   const found = [...reviewRows, ...libraryRows].find((w) => w.id === id);
   if (!found) throw new Error(`no row with id ${id}`);
   return found;
@@ -81,7 +81,7 @@ function served(args: Record<string, unknown> | undefined): Wallpaper {
  * the row it wrote and the columns it did not touch come through unchanged.
  */
 function wrote(
-  args: Record<string, unknown> | undefined,
+  args: { id: number },
   over: Partial<Wallpaper> = {},
 ): Wallpaper {
   return { ...served(args), ...over };
@@ -89,7 +89,7 @@ function wrote(
 
 /** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
 function rejectedTo(
-  args: Record<string, unknown> | undefined,
+  args: { id: number },
   landedAt: string,
 ): Wallpaper {
   const before = served(args);
@@ -104,7 +104,7 @@ function rejectedTo(
 
 /** The row a Restore wrote: the file back at `landedAt`, and the Origin spent. */
 function restoredTo(
-  args: Record<string, unknown> | undefined,
+  args: { id: number },
   landedAt: string,
 ): Wallpaper {
   return {
@@ -706,7 +706,7 @@ test("a Rejected wallpaper offers Restore alone", async () => {
 test("K keeps the wallpaper on screen", async () => {
   const kept: unknown[] = [];
   mockCommand("keep_wallpaper", (args) => {
-    kept.push(args?.id);
+    kept.push(args.id);
     return wrote(args, { status: "kept" });
   });
   await enterReview(threeRows());
@@ -724,7 +724,7 @@ test("K keeps the wallpaper on screen", async () => {
 test("Delete rejects the wallpaper on screen", async () => {
   const moved: unknown[] = [];
   mockCommand("move_wallpaper", (args) => {
-    moved.push(args?.id);
+    moved.push(args.id);
     return rejectedTo(args, "/library/rejected/first.jpg");
   });
   await enterReview();
@@ -742,7 +742,7 @@ test("Delete rejects the wallpaper on screen", async () => {
 test("R restores the wallpaper on screen", async () => {
   const restored: unknown[] = [];
   mockCommand("restore_wallpaper", (args) => {
-    restored.push(args?.id);
+    restored.push(args.id);
     return restoredTo(args, "/library/gone.jpg");
   });
   await enterLibrary([
@@ -764,7 +764,7 @@ test("R restores the wallpaper on screen", async () => {
 test("Enter does nothing in here", async () => {
   const kept: unknown[] = [];
   mockCommand("keep_wallpaper", (args) => {
-    kept.push(args?.id);
+    kept.push(args.id);
     return wrote(args, { status: "kept" });
   });
   await enterReview();
@@ -848,7 +848,7 @@ test("restoring in the lightbox reaches the backend and puts the row back", asyn
     rejectedTo(args, "/library/rejected/one.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restored.push(args?.id);
+    restored.push(args.id);
     return restoredTo(args, "/library/one.jpg");
   });
   await enterLibrary([
@@ -876,7 +876,7 @@ test("undoing a reject from its toast leaves the row where its Restore would", a
     rejectedTo(args, "/library/rejected/one.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restored.push(args?.id);
+    restored.push(args.id);
     return restoredTo(args, "/library/one.jpg");
   });
   await enterLibrary([wallpaper(11, { filename: "one.jpg" })]);
@@ -1018,7 +1018,7 @@ test("a failed action puts the lightbox back on the wallpaper the toast names", 
 test("Ctrl+Z presses the visible toast's Undo from inside the lightbox", async () => {
   const unkept: unknown[] = [];
   mockCommand("unkeep_wallpaper", (args) => {
-    unkept.push(args?.id);
+    unkept.push(args.id);
     return wrote(args, { status: "active" });
   });
   await enterReview(threeRows());

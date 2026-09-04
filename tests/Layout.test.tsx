@@ -65,7 +65,7 @@ beforeEach(() => {
   // The Library root field resolves what it holds and stores it before a scan,
   // so every visit to Settings in this file reaches these two.
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("set_setting", () => settings());
@@ -93,11 +93,11 @@ beforeEach(() => {
     library: () => libraryRows,
   });
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
+    votes.push([args.winnerId, args.loserId]);
     return { next_pair: [wallpaper(80), wallpaper(81)], stats: stats() };
   });
   mockCommand("start_scan", (args) => {
-    scannedPaths.push(args?.path as string);
+    scannedPaths.push(args.path);
     return null;
   });
 });

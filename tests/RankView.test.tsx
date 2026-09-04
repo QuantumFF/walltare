@@ -63,9 +63,9 @@ function servePairs(...queue: Array<[Wallpaper, Wallpaper]>): void {
 }
 
 /** Record every Comparison the view submits and answer with `response()`. */
-function serveVote(response: () => unknown): void {
+function serveVote(response: () => VoteOutcome | Promise<VoteOutcome>): void {
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
+    votes.push([args.winnerId, args.loserId]);
     return response();
   });
 }
@@ -230,7 +230,7 @@ test("an empty Eligible pool reads Round 1 at 0%", async () => {
 test("a pick swaps in the prefetched pair before the backend answers", async () => {
   servePairs(pair(1, 2), pair(3, 4));
   const inFlight = deferred<VoteOutcome>();
-  let response: unknown = inFlight.promise;
+  let response: VoteOutcome | Promise<VoteOutcome> = inFlight.promise;
   serveVote(() => response);
 
   await renderRankView();
@@ -350,7 +350,7 @@ test("an image that fails to load unblocks its pane rather than wedging it", asy
 test("a fetch is told which wallpapers are already on screen", async () => {
   const excludes: unknown[] = [];
   mockCommand("get_pair", (args) => {
-    excludes.push(args?.exclude);
+    excludes.push(args.exclude);
     const next = [pair(1, 2), pair(3, 4), pair(5, 6), pair(7, 8)][
       getPairCalls++
     ];
@@ -359,8 +359,8 @@ test("a fetch is told which wallpapers are already on screen", async () => {
   });
   let votedExclude: unknown;
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
-    votedExclude = args?.exclude;
+    votes.push([args.winnerId, args.loserId]);
+    votedExclude = args.exclude;
     return { next_pair: pair(11, 12), stats: stats() };
   });
 
@@ -563,7 +563,7 @@ test("a vote that fails rolls back to the pair the user picked from", async () =
   expectConsoleError(/Failed to submit vote/);
   servePairs(pair(1, 2), pair(3, 4), pair(9, 10));
   const inFlight = deferred<VoteOutcome>();
-  let response: unknown = inFlight.promise;
+  let response: VoteOutcome | Promise<VoteOutcome> = inFlight.promise;
   serveVote(() => response);
 
   await renderRankView();

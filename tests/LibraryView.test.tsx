@@ -59,14 +59,14 @@ beforeEach(() => {
   mockCommand("start_pregen", () => null);
   mockCommand("list_wallpapers", (args) => {
     listCalls++;
-    const filter = (args?.filter as string) ?? "all";
-    listArgs.push([filter, args?.ordering as string]);
+    const filter = args.filter;
+    listArgs.push([filter, args.ordering]);
     return library.filter((w) => filter === "all" || w.status === filter);
   });
   // A reject reads the stored destination and asks whether it is relative, which
   // cannot be read off the string (ADR 0018).
   mockCommand("expand_path", (args) => {
-    const input = String(args?.input);
+    const input = args.input;
     return { resolved: input.replace(/^~/, HOME), exists: true };
   });
 });
@@ -426,8 +426,8 @@ test("keep records the decision and the row changes where it sits", async () => 
   const keptIds: unknown[] = [];
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
-    return wrote(args?.id as number, { status: "kept" });
+    keptIds.push(args.id);
+    return wrote(args.id, { status: "kept" });
   });
 
   await click(button(/keep wall-1\.jpg/i));
@@ -448,8 +448,8 @@ test("make active undoes a keep and says which Status it landed on", async () =>
   const unkeptIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { status: "kept" })]);
   mockCommand("unkeep_wallpaper", (args) => {
-    unkeptIds.push(args?.id);
-    return wrote(args?.id as number, { status: "active" });
+    unkeptIds.push(args.id);
+    return wrote(args.id, { status: "active" });
   });
 
   await click(button(/make active wall-1\.jpg/i));
@@ -471,7 +471,7 @@ test("reject moves the file to the stored destination and names where it went", 
   await openLibraryOf([wallpaper(1)], { reject_destination: "~/bin" });
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
-    return rejectedTo(args?.id as number, `${HOME}/bin/wall-1 (1).jpg`);
+    return rejectedTo(args.id, `${HOME}/bin/wall-1 (1).jpg`);
   });
 
   await click(button(/reject wall-1\.jpg/i));
@@ -505,8 +505,8 @@ test("restore puts the file back and the wallpaper on Active", async () => {
     }),
   ]);
   mockCommand("restore_wallpaper", (args) => {
-    restoredIds.push(args?.id);
-    return restoredTo(args?.id as number, "/library/wall-1.jpg");
+    restoredIds.push(args.id);
+    return restoredTo(args.id, "/library/wall-1.jpg");
   });
 
   await click(button(/restore wall-1\.jpg/i));
@@ -533,11 +533,11 @@ test("a row rejected in place is restorable straight away, with no refetch betwe
   const restoredIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { path: "/library/photos/wall-1.jpg" })]);
   mockCommand("move_wallpaper", (args) =>
-    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+    rejectedTo(args.id, "/library/photos/rejected/wall-1.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restoredIds.push(args?.id);
-    return restoredTo(args?.id as number, "/library/photos/wall-1.jpg");
+    restoredIds.push(args.id);
+    return restoredTo(args.id, "/library/photos/wall-1.jpg");
   });
 
   await click(button(/reject wall-1\.jpg/i));
@@ -560,7 +560,7 @@ test("a row rejected in place names the folder its file went into, not the one i
     wallpaper(1, { path: "/library/photos/wall-1.jpg", comparisons_count: 14 }),
   ]);
   mockCommand("move_wallpaper", (args) =>
-    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+    rejectedTo(args.id, "/library/photos/rejected/wall-1.jpg"),
   );
 
   await click(button(/reject wall-1\.jpg/i));
@@ -583,7 +583,7 @@ test("a restore leaves the row on the path the file landed back at", async () =>
     }),
   ]);
   mockCommand("restore_wallpaper", (args) =>
-    restoredTo(args?.id as number, "/library/photos/wall-1 (1).jpg"),
+    restoredTo(args.id, "/library/photos/wall-1 (1).jpg"),
   );
 
   await click(button(/restore wall-1\.jpg/i));
@@ -600,17 +600,17 @@ test("a keep leaves the row's other columns alone, and the reject after it still
   const restoredIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { path: "/library/photos/wall-1.jpg" })]);
   mockCommand("keep_wallpaper", (args) =>
-    wrote(args?.id as number, { status: "kept" }),
+    wrote(args.id, { status: "kept" }),
   );
   mockCommand("unkeep_wallpaper", (args) =>
-    wrote(args?.id as number, { status: "active" }),
+    wrote(args.id, { status: "active" }),
   );
   mockCommand("move_wallpaper", (args) =>
-    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+    rejectedTo(args.id, "/library/photos/rejected/wall-1.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restoredIds.push(args?.id);
-    return restoredTo(args?.id as number, "/library/photos/wall-1.jpg");
+    restoredIds.push(args.id);
+    return restoredTo(args.id, "/library/photos/wall-1.jpg");
   });
 
   // Keep and un-keep move no file, so the row each answers with differs from the
@@ -635,7 +635,7 @@ test("a keep leaves the row's other columns alone, and the reject after it still
 test("a row whose new Status falls outside the filter leaves the grid", async () => {
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) =>
-    wrote(args?.id as number, { status: "kept" }),
+    wrote(args.id, { status: "kept" }),
   );
   await filterBy("Active");
   expect(listCalls).toBe(2);
@@ -696,8 +696,8 @@ test("the direct keys act on the selected card, the same as its buttons", async 
   const keptIds: unknown[] = [];
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
-    return wrote(args?.id as number, { status: "kept" });
+    keptIds.push(args.id);
+    return wrote(args.id, { status: "kept" });
   });
 
   await act(async () => {

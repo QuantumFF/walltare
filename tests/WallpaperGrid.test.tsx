@@ -52,15 +52,29 @@ beforeEach(() => {
   // The four a page can make on the curator's behalf. Review reaches two of
   // them and the library page reaches all four, so this host stands in for the
   // page rather than for either one.
-  mockCommand("keep_wallpaper", () => commands.push("keep_wallpaper"));
-  mockCommand("unkeep_wallpaper", () => commands.push("unkeep_wallpaper"));
-  mockCommand("move_wallpaper", () => {
-    commands.push("move_wallpaper");
-    return "/library/rejected/wall-1.jpg";
+  // Each answers with the row it wrote (ADR 0023); this host only counts which
+  // command was reached, but a mock answering with a path or with the length of
+  // an array was answering with a row nothing produces.
+  mockCommand("keep_wallpaper", (args) => {
+    commands.push("keep_wallpaper");
+    return wallpaper(args.id, { status: "kept" });
   });
-  mockCommand("restore_wallpaper", () => {
+  mockCommand("unkeep_wallpaper", (args) => {
+    commands.push("unkeep_wallpaper");
+    return wallpaper(args.id);
+  });
+  mockCommand("move_wallpaper", (args) => {
+    commands.push("move_wallpaper");
+    const before = wallpaper(args.id);
+    return wallpaper(args.id, {
+      status: "rejected",
+      path: `${args.destinationFolder}/${before.filename}`,
+      origin_path: before.path,
+    });
+  });
+  mockCommand("restore_wallpaper", (args) => {
     commands.push("restore_wallpaper");
-    return "/library/wall-1.jpg";
+    return wallpaper(args.id);
   });
 });
 

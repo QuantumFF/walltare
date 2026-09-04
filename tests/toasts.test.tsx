@@ -27,10 +27,10 @@ let reviewed: ReturnType<typeof wallpaper>[];
  * it wrote and the columns it did not touch come through unchanged.
  */
 function wrote(
-  args: Record<string, unknown> | undefined,
+  args: { id: number },
   over: Partial<ReturnType<typeof wallpaper>> = {},
 ) {
-  const id = args?.id as number;
+  const id = args.id;
   const before = reviewed.find((w) => w.id === id);
   if (!before) throw new Error(`no review row with id ${id}`);
   return { ...before, ...over };
@@ -58,7 +58,7 @@ beforeEach(() => {
   // decides whether a reject toast has a path to name (ADR 0018). `./rejected`
   // resolves to itself, so every reject below is into a relative destination.
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("start_pregen", () => null);
@@ -71,17 +71,17 @@ beforeEach(() => {
     library: () => [],
   });
   mockCommand("keep_wallpaper", (args) => {
-    keeps.push(args?.id as number);
+    keeps.push(args.id);
     return wrote(args, { status: "kept" });
   });
   mockCommand("unkeep_wallpaper", (args) => {
-    unkeeps.push(args?.id as number);
+    unkeeps.push(args.id);
     return wrote(args, { status: "active" });
   });
   mockCommand("move_wallpaper", (args) => {
     moves.push({
-      id: args?.id as number,
-      destination: args?.destinationFolder as string,
+      id: args.id,
+      destination: args.destinationFolder,
     });
     const before = wrote(args);
     // The file keeps its name, which is what a reject without a collision does:
@@ -99,7 +99,7 @@ beforeEach(() => {
     };
   });
   mockCommand("restore_wallpaper", (args) => {
-    restores.push(args?.id as number);
+    restores.push(args.id);
     return wrote(args, {
       status: "active",
       path: "/library/wall-7.jpg",

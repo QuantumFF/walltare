@@ -25,9 +25,12 @@ beforeEach(() => {
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
   mockCommand("start_pregen", () => null);
+  // The row a Restore writes: back on Active, at the path it came from, and
+  // its Origin spent (ADR 0023). The card only counts the calls, but a mock
+  // answering with a bare path was answering with a row nothing produces.
   mockCommand("restore_wallpaper", (args) => {
-    restores.push(args?.id as number);
-    return "/library/wall-1.jpg";
+    restores.push(args.id);
+    return wallpaper(args.id);
   });
 });
 

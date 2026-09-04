@@ -63,7 +63,7 @@ beforeEach(() => {
   // Review's bar resolves the stored destination as soon as the view mounts,
   // which is the one backend call this file's navigation adds (ADR 0018).
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("start_pregen", () => null);
@@ -77,7 +77,7 @@ beforeEach(() => {
       : [wallpaper(8), wallpaper(9)];
   });
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
+    votes.push([args.winnerId, args.loserId]);
     return { next_pair: [wallpaper(8), wallpaper(9)], stats: VOTED_STATS };
   });
 
@@ -97,7 +97,7 @@ beforeEach(() => {
     // rows the current filter does not show.
     library: (args) => {
       listCalls++;
-      const filter = (args?.filter as StatusFilter) ?? "all";
+      const filter = args.filter;
       listFilters.push(filter);
       return library.filter((w) => filter === "all" || w.status === filter);
     },
@@ -122,8 +122,8 @@ beforeEach(() => {
 });
 
 /** The library row a transition was asked about. */
-function row(args: Record<string, unknown> | undefined): Wallpaper {
-  const id = args?.id as number;
+function row(args: { id: number }): Wallpaper {
+  const id = args.id;
   const found = library.find((w) => w.id === id);
   if (!found) throw new Error(`no library row with id ${id}`);
   return found;
@@ -131,7 +131,7 @@ function row(args: Record<string, unknown> | undefined): Wallpaper {
 
 /** That row as a transition rewrote it. */
 function wrote(
-  args: Record<string, unknown> | undefined,
+  args: { id: number },
   over: Partial<Wallpaper>,
 ): Wallpaper {
   return { ...row(args), ...over };
@@ -390,7 +390,7 @@ test("a reject in Review leaves the Library row it patched restorable", async ()
   // at all (ADR 0009).
   const restores: unknown[] = [];
   mockCommand("restore_wallpaper", (args) => {
-    restores.push(args?.id);
+    restores.push(args.id);
     // The Origin spent and the file back at it, which is what the backend
     // writes in the one statement that clears the column.
     return wrote(args, { status: "active", origin_path: null });

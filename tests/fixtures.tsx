@@ -2,7 +2,13 @@ import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
-import type { CacheSize, Settings, Stats, Wallpaper } from "@/lib/client";
+import type {
+  BackendCommands,
+  CacheSize,
+  Settings,
+  Stats,
+  Wallpaper,
+} from "@/lib/client";
 import { act, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { mockCommand } from "./ipc-mocks";
@@ -33,7 +39,8 @@ export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper 
   };
 }
 
-type CommandArgs = Record<string, unknown> | undefined;
+/** What a `list_wallpapers` call carries, so an answer can read the `limit`. */
+type ListingArgs = BackendCommands["list_wallpapers"]["args"];
 
 /**
  * Answer `list_wallpapers` for a test that renders both listing pages.
@@ -45,11 +52,11 @@ type CommandArgs = Record<string, unknown> | undefined;
  * arguments takes the answer meant for the other one and the test says so.
  */
 export function mockListings(answer: {
-  review: (args: CommandArgs) => Wallpaper[];
-  library: (args: CommandArgs) => Wallpaper[];
+  review: (args: ListingArgs) => Wallpaper[];
+  library: (args: ListingArgs) => Wallpaper[];
 }): void {
   mockCommand("list_wallpapers", (args) =>
-    args?.limit === undefined ? answer.library(args) : answer.review(args),
+    args.limit === undefined ? answer.library(args) : answer.review(args),
   );
 }
 

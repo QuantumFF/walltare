@@ -1,9 +1,9 @@
+import type { BackendCommands, Command } from "@/lib/client";
 import { mock } from "bun:test";
 
-type CommandArgs = Record<string, unknown> | undefined;
 type EventHandler = (event: { payload: unknown }) => void;
 
-const commands = new Map<string, (args: CommandArgs) => unknown>();
+const commands = new Map<string, (args: never) => unknown>();
 const handlers = new Map<string, Set<EventHandler>>();
 
 // A mock body that throws synchronously is a broken test, not a backend
@@ -57,14 +57,6 @@ export function flushMockFailures(): void {
   throw first;
 }
 
-/** Register (or replace) the mock implementation of a Tauri command. */
-export function mockCommand(
-  name: string,
-  impl: (args: CommandArgs) => unknown,
-): void {
-  commands.set(name, impl);
-}
-
 /**
  * The command `client.pickFolder` reaches through the dialog plugin.
  *
@@ -72,8 +64,41 @@ export function mockCommand(
  * through the registry above rather than through a module mock of its own. That
  * keeps one seam for the whole backend and means `resetIpcMocks` clears a
  * leftover picker along with everything else.
+ *
+ * It stays here rather than joining `Command` in `client.ts` for the same
+ * reason: `client` reaches the picker through the plugin's own wrapper and
+ * never spells the string, so this is the only place that knows it (ADR 0031).
  */
-const FOLDER_PICKER_COMMAND = "plugin:dialog|open";
+export type PluginCommand = "plugin:dialog|open";
+
+/** The plugin commands, in the shape `BackendCommands` states the backend's in. */
+interface PluginCommands {
+  "plugin:dialog|open": {
+    args: { options?: Record<string, unknown> };
+    answer: string | null;
+  };
+}
+
+type Commands = BackendCommands & PluginCommands;
+
+/** What a mock of `C` is handed, and what it has to answer with. */
+type ArgsOf<C extends keyof Commands> = Commands[C]["args"];
+type AnswerOf<C extends keyof Commands> = Commands[C]["answer"];
+
+/**
+ * Register (or replace) the mock implementation of a Tauri command.
+ *
+ * Generic over `BackendCommands` (ADR 0031), so a registration states a real
+ * command name, is handed its arguments typed, and answers with the shape that
+ * command answers with. A deliberate backend failure is still
+ * `Promise.reject(...)`: that is `Promise<never>` and stays assignable.
+ */
+export function mockCommand<C extends Command | PluginCommand>(
+  name: C,
+  impl: (args: ArgsOf<C>) => AnswerOf<C> | Promise<AnswerOf<C>>,
+): void {
+  commands.set(name, impl as (args: never) => unknown);
+}
 
 /** What the picker was asked for, and how often, while a test ran. */
 export interface FolderPicker {
@@ -90,9 +115,9 @@ export interface FolderPicker {
  */
 export function mockFolderPicker(chosen: string | null): FolderPicker {
   const picker: FolderPicker = { opened: 0 };
-  mockCommand(FOLDER_PICKER_COMMAND, (args) => {
+  mockCommand("plugin:dialog|open", (args) => {
     picker.opened += 1;
-    picker.options = args?.options as Record<string, unknown>;
+    picker.options = args.options;
     return chosen;
   });
   return picker;
@@ -125,7 +150,7 @@ export function registerIpcMocks(): void {
         );
       }
       try {
-        return Promise.resolve(impl(args));
+        return Promise.resolve(impl(args as never));
       } catch (error) {
         mockFailures.push(error);
         return Promise.reject(error);

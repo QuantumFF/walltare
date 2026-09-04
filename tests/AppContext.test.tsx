@@ -111,7 +111,7 @@ beforeEach(() => {
   // and the reject destination has a default, so the two rows of the boot table
   // that land there reach this command without anything being typed.
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input),
+    resolved: args.input,
     exists: true,
   }));
   // And it walks the thumbnail cache on mount, for the line its Thumbnails

@@ -105,19 +105,19 @@ beforeEach(() => {
   // A Written path resolves the way ADR 0011 says it does, and the folder is
   // there. The status-line tests replace this with the answer they are about.
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^~/, HOME),
+    resolved: args.input.replace(/^~/, HOME),
     exists: true,
   }));
   mockCommand("set_setting", (args) => {
     settingWrites.push({
-      key: args?.key as string,
-      value: args?.value as string,
+      key: args.key,
+      value: args.value,
     });
     scanSequence.push("set_setting");
-    return settings({ [args?.key as string]: args?.value as string });
+    return settings({ [args.key]: args.value });
   });
   mockCommand("start_scan", (args) => {
-    scannedPaths.push(args?.path as string);
+    scannedPaths.push(args.path);
     scanSequence.push("start_scan");
     return null;
   });
@@ -442,7 +442,7 @@ test("the status line says where the Written path points", async () => {
 
 test("a folder that is not there is said on the same line, and not in the destructive colour", async () => {
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^~/, HOME),
+    resolved: args.input.replace(/^~/, HOME),
     exists: false,
   }));
   await openSettingsFromLibrary();
@@ -662,7 +662,7 @@ test("an unreadable path lands on the status line, and the next keystroke clears
   mockCommand("start_scan", (args) =>
     Promise.reject({
       kind: "invalid_path",
-      message: `${args?.path} is not a directory`,
+      message: `${args.path} is not a directory`,
     }),
   );
   await openSettingsFromLibrary();
@@ -853,7 +853,7 @@ test("whether a destination is relative is not read off the string", async () =>
   // `$HOME/bin` looks relative and expands absolute, which is why only
   // `expand_path` gets to decide which of the two lines is up (ADR 0018).
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^\$HOME/, HOME),
+    resolved: args.input.replace(/^\$HOME/, HOME),
     exists: true,
   }));
   await openSettingsFromLibrary();
@@ -886,7 +886,7 @@ test("no destination is ever reported as not found", async () => {
   // (ADR 0003), so this field ignores the `exists` its own resolution answered
   // with — the one thing it reads past that the Library root reports.
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^~/, HOME),
+    resolved: args.input.replace(/^~/, HOME),
     exists: false,
   }));
   await openSettingsFromLibrary();
