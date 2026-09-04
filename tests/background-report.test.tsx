@@ -1,11 +1,12 @@
-import App from "@/App";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import {
   cacheSize,
+  click,
   flush,
   mockBootedApp,
   mockListings,
+  openApp,
   settings,
   showingView,
   stats,
@@ -123,13 +124,6 @@ const gear = () =>
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
 async function emit(name: string, payload: unknown) {
   await act(async () => {
     emitEvent(name, payload);
@@ -141,11 +135,6 @@ async function runOut(ms: number) {
   await act(async () => {
     jest.advanceTimersByTime(ms);
   });
-  await flush();
-}
-
-async function openApp() {
-  render(<App />);
   await flush();
 }
 

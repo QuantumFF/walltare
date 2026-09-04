@@ -13,6 +13,7 @@ import { useRef, useState, type RefObject } from "react";
 import {
   flush,
   mockBootedApp,
+  press,
   renderInApp,
   viewportWidth,
   wallpaper,
@@ -257,13 +258,6 @@ function pressTab(): void {
   );
   const from = stops.indexOf(document.activeElement as HTMLElement);
   (stops[from + 1] ?? stops[0]).focus();
-}
-
-async function press(key: string): Promise<void> {
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, { key });
-  });
-  await flush();
 }
 
 /** Put focus on the grid's one tab stop, the way Tab does. */

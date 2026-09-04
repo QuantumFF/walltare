@@ -4,17 +4,18 @@ import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  advancePickFeedback,
   currentView,
   deferred,
   flush,
   mockBootedApp,
+  panesArrive,
+  press,
   renderInApp,
   stats,
   wallpaper,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
-
-const PICK_FEEDBACK_MS = 300;
 
 let getPairCalls = 0;
 let getStatsCalls = 0;
@@ -68,22 +69,6 @@ function serveVote(response: () => VoteOutcome | Promise<VoteOutcome>): void {
   });
 }
 
-/**
- * happy-dom never fetches an `<img>`, so stand in for the browser finishing
- * one. The view refuses a pick until both panes have their image, because a
- * pick on a pane that is still blank is a Comparison on a wallpaper the user
- * never saw.
- */
-async function panesArrive() {
-  for (const side of ["Left", "Right"] as const) {
-    const el = screen.queryByAltText(`${side} Wallpaper`);
-    if (!el) continue;
-    await act(async () => {
-      fireEvent.load(el);
-    });
-  }
-}
-
 async function renderRankView() {
   const rendered = await renderInApp(<RankView />);
   await flush();
@@ -133,21 +118,6 @@ async function clickPane(side: "Left" | "Right") {
   await act(async () => {
     fireEvent.click(screen.getByAltText(`${side} Wallpaper`));
   });
-}
-
-async function pressArrow(key: "ArrowLeft" | "ArrowRight") {
-  await act(async () => {
-    fireEvent.keyDown(window, { key });
-  });
-  await flush();
-}
-
-/** Run out the pick-feedback delay that gates the optimistic swap. */
-async function advancePickFeedback() {
-  await act(async () => {
-    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
-  });
-  await flush();
 }
 
 async function runPickFeedback() {
@@ -386,12 +356,12 @@ test("arrow keys register the matching Comparison", async () => {
 
   await renderRankView();
 
-  await pressArrow("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await runPickFeedback();
   expect(votes[0]).toEqual([1, 2]);
   expect(shownIds()).toEqual([3, 4]);
 
-  await pressArrow("ArrowRight");
+  await press("ArrowRight", { target: window });
   await runPickFeedback();
   expect(votes[1]).toEqual([4, 3]);
   expect(shownIds()).toEqual([7, 8]);
@@ -415,7 +385,7 @@ test("one Comparison per pick, however fast the input and however slow the vote"
 
   // Still guarded across the async window, which spans many ticks.
   await clickPane("Right");
-  await pressArrow("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await runPickFeedback();
   expect(votes).toEqual([[1, 2]]);
 

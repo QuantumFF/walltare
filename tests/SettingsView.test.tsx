@@ -1,4 +1,3 @@
-import App from "@/App";
 import { Layout } from "@/components/Layout";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
@@ -15,10 +14,12 @@ import { expectConsoleError } from "./console-guard";
 import type { CacheSize } from "@/lib/client";
 import {
   cacheSize,
+  click,
   desktopColorScheme,
   emptyStats,
   flush,
   mockBootedApp,
+  openApp,
   settings,
   showingView,
   stats,
@@ -155,13 +156,6 @@ const sectionHeadings = () =>
     (el) => el.textContent,
   );
 
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
 /** Type a Written path, one `change` the way a field reports one. */
 async function type(value: string) {
   await act(async () => {
@@ -206,12 +200,6 @@ async function pressEscape(target: Window | Element) {
     fireEvent.keyDown(target, { key: "Escape" });
   });
   await flush();
-}
-
-async function openApp() {
-  const rendered = render(<App />);
-  await flush();
-  return rendered;
 }
 
 /** Boot on Rank, then reach Settings the way the gear does, from Library. */

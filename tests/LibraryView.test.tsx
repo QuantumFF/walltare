@@ -11,11 +11,13 @@ import {
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  click,
   currentView,
   deferred,
   flush,
   mockBootedApp,
   mockTransitions,
+  press,
   renderInApp,
   servingRows,
   settings,
@@ -158,13 +160,6 @@ function toast(): { title: string; description: string | null } | null {
   };
 }
 
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
 /** The overlay button for one action on one card, by its accessible name. */
 const button = (name: RegExp) => screen.getByRole("button", { name });
 
@@ -237,13 +232,6 @@ async function browserReportsScroll() {
   await act(async () => {
     fireEvent.scroll(scroller());
   });
-}
-
-async function press(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, { key });
-  });
-  await flush();
 }
 
 /** Put focus on the grid's one tab stop, the way Tab does. */

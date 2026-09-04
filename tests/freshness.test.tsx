@@ -1,20 +1,23 @@
-import App from "@/App";
 import type { StatusFilter, Wallpaper } from "@/lib/client";
 import {
   act,
   cleanup,
   fireEvent,
-  render,
   screen,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  advancePickFeedback,
+  click,
   flush,
   mockBootedApp,
   mockListings,
   mockTransitions,
+  openApp,
+  panesArrive,
+  press,
   servingRows,
   stats,
   wallpaper,
@@ -26,8 +29,6 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 // most of them are about the fetch that does not happen — a patch reaches a
 // hidden view for free, and the one event that cannot be patched waits until
 // the curator is looking (ADR 0015).
-
-const PICK_FEEDBACK_MS = 300;
 
 /** The Stats a vote answers with: a Round further on than the boot read. */
 const VOTED_STATS = stats({
@@ -118,45 +119,6 @@ beforeEach(() => {
 });
 
 const tab = (name: string) => screen.getByRole("tab", { name });
-
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
-async function pressKey(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(window, { key });
-  });
-  await flush();
-}
-
-async function openApp() {
-  const rendered = render(<App />);
-  await flush();
-  return rendered;
-}
-
-/** happy-dom never fetches an `<img>`; Rank refuses a pick until both arrive. */
-async function panesArrive() {
-  for (const side of ["Left", "Right"] as const) {
-    const pane = screen.queryByAltText(`${side} Wallpaper`);
-    if (!pane) continue;
-    await act(async () => {
-      fireEvent.load(pane);
-    });
-  }
-}
-
-/** Run out the pick-feedback delay that gates a vote reaching the backend. */
-async function advancePickFeedback() {
-  await act(async () => {
-    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
-  });
-  await flush();
-}
 
 const pageBar = (view: string) =>
   document.querySelector(
@@ -469,7 +431,7 @@ test("a vote patches Rank's headline from stats-changed", async () => {
   await panesArrive();
   expect(pageBar("rank").textContent).toContain("Round 3");
 
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
@@ -490,7 +452,7 @@ test("score-changed tells Library which two Scores moved, without a fetch", asyn
   expect([badge(1), badge(2), badge(3)]).toEqual(["29.2", "20.8", "25.5"]);
 
   await click(tab("Rank"));
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
@@ -512,7 +474,7 @@ test("a refetch makes every Score current again", async () => {
   await panesArrive();
   await click(tab("Library"));
   await click(tab("Rank"));
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
 
   library[0] = wallpaper(1, {

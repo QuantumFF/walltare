@@ -1,3 +1,4 @@
+import App from "@/App";
 import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
@@ -9,9 +10,34 @@ import type {
   Stats,
   Wallpaper,
 } from "@/lib/client";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { jest } from "bun:test";
 import type { ReactNode } from "react";
 import { mockCommand } from "./ipc-mocks";
+
+// What a test arranges, and what a test does.
+//
+// A helper earns a place here on either of two conditions, and only these two
+// (ADR 0031):
+//
+// 1. It holds a rule an ADR states. `mockListings` carries ADR 0028's, the
+//    `servingRows` family ADR 0023's, and a rule stated in each of N places is
+//    a rule that drifts — which is what a shared fixture is for.
+// 2. Its copies are mechanically identical, or made identical by a change with
+//    no effect on any assertion, *demonstrated by running the suite*. The
+//    demonstration is part of the condition: without it the rule licenses
+//    guessing about which differences between two copies were deliberate.
+//
+// Neither condition is "two files want it". A default that applies a rule is
+// the point; a default that hides a value is worse than the explicit lines it
+// replaces, because it makes a test pass for reasons its own file does not
+// state. Three of `mockBootedApp`'s callers re-register one command below the
+// call for exactly that reason, and `expand_path` never moved here at all.
+//
+// The DOM helpers are here rather than in a module of their own, which is why
+// `click` sits beside `wallpaper()`: `click` is four lines around `flush`, this
+// is already the render-and-act module, and naming a new one for a `fireEvent`
+// wrapper is more interface than the job needs.
 
 /**
  * One row as `list_wallpapers` would answer with it.
@@ -360,6 +386,80 @@ export async function renderInApp(ui: ReactNode) {
   );
   await flush();
   return rendered;
+}
+
+/**
+ * Render the whole app and wait out its boot gate, which is where every test
+ * about the shell starts.
+ *
+ * A file that navigates on arrival wraps this rather than replacing it: booting
+ * and clicking through to a page is a different sequence, and giving it this
+ * name would hide the click.
+ */
+export async function openApp() {
+  const rendered = render(<App />);
+  await flush();
+  return rendered;
+}
+
+/** One click, and the state updates behind it. */
+export async function click(element: Element): Promise<void> {
+  await act(async () => {
+    fireEvent.click(element);
+  });
+  await flush();
+}
+
+/**
+ * One keystroke, and the state updates behind it.
+ *
+ * The target defaults to wherever focus is, which is what a curator's keyboard
+ * reaches and so what a test about a binding wants: a grid's arrow keys are
+ * about the card that has focus, and the lightbox's Escape is about the layer
+ * in front. Pass `target` for the two cases that are not — a shell binding
+ * listening on the `window`, and a key delivered to a field that focus is not
+ * in — and the modifiers for a chord.
+ */
+export async function press(
+  key: string,
+  options: {
+    target?: Window | Element;
+    ctrlKey?: boolean;
+    altKey?: boolean;
+    metaKey?: boolean;
+  } = {},
+): Promise<void> {
+  const { target = document.activeElement ?? document.body, ...modifiers } =
+    options;
+  await act(async () => {
+    fireEvent.keyDown(target, { key, ...modifiers });
+  });
+  await flush();
+}
+
+/** happy-dom never fetches an `<img>`; Rank refuses a pick until both arrive. */
+export async function panesArrive(): Promise<void> {
+  for (const side of ["Left", "Right"] as const) {
+    const pane = screen.queryByAltText(`${side} Wallpaper`);
+    if (!pane) continue;
+    await act(async () => {
+      fireEvent.load(pane);
+    });
+  }
+}
+
+/** `RankView`'s pick-feedback delay, which gates a vote reaching the backend. */
+const PICK_FEEDBACK_MS = 300;
+
+/**
+ * Run that delay out. The caller owns the fake clock — `jest.useFakeTimers()`
+ * in its own `beforeEach` — since which tests fake time is theirs to decide.
+ */
+export async function advancePickFeedback(): Promise<void> {
+  await act(async () => {
+    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
+  });
+  await flush();
 }
 
 export interface Deferred<T> {

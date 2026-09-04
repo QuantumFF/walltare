@@ -1,21 +1,16 @@
-import App from "@/App";
 import type { Settings, Wallpaper } from "@/lib/client";
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
   cacheSize,
+  click,
   deferred,
   flush,
   mockBootedApp,
   mockTransitions,
+  openApp,
+  press,
   servingRows,
   settings,
   showingView,
@@ -91,20 +86,6 @@ async function enterGrid() {
   });
 }
 
-async function press(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, { key });
-  });
-  await flush();
-}
-
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
 /** The card holding the selection, by the accessible name it carries. */
 const selectedCard = () =>
   (document.activeElement as HTMLElement | null)?.getAttribute("aria-label") ??
@@ -138,10 +119,9 @@ beforeEach(() => {
   mockTransitions(() => reviewed);
 });
 
-/** Render the app and land on Review, which is what a tab click does. */
-async function openApp() {
-  const rendered = render(<App />);
-  await flush();
+/** Boot the app and land on Review, which is what a tab click does. */
+async function openOnReview() {
+  const rendered = await openApp();
   await click(screen.getByRole("tab", { name: "Review" }));
   return rendered;
 }
@@ -151,7 +131,7 @@ async function openReview(list: Wallpaper[], stored: Partial<Settings> = {}) {
   reviewed = list;
   mockCommand("list_wallpapers", () => list);
   mockCommand("get_settings", () => settings(stored));
-  return openApp();
+  return openOnReview();
 }
 
 test("renders the rows the backend returned, in the order it returned them", async () => {
@@ -250,7 +230,7 @@ test("asks the listing for the 50 Active wallpapers with the lowest Scores", asy
     return [];
   });
 
-  await openApp();
+  await openOnReview();
 
   expect(calls).toEqual([
     { filter: "active", ordering: "score_asc", limit: 50 },
@@ -290,7 +270,7 @@ test("refresh renders whatever the backend returns next", async () => {
   ];
   mockCommand("list_wallpapers", () => responses[Math.min(fetches++, 1)]);
 
-  await openApp();
+  await openOnReview();
   expect(fetches).toBe(1);
   expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
 
@@ -378,7 +358,7 @@ test("a successful fetch does not clear the previous failure", async () => {
       : [wallpaper(2, { filename: "a.jpg" })],
   );
 
-  await openApp();
+  await openOnReview();
   expect(toast()?.title).toBe("Couldn't load the review list");
 
   broken = false;
@@ -426,7 +406,7 @@ test("the list can't be refetched while a fetch is in flight", async () => {
   let fetches = 0;
   mockCommand("list_wallpapers", () => responses[fetches++]);
 
-  await openApp();
+  await openOnReview();
 
   // While loading the body is a spinner and Refresh is disabled. The control
   // lives in the bar this page owns below the chrome, which holds its height in
@@ -615,7 +595,7 @@ test("a load failure surfaces readably instead of console-only", async () => {
     Promise.reject({ kind: "db", message: "locked database" }),
   );
 
-  await openApp();
+  await openOnReview();
 
   // On the shell's surface now, not in a paragraph of this view's own. Two
   // error surfaces in one view is what ADR 0017 removed, and a list that will
