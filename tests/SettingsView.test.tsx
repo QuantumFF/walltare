@@ -18,6 +18,7 @@ import {
   desktopColorScheme,
   emptyStats,
   flush,
+  mockBootedApp,
   settings,
   showingView,
   stats,
@@ -72,14 +73,15 @@ beforeEach(() => {
   pregenCommands = [];
   clearCalls = 0;
 
+  mockBootedApp();
   // A library with wallpapers in it, so boot lands on Rank and the curator
   // reaches Settings through the gear — which is what puts a `returnTo` on the
-  // navigation. The tests about a first run and a failed boot override it.
+  // navigation. The tests about a first run and a failed boot override it, and
+  // the reads are counted because the page refetches them.
   mockCommand("get_stats", () => {
     statsCalls++;
     return stats();
   });
-  mockCommand("get_settings", () => settings());
   // The shell starts a pass as soon as it mounts, so every render in this file
   // reaches this one before the curator has clicked anything (ADR 0012).
   mockCommand("start_pregen", () => {

@@ -13,9 +13,10 @@ import {
   cacheSize,
   deferred,
   flush,
+  mockBootedApp,
   mockListings,
-  settings,
-  stats,
+  mockTransitions,
+  servingRows,
   wallpaper,
 } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
@@ -39,6 +40,12 @@ let reviewRows: Wallpaper[];
 /** The rows the library page's fetch answers with, set per test. */
 let libraryRows: Wallpaper[];
 
+/** Whichever page is serving a row, since either can raise the lightbox. */
+const SERVED_ROWS = () => [...reviewRows, ...libraryRows];
+
+/** The rows a transition answers with, read off that page (ADR 0023). */
+const { wrote, rejectedTo, restoredTo } = servingRows(SERVED_ROWS);
+
 beforeEach(() => {
   reviewRows = [
     wallpaper(7, {
@@ -52,9 +59,7 @@ beforeEach(() => {
 
   // A library with wallpapers in it, so boot lands on Rank and every test
   // navigates from where the curator actually starts.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   mockCommand("get_cache_size", () => cacheSize());
   // Both rejecting pages read where a reject goes for the line on their bar.
   mockCommand("expand_path", (args) => ({
@@ -63,58 +68,10 @@ beforeEach(() => {
   }));
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockListings({ review: () => reviewRows, library: () => libraryRows });
-  mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
+  // Every transition answers with the row it wrote, off whichever page is
+  // serving it (ADR 0023). The tests below override the one they are about.
+  mockTransitions(SERVED_ROWS);
 });
-
-/** The row whichever page is serving it holds for an id. */
-function served(args: { id: number }): Wallpaper {
-  const id = args.id;
-  const found = [...reviewRows, ...libraryRows].find((w) => w.id === id);
-  if (!found) throw new Error(`no row with id ${id}`);
-  return found;
-}
-
-/**
- * The row a transition answered with (ADR 0023).
- *
- * Built from the row the page is holding, because every command answers with
- * the row it wrote and the columns it did not touch come through unchanged.
- */
-function wrote(
-  args: { id: number },
-  over: Partial<Wallpaper> = {},
-): Wallpaper {
-  return { ...served(args), ...over };
-}
-
-/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
-function rejectedTo(
-  args: { id: number },
-  landedAt: string,
-): Wallpaper {
-  const before = served(args);
-  return {
-    ...before,
-    status: "rejected",
-    path: landedAt,
-    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
-    origin_path: before.path,
-  };
-}
-
-/** The row a Restore wrote: the file back at `landedAt`, and the Origin spent. */
-function restoredTo(
-  args: { id: number },
-  landedAt: string,
-): Wallpaper {
-  return {
-    ...served(args),
-    status: "active",
-    path: landedAt,
-    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
-    origin_path: null,
-  };
-}
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 
@@ -955,9 +912,9 @@ test("the origin-less Restore explains itself and calls nothing", async () => {
       origin_path: null,
     }),
   ]);
-  // No `restore_wallpaper` mock at all: reaching the backend is what this test
-  // says must not happen, and an unmocked command rejects into a `console.error`
-  // the guard would fail on.
+  // Reaching the backend is what this test says must not happen, and the
+  // shared default throws on a row with no Origin — a call the frontend refuses
+  // before it makes it, so a mock that answered one would hide the regression.
 
   await click(cell("legacy.jpg, Rejected"));
 

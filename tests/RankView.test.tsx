@@ -7,8 +7,8 @@ import {
   currentView,
   deferred,
   flush,
+  mockBootedApp,
   renderInApp,
-  settings,
   stats,
   wallpaper,
 } from "./fixtures";
@@ -35,14 +35,12 @@ beforeEach(() => {
   // going through `waitFor`.
   jest.useFakeTimers();
   votes = [];
+  mockBootedApp();
+  // Counted, because a refetch after a vote is what half this file is about.
   mockCommand("get_stats", () => {
     getStatsCalls++;
     return stats();
   });
-  // The other half of the provider's boot gate; without it nothing renders.
-  mockCommand("get_settings", () => settings());
-  // Started by the provider once that gate settles.
-  mockCommand("start_pregen", () => null);
 });
 
 function pair(leftId: number, rightId: number): [Wallpaper, Wallpaper] {

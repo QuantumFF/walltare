@@ -2,7 +2,14 @@ import App from "@/App";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import { flush, mockListings, settings, stats, wallpaper } from "./fixtures";
+import {
+  flush,
+  mockBootedApp,
+  mockListings,
+  servingRows,
+  settings,
+  wallpaper,
+} from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
 // The toast lives in the shell, so every test here renders the whole app and
@@ -20,21 +27,8 @@ let reviewFetches: number;
 /** The worklist Review is serving, which the transition mocks read rows from. */
 let reviewed: ReturnType<typeof wallpaper>[];
 
-/**
- * The row a transition answered with (ADR 0023).
- *
- * Built from the row the list holds, because every command answers with the row
- * it wrote and the columns it did not touch come through unchanged.
- */
-function wrote(
-  args: { id: number },
-  over: Partial<ReturnType<typeof wallpaper>> = {},
-) {
-  const id = args.id;
-  const before = reviewed.find((w) => w.id === id);
-  if (!before) throw new Error(`no review row with id ${id}`);
-  return { ...before, ...over };
-}
+/** The rows a transition answers with, read off that worklist (ADR 0023). */
+const { row, wrote, rejectedTo, restoredTo } = servingRows(() => reviewed);
 
 afterEach(() => {
   cleanup();
@@ -52,8 +46,7 @@ beforeEach(() => {
     wallpaper(8, { filename: "wall-8.jpg" }),
   ];
 
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
+  mockBootedApp();
   // Review's bar resolves the stored destination on mount, which is also what
   // decides whether a reject toast has a path to name (ADR 0018). `./rejected`
   // resolves to itself, so every reject below is into a relative destination.
@@ -61,7 +54,6 @@ beforeEach(() => {
     resolved: args.input,
     exists: true,
   }));
-  mockCommand("start_pregen", () => null);
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockListings({
     review: () => {
@@ -83,28 +75,18 @@ beforeEach(() => {
       id: args.id,
       destination: args.destinationFolder,
     });
-    const before = wrote(args);
     // The file keeps its name, which is what a reject without a collision does:
     // only `unique_destination` suffixes one, and the tests below that want a
     // suffix arrange it themselves.
     //
-    // The Origin is here because the Undo this toast offers is a Restore on the
-    // row the reject answered with, and a row with no Origin is refused before
-    // any call is made (ADR 0009).
-    return {
-      ...before,
-      status: "rejected",
-      path: `/library/rejected/${before.filename}`,
-      origin_path: before.path,
-    };
+    // The Origin comes with it because the Undo this toast offers is a Restore
+    // on the row the reject answered with, and a row with no Origin is refused
+    // before any call is made (ADR 0009).
+    return rejectedTo(args, `/library/rejected/${row(args).filename}`);
   });
   mockCommand("restore_wallpaper", (args) => {
     restores.push(args.id);
-    return wrote(args, {
-      status: "active",
-      path: "/library/wall-7.jpg",
-      origin_path: null,
-    });
+    return restoredTo(args, `/library/${row(args).filename}`);
   });
 });
 

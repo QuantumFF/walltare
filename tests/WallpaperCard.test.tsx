@@ -2,7 +2,7 @@ import { WallpaperCard, type CardAction } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { flush, renderInApp, settings, stats, wallpaper } from "./fixtures";
+import { flush, mockBootedApp, renderInApp, wallpaper } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
 // Review lists only Active wallpapers, so the pill, the dimming, the folder
@@ -22,9 +22,7 @@ beforeEach(() => {
   restores = [];
   opened = [];
   // The provider's boot gate; the card itself asks the backend nothing.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   // The row a Restore writes: back on Active, at the path it came from, and
   // its Origin spent (ADR 0023). The card only counts the calls, but a mock
   // answering with a bare path was answering with a row nothing produces.

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import {
   cacheSize,
   flush,
+  mockBootedApp,
   mockListings,
   settings,
   showingView,
@@ -51,9 +52,7 @@ beforeEach(() => {
 
   // A mid-life library on Round 3, so boot lands on Rank and the Round has
   // somewhere to move back from.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockListings({
     review: () => [

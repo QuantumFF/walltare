@@ -16,6 +16,7 @@ import {
   emptyStats,
   flush,
   hiddenViews,
+  mockBootedApp,
   mockListings,
   mountedViews,
   settings,
@@ -60,8 +61,7 @@ beforeEach(() => {
 
   // A library with wallpapers in it, so boot lands on Rank and every test
   // starts where the curator spends their time.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
+  mockBootedApp();
   // The Library root field resolves what it holds and stores it before a scan,
   // so every visit to Settings in this file reaches these two.
   mockCommand("expand_path", (args) => ({

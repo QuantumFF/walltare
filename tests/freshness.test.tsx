@@ -10,7 +10,15 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import { flush, mockListings, settings, stats, wallpaper } from "./fixtures";
+import {
+  flush,
+  mockBootedApp,
+  mockListings,
+  mockTransitions,
+  servingRows,
+  stats,
+  wallpaper,
+} from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // Cross-view freshness, driven the way the curator drives it: the whole app,
@@ -36,6 +44,9 @@ let votes: Array<[number, number]>;
 /** The library `list_wallpapers` reads, which a scan in a test appends to. */
 let library: Wallpaper[];
 
+/** The rows a transition answers with, read off that library (ADR 0023). */
+const { wrote } = servingRows(() => library);
+
 afterEach(() => {
   cleanup();
   jest.useRealTimers();
@@ -58,15 +69,13 @@ beforeEach(() => {
     }),
   ];
 
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
+  mockBootedApp();
   // Review's bar resolves the stored destination as soon as the view mounts,
   // which is the one backend call this file's navigation adds (ADR 0018).
   mockCommand("expand_path", (args) => ({
     resolved: args.input,
     exists: true,
   }));
-  mockCommand("start_pregen", () => null);
 
   // Rank opens on wallpapers 1 and 2, which are also rows in the library, so a
   // vote and a library row are about the same two wallpapers.
@@ -103,39 +112,10 @@ beforeEach(() => {
     },
   });
 
-  // Every transition answers with the row it wrote, so these mocks derive one
-  // from the library rather than returning a path: a patch carries that row
-  // whole, and a fixture that dropped the Score or the comparison count would
-  // be a row the backend could never report (ADR 0023).
-  mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
-  mockCommand("move_wallpaper", (args) => {
-    const before = row(args);
-    return {
-      ...before,
-      status: "rejected",
-      path: `/library/rejected/${before.filename}`,
-      // What the backend writes: `origin_path = path`, in the same statement
-      // that overwrites `path`.
-      origin_path: before.path,
-    };
-  });
+  // Every transition answers with the row it wrote, off the library the tests
+  // arrange (ADR 0023). The tests below override the one they are refusing.
+  mockTransitions(() => library);
 });
-
-/** The library row a transition was asked about. */
-function row(args: { id: number }): Wallpaper {
-  const id = args.id;
-  const found = library.find((w) => w.id === id);
-  if (!found) throw new Error(`no library row with id ${id}`);
-  return found;
-}
-
-/** That row as a transition rewrote it. */
-function wrote(
-  args: { id: number },
-  over: Partial<Wallpaper>,
-): Wallpaper {
-  return { ...row(args), ...over };
-}
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 

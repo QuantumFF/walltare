@@ -14,9 +14,11 @@ import {
   cacheSize,
   deferred,
   flush,
+  mockBootedApp,
+  mockTransitions,
+  servingRows,
   settings,
   showingView,
-  stats,
   wallpaper,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
@@ -36,44 +38,8 @@ let expansions: string[];
 /** The worklist Review is serving, which the transition mocks read rows from. */
 let reviewed: Wallpaper[];
 
-/** The row the review list holds for an id, which every transition mock starts from. */
-function row(args: { id: number }): Wallpaper {
-  const id = args.id;
-  const found = reviewed.find((w) => w.id === id);
-  if (!found) throw new Error(`no review row with id ${id}`);
-  return found;
-}
-
-/**
- * The row a transition answered with (ADR 0023).
- *
- * Built from the row the list holds, because a command answers with the row it
- * wrote and every column it did not touch comes through unchanged. A mock
- * returning `null` or a path would be a backend this app no longer has.
- */
-function wrote(
-  args: { id: number },
-  over: Partial<Wallpaper> = {},
-): Wallpaper {
-  return { ...row(args), ...over };
-}
-
-/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
-function rejectedTo(
-  args: { id: number },
-  landedAt: string,
-): Wallpaper {
-  const before = row(args);
-  return {
-    ...before,
-    status: "rejected",
-    path: landedAt,
-    // The basename of the path the backend wrote, which is how it derives the
-    // `filename` column it stores.
-    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
-    origin_path: before.path,
-  };
-}
+/** The rows a transition answers with, read off that worklist (ADR 0023). */
+const { wrote, rejectedTo } = servingRows(() => reviewed);
 
 const reviewView = () =>
   document.querySelector(
@@ -152,9 +118,7 @@ beforeEach(() => {
 
   // A library with wallpapers in it, so boot lands on Rank and Review is
   // reached the way the curator reaches it.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   // Rank mounts at boot and stays mounted behind this page. Its pair is named
   // apart from anything in the review list, so a query that reaches past the
   // shown view is a failing test rather than a passing one.
@@ -169,6 +133,9 @@ beforeEach(() => {
     expansions.push(input);
     return { resolved: input.replace(/^~/, HOME), exists: true };
   });
+  // Every transition answers with the row it wrote, off the worklist the test
+  // arranged (ADR 0023). The tests below override the one they are about.
+  mockTransitions(() => reviewed);
 });
 
 /** Render the app and land on Review, which is what a tab click does. */

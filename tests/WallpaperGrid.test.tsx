@@ -12,9 +12,8 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useRef, useState, type RefObject } from "react";
 import {
   flush,
+  mockBootedApp,
   renderInApp,
-  settings,
-  stats,
   viewportWidth,
   wallpaper,
 } from "./fixtures";
@@ -46,9 +45,7 @@ beforeEach(() => {
   asked = [];
   opened = [];
   // The provider's boot gate; the grid itself asks the backend nothing.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   // The four a page can make on the curator's behalf. Review reaches two of
   // them and the library page reaches all four, so this host stands in for the
   // page rather than for either one.
