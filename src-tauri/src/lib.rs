@@ -5,6 +5,9 @@ mod pregen;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod scanner;
 mod settings;
+mod soft_reject;
+#[cfg(test)]
+mod testing;
 mod thumbnails;
 mod voting;
 mod window_state;
@@ -245,7 +248,7 @@ fn scan_root(path: &str) -> Result<PathBuf, error::AppError> {
 ///
 /// Same reason as [`paths::expand_with`]: the `~` case needs a known `HOME`, and
 /// cargo runs tests as threads in one process, so mutating the environment would
-/// race every other test in the crate. `db`'s tests reach
+/// race every other test in the crate. `soft_reject`'s tests reach
 /// `resolve_destination_dir_with` for the same reason.
 #[cfg(test)]
 fn scan_root_with(
@@ -437,7 +440,7 @@ fn move_wallpaper(
     state: tauri::State<Db>,
 ) -> Result<db::Wallpaper, error::AppError> {
     let conn = lock_conn(state);
-    db::move_wallpaper(&conn, id, &destination_folder)
+    soft_reject::reject(&conn, id, &destination_folder)
 }
 
 /// Undoes a soft reject and answers with the row it wrote: the file is back at
@@ -450,7 +453,7 @@ fn move_wallpaper(
 #[tauri::command]
 fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
     let conn = lock_conn(state);
-    db::restore_wallpaper(&conn, id)
+    soft_reject::restore(&conn, id)
 }
 
 /// Parses `wallpaper://localhost/image/{id}?size={size}`.
