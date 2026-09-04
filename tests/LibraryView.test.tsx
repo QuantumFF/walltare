@@ -178,12 +178,28 @@ const pressedChip = () =>
     .getAllByRole("button", { pressed: true })
     .map((el) => el.textContent)[0] ?? null;
 
-/** Choose one of ADR 0014's four orderings, by its wire name. */
-async function orderBy(value: string) {
-  await act(async () => {
-    fireEvent.change(bar().getByLabelText("Order by"), { target: { value } });
-  });
-  await flush();
+/** The ordering control: a combobox since #192, not a `<select>`. */
+const ordering = () => bar().getByLabelText("Order by");
+
+/**
+ * The four names in the open list, in order. Unscoped, because the list is
+ * portalled to the end of the body and is not inside the bar the trigger is on.
+ */
+const orderingNames = () =>
+  screen.getAllByRole("option").map((el) => el.textContent);
+
+/**
+ * Choose one of ADR 0014's four orderings, by the name on it.
+ *
+ * Through the list rather than by writing a value onto the control, which is
+ * what leaves the assertion on `listArgs` worth making: the curator reads a
+ * sentence and picks it, and what goes over the wire is the ordering's name.
+ * Enter opens and Enter chooses, both of them the trigger's and the item's own
+ * bindings.
+ */
+async function orderBy(name: string) {
+  await press("Enter", { target: ordering() });
+  await press("Enter", { target: screen.getByRole("option", { name }) });
 }
 
 /** ADR 0018's line on the bar, whichever of its two shapes is up. */
@@ -317,18 +333,22 @@ test("the filter is four chips in one named group, with the current one pressed"
 test("the ordering offers four names, and the frontend sends the name", async () => {
   await openLibraryOf([wallpaper(1)]);
 
-  const ordering = () => bar().getByLabelText("Order by") as HTMLSelectElement;
+  // The current one is on the trigger, and it is where the page opens: ADR
+  // 0014's default is the one view neither Rank nor Review gives.
+  expect(ordering().textContent).toBe("Score, high to low");
+
   // Each with its direction baked in, which is why Score appears twice and
   // there is no direction toggle beside it (ADR 0014).
-  expect([...ordering().options].map((el) => el.textContent)).toEqual([
+  await press("Enter", { target: ordering() });
+  expect(orderingNames()).toEqual([
     "Score, high to low",
     "Score, low to high",
     "Filename, A to Z",
     "Recently added",
   ]);
-  expect(ordering().value).toBe("score_desc");
+  await press("Escape");
 
-  await orderBy("filename_asc");
+  await orderBy("Filename, A to Z");
 
   // A name and nothing else: no column, no direction and nothing sorted here.
   // The backend owns every part of the clause behind the name (ADR 0014).
@@ -336,7 +356,7 @@ test("the ordering offers four names, and the frontend sends the name", async ()
     ["all", "score_desc"],
     ["all", "filename_asc"],
   ]);
-  expect(ordering().value).toBe("filename_asc");
+  expect(ordering().textContent).toBe("Filename, A to Z");
 });
 
 test("the bar says where rejects go, in the string the curator wrote", async () => {

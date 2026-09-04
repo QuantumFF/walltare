@@ -387,9 +387,7 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
   expect(
     bar.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
   ).toEqual(["All"]);
-  expect((bar.getByLabelText("Order by") as HTMLSelectElement).value).toBe(
-    "score_desc",
-  );
+  expect(bar.getByLabelText("Order by").textContent).toBe("Score, high to low");
 });
 
 test("an empty library says so on the page that would have listed it", async () => {
