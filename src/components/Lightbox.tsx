@@ -7,6 +7,7 @@ import {
   actionFor,
   printedKey,
   type GridSelection,
+  type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,7 +18,13 @@ import { counted, grouped, isEvaluated, score, STATUS_LABEL } from "@/lib/copy";
 import { cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Dialog } from "radix-ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 
 /**
  * How narrow the row under the picture is allowed to get, in pixels.
@@ -74,9 +81,9 @@ export interface LightboxControls {
    * focus.
    *
    * The curator's own Escape or Close, in other words. The two closes nobody
-   * pressed do not come through here: a destination change would be asking for
-   * focus inside a page the shell has just hidden, and there is no card left to
-   * ask about when the list empties.
+   * pressed do not come through here; what they owe the grid is decided beside
+   * them, because only the caller knows which of the three closes this is
+   * (ADR 0029).
    */
   close: () => void;
 }
@@ -95,12 +102,21 @@ export interface LightboxControls {
  * already makes every destination own an empty state that names the reason and
  * offers the route out, so a second "nothing left" panel inside the lightbox
  * would be that screen with less room.
+ *
+ * Two of those three hand focus back to the grid and the third does not, which
+ * is why this takes the grid's handle rather than the grid watching a flag: a
+ * destination change hides the page in the same pass, so focusing a card in it
+ * is a no-op in a browser and a lie under happy-dom. Only the caller can tell
+ * the three apart (ADR 0029).
  */
-export function useLightbox(selection: GridSelection): LightboxControls {
+export function useLightbox(
+  selection: GridSelection,
+  grid: RefObject<WallpaperGridHandle | null>,
+): LightboxControls {
   const { view } = useApp();
   const { setOpen: reportToShell } = useLightboxHost();
   const [open, setOpen] = useState(false);
-  const { wallpaper, selectId, requestFocus } = selection;
+  const { wallpaper, selectId } = selection;
 
   /**
    * The page's flag and the shell's, set together.
@@ -138,16 +154,37 @@ export function useLightbox(selection: GridSelection): LightboxControls {
   // grid's own layout effect answers it (ADR 0019, ADR 0022).
   const close = useCallback(() => {
     setOpenEverywhere(false);
-    requestFocus();
-  }, [requestFocus, setOpenEverywhere]);
+    grid.current?.focusSelection();
+  }, [grid, setOpenEverywhere]);
 
+  // The destination change, and the one close that hands nothing back: `Ctrl+2`
+  // hides this page with `display: none` in the same pass (ADR 0015), so a card
+  // focused in it is a no-op in a browser and a lie under happy-dom.
   useEffect(() => {
     setOpenEverywhere(false);
   }, [view, setOpenEverywhere]);
 
+  // The list emptying under it, which does ask for the focus back. There is no
+  // card left to land on, so what would take it is the grid container — the
+  // alternative is `body`, where the next Tab starts from the top of the
+  // document rather than from the page the curator is on (ADR 0029).
+  //
+  // Today it lands on `body` anyway, and not because of anything here: both
+  // pages swap their grid for their own empty state in the same commit, so the
+  // handle is null by the time this runs. The ask is still made rather than
+  // left out, because which surface is on screen after the list empties is the
+  // page's decision and this rule holds either way. `lightbox.test.tsx` pins
+  // what a curator gets today.
+  //
+  // `open` is in the condition and not only in the effect's own bookkeeping,
+  // because a page whose first fetch has not landed renders its grid over an
+  // empty list: without it, arriving on the library page would hand focus to a
+  // grid the curator has not walked into.
   useEffect(() => {
-    if (wallpaper === null) setOpenEverywhere(false);
-  }, [wallpaper, setOpenEverywhere]);
+    if (wallpaper !== null || !open) return;
+    setOpenEverywhere(false);
+    grid.current?.focusSelection();
+  }, [wallpaper, open, grid, setOpenEverywhere]);
 
   // The page that stops rendering while one is still up, which is the one case
   // no handler above covers. Nothing unmounts a view today; this is what stops

@@ -218,3 +218,26 @@ handle, and it is the same two lines in each file.
 future surface needs to know, the thing to add is a reason rather than a getter,
 because the answer is only ever used to decide whether to move focus, and moving
 focus is what `focusSelection` is for.
+
+> **Amended by [#174](https://github.com/QuantumFF/walltare/issues/174),
+> 2026-09-04.** The named behaviour change did not land, and the reading behind
+> it was wrong. Keeping the last row from inside the lightbox still leaves focus
+> on `body`, because the grid is not there to be asked: both pages render their
+> own empty state *instead of* the grid when the list empties
+> (`ReviewView.tsx`, `LibraryView.tsx`), so the component unmounts in the same
+> commit that empties it and `grid.current` is `null` by the time the
+> list-emptied effect runs. The context section above has the grid's effect
+> returning at `:471` on that path; nothing of the sort happens, since the
+> effect no longer exists.
+>
+> The rest of the decision stands and is implemented as written. The
+> list-emptied effect does call `focusSelection`, because whether a surface is
+> still there to take the focus is the page's decision and this rule holds
+> either way — it is simply a no-op on both of today's pages. The three closes
+> still differ, and the destination change still hands nothing back.
+>
+> What it would take to deliver the change is a page that keeps its grid mounted
+> over an empty list, which is a different decision about what an empty
+> destination looks like and belongs to whoever makes it. The grid's own
+> container-focus branch is unaffected and still covered by
+> `WallpaperGrid.test.tsx`; `lightbox.test.tsx` pins what a curator gets today.
