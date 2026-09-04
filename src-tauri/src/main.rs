@@ -5,7 +5,7 @@ fn main() {
     #[cfg(target_os = "linux")]
     if is_wayland() && is_nvidia() {
         // Workaround for WebKitGTK on NVIDIA, see tauri-apps/tauri#9394
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        // std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
         std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
     }
 
