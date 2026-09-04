@@ -176,7 +176,19 @@ export function ReviewView() {
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       ) : (
-        <div className="mx-auto flex h-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
+        /* `w-full` beside the `mx-auto`, and it is load-bearing rather than
+           tidiness. Auto cross-axis margins on a flex item suppress the
+           `stretch` that would otherwise give it the line's full width, so
+           without a width of its own this centred box is sized `fit-content` —
+           and the grid inside it is `minmax(0, 1fr)` columns, whose intrinsic
+           contribution is nothing. WebKitGTK's first layout of the subtree
+           stretched it anyway and its relayout does not, so the collapse
+           appeared only on the second visit: ADR 0015 hides this view with
+           `display: none` rather than unmounting it, and the way back is a
+           fresh layout. Fifty cards twelve pixels wide, until a reload made it
+           a first visit again. Rank and Settings pair the two classes for the
+           same reason (#190). */
+        <div className="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
           {/* Content */}
           {wallpapers.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
