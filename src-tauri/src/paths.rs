@@ -23,8 +23,8 @@ pub fn expand(input: &str) -> Result<PathBuf, AppError> {
 /// known value for some rows and unset for another, and cargo runs tests as
 /// threads in one process, so mutating the environment would race every other
 /// test in the crate. It also stops `~` being a special case, since it becomes
-/// a lookup of `HOME` like any other variable. `db`'s tests reach it through
-/// `resolve_destination_dir_with` for the same reason.
+/// a lookup of `HOME` like any other variable. `soft_reject`'s tests reach it
+/// through `resolve_destination_dir_with` for the same reason.
 ///
 /// A variable set to an empty string counts as absent, because expanding it to
 /// nothing is what produces the path this whole module exists to refuse: `~` on
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn an_empty_written_path_expands_to_an_empty_path() {
-        // `db::resolve_destination_dir` reads a relative result against the
+        // `soft_reject::resolve_destination_dir` reads a relative result against the
         // wallpaper's own folder, and "" is how it already spells "this folder".
         assert_eq!(expanded(""), PathBuf::from(""));
     }
