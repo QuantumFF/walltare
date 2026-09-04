@@ -139,6 +139,7 @@ async function pressArrow(key: "ArrowLeft" | "ArrowRight") {
   await act(async () => {
     fireEvent.keyDown(window, { key });
   });
+  await flush();
 }
 
 /** Run out the pick-feedback delay that gates the optimistic swap. */

@@ -263,6 +263,7 @@ async function press(key: string): Promise<void> {
   await act(async () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key });
   });
+  await flush();
 }
 
 /** Put focus on the grid's one tab stop, the way Tab does. */
