@@ -12,6 +12,13 @@ import {
 } from "@/components/WallpaperGrid";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useApp } from "@/context/AppContext";
 import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
 import {
@@ -347,22 +354,37 @@ export function LibraryView() {
             nothing here composes a key and a direction — the frontend picks a
             name and the backend owns every part of the clause behind it.
 
-            A `<select>`, styled to sit beside the chips. Four fixed entries the
-            curator opens, reads and closes is exactly what the native control
-            is, and a popover would be a menu component, a focus trap and a
-            keyboard model this app does not otherwise have. */}
-        <select
-          aria-label="Order by"
+            The app's own drop-down rather than a native `<select>`. The native
+            control was the smaller thing to reach for and it is the one control
+            in the window a stylesheet cannot paint: WebKit draws it from the
+            UA's appearance and ignores `background-color`, so under the dark
+            palette it came out white with a near-white label on it (#192). The
+            keyboard model that was the argument against a popover is Radix's,
+            not this file's, and the list is portalled clear of the grid, so the
+            arrows the cards spend belong to whichever surface is in front
+            (ADR 0019).
+
+            `size="sm"` is the chips' 28px, so the two controls sit on one
+            line. */}
+        <Select
           value={ordering}
-          onChange={(event) => setOrdering(event.target.value as ListOrdering)}
-          className="h-7 shrink-0 rounded-lg border border-border bg-background px-2 text-[0.8rem] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          onValueChange={(value) => setOrdering(value as ListOrdering)}
         >
-          {ORDERINGS.map(({ value, label }) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger
+            aria-label="Order by"
+            size="sm"
+            className="shrink-0 text-[0.8rem]"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {ORDERINGS.map(({ value, label }) => (
+              <SelectItem key={value} value={value} className="text-[0.8rem]">
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
         {/* The row count, which is the size of the library under this filter and
             not a page of it: one call returns every matching row, so nothing

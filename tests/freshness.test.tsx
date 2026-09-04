@@ -185,14 +185,17 @@ async function filterBy(label: string) {
   await click(libraryBar().getByRole("button", { name: label }));
 }
 
-/** Choose one of ADR 0014's four orderings, by its wire name. */
-async function orderBy(value: string) {
-  await act(async () => {
-    fireEvent.change(libraryBar().getByLabelText("Order by"), {
-      target: { value },
-    });
-  });
-  await flush();
+/**
+ * Choose one of ADR 0014's four orderings, by the name on it.
+ *
+ * The trigger is scoped to this page's bar like the queries above, but the list
+ * cannot be: since #192 it is a popover portalled to the end of the body, so it
+ * is nowhere inside the bar the trigger sits on. Unscoped is safe here anyway,
+ * because Review's bar has no ordering control to be confused with.
+ */
+async function orderBy(name: string) {
+  await press("Enter", { target: libraryBar().getByLabelText("Order by") });
+  await press("Enter", { target: screen.getByRole("option", { name }) });
 }
 
 /** The toast in the shell's one slot, as it reads. */
@@ -483,7 +486,7 @@ test("a refetch makes every Score current again", async () => {
     rating_mu: 33.1,
   });
   await click(tab("Library"));
-  await orderBy("filename_asc");
+  await orderBy("Filename, A to Z");
 
   expect(badge(1)).toBe("33.1");
 });
@@ -522,7 +525,7 @@ test("an ordering change puts the list back at the top", async () => {
   await click(tab("Library"));
   await scrollLibraryTo(240);
 
-  await orderBy("recently_added");
+  await orderBy("Recently added");
 
   expect(scroller().scrollTop).toBe(0);
 });

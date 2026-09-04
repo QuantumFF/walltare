@@ -73,6 +73,20 @@
 }
 
 :root {
+    /*
+     * The palette below only reaches what we paint ourselves. A native control
+     * and a scrollbar are drawn by the UA from its own appearance, and
+     * `color-scheme` is the one declaration it reads to know which one, so this
+     * moves with the class rather than being set once.
+     *
+     * #192 is what it was missing for: the Library bar's `<select>` came out
+     * white against the dark shell, with a label inheriting our near-white
+     * `--foreground`. That control is the app's own component now, so what is
+     * left here is the scrollbars and any native control a later view reaches
+     * for.
+     */
+    color-scheme: light;
+
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
@@ -107,6 +121,8 @@
     --sidebar-ring: oklch(0.708 0 0);
 
     @variant dark {
+        color-scheme: dark;
+
         --background: oklch(0.145 0 0);
         --foreground: oklch(0.985 0 0);
         --card: oklch(0.205 0 0);
