@@ -5,6 +5,8 @@ mod pregen;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod scanner;
 mod settings;
+#[cfg(test)]
+mod testing;
 mod thumbnails;
 mod voting;
 mod window_state;

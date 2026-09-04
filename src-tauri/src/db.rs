@@ -786,6 +786,7 @@ pub fn unkeep_wallpaper(conn: &Connection, id: i64) -> Result<Wallpaper, AppErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::*;
 
     /// The v1 schema, as shipped before the thumbnails CHECK was widened.
     const DDL_V1: &str = "
@@ -859,20 +860,6 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )
         .map(|n| n > 0)
-    }
-
-    fn origin_path_of(conn: &Connection, id: i64) -> Option<String> {
-        conn.query_row(
-            "SELECT origin_path FROM wallpapers WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        )
-        .unwrap()
-    }
-
-    fn count_comparisons(conn: &Connection) -> i64 {
-        conn.query_row("SELECT COUNT(*) FROM comparisons", [], |row| row.get(0))
-            .unwrap()
     }
 
     fn record_full_thumbnail(conn: &Connection, wallpaper_id: i64) -> rusqlite::Result<usize> {
@@ -1017,15 +1004,6 @@ mod tests {
 
         let mixed = vec![PathBuf::from("/w/b.png"), PathBuf::from("/w/c.webp")];
         assert_eq!(insert_new_wallpapers(&conn, &mixed).unwrap(), 1);
-    }
-
-    fn seed_wallpaper(conn: &Connection, path: &str, status: &str, mu: f64) -> i64 {
-        conn.execute(
-            "INSERT INTO wallpapers (filename, path, status, rating_mu) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![path.rsplit('/').next().unwrap(), path, status, mu],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
     }
 
     #[test]
@@ -1498,22 +1476,6 @@ mod tests {
         }
     }
 
-    fn status_of(conn: &Connection, id: i64) -> String {
-        conn.query_row(
-            "SELECT status FROM wallpapers WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        )
-        .unwrap()
-    }
-
-    fn seed_real_wallpaper(conn: &Connection, dir: &Path, name: &str) -> i64 {
-        let path = dir.join(name);
-        std::fs::File::create(&path).unwrap();
-        insert_new_wallpapers(conn, &[path]).unwrap();
-        conn.last_insert_rowid()
-    }
-
     /// A wallpaper whose file is a real image, for the tests that put a
     /// thumbnail behind it. `seed_real_wallpaper`'s empty file has an mtime,
     /// which is all a move cares about, but nothing can decode it.
@@ -1535,23 +1497,6 @@ mod tests {
         .unwrap()
     }
 
-    fn add_comparison(conn: &Connection, winner_id: i64, loser_id: i64) {
-        conn.execute(
-            "INSERT INTO comparisons (winner_id, loser_id, voted_at) VALUES (?1, ?2, unixepoch())",
-            rusqlite::params![winner_id, loser_id],
-        )
-        .unwrap();
-    }
-
-    fn row_status_and_path(conn: &Connection, id: i64) -> (String, String) {
-        conn.query_row(
-            "SELECT status, path FROM wallpapers WHERE id = ?1",
-            rusqlite::params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap()
-    }
-
     fn filename_of(conn: &Connection, id: i64) -> String {
         conn.query_row(
             "SELECT filename FROM wallpapers WHERE id = ?1",
@@ -1568,11 +1513,6 @@ mod tests {
             |row| row.get(0),
         )
         .unwrap()
-    }
-
-    fn count_wallpapers(conn: &Connection) -> i64 {
-        conn.query_row("SELECT COUNT(*) FROM wallpapers", [], |row| row.get(0))
-            .unwrap()
     }
 
     /// `move_wallpaper` stores canonical paths, so expectations built from a
@@ -1667,12 +1607,6 @@ mod tests {
         assert_eq!(status_of(&conn, kept), "active");
         // Back in review, and in its place by Score rather than appended.
         assert_eq!(review_ids(&conn), vec![kept, other]);
-    }
-
-    /// The listing Review asks for, as ids: what the curator's worklist holds
-    /// after a transition has moved a wallpaper into or out of it.
-    fn review_ids(conn: &Connection) -> Vec<i64> {
-        limited_ids(conn, StatusFilter::Active, ListOrdering::ScoreAsc, Some(50))
     }
 
     #[test]
@@ -2178,15 +2112,6 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap()
-    }
-
-    /// A library folder holding one wallpaper, and the Origin string a reject of
-    /// it records. Every restore test starts here.
-    fn seed_for_restore(conn: &Connection, root: &Path, name: &str) -> (i64, PathBuf) {
-        let library = root.join("library");
-        std::fs::create_dir_all(&library).unwrap();
-        let id = seed_real_wallpaper(conn, &library, name);
-        (id, library.join(name))
     }
 
     #[test]
