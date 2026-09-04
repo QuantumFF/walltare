@@ -98,9 +98,12 @@ in [#34](https://github.com/QuantumFF/walltare/issues/34).
 > kept by a module instead of restated in seven places, one of which was this
 > ADR's own neighbour at ADR 0009.
 >
-> `unique_destination` and `move_file` are private to that module. The three
-> failure paths named in **Consequences** are still untested; a permission
-> failure on the destination is filed as
-> [#181](https://github.com/QuantumFF/walltare/issues/181), and the other two —
-> the cross-device fallback and a full disk — need a seam over `std::fs` that
+> `unique_destination` and `move_file` are private to that module. A permission
+> failure on the destination — a reject folder on a read-only mount, or one owned
+> by another user — is covered by
+> `a_destination_the_process_cannot_write_to_leaves_the_row_untouched`
+> ([#181](https://github.com/QuantumFF/walltare/issues/181)), which fails the move
+> with the source still in place and asserts the rollback this ADR promises. The
+> two remaining failure paths — `move_file`'s cross-device fallback and a full
+> disk — need a seam over `std::fs` that
 > [the map](https://github.com/QuantumFF/walltare/issues/149) rules out of scope.

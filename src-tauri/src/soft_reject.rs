@@ -761,6 +761,51 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn a_destination_the_process_cannot_write_to_leaves_the_row_untouched() {
+        // The arm most likely to reach a real curator: a reject folder on a
+        // read-only mount, or one owned by another user. Its neighbour above
+        // fails the move by deleting the source, so it only exercises `rename`'s
+        // missing-source arm; this one fails the move with the source right
+        // where it belongs and the destination refusing the write.
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "locked-out.jpg");
+        let before = row_status_and_path(&conn, id);
+
+        let readonly = dest.path().join("readonly");
+        std::fs::create_dir(&readonly).unwrap();
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result = reject(&conn, id, readonly.to_str().unwrap());
+
+        // Restored before the assertions rather than after, so a failing one
+        // still leaves `tempfile` a directory it can clean up.
+        std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Permission denied rather than any other `Io`: the destination exists
+        // and canonicalizes, and `create_dir_all` is a no-op on a directory that
+        // is already there, so the only step left to refuse is the move itself.
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::error::AppError::Io(ref m) if m.contains("Permission denied")),
+            "got {err:?}"
+        );
+        assert_eq!(row_status_and_path(&conn, id), before);
+        // The rollback takes the Origin with it: a wallpaper that is not
+        // Rejected must not read as one a Restore could move.
+        assert_eq!(origin_path_of(&conn, id), None);
+        // And the file never left, so the reject is one the curator can retry
+        // once they have fixed the folder.
+        assert!(tmp.path().join("locked-out.jpg").is_file());
+        assert_eq!(std::fs::read_dir(&readonly).unwrap().count(), 0);
+    }
+
+    #[test]
     fn unknown_id_returns_not_found() {
         let tmp = tempfile::tempdir().unwrap();
         let conn = Connection::open_in_memory().unwrap();

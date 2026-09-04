@@ -240,8 +240,8 @@ count changed by moving the code, and the surface a trait would have to cover is
 seven calls — `rename`, `copy`, `remove_file`, `create_dir_all`, `canonicalize`,
 `exists`, `is_file` — not the two that ruling assumed. Of ADR 0003's three
 untested failure paths a trait is needed for two, the cross-device fallback and a
-full disk; a permission failure needs only `chmod 0o555` and is filed as
-[#181](https://github.com/QuantumFF/walltare/issues/181).
+full disk; a permission failure needed only `chmod 0o555`, and
+[#181](https://github.com/QuantumFF/walltare/issues/181) tested it without one.
 
 ## Consequences
 
