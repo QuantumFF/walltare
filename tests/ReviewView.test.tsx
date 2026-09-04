@@ -1,22 +1,19 @@
-import App from "@/App";
 import type { Settings, Wallpaper } from "@/lib/client";
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
   cacheSize,
+  click,
   deferred,
   flush,
+  mockBootedApp,
+  mockTransitions,
+  openApp,
+  press,
+  servingRows,
   settings,
   showingView,
-  stats,
   wallpaper,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
@@ -36,44 +33,8 @@ let expansions: string[];
 /** The worklist Review is serving, which the transition mocks read rows from. */
 let reviewed: Wallpaper[];
 
-/** The row the review list holds for an id, which every transition mock starts from. */
-function row(args: Record<string, unknown> | undefined): Wallpaper {
-  const id = args?.id as number;
-  const found = reviewed.find((w) => w.id === id);
-  if (!found) throw new Error(`no review row with id ${id}`);
-  return found;
-}
-
-/**
- * The row a transition answered with (ADR 0023).
- *
- * Built from the row the list holds, because a command answers with the row it
- * wrote and every column it did not touch comes through unchanged. A mock
- * returning `null` or a path would be a backend this app no longer has.
- */
-function wrote(
-  args: Record<string, unknown> | undefined,
-  over: Partial<Wallpaper> = {},
-): Wallpaper {
-  return { ...row(args), ...over };
-}
-
-/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
-function rejectedTo(
-  args: Record<string, unknown> | undefined,
-  landedAt: string,
-): Wallpaper {
-  const before = row(args);
-  return {
-    ...before,
-    status: "rejected",
-    path: landedAt,
-    // The basename of the path the backend wrote, which is how it derives the
-    // `filename` column it stores.
-    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
-    origin_path: before.path,
-  };
-}
+/** The rows a transition answers with, read off that worklist (ADR 0023). */
+const { wrote, rejectedTo } = servingRows(() => reviewed);
 
 const reviewView = () =>
   document.querySelector(
@@ -125,20 +86,6 @@ async function enterGrid() {
   });
 }
 
-async function press(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, { key });
-  });
-  await flush();
-}
-
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
 /** The card holding the selection, by the accessible name it carries. */
 const selectedCard = () =>
   (document.activeElement as HTMLElement | null)?.getAttribute("aria-label") ??
@@ -152,9 +99,7 @@ beforeEach(() => {
 
   // A library with wallpapers in it, so boot lands on Rank and Review is
   // reached the way the curator reaches it.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   // Rank mounts at boot and stays mounted behind this page. Its pair is named
   // apart from anything in the review list, so a query that reaches past the
   // shown view is a failing test rather than a passing one.
@@ -165,16 +110,18 @@ beforeEach(() => {
   // The read-out resolves the stored destination, because whether it is
   // relative cannot be read off the string (ADR 0018).
   mockCommand("expand_path", (args) => {
-    const input = String(args?.input);
+    const input = args.input;
     expansions.push(input);
     return { resolved: input.replace(/^~/, HOME), exists: true };
   });
+  // Every transition answers with the row it wrote, off the worklist the test
+  // arranged (ADR 0023). The tests below override the one they are about.
+  mockTransitions(() => reviewed);
 });
 
-/** Render the app and land on Review, which is what a tab click does. */
-async function openApp() {
-  const rendered = render(<App />);
-  await flush();
+/** Boot the app and land on Review, which is what a tab click does. */
+async function openOnReview() {
+  const rendered = await openApp();
   await click(screen.getByRole("tab", { name: "Review" }));
   return rendered;
 }
@@ -184,7 +131,7 @@ async function openReview(list: Wallpaper[], stored: Partial<Settings> = {}) {
   reviewed = list;
   mockCommand("list_wallpapers", () => list);
   mockCommand("get_settings", () => settings(stored));
-  return openApp();
+  return openOnReview();
 }
 
 test("renders the rows the backend returned, in the order it returned them", async () => {
@@ -283,7 +230,7 @@ test("asks the listing for the 50 Active wallpapers with the lowest Scores", asy
     return [];
   });
 
-  await openApp();
+  await openOnReview();
 
   expect(calls).toEqual([
     { filter: "active", ordering: "score_asc", limit: 50 },
@@ -298,7 +245,7 @@ test("keep records the decision and removes the card without waiting for a refet
     wallpaper(5, { filename: "stay.jpg" }),
   ]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
+    keptIds.push(args.id);
     return pending.promise;
   });
 
@@ -323,7 +270,7 @@ test("refresh renders whatever the backend returns next", async () => {
   ];
   mockCommand("list_wallpapers", () => responses[Math.min(fetches++, 1)]);
 
-  await openApp();
+  await openOnReview();
   expect(fetches).toBe(1);
   expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
 
@@ -367,7 +314,7 @@ test("a keep that fails does not resurrect a card kept while it was in flight", 
   // second card back too, undoing a decision that actually persisted.
   const doomed = deferred<Wallpaper>();
   mockCommand("keep_wallpaper", (args) =>
-    args?.id === 1 ? doomed.promise : wrote(args, { status: "kept" }),
+    args.id === 1 ? doomed.promise : wrote(args, { status: "kept" }),
   );
 
   await click(inReview().getByRole("button", { name: /keep doomed\.jpg/i }));
@@ -411,7 +358,7 @@ test("a successful fetch does not clear the previous failure", async () => {
       : [wallpaper(2, { filename: "a.jpg" })],
   );
 
-  await openApp();
+  await openOnReview();
   expect(toast()?.title).toBe("Couldn't load the review list");
 
   broken = false;
@@ -459,7 +406,7 @@ test("the list can't be refetched while a fetch is in flight", async () => {
   let fetches = 0;
   mockCommand("list_wallpapers", () => responses[fetches++]);
 
-  await openApp();
+  await openOnReview();
 
   // While loading the body is a spinner and Refresh is disabled. The control
   // lives in the bar this page owns below the chrome, which holds its height in
@@ -554,7 +501,7 @@ test("whether the destination is relative is not read off the string", async () 
   // `$HOME/bin` looks relative and expands absolute, which is why the clause
   // waits on `expand_path` rather than on a leading character (ADR 0018).
   mockCommand("expand_path", (args) => {
-    const input = String(args?.input);
+    const input = args.input;
     expansions.push(input);
     return { resolved: input.replace(/^\$HOME/, HOME), exists: true };
   });
@@ -648,7 +595,7 @@ test("a load failure surfaces readably instead of console-only", async () => {
     Promise.reject({ kind: "db", message: "locked database" }),
   );
 
-  await openApp();
+  await openOnReview();
 
   // On the shell's surface now, not in a paragraph of this view's own. Two
   // error surfaces in one view is what ADR 0017 removed, and a list that will
@@ -737,7 +684,7 @@ test("K keeps the selected card, the same as pressing Keep", async () => {
     wallpaper(5, { filename: "next.jpg" }),
   ]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
+    keptIds.push(args.id);
     return wrote(args, { status: "kept" });
   });
 

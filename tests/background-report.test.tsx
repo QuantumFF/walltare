@@ -1,10 +1,12 @@
-import App from "@/App";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import {
   cacheSize,
+  click,
   flush,
+  mockBootedApp,
   mockListings,
+  openApp,
   settings,
   showingView,
   stats,
@@ -51,9 +53,7 @@ beforeEach(() => {
 
   // A mid-life library on Round 3, so boot lands on Rank and the Round has
   // somewhere to move back from.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockListings({
     review: () => [
@@ -65,19 +65,19 @@ beforeEach(() => {
   // Every transition answers with the row it wrote (ADR 0023), and a keep's row
   // differs from the one it read in the `status` column alone.
   mockCommand("keep_wallpaper", (args) =>
-    wallpaper(args?.id as number, {
-      filename: `wall-${String(args?.id)}.jpg`,
+    wallpaper(args.id, {
+      filename: `wall-${String(args.id)}.jpg`,
       status: "kept",
     }),
   );
   mockCommand("start_scan", (args) => {
-    scannedPaths.push(args?.path as string);
+    scannedPaths.push(args.path);
     return null;
   });
   // What the Settings page does around the scan it starts: it resolves the path
   // under the field as it is typed, and stores it before the walk begins.
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("set_setting", () => settings());
@@ -124,13 +124,6 @@ const gear = () =>
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
 async function emit(name: string, payload: unknown) {
   await act(async () => {
     emitEvent(name, payload);
@@ -142,11 +135,6 @@ async function runOut(ms: number) {
   await act(async () => {
     jest.advanceTimersByTime(ms);
   });
-  await flush();
-}
-
-async function openApp() {
-  render(<App />);
   await flush();
 }
 

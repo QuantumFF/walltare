@@ -1,21 +1,18 @@
-import App from "@/App";
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-} from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
   cacheSize,
+  click,
   deferred,
   flush,
+  mockBootedApp,
   mockListings,
-  settings,
-  stats,
+  mockTransitions,
+  openApp,
+  press,
+  servingRows,
   wallpaper,
 } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
@@ -39,6 +36,12 @@ let reviewRows: Wallpaper[];
 /** The rows the library page's fetch answers with, set per test. */
 let libraryRows: Wallpaper[];
 
+/** Whichever page is serving a row, since either can raise the lightbox. */
+const SERVED_ROWS = () => [...reviewRows, ...libraryRows];
+
+/** The rows a transition answers with, read off that page (ADR 0023). */
+const { wrote, rejectedTo, restoredTo } = servingRows(SERVED_ROWS);
+
 beforeEach(() => {
   reviewRows = [
     wallpaper(7, {
@@ -52,69 +55,19 @@ beforeEach(() => {
 
   // A library with wallpapers in it, so boot lands on Rank and every test
   // navigates from where the curator actually starts.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   mockCommand("get_cache_size", () => cacheSize());
   // Both rejecting pages read where a reject goes for the line on their bar.
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockListings({ review: () => reviewRows, library: () => libraryRows });
-  mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
+  // Every transition answers with the row it wrote, off whichever page is
+  // serving it (ADR 0023). The tests below override the one they are about.
+  mockTransitions(SERVED_ROWS);
 });
-
-/** The row whichever page is serving it holds for an id. */
-function served(args: Record<string, unknown> | undefined): Wallpaper {
-  const id = args?.id as number;
-  const found = [...reviewRows, ...libraryRows].find((w) => w.id === id);
-  if (!found) throw new Error(`no row with id ${id}`);
-  return found;
-}
-
-/**
- * The row a transition answered with (ADR 0023).
- *
- * Built from the row the page is holding, because every command answers with
- * the row it wrote and the columns it did not touch come through unchanged.
- */
-function wrote(
-  args: Record<string, unknown> | undefined,
-  over: Partial<Wallpaper> = {},
-): Wallpaper {
-  return { ...served(args), ...over };
-}
-
-/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
-function rejectedTo(
-  args: Record<string, unknown> | undefined,
-  landedAt: string,
-): Wallpaper {
-  const before = served(args);
-  return {
-    ...before,
-    status: "rejected",
-    path: landedAt,
-    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
-    origin_path: before.path,
-  };
-}
-
-/** The row a Restore wrote: the file back at `landedAt`, and the Origin spent. */
-function restoredTo(
-  args: Record<string, unknown> | undefined,
-  landedAt: string,
-): Wallpaper {
-  return {
-    ...served(args),
-    status: "active",
-    path: landedAt,
-    filename: landedAt.slice(landedAt.lastIndexOf("/") + 1),
-    origin_path: null,
-  };
-}
 
 const tab = (name: string) => screen.getByRole("tab", { name });
 
@@ -188,39 +141,6 @@ function cell(name: string): HTMLElement {
   return screen.getByRole("gridcell", { name });
 }
 
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
-/**
- * A keystroke, from wherever focus is — which while a lightbox is up is inside
- * it, and which is what puts Escape in front of the layer that answers it.
- */
-async function pressKey(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, { key });
-  });
-  await flush();
-}
-
-/**
- * A keystroke with Ctrl held, which is the shell's handler's half of the
- * keyboard rather than the lightbox's: the two do not overlap, and this is how
- * a test says so.
- */
-async function pressChord(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, {
-      key,
-      ctrlKey: true,
-    });
-  });
-  await flush();
-}
-
 /**
  * An image arriving. happy-dom lays nothing out and loads nothing, so it fires
  * no `load` of its own — a test that needs a picture to have arrived has to say
@@ -230,11 +150,6 @@ async function loaded(element: Element) {
   await act(async () => {
     fireEvent.load(element);
   });
-  await flush();
-}
-
-async function openApp() {
-  render(<App />);
   await flush();
 }
 
@@ -271,7 +186,7 @@ test("Enter on the selected card opens the lightbox on it", async () => {
   await enterReview();
   expect(lightbox()).toBeNull();
 
-  await pressKey("Enter");
+  await press("Enter");
 
   // The dialog is named by the filename, which is the identity line doubling as
   // the `Dialog.Title` Radix wants for `aria-labelledby` — so what a screen
@@ -292,7 +207,7 @@ test("a click on a card body opens the lightbox on that card, wherever the selec
 
   // And the grid is pointed there too, which is observable as the card Escape
   // hands the focus back to.
-  await pressKey("Escape");
+  await press("Escape");
   expect(lightbox()).toBeNull();
   expect(document.activeElement?.getAttribute("aria-label")).toBe(
     "second.jpg, Active",
@@ -321,7 +236,7 @@ test("Enter on an overlay button acts and opens nothing", async () => {
   await act(async () => {
     keep.focus();
   });
-  await pressKey("Enter");
+  await press("Enter");
 
   expect(lightbox()).toBeNull();
 });
@@ -329,7 +244,7 @@ test("Enter on an overlay button acts and opens nothing", async () => {
 test("the row carries the identity, the read-out and the position", async () => {
   await enterReview();
 
-  await pressKey("Enter");
+  await press("Enter");
 
   // Everything #44's housing puts under the picture, on the one row: the Score,
   // the filename, the Status, where the file is, how much the Score is worth,
@@ -347,7 +262,7 @@ test("the row carries the identity, the read-out and the position", async () => 
 test("a non-Rejected wallpaper's read-out is its path", async () => {
   await enterReview();
 
-  await pressKey("Enter");
+  await press("Enter");
 
   expect(readOut().textContent).toBe("/library/first.jpg");
   expect(readOut().getAttribute("title")).toBe("/library/first.jpg");
@@ -401,7 +316,7 @@ test("a Rejected wallpaper with no Origin falls back to its path", async () => {
 
 test("the lightbox is a non-modal dialog, labelled by the filename", async () => {
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
 
   const dialog = screen.getByRole("dialog", { name: "first.jpg" });
   expect(dialog.getAttribute("aria-modal")).toBe("true");
@@ -421,7 +336,7 @@ test("the pages behind are inert while it is open, and the toast viewport is not
   await enterReview();
   expect(viewContainer().hasAttribute("inert")).toBe(false);
 
-  await pressKey("Enter");
+  await press("Enter");
 
   // The containment ADR 0022 chose in place of a focus trap: nothing behind the
   // opaque backdrop takes focus or a click.
@@ -433,7 +348,7 @@ test("the pages behind are inert while it is open, and the toast viewport is not
   expect(viewport).not.toBeNull();
   expect(viewContainer().contains(viewport)).toBe(false);
 
-  await pressKey("Escape");
+  await press("Escape");
   expect(viewContainer().hasAttribute("inert")).toBe(false);
 });
 
@@ -448,7 +363,7 @@ test("the background progress report is suppressed while it is open", async () =
   // that never arrived.
   expect(toastTitle()).toBe("Preparing thumbnails… 5 of 10");
 
-  await pressKey("Enter");
+  await press("Enter");
 
   // Not covered — suppressed. A full-screen picture is the one place the app
   // asks for the whole window, and ADR 0017's reason for putting a toast over
@@ -456,16 +371,16 @@ test("the background progress report is suppressed while it is open", async () =
   // does not extend to a report of work nobody started (ADR 0021).
   expect(toastTitle()).toBeNull();
 
-  await pressKey("Escape");
+  await press("Escape");
   expect(toastTitle()).toBe("Preparing thumbnails… 5 of 10");
 });
 
 test("Escape closes it and puts the card for the current selection back in focus", async () => {
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
   expect(lightbox()).not.toBeNull();
 
-  await pressKey("Escape");
+  await press("Escape");
 
   expect(lightbox()).toBeNull();
   // Radix would have focused the trigger; the card asked for is the one holding
@@ -478,7 +393,7 @@ test("Escape closes it and puts the card for the current selection back in focus
 
 test("the Close button closes it, which is the touchscreen's way out", async () => {
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
 
   // There is no hover to reveal and no Escape to press on a hover-less pointer,
   // and ADR 0019 routes that curator through this surface for every action.
@@ -489,7 +404,7 @@ test("the Close button closes it, which is the touchscreen's way out", async () 
 
 test("changing destination closes it", async () => {
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
   expect(lightbox()).not.toBeNull();
 
   // ADR 0015's rule, and the reason the shell's keyboard handler can stay live
@@ -506,7 +421,7 @@ test("changing destination leaves the page it hid alone", async () => {
   // rather than the empty-list case that takes the container focus itself.
   libraryRows = [wallpaper(9, { filename: "other.jpg" })];
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
 
   await click(tab("Library"));
 
@@ -537,17 +452,17 @@ test("both pages open one, from the same component", async () => {
 
 test("the arrow keys walk the list, and the row follows", async () => {
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
 
   // A step is a selection move and nothing else, so what the whole row says
   // moves with it: the name the dialog is announced by, the read-out and the
   // position (ADR 0022).
-  await pressKey("ArrowRight");
+  await press("ArrowRight");
   expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
   expect(readOut().textContent).toBe("/library/second.jpg");
   expect(row().textContent).toContain("2 / 3");
 
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft");
   expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
   expect(readOut().textContent).toBe("/library/first.jpg");
   expect(row().textContent).toContain("1 / 3");
@@ -555,7 +470,7 @@ test("the arrow keys walk the list, and the row follows", async () => {
 
 test("the ends of the list clamp, and the arrow that would leave it is unavailable", async () => {
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
 
   // The prototype wraps. Reaching the end of a worklist is the moment the
   // sweep is done, and wrapping hides that — at the library's ceiling it means
@@ -565,25 +480,25 @@ test("the ends of the list clamp, and the arrow that would leave it is unavailab
   expect(previous().hasAttribute("disabled")).toBe(true);
   expect(next().hasAttribute("disabled")).toBe(false);
 
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft");
   expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
   expect(row().textContent).toContain("1 / 3");
 
-  await pressKey("ArrowRight");
-  await pressKey("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
   expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
   expect(row().textContent).toContain("3 / 3");
   expect(next().hasAttribute("disabled")).toBe(true);
   expect(previous().hasAttribute("disabled")).toBe(false);
 
-  await pressKey("ArrowRight");
+  await press("ArrowRight");
   expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
   expect(row().textContent).toContain("3 / 3");
 });
 
 test("the arrow buttons make the movement the keys make", async () => {
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
 
   await click(next());
   expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
@@ -594,13 +509,13 @@ test("the arrow buttons make the movement the keys make", async () => {
 
   // And a key picks up where the pointer left off, because both are the one
   // selection move rather than two cursors that have to agree.
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft");
   expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
 });
 
 test("a first open paints the card's small behind the medium", async () => {
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
 
   // Behind, and not beside: the two sit in one grid cell fitted against the
   // same rectangle, and the order they are in the DOM is the order they paint.
@@ -622,11 +537,11 @@ test("a first open paints the card's small behind the medium", async () => {
 
 test("a step holds the outgoing picture until the next one has loaded", async () => {
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
   const element = picture();
   await loaded(element);
 
-  await pressKey("ArrowRight");
+  await press("ArrowRight");
 
   // The same element with a new `src`, which is the whole mechanism: an `<img>`
   // keeps painting the image it has until the new one decodes. A `key` per
@@ -642,10 +557,10 @@ test("a step holds the outgoing picture until the next one has loaded", async ()
 
 test("neither neighbour's medium is requested on a step", async () => {
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
   await loaded(picture());
 
-  await pressKey("ArrowRight");
+  await press("ArrowRight");
 
   // One request on the surface, for the wallpaper being looked at. Stepping
   // back is already free under ADR 0016's `max-age=300`, so only the forward
@@ -660,7 +575,7 @@ test("neither neighbour's medium is requested on a step", async () => {
 
 test("an Active wallpaper offers Keep and Reject, with the key on each button", async () => {
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
 
   // Two buttons and no third. Nothing is greyed to hold space: the row's width
   // already changes on every step, because it is measured off a picture, so
@@ -706,16 +621,16 @@ test("a Rejected wallpaper offers Restore alone", async () => {
 test("K keeps the wallpaper on screen", async () => {
   const kept: unknown[] = [];
   mockCommand("keep_wallpaper", (args) => {
-    kept.push(args?.id);
+    kept.push(args.id);
     return wrote(args, { status: "kept" });
   });
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
 
   // Stepped first, so what this acts on is what is up rather than what it
   // opened on.
-  await pressKey("ArrowRight");
-  await pressKey("k");
+  await press("ArrowRight");
+  await press("k");
 
   expect(kept).toEqual([8]);
   expect(toastTitle()).toBe("Kept second.jpg");
@@ -724,16 +639,16 @@ test("K keeps the wallpaper on screen", async () => {
 test("Delete rejects the wallpaper on screen", async () => {
   const moved: unknown[] = [];
   mockCommand("move_wallpaper", (args) => {
-    moved.push(args?.id);
+    moved.push(args.id);
     return rejectedTo(args, "/library/rejected/first.jpg");
   });
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
 
   // One keypress, no confirm and no modifier. ADR 0009 deleted the confirm
   // dialog and put act-then-undo in its place, which is the toast below and the
   // `Ctrl+Z` that presses it.
-  await pressKey("Delete");
+  await press("Delete");
 
   expect(moved).toEqual([7]);
   expect(toastTitle()).toBe("Rejected first.jpg");
@@ -742,7 +657,7 @@ test("Delete rejects the wallpaper on screen", async () => {
 test("R restores the wallpaper on screen", async () => {
   const restored: unknown[] = [];
   mockCommand("restore_wallpaper", (args) => {
-    restored.push(args?.id);
+    restored.push(args.id);
     return restoredTo(args, "/library/gone.jpg");
   });
   await enterLibrary([
@@ -755,7 +670,7 @@ test("R restores the wallpaper on screen", async () => {
   ]);
 
   await click(cell("gone.jpg, Rejected"));
-  await pressKey("r");
+  await press("r");
 
   expect(restored).toEqual([4]);
   expect(toastTitle()).toBe("Restored gone.jpg");
@@ -764,13 +679,13 @@ test("R restores the wallpaper on screen", async () => {
 test("Enter does nothing in here", async () => {
   const kept: unknown[] = [];
   mockCommand("keep_wallpaper", (args) => {
-    kept.push(args?.id);
+    kept.push(args.id);
     return wrote(args, { status: "kept" });
   });
   await enterReview();
 
-  await pressKey("Enter");
-  await pressKey("Enter");
+  await press("Enter");
+  await press("Enter");
 
   // It is the key that opened this, so it gets no binding on the way in. The
   // open lands on the surface rather than on the first button of the row, which
@@ -793,16 +708,16 @@ test("keeping or rejecting in Review advances to the next wallpaper", async () =
     rejectedTo(args, "/library/rejected/second.jpg"),
   );
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
 
   // The row leaves the list, so the id no longer resolves and the fall back
   // lands on the same position in the shorter list — which is the wallpaper
   // that took its place, and reads as advancing.
-  await pressKey("k");
+  await press("k");
   expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
   expect(row().textContent).toContain("1 / 2");
 
-  await pressKey("Delete");
+  await press("Delete");
   expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
   expect(row().textContent).toContain("1 / 1");
 });
@@ -817,7 +732,7 @@ test("rejecting in Library under All keeps the same wallpaper up, with its new a
   ]);
 
   await click(cell("one.jpg, Active"));
-  await pressKey("Delete");
+  await press("Delete");
 
   // All is the default filter, so the row stays and turns Rejected. The id
   // still resolves, so the same wallpaper is up wearing its new Status and
@@ -848,7 +763,7 @@ test("restoring in the lightbox reaches the backend and puts the row back", asyn
     rejectedTo(args, "/library/rejected/one.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restored.push(args?.id);
+    restored.push(args.id);
     return restoredTo(args, "/library/one.jpg");
   });
   await enterLibrary([
@@ -857,8 +772,8 @@ test("restoring in the lightbox reaches the backend and puts the row back", asyn
   ]);
 
   await click(cell("one.jpg, Active"));
-  await pressKey("Delete");
-  await pressKey("r");
+  await press("Delete");
+  await press("r");
 
   // Both legs from in here, on one row, with no fetch between them: the reject
   // wrote the Origin the Restore then read, and the Restore wrote the path the
@@ -876,16 +791,16 @@ test("undoing a reject from its toast leaves the row where its Restore would", a
     rejectedTo(args, "/library/rejected/one.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restored.push(args?.id);
+    restored.push(args.id);
     return restoredTo(args, "/library/one.jpg");
   });
   await enterLibrary([wallpaper(11, { filename: "one.jpg" })]);
 
   await click(cell("one.jpg, Active"));
-  await pressKey("Delete");
+  await press("Delete");
   expect(toastTitle()).toBe("Rejected one.jpg");
 
-  await pressChord("z");
+  await press("z", { ctrlKey: true });
 
   // The third route to a Restore, and the furthest from the row it edits: the
   // Undo fires from the shell, over whatever page the curator has wandered to,
@@ -908,7 +823,7 @@ test("rejecting in Library under Active advances", async () => {
   await click(screen.getByRole("button", { name: "Active" }));
 
   await click(cell("one.jpg, Active"));
-  await pressKey("Delete");
+  await press("Delete");
 
   // The same action on the same page, and the other answer, because the list
   // did something else: a Rejected row does not belong in a list of Active
@@ -921,9 +836,9 @@ test("rejecting in Library under Active advances", async () => {
 
 test("acting on the only row closes it onto the page's own empty state", async () => {
   await enterReview([reviewRows[0]]);
-  await pressKey("Enter");
+  await press("Enter");
 
-  await pressKey("k");
+  await press("k");
 
   // The list emptied, so there is no wallpaper left for a second rendering of
   // the selection to render. ADR 0015 already makes every destination own an
@@ -955,9 +870,9 @@ test("the origin-less Restore explains itself and calls nothing", async () => {
       origin_path: null,
     }),
   ]);
-  // No `restore_wallpaper` mock at all: reaching the backend is what this test
-  // says must not happen, and an unmocked command rejects into a `console.error`
-  // the guard would fail on.
+  // Reaching the backend is what this test says must not happen, and the
+  // shared default throws on a row with no Origin — a call the frontend refuses
+  // before it makes it, so a mock that answered one would hide the regression.
 
   await click(cell("legacy.jpg, Rejected"));
 
@@ -983,7 +898,7 @@ test("the origin-less Restore explains itself and calls nothing", async () => {
 
   // And `R` is the same event with the same outcome, because the refusal is a
   // property of the action rather than of the control that was pressed.
-  await pressKey("r");
+  await press("r");
   expect(toastTitle()).toBe("Can't restore legacy.jpg");
 });
 
@@ -992,14 +907,14 @@ test("a failed action puts the lightbox back on the wallpaper the toast names", 
   const call = deferred<Wallpaper>();
   mockCommand("keep_wallpaper", () => call.promise);
   await enterReview(threeRows());
-  await pressKey("Enter");
+  await press("Enter");
 
   // Review removes the card ahead of the write, so the sweep moves on at once
   // rather than stalling on a file move — and the curator can walk further
   // while the call is still out.
-  await pressKey("k");
+  await press("k");
   expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
-  await pressKey("ArrowRight");
+  await press("ArrowRight");
   expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
 
   await act(async () => {
@@ -1018,15 +933,15 @@ test("a failed action puts the lightbox back on the wallpaper the toast names", 
 test("Ctrl+Z presses the visible toast's Undo from inside the lightbox", async () => {
   const unkept: unknown[] = [];
   mockCommand("unkeep_wallpaper", (args) => {
-    unkept.push(args?.id);
+    unkept.push(args.id);
     return wrote(args, { status: "active" });
   });
   await enterReview(threeRows());
-  await pressKey("Enter");
-  await pressKey("k");
+  await press("Enter");
+  await press("k");
   expect(toastTitle()).toBe("Kept first.jpg");
 
-  await pressChord("z");
+  await press("z", { ctrlKey: true });
 
   // The shell's handler is live under an open lightbox. ADR 0022 deleted the
   // clause that suppressed it, whose only effect was disabling Undo in the one
@@ -1040,9 +955,9 @@ test("Ctrl+Z presses the visible toast's Undo from inside the lightbox", async (
 
 test("? opens the shortcut list from inside, and Escape closes that first", async () => {
   await enterReview();
-  await pressKey("Enter");
+  await press("Enter");
 
-  await pressKey("?");
+  await press("?");
 
   // The other binding the deleted suppression clause used to break, in the one
   // place a curator is most likely to want the list.
@@ -1053,7 +968,7 @@ test("? opens the shortcut list from inside, and Escape closes that first", asyn
   // Two dialogs are layered, which is what `?` working from in here makes
   // possible. Radix's `DismissableLayer` stack gives Escape to the topmost, so
   // the list goes and the picture stays (ADR 0022).
-  await pressKey("Escape");
+  await press("Escape");
   expect(
     screen.queryByRole("dialog", { name: "Keyboard shortcuts" }),
   ).toBeNull();
@@ -1062,12 +977,12 @@ test("? opens the shortcut list from inside, and Escape closes that first", asyn
 
 test("closing after a sweep focuses the card the selection ended on", async () => {
   await enterReview(threeRows());
-  await pressKey("Enter");
-  await pressKey("ArrowRight");
-  await pressKey("ArrowRight");
+  await press("Enter");
+  await press("ArrowRight");
+  await press("ArrowRight");
   expect(screen.getByRole("dialog", { name: "third.jpg" })).toBeTruthy();
 
-  await pressKey("Escape");
+  await press("Escape");
 
   // Radix would focus the card the lightbox was opened from, which after a
   // sweep of two hundred wallpapers is both the wrong card and probably an

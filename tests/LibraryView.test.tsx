@@ -11,12 +11,16 @@ import {
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  click,
   currentView,
   deferred,
   flush,
+  mockBootedApp,
+  mockTransitions,
+  press,
   renderInApp,
+  servingRows,
   settings,
-  stats,
   viewportWidth,
   wallpaper,
 } from "./fixtures";
@@ -42,6 +46,9 @@ let listCalls: number;
 /** The filter and the ordering of every call, in order, as the wire carries them. */
 let listArgs: Array<[string, string]>;
 
+/** The rows a transition answers with, read off that library (ADR 0023). */
+const { wrote, rejectedTo, restoredTo } = servingRows(() => library);
+
 afterEach(() => {
   cleanup();
   // The viewport outlives the test that set it, and the column count — which
@@ -54,65 +61,23 @@ beforeEach(() => {
   library = [];
   listCalls = 0;
   listArgs = [];
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
-  mockCommand("start_pregen", () => null);
+  mockBootedApp();
   mockCommand("list_wallpapers", (args) => {
     listCalls++;
-    const filter = (args?.filter as string) ?? "all";
-    listArgs.push([filter, args?.ordering as string]);
+    const filter = args.filter;
+    listArgs.push([filter, args.ordering]);
     return library.filter((w) => filter === "all" || w.status === filter);
   });
   // A reject reads the stored destination and asks whether it is relative, which
   // cannot be read off the string (ADR 0018).
   mockCommand("expand_path", (args) => {
-    const input = String(args?.input);
+    const input = args.input;
     return { resolved: input.replace(/^~/, HOME), exists: true };
   });
+  // Every transition answers with the row it wrote, off the library the test
+  // arranged (ADR 0023). The tests below override the one they are about.
+  mockTransitions(() => library);
 });
-
-/** The row the library holds for an id, which every transition mock starts from. */
-function row(id: number): Wallpaper {
-  const found = library.find((w) => w.id === id);
-  if (!found) throw new Error(`no library row with id ${id}`);
-  return found;
-}
-
-/**
- * The row a transition answered with (ADR 0023).
- *
- * Derived from the row the library holds rather than written out, because a
- * command answers with the row it wrote and every column it did not touch comes
- * through unchanged. A mock returning a path — which is what these returned
- * before — would be a backend this app no longer has.
- */
-function wrote(id: number, over: Partial<Wallpaper>): Wallpaper {
-  return { ...row(id), ...over };
-}
-
-/** The last segment of a path, which is the `filename` column the backend stores. */
-const basenameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
-
-/** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
-function rejectedTo(id: number, landedAt: string): Wallpaper {
-  return wrote(id, {
-    status: "rejected",
-    path: landedAt,
-    filename: basenameOf(landedAt),
-    // `origin_path = path`, in the same statement that overwrites `path`.
-    origin_path: row(id).path,
-  });
-}
-
-/** The row a Restore wrote: the file back at `landedAt`, and the Origin spent. */
-function restoredTo(id: number, landedAt: string): Wallpaper {
-  return wrote(id, {
-    status: "active",
-    path: landedAt,
-    filename: basenameOf(landedAt),
-    origin_path: null,
-  });
-}
 
 /** A library of `count` wallpapers, on the page and fetched. */
 async function openLibrary(count: number) {
@@ -195,13 +160,6 @@ function toast(): { title: string; description: string | null } | null {
   };
 }
 
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
 /** The overlay button for one action on one card, by its accessible name. */
 const button = (name: RegExp) => screen.getByRole("button", { name });
 
@@ -273,12 +231,6 @@ function browserLaysOutTheScroller() {
 async function browserReportsScroll() {
   await act(async () => {
     fireEvent.scroll(scroller());
-  });
-}
-
-async function press(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, { key });
   });
 }
 
@@ -426,8 +378,8 @@ test("keep records the decision and the row changes where it sits", async () => 
   const keptIds: unknown[] = [];
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
-    return wrote(args?.id as number, { status: "kept" });
+    keptIds.push(args.id);
+    return wrote(args, { status: "kept" });
   });
 
   await click(button(/keep wall-1\.jpg/i));
@@ -448,8 +400,8 @@ test("make active undoes a keep and says which Status it landed on", async () =>
   const unkeptIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { status: "kept" })]);
   mockCommand("unkeep_wallpaper", (args) => {
-    unkeptIds.push(args?.id);
-    return wrote(args?.id as number, { status: "active" });
+    unkeptIds.push(args.id);
+    return wrote(args, { status: "active" });
   });
 
   await click(button(/make active wall-1\.jpg/i));
@@ -471,7 +423,7 @@ test("reject moves the file to the stored destination and names where it went", 
   await openLibraryOf([wallpaper(1)], { reject_destination: "~/bin" });
   mockCommand("move_wallpaper", (args) => {
     moveArgs.push(args);
-    return rejectedTo(args?.id as number, `${HOME}/bin/wall-1 (1).jpg`);
+    return rejectedTo(args, `${HOME}/bin/wall-1 (1).jpg`);
   });
 
   await click(button(/reject wall-1\.jpg/i));
@@ -505,8 +457,8 @@ test("restore puts the file back and the wallpaper on Active", async () => {
     }),
   ]);
   mockCommand("restore_wallpaper", (args) => {
-    restoredIds.push(args?.id);
-    return restoredTo(args?.id as number, "/library/wall-1.jpg");
+    restoredIds.push(args.id);
+    return restoredTo(args, "/library/wall-1.jpg");
   });
 
   await click(button(/restore wall-1\.jpg/i));
@@ -533,11 +485,11 @@ test("a row rejected in place is restorable straight away, with no refetch betwe
   const restoredIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { path: "/library/photos/wall-1.jpg" })]);
   mockCommand("move_wallpaper", (args) =>
-    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+    rejectedTo(args, "/library/photos/rejected/wall-1.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restoredIds.push(args?.id);
-    return restoredTo(args?.id as number, "/library/photos/wall-1.jpg");
+    restoredIds.push(args.id);
+    return restoredTo(args, "/library/photos/wall-1.jpg");
   });
 
   await click(button(/reject wall-1\.jpg/i));
@@ -560,7 +512,7 @@ test("a row rejected in place names the folder its file went into, not the one i
     wallpaper(1, { path: "/library/photos/wall-1.jpg", comparisons_count: 14 }),
   ]);
   mockCommand("move_wallpaper", (args) =>
-    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+    rejectedTo(args, "/library/photos/rejected/wall-1.jpg"),
   );
 
   await click(button(/reject wall-1\.jpg/i));
@@ -583,7 +535,7 @@ test("a restore leaves the row on the path the file landed back at", async () =>
     }),
   ]);
   mockCommand("restore_wallpaper", (args) =>
-    restoredTo(args?.id as number, "/library/photos/wall-1 (1).jpg"),
+    restoredTo(args, "/library/photos/wall-1 (1).jpg"),
   );
 
   await click(button(/restore wall-1\.jpg/i));
@@ -600,17 +552,17 @@ test("a keep leaves the row's other columns alone, and the reject after it still
   const restoredIds: unknown[] = [];
   await openLibraryOf([wallpaper(1, { path: "/library/photos/wall-1.jpg" })]);
   mockCommand("keep_wallpaper", (args) =>
-    wrote(args?.id as number, { status: "kept" }),
+    wrote(args, { status: "kept" }),
   );
   mockCommand("unkeep_wallpaper", (args) =>
-    wrote(args?.id as number, { status: "active" }),
+    wrote(args, { status: "active" }),
   );
   mockCommand("move_wallpaper", (args) =>
-    rejectedTo(args?.id as number, "/library/photos/rejected/wall-1.jpg"),
+    rejectedTo(args, "/library/photos/rejected/wall-1.jpg"),
   );
   mockCommand("restore_wallpaper", (args) => {
-    restoredIds.push(args?.id);
-    return restoredTo(args?.id as number, "/library/photos/wall-1.jpg");
+    restoredIds.push(args.id);
+    return restoredTo(args, "/library/photos/wall-1.jpg");
   });
 
   // Keep and un-keep move no file, so the row each answers with differs from the
@@ -635,7 +587,7 @@ test("a keep leaves the row's other columns alone, and the reject after it still
 test("a row whose new Status falls outside the filter leaves the grid", async () => {
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) =>
-    wrote(args?.id as number, { status: "kept" }),
+    wrote(args, { status: "kept" }),
   );
   await filterBy("Active");
   expect(listCalls).toBe(2);
@@ -676,8 +628,9 @@ test("an origin-less Restore is refused before any call is made", async () => {
   await openLibraryOf([
     wallpaper(1, { status: "rejected", path: "/library/rejected/wall-1.jpg" }),
   ]);
-  // No `restore_wallpaper` mock at all: reaching the backend is what this test
-  // says must not happen, and an unmocked command rejects.
+  // Reaching the backend is what this test says must not happen, and the
+  // shared default throws on a row with no Origin — a call the frontend refuses
+  // before it makes it, so a mock that answered one would hide the regression.
 
   await click(button(/restore wall-1\.jpg/i));
 
@@ -696,8 +649,8 @@ test("the direct keys act on the selected card, the same as its buttons", async 
   const keptIds: unknown[] = [];
   await openLibraryOf([wallpaper(1), wallpaper(2)]);
   mockCommand("keep_wallpaper", (args) => {
-    keptIds.push(args?.id);
-    return wrote(args?.id as number, { status: "kept" });
+    keptIds.push(args.id);
+    return wrote(args, { status: "kept" });
   });
 
   await act(async () => {

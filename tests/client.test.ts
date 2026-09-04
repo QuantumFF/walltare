@@ -25,7 +25,7 @@ describe("client seam", () => {
   test("startScan forwards the path argument", async () => {
     let receivedPath: string | undefined;
     mockCommand("start_scan", (args) => {
-      receivedPath = args?.path as string;
+      receivedPath = args.path;
       return null;
     });
     await client.startScan("/tmp/pics");
@@ -45,7 +45,7 @@ describe("client seam", () => {
   test("expandPath forwards the input argument", async () => {
     let receivedInput: string | undefined;
     mockCommand("expand_path", (args) => {
-      receivedInput = args?.input as string;
+      receivedInput = args.input;
       return { resolved: "/home/me/pics", exists: true };
     });
     const expanded = await client.expandPath("~/pics");
@@ -178,7 +178,7 @@ describe("client seam", () => {
     // truncated list by omission.
     const calls: unknown[] = [];
     mockCommand("list_wallpapers", (args) => {
-      calls.push(args?.limit);
+      calls.push(args.limit);
       return [];
     });
 

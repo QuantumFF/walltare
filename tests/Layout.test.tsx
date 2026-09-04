@@ -11,13 +11,19 @@ import {
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  advancePickFeedback,
   cacheSize,
+  click,
   deferred,
   emptyStats,
   flush,
   hiddenViews,
+  mockBootedApp,
   mockListings,
   mountedViews,
+  openApp,
+  panesArrive,
+  press,
   settings,
   showingView,
   stats,
@@ -28,8 +34,6 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 // The shell owns the navigation, so every test here renders the whole app and
 // clicks what the curator clicks. Mounting a view alone would test an
 // arrangement the app no longer runs.
-
-const PICK_FEEDBACK_MS = 300;
 
 let getPairCalls = 0;
 let reviewFetches = 0;
@@ -60,12 +64,11 @@ beforeEach(() => {
 
   // A library with wallpapers in it, so boot lands on Rank and every test
   // starts where the curator spends their time.
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
+  mockBootedApp();
   // The Library root field resolves what it holds and stores it before a scan,
   // so every visit to Settings in this file reaches these two.
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
   mockCommand("set_setting", () => settings());
@@ -93,11 +96,11 @@ beforeEach(() => {
     library: () => libraryRows,
   });
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
+    votes.push([args.winnerId, args.loserId]);
     return { next_pair: [wallpaper(80), wallpaper(81)], stats: stats() };
   });
   mockCommand("start_scan", (args) => {
-    scannedPaths.push(args?.path as string);
+    scannedPaths.push(args.path);
     return null;
   });
 });
@@ -117,49 +120,6 @@ function selectedTab(): string | null {
     (el) => el.getAttribute("aria-selected") === "true",
   );
   return selected?.textContent ?? null;
-}
-
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
-async function pressKey(
-  target: Window | Element,
-  key: string,
-  modifiers: { ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean } = {},
-) {
-  await act(async () => {
-    fireEvent.keyDown(target, { key, ...modifiers });
-  });
-  await flush();
-}
-
-/** happy-dom never fetches an `<img>`; Rank refuses a pick until both arrive. */
-async function panesArrive() {
-  for (const side of ["Left", "Right"] as const) {
-    const pane = screen.queryByAltText(`${side} Wallpaper`);
-    if (!pane) continue;
-    await act(async () => {
-      fireEvent.load(pane);
-    });
-  }
-}
-
-/** Run out the pick-feedback delay that gates a vote reaching the backend. */
-async function advancePickFeedback() {
-  await act(async () => {
-    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
-  });
-  await flush();
-}
-
-async function openApp() {
-  const rendered = render(<App />);
-  await flush();
-  return rendered;
 }
 
 test("clicking a tab changes the view", async () => {
@@ -242,7 +202,7 @@ test("arrows pressed while Library is showing cast no vote", async () => {
 
   // First prove the arrow does work where it belongs, so the assertion below
   // is about the gate rather than about a broken fixture.
-  await pressKey(window, "ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
@@ -254,8 +214,8 @@ test("arrows pressed while Library is showing cast no vote", async () => {
   await click(tab("Library"));
   expect(showingView()).toBe("library");
 
-  await pressKey(window, "ArrowLeft");
-  await pressKey(window, "ArrowRight");
+  await press("ArrowLeft", { target: window });
+  await press("ArrowRight", { target: window });
   await advancePickFeedback();
 
   expect(votes).toEqual([[1, 2]]);
@@ -276,7 +236,7 @@ test("arrows pressed while Review is showing move the selection and cast no vote
 
   // First prove the arrow does work where it belongs, so the assertion below is
   // about the gate rather than about a broken fixture.
-  await pressKey(window, "ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
   await panesArrive();
@@ -286,7 +246,7 @@ test("arrows pressed while Review is showing move the selection and cast no vote
   // With focus outside the grid nothing answers the key at all, so the view
   // check is the only thing standing between an arrow and a Comparison. That is
   // the half of this the grid's own `preventDefault` cannot cover.
-  await pressKey(window, "ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
@@ -295,7 +255,7 @@ test("arrows pressed while Review is showing move the selection and cast no vote
     first.focus();
   });
 
-  await pressKey(first, "ArrowRight");
+  await press("ArrowRight", { target: first });
   await advancePickFeedback();
 
   // The key moved the selection and nothing else. A vote here would be a
@@ -314,7 +274,7 @@ test("an arrow inside the tab bar walks the tabs and casts no vote", async () =>
   await openApp();
   await panesArrive();
 
-  await pressKey(tab("Rank"), "ArrowRight");
+  await press("ArrowRight", { target: tab("Rank") });
   expect(showingView()).toBe("review");
   expect(document.activeElement).toBe(tab("Review"));
 
@@ -598,19 +558,19 @@ test("a first scan that turns up a single wallpaper lands on Library", async () 
 test("Ctrl+1, Ctrl+2 and Ctrl+3 reach Rank, Review and Library", async () => {
   await openApp();
 
-  await pressKey(window, "2", { ctrlKey: true });
+  await press("2", { target: window, ctrlKey: true });
   expect(showingView()).toBe("review");
   expect(selectedTab()).toBe("Review");
 
-  await pressKey(window, "3", { ctrlKey: true });
+  await press("3", { target: window, ctrlKey: true });
   expect(showingView()).toBe("library");
 
-  await pressKey(window, "1", { ctrlKey: true });
+  await press("1", { target: window, ctrlKey: true });
   expect(showingView()).toBe("rank");
 
   // The digit alone is not a shortcut: bare keys belong to the view, and Rank
   // is about to want them.
-  await pressKey(window, "3");
+  await press("3", { target: window });
   expect(showingView()).toBe("rank");
 });
 
@@ -618,13 +578,13 @@ test("Ctrl+, opens Settings and records where the curator was", async () => {
   await openApp();
   await click(tab("Library"));
 
-  await pressKey(window, ",", { ctrlKey: true });
+  await press(",", { target: window, ctrlKey: true });
   expect(showingView()).toBe("settings");
   expect(selectedTab()).toBeNull();
 
   // Pressed again it does nothing: the gear and Escape are the ways out. A
   // binding that both opened and closed would mean two things.
-  await pressKey(window, ",", { ctrlKey: true });
+  await press(",", { target: window, ctrlKey: true });
   expect(showingView()).toBe("settings");
 
   await click(gear());
@@ -640,15 +600,15 @@ test("a keystroke typed into a text field navigates nowhere", async () => {
   // binding is off while the caret is in a field, which is the whole of the
   // suppression rule.
   for (const key of ["1", "2", "3", ","]) {
-    await pressKey(input, key, { ctrlKey: true });
+    await press(key, { target: input, ctrlKey: true });
     expect(showingView()).toBe("settings");
   }
-  await pressKey(input, "?");
+  await press("?", { target: input });
   expect(screen.queryByRole("dialog")).toBeNull();
 
   // The same keystroke outside the field does navigate, so this test is about
   // the suppression rather than about a shortcut that never worked.
-  await pressKey(window, "1", { ctrlKey: true });
+  await press("1", { target: window, ctrlKey: true });
   expect(showingView()).toBe("rank");
 });
 
@@ -656,7 +616,7 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   await openApp();
   expect(screen.queryByRole("dialog")).toBeNull();
 
-  await pressKey(window, "?");
+  await press("?", { target: window });
 
   const dialog = screen.getByRole("dialog");
   expect(dialog.textContent).toContain("Keyboard shortcuts");

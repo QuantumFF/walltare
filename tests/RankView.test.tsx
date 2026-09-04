@@ -4,17 +4,18 @@ import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  advancePickFeedback,
   currentView,
   deferred,
   flush,
+  mockBootedApp,
+  panesArrive,
+  press,
   renderInApp,
-  settings,
   stats,
   wallpaper,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
-
-const PICK_FEEDBACK_MS = 300;
 
 let getPairCalls = 0;
 let getStatsCalls = 0;
@@ -35,14 +36,12 @@ beforeEach(() => {
   // going through `waitFor`.
   jest.useFakeTimers();
   votes = [];
+  mockBootedApp();
+  // Counted, because a refetch after a vote is what half this file is about.
   mockCommand("get_stats", () => {
     getStatsCalls++;
     return stats();
   });
-  // The other half of the provider's boot gate; without it nothing renders.
-  mockCommand("get_settings", () => settings());
-  // Started by the provider once that gate settles.
-  mockCommand("start_pregen", () => null);
 });
 
 function pair(leftId: number, rightId: number): [Wallpaper, Wallpaper] {
@@ -63,27 +62,11 @@ function servePairs(...queue: Array<[Wallpaper, Wallpaper]>): void {
 }
 
 /** Record every Comparison the view submits and answer with `response()`. */
-function serveVote(response: () => unknown): void {
+function serveVote(response: () => VoteOutcome | Promise<VoteOutcome>): void {
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
+    votes.push([args.winnerId, args.loserId]);
     return response();
   });
-}
-
-/**
- * happy-dom never fetches an `<img>`, so stand in for the browser finishing
- * one. The view refuses a pick until both panes have their image, because a
- * pick on a pane that is still blank is a Comparison on a wallpaper the user
- * never saw.
- */
-async function panesArrive() {
-  for (const side of ["Left", "Right"] as const) {
-    const el = screen.queryByAltText(`${side} Wallpaper`);
-    if (!el) continue;
-    await act(async () => {
-      fireEvent.load(el);
-    });
-  }
 }
 
 async function renderRankView() {
@@ -135,20 +118,6 @@ async function clickPane(side: "Left" | "Right") {
   await act(async () => {
     fireEvent.click(screen.getByAltText(`${side} Wallpaper`));
   });
-}
-
-async function pressArrow(key: "ArrowLeft" | "ArrowRight") {
-  await act(async () => {
-    fireEvent.keyDown(window, { key });
-  });
-}
-
-/** Run out the pick-feedback delay that gates the optimistic swap. */
-async function advancePickFeedback() {
-  await act(async () => {
-    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
-  });
-  await flush();
 }
 
 async function runPickFeedback() {
@@ -230,7 +199,7 @@ test("an empty Eligible pool reads Round 1 at 0%", async () => {
 test("a pick swaps in the prefetched pair before the backend answers", async () => {
   servePairs(pair(1, 2), pair(3, 4));
   const inFlight = deferred<VoteOutcome>();
-  let response: unknown = inFlight.promise;
+  let response: VoteOutcome | Promise<VoteOutcome> = inFlight.promise;
   serveVote(() => response);
 
   await renderRankView();
@@ -350,7 +319,7 @@ test("an image that fails to load unblocks its pane rather than wedging it", asy
 test("a fetch is told which wallpapers are already on screen", async () => {
   const excludes: unknown[] = [];
   mockCommand("get_pair", (args) => {
-    excludes.push(args?.exclude);
+    excludes.push(args.exclude);
     const next = [pair(1, 2), pair(3, 4), pair(5, 6), pair(7, 8)][
       getPairCalls++
     ];
@@ -359,8 +328,8 @@ test("a fetch is told which wallpapers are already on screen", async () => {
   });
   let votedExclude: unknown;
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
-    votedExclude = args?.exclude;
+    votes.push([args.winnerId, args.loserId]);
+    votedExclude = args.exclude;
     return { next_pair: pair(11, 12), stats: stats() };
   });
 
@@ -387,12 +356,12 @@ test("arrow keys register the matching Comparison", async () => {
 
   await renderRankView();
 
-  await pressArrow("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await runPickFeedback();
   expect(votes[0]).toEqual([1, 2]);
   expect(shownIds()).toEqual([3, 4]);
 
-  await pressArrow("ArrowRight");
+  await press("ArrowRight", { target: window });
   await runPickFeedback();
   expect(votes[1]).toEqual([4, 3]);
   expect(shownIds()).toEqual([7, 8]);
@@ -416,7 +385,7 @@ test("one Comparison per pick, however fast the input and however slow the vote"
 
   // Still guarded across the async window, which spans many ticks.
   await clickPane("Right");
-  await pressArrow("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await runPickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
@@ -563,7 +532,7 @@ test("a vote that fails rolls back to the pair the user picked from", async () =
   expectConsoleError(/Failed to submit vote/);
   servePairs(pair(1, 2), pair(3, 4), pair(9, 10));
   const inFlight = deferred<VoteOutcome>();
-  let response: unknown = inFlight.promise;
+  let response: VoteOutcome | Promise<VoteOutcome> = inFlight.promise;
   serveVote(() => response);
 
   await renderRankView();

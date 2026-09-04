@@ -10,6 +10,7 @@ import {
   desktopColorScheme,
   emptyStats,
   flush,
+  mockBootedApp,
   settings,
   showingView,
   stats,
@@ -100,10 +101,10 @@ afterEach(() => {
 beforeEach(() => {
   // Rank is where the first row of the boot table lands; give it a pair to show.
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
-  mockCommand("get_settings", () => settings());
-  // The shell starts pre-generation as soon as it mounts, which is as soon as
-  // the boot gate settles, so every `<App />` in this file reaches this command.
-  mockCommand("start_pregen", () => null);
+  // The boot gate and the pass the shell starts once it settles, which every
+  // `<App />` in this file reaches. Every test below arranges the library it is
+  // about, so each one re-registers `get_stats` for itself.
+  mockBootedApp();
   // Library is the second row of the boot table, and it lists its rows on the
   // first visit — which, for that row, is boot itself.
   mockCommand("list_wallpapers", () => [wallpaper(1)]);
@@ -111,7 +112,7 @@ beforeEach(() => {
   // and the reject destination has a default, so the two rows of the boot table
   // that land there reach this command without anything being typed.
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input),
+    resolved: args.input,
     exists: true,
   }));
   // And it walks the thumbnail cache on mount, for the line its Thumbnails

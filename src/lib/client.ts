@@ -174,6 +174,84 @@ export interface BackendEvents {
 }
 
 /**
+ * Every command the backend exposes, under the name `invoke` reaches it by.
+ *
+ * The wire names, `generate_handler!` in `lib.rs`, and the same job
+ * `BackendEvents` does above for the five event names: the one place in the
+ * frontend where these 16 strings are written down. `client`'s methods below
+ * are the only callers in the app; the test suite's `mockCommand` is the other
+ * reader, which is why the names are exported rather than inlined (ADR 0031).
+ *
+ * A Rust rename is still not a compilation failure — nothing short of generated
+ * bindings makes it one, and ADR 0031 refused those. What this buys is that
+ * once a rename reaches this file, every registration lights up at once.
+ */
+export type Command =
+  | "start_scan"
+  | "start_pregen"
+  | "cancel_pregen"
+  | "get_cache_size"
+  | "clear_cache"
+  | "expand_path"
+  | "get_pair"
+  | "vote"
+  | "get_stats"
+  | "list_wallpapers"
+  | "keep_wallpaper"
+  | "unkeep_wallpaper"
+  | "move_wallpaper"
+  | "restore_wallpaper"
+  | "get_settings"
+  | "set_setting";
+
+/**
+ * What each command takes and what it answers with.
+ *
+ * `args` is the payload as it crosses, so it is spelled the way the `invoke`
+ * calls in `client` spell it — camelCase keys included — and it is `undefined`
+ * for the six commands that take none. An answer of `null` is a command that
+ * answers with nothing.
+ *
+ * This restates what `client`'s methods already say for callers, because the
+ * one caller that cannot read a method signature is a generic over the names.
+ * That is the same redundancy `BackendEvents` carries next to `subscribe`.
+ */
+export interface BackendCommands {
+  start_scan: { args: { path: string }; answer: null };
+  start_pregen: { args: undefined; answer: null };
+  cancel_pregen: { args: undefined; answer: null };
+  get_cache_size: { args: undefined; answer: CacheSize };
+  clear_cache: { args: undefined; answer: null };
+  expand_path: { args: { input: string }; answer: Expanded };
+  get_pair: {
+    args: { exclude?: number[] };
+    answer: [Wallpaper, Wallpaper];
+  };
+  vote: {
+    args: { winnerId: number; loserId: number; exclude?: number[] };
+    answer: VoteOutcome;
+  };
+  get_stats: { args: undefined; answer: Stats };
+  list_wallpapers: {
+    args: { filter: StatusFilter; ordering: ListOrdering; limit?: number };
+    answer: Wallpaper[];
+  };
+  keep_wallpaper: { args: { id: number }; answer: Wallpaper };
+  unkeep_wallpaper: { args: { id: number }; answer: Wallpaper };
+  move_wallpaper: {
+    args: { id: number; destinationFolder: string };
+    answer: Wallpaper;
+  };
+  restore_wallpaper: { args: { id: number }; answer: Wallpaper };
+  get_settings: { args: undefined; answer: Settings };
+  /** The value crosses as a string, which is what the column holds (`setSetting`). */
+  set_setting: {
+    args: { key: keyof Settings; value: string };
+    answer: Settings;
+  };
+}
+
+/**
  * Mirrors thumbnails::CacheSize: what a walk of the cache directory found.
  *
  * Both are zero for a cache with nothing in it, which is also the answer for a

@@ -1,16 +1,27 @@
-import App from "@/App";
 import type { StatusFilter, Wallpaper } from "@/lib/client";
 import {
   act,
   cleanup,
   fireEvent,
-  render,
   screen,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import { flush, mockListings, settings, stats, wallpaper } from "./fixtures";
+import {
+  advancePickFeedback,
+  click,
+  flush,
+  mockBootedApp,
+  mockListings,
+  mockTransitions,
+  openApp,
+  panesArrive,
+  press,
+  servingRows,
+  stats,
+  wallpaper,
+} from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // Cross-view freshness, driven the way the curator drives it: the whole app,
@@ -18,8 +29,6 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 // most of them are about the fetch that does not happen — a patch reaches a
 // hidden view for free, and the one event that cannot be patched waits until
 // the curator is looking (ADR 0015).
-
-const PICK_FEEDBACK_MS = 300;
 
 /** The Stats a vote answers with: a Round further on than the boot read. */
 const VOTED_STATS = stats({
@@ -35,6 +44,9 @@ let listFilters: StatusFilter[];
 let votes: Array<[number, number]>;
 /** The library `list_wallpapers` reads, which a scan in a test appends to. */
 let library: Wallpaper[];
+
+/** The rows a transition answers with, read off that library (ADR 0023). */
+const { wrote } = servingRows(() => library);
 
 afterEach(() => {
   cleanup();
@@ -58,15 +70,13 @@ beforeEach(() => {
     }),
   ];
 
-  mockCommand("get_stats", () => stats());
-  mockCommand("get_settings", () => settings());
+  mockBootedApp();
   // Review's bar resolves the stored destination as soon as the view mounts,
   // which is the one backend call this file's navigation adds (ADR 0018).
   mockCommand("expand_path", (args) => ({
-    resolved: args?.input as string,
+    resolved: args.input,
     exists: true,
   }));
-  mockCommand("start_pregen", () => null);
 
   // Rank opens on wallpapers 1 and 2, which are also rows in the library, so a
   // vote and a library row are about the same two wallpapers.
@@ -77,7 +87,7 @@ beforeEach(() => {
       : [wallpaper(8), wallpaper(9)];
   });
   mockCommand("vote", (args) => {
-    votes.push([args?.winnerId as number, args?.loserId as number]);
+    votes.push([args.winnerId, args.loserId]);
     return { next_pair: [wallpaper(8), wallpaper(9)], stats: VOTED_STATS };
   });
 
@@ -97,86 +107,18 @@ beforeEach(() => {
     // rows the current filter does not show.
     library: (args) => {
       listCalls++;
-      const filter = (args?.filter as StatusFilter) ?? "all";
+      const filter = args.filter;
       listFilters.push(filter);
       return library.filter((w) => filter === "all" || w.status === filter);
     },
   });
 
-  // Every transition answers with the row it wrote, so these mocks derive one
-  // from the library rather than returning a path: a patch carries that row
-  // whole, and a fixture that dropped the Score or the comparison count would
-  // be a row the backend could never report (ADR 0023).
-  mockCommand("keep_wallpaper", (args) => wrote(args, { status: "kept" }));
-  mockCommand("move_wallpaper", (args) => {
-    const before = row(args);
-    return {
-      ...before,
-      status: "rejected",
-      path: `/library/rejected/${before.filename}`,
-      // What the backend writes: `origin_path = path`, in the same statement
-      // that overwrites `path`.
-      origin_path: before.path,
-    };
-  });
+  // Every transition answers with the row it wrote, off the library the tests
+  // arrange (ADR 0023). The tests below override the one they are refusing.
+  mockTransitions(() => library);
 });
 
-/** The library row a transition was asked about. */
-function row(args: Record<string, unknown> | undefined): Wallpaper {
-  const id = args?.id as number;
-  const found = library.find((w) => w.id === id);
-  if (!found) throw new Error(`no library row with id ${id}`);
-  return found;
-}
-
-/** That row as a transition rewrote it. */
-function wrote(
-  args: Record<string, unknown> | undefined,
-  over: Partial<Wallpaper>,
-): Wallpaper {
-  return { ...row(args), ...over };
-}
-
 const tab = (name: string) => screen.getByRole("tab", { name });
-
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
-
-async function pressKey(key: string) {
-  await act(async () => {
-    fireEvent.keyDown(window, { key });
-  });
-  await flush();
-}
-
-async function openApp() {
-  const rendered = render(<App />);
-  await flush();
-  return rendered;
-}
-
-/** happy-dom never fetches an `<img>`; Rank refuses a pick until both arrive. */
-async function panesArrive() {
-  for (const side of ["Left", "Right"] as const) {
-    const pane = screen.queryByAltText(`${side} Wallpaper`);
-    if (!pane) continue;
-    await act(async () => {
-      fireEvent.load(pane);
-    });
-  }
-}
-
-/** Run out the pick-feedback delay that gates a vote reaching the backend. */
-async function advancePickFeedback() {
-  await act(async () => {
-    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
-  });
-  await flush();
-}
 
 const pageBar = (view: string) =>
   document.querySelector(
@@ -390,7 +332,7 @@ test("a reject in Review leaves the Library row it patched restorable", async ()
   // at all (ADR 0009).
   const restores: unknown[] = [];
   mockCommand("restore_wallpaper", (args) => {
-    restores.push(args?.id);
+    restores.push(args.id);
     // The Origin spent and the file back at it, which is what the backend
     // writes in the one statement that clears the column.
     return wrote(args, { status: "active", origin_path: null });
@@ -489,7 +431,7 @@ test("a vote patches Rank's headline from stats-changed", async () => {
   await panesArrive();
   expect(pageBar("rank").textContent).toContain("Round 3");
 
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
@@ -510,7 +452,7 @@ test("score-changed tells Library which two Scores moved, without a fetch", asyn
   expect([badge(1), badge(2), badge(3)]).toEqual(["29.2", "20.8", "25.5"]);
 
   await click(tab("Rank"));
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
@@ -532,7 +474,7 @@ test("a refetch makes every Score current again", async () => {
   await panesArrive();
   await click(tab("Library"));
   await click(tab("Rank"));
-  await pressKey("ArrowLeft");
+  await press("ArrowLeft", { target: window });
   await advancePickFeedback();
 
   library[0] = wallpaper(1, {

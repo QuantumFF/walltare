@@ -1,4 +1,3 @@
-import App from "@/App";
 import { Layout } from "@/components/Layout";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
@@ -15,9 +14,12 @@ import { expectConsoleError } from "./console-guard";
 import type { CacheSize } from "@/lib/client";
 import {
   cacheSize,
+  click,
   desktopColorScheme,
   emptyStats,
   flush,
+  mockBootedApp,
+  openApp,
   settings,
   showingView,
   stats,
@@ -72,14 +74,15 @@ beforeEach(() => {
   pregenCommands = [];
   clearCalls = 0;
 
+  mockBootedApp();
   // A library with wallpapers in it, so boot lands on Rank and the curator
   // reaches Settings through the gear — which is what puts a `returnTo` on the
-  // navigation. The tests about a first run and a failed boot override it.
+  // navigation. The tests about a first run and a failed boot override it, and
+  // the reads are counted because the page refetches them.
   mockCommand("get_stats", () => {
     statsCalls++;
     return stats();
   });
-  mockCommand("get_settings", () => settings());
   // The shell starts a pass as soon as it mounts, so every render in this file
   // reaches this one before the curator has clicked anything (ADR 0012).
   mockCommand("start_pregen", () => {
@@ -105,19 +108,19 @@ beforeEach(() => {
   // A Written path resolves the way ADR 0011 says it does, and the folder is
   // there. The status-line tests replace this with the answer they are about.
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^~/, HOME),
+    resolved: args.input.replace(/^~/, HOME),
     exists: true,
   }));
   mockCommand("set_setting", (args) => {
     settingWrites.push({
-      key: args?.key as string,
-      value: args?.value as string,
+      key: args.key,
+      value: args.value,
     });
     scanSequence.push("set_setting");
-    return settings({ [args?.key as string]: args?.value as string });
+    return settings({ [args.key]: args.value });
   });
   mockCommand("start_scan", (args) => {
-    scannedPaths.push(args?.path as string);
+    scannedPaths.push(args.path);
     scanSequence.push("start_scan");
     return null;
   });
@@ -152,13 +155,6 @@ const sectionHeadings = () =>
   Array.from(document.querySelectorAll('[data-slot="settings-section"] h2')).map(
     (el) => el.textContent,
   );
-
-async function click(element: Element) {
-  await act(async () => {
-    fireEvent.click(element);
-  });
-  await flush();
-}
 
 /** Type a Written path, one `change` the way a field reports one. */
 async function type(value: string) {
@@ -204,12 +200,6 @@ async function pressEscape(target: Window | Element) {
     fireEvent.keyDown(target, { key: "Escape" });
   });
   await flush();
-}
-
-async function openApp() {
-  const rendered = render(<App />);
-  await flush();
-  return rendered;
 }
 
 /** Boot on Rank, then reach Settings the way the gear does, from Library. */
@@ -442,7 +432,7 @@ test("the status line says where the Written path points", async () => {
 
 test("a folder that is not there is said on the same line, and not in the destructive colour", async () => {
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^~/, HOME),
+    resolved: args.input.replace(/^~/, HOME),
     exists: false,
   }));
   await openSettingsFromLibrary();
@@ -662,7 +652,7 @@ test("an unreadable path lands on the status line, and the next keystroke clears
   mockCommand("start_scan", (args) =>
     Promise.reject({
       kind: "invalid_path",
-      message: `${args?.path} is not a directory`,
+      message: `${args.path} is not a directory`,
     }),
   );
   await openSettingsFromLibrary();
@@ -853,7 +843,7 @@ test("whether a destination is relative is not read off the string", async () =>
   // `$HOME/bin` looks relative and expands absolute, which is why only
   // `expand_path` gets to decide which of the two lines is up (ADR 0018).
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^\$HOME/, HOME),
+    resolved: args.input.replace(/^\$HOME/, HOME),
     exists: true,
   }));
   await openSettingsFromLibrary();
@@ -886,7 +876,7 @@ test("no destination is ever reported as not found", async () => {
   // (ADR 0003), so this field ignores the `exists` its own resolution answered
   // with — the one thing it reads past that the Library root reports.
   mockCommand("expand_path", (args) => ({
-    resolved: String(args?.input).replace(/^~/, HOME),
+    resolved: args.input.replace(/^~/, HOME),
     exists: false,
   }));
   await openSettingsFromLibrary();

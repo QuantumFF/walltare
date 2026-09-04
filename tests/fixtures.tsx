@@ -1,11 +1,43 @@
+import App from "@/App";
 import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
-import type { CacheSize, Settings, Stats, Wallpaper } from "@/lib/client";
-import { act, render, screen } from "@testing-library/react";
+import type {
+  BackendCommands,
+  CacheSize,
+  Settings,
+  Stats,
+  Wallpaper,
+} from "@/lib/client";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { jest } from "bun:test";
 import type { ReactNode } from "react";
 import { mockCommand } from "./ipc-mocks";
+
+// What a test arranges, and what a test does.
+//
+// A helper earns a place here on either of two conditions, and only these two
+// (ADR 0031):
+//
+// 1. It holds a rule an ADR states. `mockListings` carries ADR 0028's, the
+//    `servingRows` family ADR 0023's, and a rule stated in each of N places is
+//    a rule that drifts — which is what a shared fixture is for.
+// 2. Its copies are mechanically identical, or made identical by a change with
+//    no effect on any assertion, *demonstrated by running the suite*. The
+//    demonstration is part of the condition: without it the rule licenses
+//    guessing about which differences between two copies were deliberate.
+//
+// Neither condition is "two files want it". A default that applies a rule is
+// the point; a default that hides a value is worse than the explicit lines it
+// replaces, because it makes a test pass for reasons its own file does not
+// state. Three of `mockBootedApp`'s callers re-register one command below the
+// call for exactly that reason, and `expand_path` never moved here at all.
+//
+// The DOM helpers are here rather than in a module of their own, which is why
+// `click` sits beside `wallpaper()`: `click` is four lines around `flush`, this
+// is already the render-and-act module, and naming a new one for a `fireEvent`
+// wrapper is more interface than the job needs.
 
 /**
  * One row as `list_wallpapers` would answer with it.
@@ -33,7 +65,124 @@ export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper 
   };
 }
 
-type CommandArgs = Record<string, unknown> | undefined;
+/**
+ * Get the app past its boot gate: a mid-life library, an empty settings table
+ * and the pass the shell starts once that gate settles.
+ *
+ * The provider reads `get_stats` and `get_settings` before it renders anything,
+ * and `start_pregen` is reached by every `<App />` and every view mounted in
+ * the real providers, so a file that renders needs all three or it renders
+ * nothing at all. Named for what it arranges, so a reader sees the name and
+ * knows the app got past its gate rather than counting three registrations to
+ * find out (ADR 0031).
+ *
+ * A file whose `get_stats` or `start_pregen` counts its calls, or answers with
+ * a library of its own, calls this and re-registers that one command below it.
+ */
+export function mockBootedApp(): void {
+  mockCommand("get_stats", () => stats());
+  mockCommand("get_settings", () => settings());
+  mockCommand("start_pregen", () => null);
+}
+
+/** What a `list_wallpapers` call carries, so an answer can read the `limit`. */
+type ListingArgs = BackendCommands["list_wallpapers"]["args"];
+
+/** The id a transition command carries, which is all four of them. */
+type TransitionArgs = { id: number };
+
+/** The rows a page is serving, and the rows a transition on one of them wrote. */
+export interface ServedRows {
+  /** The row `source` holds for the id a transition was asked about. */
+  row: (args: TransitionArgs) => Wallpaper;
+  /** That row as a transition rewrote it. */
+  wrote: (args: TransitionArgs, over?: Partial<Wallpaper>) => Wallpaper;
+  /** The row a reject wrote: the file at `landedAt`, and the Origin it came from. */
+  rejectedTo: (args: TransitionArgs, landedAt: string) => Wallpaper;
+  /** The row a Restore wrote: the file back at `landedAt`, and the Origin spent. */
+  restoredTo: (args: TransitionArgs, landedAt: string) => Wallpaper;
+}
+
+/** The last segment of a path, which is the `filename` column the backend stores. */
+const basenameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
+/**
+ * Answer a transition the way the backend does: with the row it wrote, every
+ * column it did not touch coming through unchanged (ADR 0023).
+ *
+ * `source` is read on every call rather than captured, so a file hands in the
+ * list it is serving — `() => library` — and the rows follow it as the test
+ * changes it. A transition on an id the page never served throws, which is what
+ * turns a fixture nobody arranged into a readable failure.
+ *
+ * The four answers are derived rather than written out, because restating the
+ * backend's rules — `origin_path = path` on a reject, `origin_path = NULL` on a
+ * Restore, the `filename` derived from the path that was written — would be
+ * predicting them however few copies of the prediction there were.
+ */
+export function servingRows(source: () => Wallpaper[]): ServedRows {
+  function row({ id }: TransitionArgs): Wallpaper {
+    const found = source().find((w) => w.id === id);
+    if (!found) throw new Error(`no served row with id ${id}`);
+    return found;
+  }
+
+  function wrote(args: TransitionArgs, over: Partial<Wallpaper> = {}) {
+    return { ...row(args), ...over };
+  }
+
+  return {
+    row,
+    wrote,
+    rejectedTo: (args, landedAt) =>
+      wrote(args, {
+        status: "rejected",
+        path: landedAt,
+        filename: basenameOf(landedAt),
+        // What the backend writes: `origin_path = path`, in the same statement
+        // that overwrites `path`.
+        origin_path: row(args).path,
+      }),
+    restoredTo: (args, landedAt) =>
+      wrote(args, {
+        status: "active",
+        path: landedAt,
+        filename: basenameOf(landedAt),
+        origin_path: null,
+      }),
+  };
+}
+
+/**
+ * Answer all four transitions off one row source, and hand back the answers so
+ * a test can override the one command it is about.
+ *
+ * A reject lands the file in a `rejected` folder beside the library, which is
+ * what the default `reject_destination` resolves to and what every test that
+ * does not arrange a destination of its own is asking about. A Restore puts the
+ * file back at its Origin, so a row with no Origin reaching that default is a
+ * broken test rather than a backend failure: the frontend refuses that call
+ * before it makes it (ADR 0009), and answering one would stand in for a backend
+ * that has no such answer.
+ */
+export function mockTransitions(source: () => Wallpaper[]): ServedRows {
+  const rows = servingRows(source);
+  mockCommand("keep_wallpaper", (args) => rows.wrote(args, { status: "kept" }));
+  mockCommand("unkeep_wallpaper", (args) =>
+    rows.wrote(args, { status: "active" }),
+  );
+  mockCommand("move_wallpaper", (args) =>
+    rows.rejectedTo(args, `/library/rejected/${rows.row(args).filename}`),
+  );
+  mockCommand("restore_wallpaper", (args) => {
+    const { origin_path } = rows.row(args);
+    if (!origin_path) {
+      throw new Error(`wallpaper ${args.id} has no Origin to restore to`);
+    }
+    return rows.restoredTo(args, origin_path);
+  });
+  return rows;
+}
 
 /**
  * Answer `list_wallpapers` for a test that renders both listing pages.
@@ -45,11 +194,11 @@ type CommandArgs = Record<string, unknown> | undefined;
  * arguments takes the answer meant for the other one and the test says so.
  */
 export function mockListings(answer: {
-  review: (args: CommandArgs) => Wallpaper[];
-  library: (args: CommandArgs) => Wallpaper[];
+  review: (args: ListingArgs) => Wallpaper[];
+  library: (args: ListingArgs) => Wallpaper[];
 }): void {
   mockCommand("list_wallpapers", (args) =>
-    args?.limit === undefined ? answer.library(args) : answer.review(args),
+    args.limit === undefined ? answer.library(args) : answer.review(args),
   );
 }
 
@@ -237,6 +386,80 @@ export async function renderInApp(ui: ReactNode) {
   );
   await flush();
   return rendered;
+}
+
+/**
+ * Render the whole app and wait out its boot gate, which is where every test
+ * about the shell starts.
+ *
+ * A file that navigates on arrival wraps this rather than replacing it: booting
+ * and clicking through to a page is a different sequence, and giving it this
+ * name would hide the click.
+ */
+export async function openApp() {
+  const rendered = render(<App />);
+  await flush();
+  return rendered;
+}
+
+/** One click, and the state updates behind it. */
+export async function click(element: Element): Promise<void> {
+  await act(async () => {
+    fireEvent.click(element);
+  });
+  await flush();
+}
+
+/**
+ * One keystroke, and the state updates behind it.
+ *
+ * The target defaults to wherever focus is, which is what a curator's keyboard
+ * reaches and so what a test about a binding wants: a grid's arrow keys are
+ * about the card that has focus, and the lightbox's Escape is about the layer
+ * in front. Pass `target` for the two cases that are not — a shell binding
+ * listening on the `window`, and a key delivered to a field that focus is not
+ * in — and the modifiers for a chord.
+ */
+export async function press(
+  key: string,
+  options: {
+    target?: Window | Element;
+    ctrlKey?: boolean;
+    altKey?: boolean;
+    metaKey?: boolean;
+  } = {},
+): Promise<void> {
+  const { target = document.activeElement ?? document.body, ...modifiers } =
+    options;
+  await act(async () => {
+    fireEvent.keyDown(target, { key, ...modifiers });
+  });
+  await flush();
+}
+
+/** happy-dom never fetches an `<img>`; Rank refuses a pick until both arrive. */
+export async function panesArrive(): Promise<void> {
+  for (const side of ["Left", "Right"] as const) {
+    const pane = screen.queryByAltText(`${side} Wallpaper`);
+    if (!pane) continue;
+    await act(async () => {
+      fireEvent.load(pane);
+    });
+  }
+}
+
+/** `RankView`'s pick-feedback delay, which gates a vote reaching the backend. */
+const PICK_FEEDBACK_MS = 300;
+
+/**
+ * Run that delay out. The caller owns the fake clock — `jest.useFakeTimers()`
+ * in its own `beforeEach` — since which tests fake time is theirs to decide.
+ */
+export async function advancePickFeedback(): Promise<void> {
+  await act(async () => {
+    jest.advanceTimersByTime(PICK_FEEDBACK_MS);
+  });
+  await flush();
 }
 
 export interface Deferred<T> {
