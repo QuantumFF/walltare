@@ -79,17 +79,16 @@ The write ordering mirrors ADR 0003:
    NULL.
 2. Refuse if the file is missing from the path the row currently holds.
 3. Create the origin directory if it is gone.
-4. Pick a filename in it that no file holds, via `unique_destination`.
+4. Pick a filename in it that no file holds.
 5. `UPDATE` the row to Active with the origin path, clearing `origin_path`.
 6. Move the file.
 7. Commit.
 
 Putting the `UPDATE` before the move is what keeps a failure harmless, exactly
-as it does outbound. Every database error, `UNIQUE(path)` included, fires while
-the disk is still untouched, and dropping the transaction rolls the row back.
+as it does outbound, and for the reasons ADR 0003 gives.
 
-A restore that has to rename is still a restore. `unique_destination` suffixes
-` (n)` from 2 and the UI reports the path the file actually got. Two situations
+A restore that has to rename is still a restore. Step 4 suffixes ` (n)` from 2
+and the UI reports the path the file actually got. Two situations
 produce the collision: a bare file has appeared at the origin, or a rescan
 picked that file up as its own wallpaper row. Both fall out of the same code,
 because `UNIQUE(path)` is enforced by the `UPDATE` in step 5.
@@ -203,3 +202,24 @@ A crash between the move and the commit loses the transition, mirroring ADR
 in the reject folder, so the image breaks in the UI, and a rescan adds the
 origin file as a second Active row because the two path strings differ.
 Recovering from that needs the same reconciliation work as the outbound case.
+
+> **Amended by [ADR 0030](0030-the-soft-reject-owns-its-ordering.md),
+> 2026-09-04.** The Restore leaves `db.rs` for `src/soft_reject.rs`, which owns
+> the write ordering above rather than restating it, so that module's doc is
+> where the rule now lives and this ADR is no longer a place to read it from.
+>
+> Two edits followed. The Decision above no longer names `unique_destination`,
+> in step 4 or in the collision paragraph below the list: the function is
+> private to `soft_reject` now, and an ADR naming another module's private
+> helper is a reference that goes stale on someone else's refactor. Both say
+> what the step does instead. And the paragraph below the list no longer
+> restates why the `UPDATE` comes first — it cites ADR 0003, which decided it.
+> **Alternatives rejected** keeps its original wording, including its mention of
+> `resolve_destination_dir`, because it is an argument about what the code did
+> at the time rather than guidance about what it does now.
+>
+> The seven steps stay as written. They are the inbound choreography, which is
+> this ADR's own content and genuinely different from ADR 0003's outbound one,
+> and three later paragraphs refer to steps 2, 5 and 6 by number. The rule that
+> was written seven times across the codebase is now written once; the steps
+> that obey it are still described where they were decided.

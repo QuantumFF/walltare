@@ -86,3 +86,21 @@ folder at that moment.
 Canonicalizing resolves symlinks, so a reject destination reached through a
 symlink stores the real path. Symlinked images have their own problems, tracked
 in [#34](https://github.com/QuantumFF/walltare/issues/34).
+
+> **Amended by [ADR 0030](0030-the-soft-reject-owns-its-ordering.md),
+> 2026-09-04.** Do not go looking in `db.rs`. The Soft reject and the Restore
+> live in `src/soft_reject.rs`, as `reject` and `restore`, and that module owns
+> the ordering decided here — the transaction, the `UPDATE`, and the move, all
+> behind two functions. Its module doc states the rule, once.
+>
+> The decision itself is unchanged: every step above, and the reasoning for
+> every step, holds exactly as written. What changed is that the rule is now
+> kept by a module instead of restated in seven places, one of which was this
+> ADR's own neighbour at ADR 0009.
+>
+> `unique_destination` and `move_file` are private to that module. The three
+> failure paths named in **Consequences** are still untested; a permission
+> failure on the destination is filed as
+> [#181](https://github.com/QuantumFF/walltare/issues/181), and the other two —
+> the cross-device fallback and a full disk — need a seam over `std::fs` that
+> [the map](https://github.com/QuantumFF/walltare/issues/149) rules out of scope.
