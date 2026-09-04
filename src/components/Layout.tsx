@@ -169,9 +169,17 @@ function Chrome() {
     <header className="sticky top-0 z-30 shrink-0 border-b border-border bg-background/95 backdrop-blur">
       <div
         data-slot="chrome-row"
+        // The window is undecorated, so this row is the title bar: Tauri moves
+        // the window from whatever the pointer went down on that carries the
+        // attribute, which is the row's own empty space and the wordmark, never
+        // the tabs or the gear.
+        data-tauri-drag-region
         className="relative flex h-12 items-center px-4"
       >
-        <div className="flex items-center gap-2 text-sm font-semibold tracking-tight">
+        <div
+          data-tauri-drag-region
+          className="flex items-center gap-2 text-sm font-semibold tracking-tight"
+        >
           <Images className="h-4 w-4" aria-hidden />
           walltare
         </div>
