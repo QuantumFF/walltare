@@ -166,7 +166,7 @@ test("an empty library opens on Settings, dressed as a first run", async () => {
   // The invitation has something to invite the curator into: the field the
   // first-run landing puts the caret in.
   expect(scanInput()).not.toBeNull();
-  expect(settingsView()?.textContent).toContain("No wallpapers yet");
+  expect(settingsView()?.textContent).toContain("Choose a Library root");
   expect(settingsView()?.textContent).not.toContain(
     "Couldn't read the library",
   );
@@ -186,7 +186,7 @@ test("a library that will not read opens on Settings, saying that instead", asyn
   // The backend's message verbatim: it is the only account of the fault there
   // is, and no canned sentence can name the lock.
   expect(settingsView()?.textContent).toContain("locked database");
-  expect(settingsView()?.textContent).not.toContain("No wallpapers yet");
+  expect(settingsView()?.textContent).not.toContain("Choose a Library root");
 });
 
 test("the two rows that both open Settings do not render the same thing", async () => {

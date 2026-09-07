@@ -56,6 +56,13 @@ last.
 > mount**: `get_cache_size` reads one directory the app owns, while this is a
 > `stat` per Active or Kept row against paths that may be on an external drive.
 
+> **Amended by [ADR 0033](0033-a-first-run-is-the-invitation.md), 2026-09-08.**
+> On the two boot landings, one section. The Library root stands and the other
+> four are withheld while a boot notice is up, because each of them is a question
+> about wallpapers the app has not found yet. The order is untouched and so is
+> the ordinary page: first-run need first, maintenance last, five sections from
+> the moment there is a library to be about.
+
 Sections rather than a flat list of label-and-control rows. The ticket called
 four groups of one or two controls thin, and it would be, except the two path
 items are each a field, a Browse button, and a status line under them. In a flat
@@ -295,6 +302,21 @@ Retry that calls `get_stats` again.
 Two headings, two colours, one with a field focused and one with a button to
 press. That is what keeps ADR 0015's two landings from looking alike.
 
+> **Amended by [ADR 0033](0033-a-first-run-is-the-invitation.md), 2026-09-08.**
+> The slot is the page on both landings rather than a block above it, and the
+> first-run copy changes. The heading is the ask — **Choose a Library root** —
+> followed by the line this section never had: *walltare ranks the wallpapers you
+> already have by showing you two at a time and asking which you prefer*, and
+> then `CONTEXT.md`'s own definition of the term, *The Library root is the folder
+> it scans to find them*. What the old sentence never said is why a wallpaper app
+> wants a folder, which is the whole of what a stranger arrives without.
+>
+> Two clauses above stand and one is corrected. Nothing in the slot is reordered
+> between its states, and the two landings still must not look alike; but
+> something is now hidden between them, which is what the four withheld sections
+> are. `bootNotice` is what the page reads to know which shape it is in, so a
+> Retry that reads clears the notice rather than the block hiding itself.
+
 The Library root section also carries a count line from the `Stats` the boot
 already fetched: "120 wallpapers in the library". No last-scanned time, because
 nothing records one, and ADR 0014 found every row sharing a single `created_at`,
@@ -376,6 +398,15 @@ a Done that only navigates would look like the Save that does not exist.
 **Hiding the other three sections on a first run.** Focuses the one thing that
 matters. It also produces a page that grows sections after a scan, and ADR 0015
 already refused to hide destinations for being empty.
+
+> **Reversed by [ADR 0033](0033-a-first-run-is-the-invitation.md), 2026-09-08.**
+> Neither half held once the boot rule was built. ADR 0015's refusal was about
+> tabs, and nothing here becomes unreachable — Settings is one gear press away
+> with all five sections in it. And the page does not grow sections under
+> anybody's eye: the boot rule's rerun takes a curator whose scan filled the
+> library off this page entirely, and the one place sections do arrive in place
+> is a Retry that read, where four sections appearing is the page recovering
+> alongside the fault leaving.
 
 **Toasting a scan-start error instead of the status line.** Consistent with
 ADR 0017's single error surface. ADR 0018 already broke that consistency in the

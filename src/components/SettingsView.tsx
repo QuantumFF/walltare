@@ -10,7 +10,7 @@ import {
 } from "@/components/PathField";
 import { MissingFilesSection } from "@/components/MissingFilesSection";
 import {
-  NoticeBlock,
+  FirstRunBlock,
   UnreadableLibraryBlock,
 } from "@/components/SettingsNotices";
 import { ThumbnailsSection } from "@/components/ThumbnailsSection";
@@ -389,9 +389,13 @@ function AppearanceSection() {
 /**
  * The Settings page.
  *
- * One column at `max-w-2xl` holding four sections in first-run order, a slot
+ * One column at `max-w-2xl` holding five sections in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
- * the way out (ADR 0020).
+ * the way out (ADR 0020, ADR 0032).
+ *
+ * On the two boot landings that slot is the page rather than a block above it:
+ * the invitation, or the fault, with the Library root section under it and the
+ * other four withheld until there is a library for them to be about (ADR 0033).
  *
  * Settings is the one destination the shell unmounts, so its fields start from
  * the store rather than from a copy they held across a visit — which is why the
@@ -400,6 +404,26 @@ function AppearanceSection() {
  */
 export function SettingsView() {
   const { bootNotice, returnTo, setView } = useApp();
+
+  /**
+   * Whether boot opened this page because there was nothing else to show, which
+   * is the whole of what makes it a landing rather than Settings.
+   *
+   * Both rows of ADR 0015's boot table that come here are read off one notice —
+   * an empty library and a library that would not read — because what the four
+   * withheld sections have in common is that neither curator has a library for
+   * them to be about. A reject destination, a thumbnail cache and a count of
+   * missing files are all questions about wallpapers the app either has not
+   * found yet or cannot see (ADR 0033).
+   *
+   * It is the notice and not `libraryTotal === 0`, so the page stops being a
+   * landing on exactly the two occasions the landing is over: the boot rule's
+   * rerun moves the curator off it once a scan fills the library, and a Retry
+   * that reads retires the fault. A curator who came back through the gear is
+   * not on a first run any more and gets the ordinary page, which is the rule
+   * `AppContext` already keeps the notice on the navigation record for.
+   */
+  const landing = bootNotice !== null;
 
   // Escape, and what it does not do: it reverts nothing. There is no Save to
   // undo and no dirty state to lose, because each field writes on blur and the
@@ -468,38 +492,44 @@ export function SettingsView() {
       </PageBar>
 
       <div className="mx-auto w-full max-w-2xl space-y-8 px-4 py-8">
-        {/* The slot, above the sections and in one place. Nothing in it is ever
-            hidden or reordered between its three states: the two rows of
+        {/* The slot, above the sections and in one place. The two rows of
             ADR 0015's boot table that land here are a first run and a library
-            that would not read, they are different problems, and telling the
+            that would not read; they are different problems, and telling the
             second one it has never scanned is the bug this shape exists to
             prevent. Otherwise the slot is absent (ADR 0020). */}
-        {bootNotice?.kind === "first_run" && (
-          <NoticeBlock tone="muted" heading="No wallpapers yet">
-            <p className="text-sm text-muted-foreground">
-              Choose a library root and scan it to start ranking.
-            </p>
-          </NoticeBlock>
-        )}
+        {bootNotice?.kind === "first_run" && <FirstRunBlock />}
         {bootNotice?.kind === "unreadable_library" && (
           <UnreadableLibraryBlock message={bootNotice.message} />
         )}
 
-        {/* First-run need first, maintenance last, and the order does not change
-            with what the library holds: a page that grows sections after a scan
-            is what ADR 0020 refused.
-
-            Missing files is fifth and last for that same rule. It is the most
-            maintenance-shaped thing on the page — a question nobody asks until
-            something looks wrong — and putting it under the Library root, where
-            it is about the same folder, would sit a filesystem walk between a
-            first-run curator and the Scan button that is the only thing they
-            need (ADR 0032). */}
+        {/* First-run need first, maintenance last, and the order never changes:
+            the Library root is first on both the landing and the ordinary page,
+            so nothing the curator learned where the field was moves once they
+            have a library (ADR 0020, ADR 0032). */}
         <LibraryRootSection />
-        <RejectDestinationSection />
-        <AppearanceSection />
-        <ThumbnailsSection />
-        <MissingFilesSection />
+
+        {/* Withheld on a boot landing, which is the one thing ADR 0020's
+            four-plus-a-slot shape got wrong. Its argument against hiding them
+            was a page that grows sections after a scan — and it does not: the
+            boot rule takes a curator whose scan filled the library off this page
+            entirely, and the one place sections do appear in place is a Retry
+            that read, where four sections arriving is the page recovering
+            alongside the fault leaving (ADR 0033).
+
+            Missing files is fifth and last for the rule that put Thumbnails
+            fourth. It is the most maintenance-shaped thing on the page — a
+            question nobody asks until something looks wrong — and putting it
+            under the Library root, where it is about the same folder, would sit
+            a filesystem walk between a first-run curator and the Scan button
+            that is the only thing they need (ADR 0032). */}
+        {!landing && (
+          <>
+            <RejectDestinationSection />
+            <AppearanceSection />
+            <ThumbnailsSection />
+            <MissingFilesSection />
+          </>
+        )}
       </div>
     </>
   );

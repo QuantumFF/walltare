@@ -335,18 +335,69 @@ test("with no returnTo the back control is absent and Escape does nothing", asyn
   expect(showingView()).toBe("library");
 });
 
-test("an empty library reads as an invitation", async () => {
+test("an empty library reads as an invitation, and says what the app is for", async () => {
   mockCommand("get_stats", () => emptyStats());
   await openApp();
 
   const block = screen.getByRole("status");
-  expect(block.textContent).toContain("No wallpapers yet");
+  expect(block.textContent).toContain("Choose a Library root");
+  // The one line a curator who has never read the README needs, which is why
+  // the app wants a folder at all (ADR 0033).
   expect(block.textContent).toContain(
-    "Choose a library root and scan it to start ranking.",
+    "walltare ranks the wallpapers you already have by showing you two at a " +
+      "time and asking which you prefer.",
+  );
+  // And which folder it means, in CONTEXT.md's own words, because this is where
+  // the term is first met.
+  expect(block.textContent).toContain(
+    "The Library root is the folder it scans to find them.",
   );
   // Not a fault, and nothing offers to retry a read that succeeded.
   expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});
+
+test("a first run leads with the prompt and nothing that is meaningless yet", async () => {
+  mockCommand("get_stats", () => emptyStats());
+  await openApp();
+
+  // The invitation is the first thing in the column, and the Library root is
+  // the only section under it: a reject destination, a thumbnail cache and a
+  // count of missing files are all questions about wallpapers this curator has
+  // not found yet (ADR 0033).
+  expect(sectionHeadings()).toEqual(["Library root"]);
+
+  const column = sectionAt(0).parentElement as HTMLElement;
+  expect(column.firstElementChild).toBe(screen.getByRole("status"));
+
+  // And the one section that reads something on mount is not here to read it:
+  // the cache is certainly empty on the launch that has never scanned, so this
+  // is the walk nobody needed (ADR 0020).
+  expect(cacheSizeCalls).toBe(0);
+});
+
+test("a first run scans from the invitation, and the app moves on", async () => {
+  mockCommand("get_stats", () => emptyStats());
+  await openApp();
+  expect(showingView()).toBe("settings");
+
+  // The caret is already in the field, so this is the sequence a first-time
+  // curator types: a path, then the one filled button on the page.
+  await type("~/pics");
+  await click(scanButton());
+  expect(scanSequence).toEqual(["set_setting", "start_scan"]);
+  expect(settingWrites).toEqual([{ key: "library_root", value: "~/pics" }]);
+  expect(scannedPaths).toEqual(["~/pics"]);
+
+  // And the boot rule's one rerun takes them off the page that asked, which is
+  // what makes the withheld sections a landing rather than a page that grows
+  // sections under the curator (ADR 0015, ADR 0033).
+  mockCommand("get_stats", () => {
+    statsCalls++;
+    return stats();
+  });
+  await emit("scan-complete", { added_count: 12, scanned_count: 12 });
+  expect(showingView()).toBe("rank");
 });
 
 test("a library that would not read reads as a fault, in the backend's own words", async () => {
@@ -364,17 +415,12 @@ test("a library that would not read reads as a fault, in the backend's own words
   expect(block.textContent).toContain("database is locked");
   expect(block.querySelector("p")?.className).toContain("text-destructive");
   expect(screen.queryByRole("status")).toBeNull();
-  expect(block.textContent).not.toContain("No wallpapers yet");
+  expect(block.textContent).not.toContain("Choose a Library root");
 
-  // And the sections are all still there in the same order underneath, because
-  // nothing in this slot is hidden or reordered between its states.
-  expect(sectionHeadings()).toEqual([
-    "Library root",
-    "Reject destination",
-    "Appearance",
-    "Thumbnails",
-    "Missing files",
-  ]);
+  // The other landing's shape, for the same reason: a library the app cannot
+  // read is not a library the four maintenance sections can be about either
+  // (ADR 0033).
+  expect(sectionHeadings()).toEqual(["Library root"]);
 });
 
 test("Retry re-reads the library, and a read that succeeds clears the block", async () => {
@@ -408,10 +454,17 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
   expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 
-  // The page is still the page: clearing the slot leaves the sections where
-  // they were, and the curator on Settings.
+  // And the page is Settings again rather than a landing with four sections
+  // missing: the notice was boot's account of a read that failed, so the read
+  // that worked retires it (ADR 0033).
   expect(showingView()).toBe("settings");
-  expect(sectionHeadings().length).toBe(5);
+  expect(sectionHeadings()).toEqual([
+    "Library root",
+    "Reject destination",
+    "Appearance",
+    "Thumbnails",
+    "Missing files",
+  ]);
 });
 
 test("neither block is up when boot found a library it could read", async () => {
