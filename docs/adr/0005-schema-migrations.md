@@ -52,6 +52,58 @@ the wider `CHECK`. Step 3 adds `wallpapers.origin_path`, the column
 rather than the 4 that ADR left open, because the settings store landed as a new
 table and needed no number.
 
+### Amendment: a database from the future is refused on open
+
+**[#199](https://github.com/QuantumFF/walltare/issues/199), 2026-09-08.** The
+runner migrates forward and said nothing about the other direction, so a
+database stamped *above* `SCHEMA_VERSION` opened happily. A curator who installs
+a newer walltare, runs it once and goes back to this one is holding exactly that
+file. The DDL is a no-op against tables that already exist, so nothing would
+complain: the app would start, run today's queries against tomorrow's shape, and
+write as it went. Comparisons are permanent by definition in `CONTEXT.md` and
+there is no second copy of them, which makes this the one failure here that
+destroys something the user cannot get back.
+
+`db::open` now refuses it. The check reads `PRAGMA user_version` before the
+`foreign_keys` and `journal_mode` pragmas, not after: the journal-mode switch
+rewrites the file header, and a database this build cannot read has to come away
+exactly as it arrived. Nothing else runs — no DDL, no migration step, no version
+stamp. `open` is the only door into a database file, so it is the only place the
+check lives; `init_schema` keeps its `rusqlite::Error`.
+
+The refusal needed a type of its own, because a database from the future is
+valid SQLite and nothing SQLite reports covers it. `open` returns
+`Result<Connection, OpenError>`, with `OpenError::Db` carrying the ordinary case
+and `OpenError::FromTheFuture { database, app }` carrying the two versions the
+user has to be told about.
+
+It reaches them as a native error dialog naming both versions, after which the
+process exits (epic [#195](https://github.com/QuantumFF/walltare/issues/195)).
+Not a React screen: there is no in-app recovery — the user reinstalls the newer
+walltare or downgrades the database, and neither happens in here — so a screen
+would buy nothing but another state threaded through the shell, and a log line
+is invisible to somebody launching from a desktop menu. The dialog is
+`tauri-plugin-dialog`, already a dependency for the folder picker (ADR 0020),
+and its Rust API is outside the IPC, so `capabilities/default.json` needs no new
+permission.
+
+Two mechanics are worth writing down. `setup` runs before the event loop, and
+the plugin hands every dialog to that loop, so `blocking_show` there would wait
+on a loop that is waiting on `setup`; the non-blocking `show` is used instead and
+its callback exits the process. And the main window is built from the config
+before `setup` runs, so it exists already and gets hidden, leaving the dialog as
+the whole of the app rather than a window with no database behind it. Hiding is
+safe to do because ADR 0010 excludes `VISIBLE` from the persisted window state,
+so a hidden window cannot survive into the next launch.
+
+Tests cover the guard, not the dialog: `db.rs` builds a database in a tempdir,
+adds a column this build has never heard of, stamps `SCHEMA_VERSION + 1`, and
+asserts the reopen is refused with both versions and the file unchanged, plus a
+second test over a `&Connection` that only above is refused — at the current
+version and below still open, and below still migrates. `lib.rs` asserts the
+message names both versions and says what to do, which is the only part of the
+dialog that can be checked without a display.
+
 ## Alternatives rejected
 
 **Add `rusqlite_migration`.** It does more than this needs and adds a

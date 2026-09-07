@@ -530,6 +530,48 @@ fn error_response(e: &error::AppError) -> tauri::http::Response<Vec<u8>> {
         .unwrap()
 }
 
+/// What the curator reads when their database was written by a newer walltare.
+///
+/// A pure function so the copy is testable: the versions are the whole point of
+/// the message, and a dialog cannot be asserted on.
+fn refusal_message(database: i64, app: i64) -> String {
+    format!(
+        "Your library was written by a newer version of walltare.\n\n\
+         The database is at schema version {database}. This walltare understands \
+         version {app}, and it cannot read a shape it has never seen.\n\n\
+         Nothing has been changed. Install the newer walltare again to open this \
+         library — your Comparisons are all in there, and they are permanent."
+    )
+}
+
+/// Reports a refused database and exits.
+///
+/// A native dialog rather than a React screen: the database is the app, so there
+/// is nothing behind the message to render, and no recovery to offer — the
+/// curator downgrades the database or reinstalls the newer walltare, and neither
+/// happens in here (issue #199). A log line would be invisible to somebody
+/// launching from a desktop menu.
+fn refuse_the_database(app: &AppHandle, database: i64, supported: i64) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+    // The window is built from the config before `setup` runs, so it already
+    // exists. Hiding it leaves the dialog as the whole of the app rather than a
+    // window with no database behind it.
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+
+    // `show` rather than `blocking_show`: both hand the dialog to the event
+    // loop, which starts only once `setup` returns, so blocking here would wait
+    // on a loop that is waiting on us. The callback runs off the main thread
+    // when the curator dismisses it, and the process ends there.
+    app.dialog()
+        .message(refusal_message(database, supported))
+        .kind(MessageDialogKind::Error)
+        .title("walltare cannot open this library")
+        .show(|_| std::process::exit(1));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -544,7 +586,22 @@ pub fn run() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let conn = db::open(&dir.join("walltare.db"))?;
+            let conn = match db::open(&dir.join("walltare.db")) {
+                Ok(conn) => conn,
+                // The refusal is the end of the launch: the dialog is up, the
+                // window is hidden, and the process exits when it is dismissed.
+                // Returning here is what keeps the rest of the setup — the
+                // schema, the caches, the state — from running against a
+                // database this build cannot read.
+                Err(db::OpenError::FromTheFuture {
+                    database,
+                    app: supported,
+                }) => {
+                    refuse_the_database(app.handle(), database, supported);
+                    return Ok(());
+                }
+                Err(db::OpenError::Db(e)) => return Err(e.into()),
+            };
             db::init_schema(&conn)?;
             let cache_dir = dir.join("thumbnails");
             std::fs::create_dir_all(&cache_dir)?;
@@ -665,6 +722,18 @@ mod tests {
                 .unwrap(),
             "max-age=300"
         );
+    }
+
+    #[test]
+    fn the_refusal_names_both_versions_and_says_what_to_do() {
+        // The dialog is the only thing the curator gets on this path, so the two
+        // numbers and the instruction are the whole of what it has to carry. A
+        // message naming one version tells them nothing they can act on.
+        let message = refusal_message(4, 3);
+        assert!(message.contains("schema version 4"), "{message}");
+        assert!(message.contains("version 3"), "{message}");
+        assert!(message.contains("Nothing has been changed"), "{message}");
+        assert!(message.contains("Install the newer walltare"), "{message}");
     }
 
     #[test]

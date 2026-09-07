@@ -54,8 +54,48 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 ";
 
-pub fn open(db_path: &Path) -> Result<Connection, rusqlite::Error> {
+/// Why a database file cannot become a working connection.
+///
+/// `rusqlite::Error` alone cannot say it: a database from a newer walltare is
+/// perfectly valid SQLite, and the reason to refuse it is a version comparison
+/// rather than anything SQLite reports.
+#[derive(Debug)]
+pub enum OpenError {
+    Db(rusqlite::Error),
+    /// The file is stamped above [`SCHEMA_VERSION`], so a newer walltare wrote
+    /// it and this build does not know the shape it is in.
+    FromTheFuture {
+        database: i64,
+        app: i64,
+    },
+}
+
+impl From<rusqlite::Error> for OpenError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Db(e)
+    }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Db(e) => write!(f, "{e}"),
+            Self::FromTheFuture { database, app } => write!(
+                f,
+                "database is at schema version {database}; this walltare understands {app}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {}
+
+pub fn open(db_path: &Path) -> Result<Connection, OpenError> {
     let conn = Connection::open(db_path)?;
+    // Before the pragmas below, not after. The journal-mode switch rewrites the
+    // file header, and a database this build cannot read has to come away
+    // exactly as it arrived.
+    refuse_a_database_from_the_future(&conn)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // The scan writes thousands of rows and every other command reads through
     // the same single connection; a rollback journal fsyncs per statement.
@@ -84,6 +124,28 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool, rusqlite::Error> 
         |row| row.get::<_, i64>(0),
     )
     .map(|n| n > 0)
+}
+
+/// Refuses a database stamped above [`SCHEMA_VERSION`].
+///
+/// `migrate` runs one way (ADR 0005): it knows how to bring an older file to
+/// this build's shape and there is nothing it could do with a newer one. Opening
+/// it anyway is the worst of the options — the DDL is a no-op against tables
+/// that already exist, so the app would start normally and then run today's
+/// queries against tomorrow's shape, writing as it went. Comparisons are
+/// permanent by definition and there is no second copy of them.
+///
+/// [`open`] is the only door into a database file, so this is the only place the
+/// check needs to be.
+fn refuse_a_database_from_the_future(conn: &Connection) -> Result<(), OpenError> {
+    let database = schema_version(conn)?;
+    if database > SCHEMA_VERSION {
+        return Err(OpenError::FromTheFuture {
+            database,
+            app: SCHEMA_VERSION,
+        });
+    }
+    Ok(())
 }
 
 fn schema_version(conn: &Connection) -> Result<i64, rusqlite::Error> {
@@ -732,6 +794,66 @@ mod tests {
 
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    #[test]
+    fn a_database_from_the_future_is_refused_and_left_untouched() {
+        // The user who installed a newer walltare, ran it once, and went back to
+        // this one. Opening the file would start the app normally — the DDL
+        // skips every table that already exists — and then run today's queries
+        // against tomorrow's shape. Comparisons are permanent, so this is the
+        // one failure that destroys something the curator cannot get back.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        let ahead = SCHEMA_VERSION + 1;
+        {
+            let conn = open(&db_path).unwrap();
+            init_schema(&conn).unwrap();
+            let winner = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+            let loser = seed_wallpaper(&conn, "/w/b.jpg", "active", 20.0);
+            add_comparison(&conn, winner, loser);
+            // What a newer walltare would have left behind: a column this build
+            // has never heard of, and its own version stamped over ours.
+            conn.execute_batch("ALTER TABLE wallpapers ADD COLUMN mood TEXT;")
+                .unwrap();
+            set_schema_version(&conn, ahead).unwrap();
+        }
+
+        let err = open(&db_path).unwrap_err();
+
+        assert!(
+            matches!(err, OpenError::FromTheFuture { database, app }
+                if database == ahead && app == SCHEMA_VERSION),
+            "got {err:?}"
+        );
+        // Nothing ran: no migration step, no version stamp. The newer column is
+        // still there, the version still says what it said, and the Comparison
+        // is intact for the walltare that can read it.
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), ahead);
+        assert!(column_exists(&conn, "wallpapers", "mood").unwrap());
+        assert_eq!(count_wallpapers(&conn), 2);
+        assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn the_guard_refuses_only_above_the_current_version() {
+        // A file at this build's version opens, and one below it goes on to
+        // migrate forward as ADR 0005 specifies. Only ahead is refused, so the
+        // guard cannot turn into a reason a curator's own database stops
+        // opening.
+        for version in [0, SCHEMA_VERSION - 1, SCHEMA_VERSION] {
+            let conn = Connection::open_in_memory().unwrap();
+            set_schema_version(&conn, version).unwrap();
+            assert!(
+                refuse_a_database_from_the_future(&conn).is_ok(),
+                "version {version} was refused"
+            );
+        }
+
+        let conn = Connection::open_in_memory().unwrap();
+        set_schema_version(&conn, SCHEMA_VERSION + 1).unwrap();
+        assert!(refuse_a_database_from_the_future(&conn).is_err());
     }
 
     #[test]
