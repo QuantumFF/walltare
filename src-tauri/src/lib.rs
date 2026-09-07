@@ -13,7 +13,7 @@ mod thumbnails;
 mod voting;
 mod window_state;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -174,11 +174,21 @@ fn get_stats(state: tauri::State<'_, Db>) -> Result<voting::Stats, error::AppErr
 /// holding `~/pics` is a template, not a path: `is_dir()` on the unexpanded
 /// string fails. The command's argument name is unchanged, and the frontend was
 /// already sending a string.
+///
+/// Two failures, and they are answered in two places, because they are two
+/// different kinds of thing. A Written path that cannot be expanded is a fact
+/// about the string the curator is typing, so it is refused here, before
+/// anything starts, and Settings prints it under the field. Whether a folder is
+/// there is a fact about the world at the moment the walk begins, and
+/// `CONTEXT.md` says the Library root is a stated preference rather than a fact
+/// about the library — it can point somewhere that no longer exists. So that one
+/// is the scan's own ending, reported on `scan-failed` wherever the curator has
+/// wandered to (ADR 0021, ADR 0034).
 #[tauri::command]
 fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
-    // Before the guard below, so a malformed path costs the user nothing and
+    // Before the guard below, so a malformed path costs the curator nothing and
     // leaves no scan running.
-    let root = scan_root(&path)?;
+    let expanded = paths::expand(&path)?;
 
     if app.state::<ScanRunning>().0.swap(true, Ordering::SeqCst) {
         return Err(error::AppError::InvalidTransition(
@@ -186,16 +196,32 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
         ));
     }
 
-    // A running pre-generation pass stands down, and does not hold up the scan
-    // while it does. Its work list is a snapshot that the rows this scan is
-    // about to insert make stale; the frontend restarts the pass on
-    // `scan-complete`, which is what puts the new files at the head of the
-    // queue (ADR 0012). Placed after the refusal above so a scan that never
-    // starts cancels nothing.
-    app.state::<Pregen>().cancel();
-
     std::thread::spawn(move || {
         let _running = ScanGuard(app.clone());
+
+        // The whole of what this scan does to the library, if the root is not
+        // walkable: nothing. The wallpapers an earlier scan found stay in the
+        // library, per `CONTEXT.md`, and the message says so.
+        let Ok(root) = canonical_scan_root(&expanded) else {
+            let _ = app.emit(
+                "scan-failed",
+                ScanFailed {
+                    message: unwalkable_root(&expanded),
+                },
+            );
+            return;
+        };
+
+        // A running pre-generation pass stands down, and does not hold up the
+        // scan while it does. Its work list is a snapshot that the rows this
+        // scan is about to insert make stale; the frontend restarts the pass on
+        // `scan-complete`, which is what puts the new files at the head of the
+        // queue (ADR 0012). Placed after the root resolves, and not on the IPC
+        // thread as it used to be, so a scan that never starts cancels nothing:
+        // nothing restarts the pass on `scan-failed`, so a mistyped folder would
+        // otherwise retire the launch pass for the rest of the session.
+        app.state::<Pregen>().cancel();
+
         let files = scanner::collect_images(std::slice::from_ref(&root));
         let mut scanned: u64 = 0;
         let mut added: u64 = 0;
@@ -234,6 +260,34 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
     Ok(())
 }
 
+/// What the curator reads when a scan's Library root is not a folder it can
+/// walk: deleted since it was set, unmounted, or a file where a folder was.
+///
+/// A pure function so the copy is testable, the way [`refusal_message`] is. It
+/// names where the app looked and what did not happen, because the second half
+/// is the one the curator cannot see: `CONTEXT.md` says the wallpapers an
+/// earlier scan found stay in the library regardless of where the Library root
+/// points now, and a curator whose drive is unmounted otherwise reads an empty
+/// scan as the app having forgotten their library (ADR 0034).
+///
+/// It is a sentence rather than a path because it travels on `scan-failed`,
+/// whose toast prints the backend message verbatim under `Couldn't finish the
+/// scan` (ADR 0021).
+fn unwalkable_root(expanded: &Path) -> String {
+    let where_it_looked = expanded.display();
+    let head = if expanded.is_dir() {
+        // The directory check passed and the canonicalization did not, which is
+        // exotic: a symlink loop, or a component that stopped being readable
+        // between the two calls.
+        format!("walltare couldn't read the folder at {where_it_looked}.")
+    } else {
+        format!("There's no folder at {where_it_looked}.")
+    };
+    format!(
+        "{head} Nothing was scanned, and every wallpaper already in your library is still in it."
+    )
+}
+
 /// Expands a Written path, checks it is a directory, then canonicalizes it.
 ///
 /// That order is the whole point. Expanding first is what makes `~/pics` and
@@ -241,8 +295,14 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
 /// keeps `~/pics`, `$HOME/pics` and `/home/me/./pics` from reaching three
 /// libraries: stored paths are compared as strings, so `UNIQUE(path)` would see
 /// the same file three times.
+///
+/// The two halves are called separately in production — the expansion on the IPC
+/// thread and the rest on the scan's own, so each failure lands on the surface
+/// that suits it (see [`start_scan`]). This composes them for the tests, which
+/// are about the composition.
+#[cfg(test)]
 fn scan_root(path: &str) -> Result<PathBuf, error::AppError> {
-    canonical_scan_root(paths::expand(path)?)
+    canonical_scan_root(&paths::expand(path)?)
 }
 
 /// [`scan_root`] with the environment passed in, for the tests.
@@ -256,11 +316,11 @@ fn scan_root_with(
     path: &str,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<PathBuf, error::AppError> {
-    canonical_scan_root(paths::expand_with(path, lookup)?)
+    canonical_scan_root(&paths::expand_with(path, lookup)?)
 }
 
 /// Everything after expansion: the directory check, then canonicalization.
-fn canonical_scan_root(expanded: PathBuf) -> Result<PathBuf, error::AppError> {
+fn canonical_scan_root(expanded: &Path) -> Result<PathBuf, error::AppError> {
     if !expanded.is_dir() {
         return Err(error::AppError::InvalidPath(expanded.display().to_string()));
     }
@@ -807,6 +867,44 @@ mod tests {
             matches!(err, error::AppError::InvalidPathSyntax(ref m)
                 if m == "unknown environment variable WALLTARE_NO_SUCH_VARIABLE"),
             "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_library_root_that_is_gone_says_where_it_looked_and_what_survived() {
+        // The sentence a curator whose drive is unmounted reads. Both halves are
+        // load-bearing: the path, because it is the thing to fix, and the second
+        // sentence, because `CONTEXT.md` says the wallpapers an earlier scan
+        // found stay in the library and nothing else on screen says so.
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("unplugged");
+
+        let message = unwalkable_root(&gone);
+
+        assert!(message.starts_with("There's no folder at "), "{message}");
+        assert!(message.contains(&gone.display().to_string()), "{message}");
+        assert!(
+            message.contains("every wallpaper already in your library is still in it"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_library_root_that_is_there_and_will_not_resolve_reads_as_unreadable() {
+        // The exotic half of `canonical_scan_root`: the directory check passed
+        // and the canonicalization did not. Telling that curator there is no
+        // folder there would be a lie they can see out of the window.
+        let dir = tempfile::tempdir().unwrap();
+
+        let message = unwalkable_root(dir.path());
+
+        assert!(
+            message.starts_with("walltare couldn't read the folder at "),
+            "{message}"
+        );
+        assert!(
+            message.contains("every wallpaper already in your library is still in it"),
+            "{message}"
         );
     }
 

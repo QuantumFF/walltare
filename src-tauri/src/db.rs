@@ -9,7 +9,7 @@ use crate::error::AppError;
 ///
 /// Adding a whole table is not such a change: `init_schema` runs the DDL before
 /// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
-/// why `settings` arrived without a bump.
+/// why `settings` arrived without a bump, and `thumbnail_failures` after it.
 const SCHEMA_VERSION: i64 = 3;
 
 const DDL: &str = "
@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS thumbnails (
     height       INTEGER NOT NULL,
     source_mtime INTEGER NOT NULL,
     PRIMARY KEY (wallpaper_id, size)
+);
+
+-- Sources the thumbnail pre-generation pass read and could not decode, so it
+-- stops decoding them again on every pass. One row per wallpaper, keyed on the
+-- mtime the failure was seen at, which is the same freshness rule `thumbnails`
+-- keeps: an edited file has a new mtime, so the note stops applying and the
+-- wallpaper rejoins the work list. See ADR 0034.
+CREATE TABLE IF NOT EXISTS thumbnail_failures (
+    wallpaper_id INTEGER PRIMARY KEY REFERENCES wallpapers(id) ON DELETE CASCADE,
+    source_mtime INTEGER NOT NULL,
+    message      TEXT    NOT NULL,
+    failed_at    INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -761,6 +773,28 @@ mod tests {
         assert!(table_exists(&conn, "settings").unwrap());
         // No step ran and no version moved: the table came back out of the DDL.
         assert_eq!(schema_version(&conn).unwrap(), before);
+        assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    #[test]
+    fn a_database_written_before_the_failure_notes_gains_them_without_a_version_bump() {
+        // `thumbnail_failures` rests on the same property `settings` does: a
+        // whole new table is reached by the DDL, which runs before `init_schema`
+        // branches, so it needs no migration step and no version bump. Without
+        // that, every launch pass on an existing library would fail on the
+        // `thumbnail_failures` join in `work_list`.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/broken.jpg", "active", 25.0);
+        let before = schema_version(&conn).unwrap();
+        conn.execute_batch("DROP TABLE thumbnail_failures").unwrap();
+
+        init_schema(&conn).unwrap();
+
+        assert!(table_exists(&conn, "thumbnail_failures").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), before);
+        crate::thumbnails::note_failure(&conn, id, 42, "not an image").unwrap();
         assert_eq!(count_wallpapers(&conn), 1);
     }
 

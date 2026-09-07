@@ -343,6 +343,18 @@ That is the boundary ADR 0011 drew when it made `InvalidPathSyntax` the one kind
 whose Rust strings are user-facing copy, and it holds: the kind with copy in it
 gets rendered, the kind with a path in it gets a frontend sentence.
 
+> **Amended by [ADR 0034](0034-a-hostile-library-root.md), 2026-09-08.**
+> `start_scan` no longer answers `InvalidPath`, so `INVALID_PATH_ERROR` becomes
+> the fallback it was written to be rather than a live path. Whether the folder
+> is there is a fact about the world at the moment the walk begins rather than
+> about the string that was typed, so it is now the scan's own ending on
+> `scan-failed` — pinned, in ADR 0021's words, with a written sentence naming
+> the folder — and it reaches a curator who has left this page. The string and
+> its test stay: the page is being asked what it does with a kind the backend
+> may send. What still answers under the field before the button is pressed is
+> the line's own `· folder not found`, which is where a curator reads the
+> problem first.
+
 The subscriptions move to the shell under ADR 0015. This page reads
 `scan-progress` for the button label only.
 

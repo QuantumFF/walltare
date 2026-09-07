@@ -252,7 +252,9 @@ fn pass(
 /// One wallpaper, and the only part of the pass a test drives directly.
 ///
 /// A missing or undecodable source is counted and left behind, because one bad
-/// file must not stop a pass over the whole library.
+/// file must not stop a pass over the whole library. An undecodable one is also
+/// written down, so the next pass does not spend the same decode learning the
+/// same thing — see [`remember`].
 fn step(db: &Db, cache_dir: &Path, pending: &thumbnails::Pending, tally: &mut Tally) {
     match generate_one(db, cache_dir, pending) {
         Ok(Step::Generated) => tally.generated += 1,
@@ -260,7 +262,40 @@ fn step(db: &Db, cache_dir: &Path, pending: &thumbnails::Pending, tally: &mut Ta
         Err(e) => {
             eprintln!("pre-generation skipped {}: {e}", pending.source.display());
             tally.failed += 1;
+            remember(db, pending.wallpaper_id, &e);
         }
+    }
+}
+
+/// Writes down a source that was read and would not decode, so the work list
+/// leaves it out until the file changes (ADR 0034).
+///
+/// Only [`error::AppError::Image`], which is the one variant that means the
+/// bytes were there and are not an image this build can decode: a zero-byte
+/// file, a download that stopped halfway, a `.jpg` that is really something
+/// else. Every other variant is either about the file being absent — ADR 0032's
+/// subject, and cheap, because it costs a `stat` rather than a decode — or about
+/// the machine, and a full disk must not permanently retire a wallpaper that is
+/// perfectly fine.
+///
+/// The mtime comes from the row's current `path` rather than from the snapshot,
+/// for [`thumbnails::still_due`]'s reason: a reject or a Restore moves the file
+/// while the pass is running. A source that cannot be `stat`ed at all is not
+/// noted, because there is nothing to say the note is about.
+///
+/// A note that cannot be written is logged and dropped. It is a cache
+/// optimisation, and the pass has already counted the failure the curator reads.
+fn remember(db: &Db, wallpaper_id: i64, error: &error::AppError) {
+    if !matches!(error, error::AppError::Image(_)) {
+        return;
+    }
+    let conn = lock(db);
+    let Some(source_mtime) = thumbnails::current_source_mtime(&conn, wallpaper_id) else {
+        return;
+    };
+    if let Err(e) = thumbnails::note_failure(&conn, wallpaper_id, source_mtime, &error.to_string())
+    {
+        eprintln!("could not record an undecodable source: {e}");
     }
 }
 
@@ -381,6 +416,36 @@ mod tests {
                 status: Status::Active,
                 missing,
             }
+        }
+
+        /// Writes a source that is not an image and inserts its row, the way a
+        /// scan does: the walk reads names rather than bytes, so a zero-byte
+        /// file and a download that stopped halfway both become wallpapers.
+        fn seed_bytes(&self, name: &str, bytes: &[u8]) -> Pending {
+            let path = self.sources.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            let conn = lock(&self.db);
+            conn.execute(
+                "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
+                rusqlite::params![name, path.to_str().unwrap()],
+            )
+            .unwrap();
+            Pending {
+                wallpaper_id: conn.last_insert_rowid(),
+                source: path,
+                status: Status::Active,
+                missing: Missing::Both,
+            }
+        }
+
+        /// What the next pass would be handed, which is the question "is this
+        /// wallpaper retried" is actually asking.
+        fn work_list(&self) -> Vec<i64> {
+            thumbnails::work_list(&lock(&self.db), self.cache.path())
+                .unwrap()
+                .into_iter()
+                .map(|p| p.wallpaper_id)
+                .collect()
         }
 
         /// Rejects a wallpaper, leaving whatever the pass is already holding for
@@ -650,6 +715,120 @@ mod tests {
                 failed: 1,
                 cancelled: false,
             }]
+        );
+    }
+
+    /// A PNG signature and a header chunk, and then nothing: enough for the
+    /// decoder to commit to a format and then run out of file.
+    const TRUNCATED_PNG: &[u8] =
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x04\x00\x00\x00\x02\x40\x08\x06\x00\x00\x00";
+
+    #[test]
+    fn a_hostile_library_finishes_the_pass_and_counts_every_bad_file_in_it() {
+        // The whole of issue #202 from the pass's side. A zero-byte image, a
+        // truncated one and a source that is gone sit in front of a perfectly
+        // good wallpaper, and the good one is still warm at the end: one
+        // undecodable image must not end the pass for every wallpaper behind it
+        // in the queue.
+        let library = Library::new();
+        let empty = library.seed_bytes("empty.jpg", b"");
+        let truncated = library.seed_bytes("half.png", TRUNCATED_PNG);
+        let gone = library.seed("gone.png", 800, 400, [1, 1, 1, 255], Missing::Both);
+        std::fs::remove_file(&gone.source).unwrap();
+        let fine = library.seed("fine.png", 800, 400, [2, 2, 2, 255], Missing::Both);
+        let recorder = Recorder::default();
+
+        library.pass(
+            &[empty.clone(), truncated.clone(), gone.clone(), fine.clone()],
+            &recorder,
+            &AtomicBool::new(false),
+        );
+
+        for bad in [&empty, &truncated, &gone] {
+            assert!(!library.cache_file(bad.wallpaper_id, "medium").exists());
+            assert_eq!(library.row(bad.wallpaper_id, "medium"), None);
+        }
+        assert_eq!(library.row(fine.wallpaper_id, "medium"), Some((800, 400)));
+        assert_eq!(library.row(fine.wallpaper_id, "small"), Some((400, 200)));
+        // The pass reached the end of its list, and the three failures reach the
+        // curator as `pregen-complete { failed }` — ADR 0021's
+        // `1 thumbnail ready, 3 failed`, rather than three log lines.
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![Complete {
+                generated: 1,
+                failed: 3,
+                cancelled: false,
+            }]
+        );
+        assert_eq!(recorder.progress.borrow().last().unwrap().done, 4);
+    }
+
+    #[test]
+    fn an_undecodable_source_leaves_the_work_list_and_a_missing_one_does_not() {
+        // A permanently broken file costs one decode, not one per launch. A
+        // file that is not there costs a `stat` either way and has no version to
+        // pin a note to, so it stays listed and stays counted — which is the
+        // line ADR 0032 drew between the two (ADR 0034).
+        let library = Library::new();
+        let truncated = library.seed_bytes("half.png", TRUNCATED_PNG);
+        let gone = library.seed("gone.png", 800, 400, [3, 3, 3, 255], Missing::Both);
+        std::fs::remove_file(&gone.source).unwrap();
+        let recorder = Recorder::default();
+
+        library.pass(
+            &[truncated.clone(), gone.clone()],
+            &recorder,
+            &AtomicBool::new(false),
+        );
+
+        assert_eq!(library.work_list(), vec![gone.wallpaper_id]);
+
+        // And a second pass over what is left counts only the file that is
+        // still worth asking about.
+        let second = Recorder::default();
+        library.pass(
+            std::slice::from_ref(&gone),
+            &second,
+            &AtomicBool::new(false),
+        );
+        assert_eq!(
+            *second.complete.borrow(),
+            vec![Complete {
+                generated: 0,
+                failed: 1,
+                cancelled: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_broken_source_that_the_curator_replaces_is_tried_again() {
+        // The note is keyed on the mtime it was taken at, so it says "these
+        // bytes" rather than "this wallpaper". A curator who re-exports the file
+        // gets a thumbnail out of the next pass with nothing to press.
+        let library = Library::new();
+        let pending = library.seed_bytes("fixable.png", TRUNCATED_PNG);
+        let mut tally = Tally::default();
+        library.step(&pending, &mut tally);
+        assert_eq!(tally.failed, 1);
+        assert!(library.work_list().is_empty());
+
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(800, 400, Rgba([9, 9, 9, 255])))
+            .save_with_format(&pending.source, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::File::options()
+            .append(true)
+            .open(&pending.source)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+
+        assert_eq!(library.work_list(), vec![pending.wallpaper_id]);
+        library.step(&pending, &mut tally);
+        assert_eq!(
+            library.row(pending.wallpaper_id, "medium"),
+            Some((800, 400))
         );
     }
 

@@ -423,6 +423,34 @@ test("a scan that failed pins the backend's own account of it", async () => {
   expect(toast()?.title).toBe("Couldn't finish the scan");
 });
 
+test("a Library root that is gone reaches the curator wherever they are", async () => {
+  freezeClock();
+  await openApp();
+
+  // The scan is asked for on Settings and answers on `scan-failed` rather than
+  // by rejecting the call, because whether a folder is there is a fact about
+  // the world at the moment the walk begins rather than about the string that
+  // was typed (ADR 0034). So the report finds a curator who has since wandered
+  // to Rank, and it pins, because a Library root that is gone is something they
+  // have to see.
+  expect(showingView()).toBe("rank");
+  await emit("scan-failed", {
+    message:
+      "There's no folder at /media/photos/walls. Nothing was scanned, and " +
+      "every wallpaper already in your library is still in it.",
+  });
+
+  expect(toast()?.title).toBe("Couldn't finish the scan");
+  // The second sentence is the half the curator cannot see for themselves:
+  // CONTEXT.md keeps the wallpapers an earlier scan found in the library
+  // regardless of where the Library root points now.
+  expect(toast()?.description).toContain(
+    "every wallpaper already in your library is still in it",
+  );
+  await runOut(LIFETIME * 10);
+  expect(toast()?.title).toBe("Couldn't finish the scan");
+});
+
 test("a pass that lost files says so, and takes its eight seconds", async () => {
   freezeClock();
   await openApp();

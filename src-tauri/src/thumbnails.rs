@@ -447,6 +447,10 @@ pub fn cache_size(cache_dir: &Path) -> Result<CacheSize, AppError> {
 ///
 /// The directory itself stays, and nothing restarts. Clearing is a rebuild the
 /// next launch pays for rather than a way to reclaim disk (ADR 0012).
+///
+/// The failure notes go with the rows, which makes Clear thumbnail cache the one
+/// control that gives an undecodable source another go — the curator asking for
+/// the whole cache to be rebuilt is asking for that too (ADR 0034).
 pub fn clear(conn: &Connection, cache_dir: &Path) -> Result<(), AppError> {
     match std::fs::read_dir(cache_dir) {
         Ok(entries) => {
@@ -468,7 +472,53 @@ pub fn clear(conn: &Connection, cache_dir: &Path) -> Result<(), AppError> {
         Err(e) => return Err(e.into()),
     }
     conn.execute("DELETE FROM thumbnails", [])?;
+    conn.execute("DELETE FROM thumbnail_failures", [])?;
     Ok(())
+}
+
+/// Remembers that a source was read and would not decode, so the pass stops
+/// decoding it again on every launch.
+///
+/// Keyed on the mtime the failure was seen at, which is the freshness rule the
+/// `thumbnails` rows already keep: a file the curator has since re-exported has
+/// a new mtime, the note stops applying, and the wallpaper rejoins the work
+/// list. So this suppresses a decode rather than a wallpaper (ADR 0034).
+///
+/// Only a source that was *there and unreadable as an image* is noted. A source
+/// that is not on disk has no mtime to key on, costs a `stat` rather than a
+/// decode, and is ADR 0032's subject rather than this one's.
+pub fn note_failure(
+    conn: &Connection,
+    wallpaper_id: i64,
+    source_mtime: i64,
+    message: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO thumbnail_failures (wallpaper_id, source_mtime, message)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(wallpaper_id) DO UPDATE SET
+            source_mtime = excluded.source_mtime,
+            message = excluded.message,
+            failed_at = unixepoch()",
+        rusqlite::params![wallpaper_id, source_mtime, message],
+    )?;
+    Ok(())
+}
+
+/// The mtime of the file a wallpaper's row points at, or `None` when it is not
+/// there to be `stat`ed.
+///
+/// What [`note_failure`]'s caller keys its note on, and the reason a missing
+/// source is never noted: there is nothing to say the note is about.
+pub fn current_source_mtime(conn: &Connection, wallpaper_id: i64) -> Option<i64> {
+    let path: String = conn
+        .query_row(
+            "SELECT path FROM wallpapers WHERE id = ?1",
+            [wallpaper_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    source_mtime(Path::new(&path)).ok()
 }
 
 /// Which of the two pre-generated sizes a wallpaper is short of.
@@ -523,15 +573,19 @@ pub struct Pending {
 /// tail group and gets generated, one rejected after the fact does not.
 ///
 /// The length is the honest total for the pass's progress, because a wallpaper
-/// it would skip never enters the list.
+/// it would skip never enters the list. That is also why a source the pass has
+/// already read and failed to decode is left out while the note still matches
+/// the file: it is not work, and listing it would spend a decode per launch to
+/// re-learn the same answer (ADR 0034).
 pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
     let cached = cache_filenames(cache_dir)?;
 
     let mut stmt = conn.prepare(
-        "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime
+        "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime
          FROM wallpapers w
          LEFT JOIN thumbnails s ON s.wallpaper_id = w.id AND s.size = 'small'
          LEFT JOIN thumbnails m ON m.wallpaper_id = w.id AND m.size = 'medium'
+         LEFT JOIN thumbnail_failures f ON f.wallpaper_id = w.id
          ORDER BY w.status = 'rejected' ASC, w.comparisons_count ASC, w.id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -541,18 +595,28 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
             row.get::<_, Status>(2)?,
             row.get::<_, Option<i64>>(3)?,
             row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<i64>>(5)?,
         ))
     })?;
 
     let mut pending = Vec::new();
     for row in rows {
-        let (wallpaper_id, path, status, small_mtime, medium_mtime) = row?;
+        let (wallpaper_id, path, status, small_mtime, medium_mtime, failed_mtime) = row?;
         let source = PathBuf::from(path);
         // A source that is not on disk cannot be stat'd, so no recorded mtime
         // can be said to match it and the wallpaper joins the list. That is
         // what makes a missing file counted and skipped rather than silently
         // absent: the pass fails it, reports it, and carries on.
         let on_disk = source_mtime(&source).ok();
+        // A source the pass already read and could not decode, still the same
+        // bytes it could not decode. Skipped here rather than failed again by
+        // the pass, so a folder of years of accumulated downloads costs its
+        // broken files one decode each and not one per launch (ADR 0034). A
+        // note against an mtime the file no longer has does not apply, which is
+        // how a re-exported file gets another go.
+        if matches!((failed_mtime, on_disk), (Some(noted), Some(d)) if noted == d) {
+            continue;
+        }
         let fresh = |recorded: Option<i64>, size: Size| {
             matches!((recorded, on_disk), (Some(r), Some(d)) if r == d)
                 && cached.contains(&cache_filename(wallpaper_id, size))
@@ -1431,6 +1495,127 @@ mod tests {
                 (rejected_voted, Status::Rejected),
             ]
         );
+    }
+
+    #[test]
+    fn a_noted_source_leaves_the_work_list_until_the_file_changes() {
+        // The whole of "not retried endlessly": the pass reads a broken file
+        // once, writes down which version of it broke, and every launch after
+        // that costs a `stat` instead of a decode. A re-exported file has a new
+        // mtime, so the note stops applying and it gets another go (ADR 0034).
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let broken = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "broken.png",
+            &solid(20, 10, [1, 1, 1, 255]),
+        );
+        let fine = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "fine.png",
+            &solid(20, 10, [2, 2, 2, 255]),
+        );
+        assert_eq!(
+            listed(&conn, cache.path()),
+            vec![(broken, Missing::Both), (fine, Missing::Both)]
+        );
+
+        let broken_path = tmp.path().join("broken.png");
+        note_failure(
+            &conn,
+            broken,
+            source_mtime(&broken_path).unwrap(),
+            "image: not an image",
+        )
+        .unwrap();
+
+        // The note only takes the wallpaper it is about out of the list.
+        assert_eq!(listed(&conn, cache.path()), vec![(fine, Missing::Both)]);
+
+        touch_later(&broken_path);
+
+        assert_eq!(
+            listed(&conn, cache.path()),
+            vec![(broken, Missing::Both), (fine, Missing::Both)]
+        );
+    }
+
+    #[test]
+    fn a_noted_source_that_is_no_longer_on_disk_is_listed_again() {
+        // Nothing can be said about the freshness of a file that is not there,
+        // and a note against an mtime nothing can be compared to is not a reason
+        // to stop reporting the wallpaper. The pass fails it, counts it, and
+        // does not decode anything to find out (ADR 0032, ADR 0034).
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "gone.png",
+            &solid(20, 10, [3, 3, 3, 255]),
+        );
+        let path = tmp.path().join("gone.png");
+        note_failure(&conn, id, source_mtime(&path).unwrap(), "image: nope").unwrap();
+        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
+
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(listed(&conn, cache.path()), vec![(id, Missing::Both)]);
+    }
+
+    #[test]
+    fn clearing_the_cache_forgets_the_failures_with_the_rows() {
+        // Clear thumbnail cache is the one control that gives an undecodable
+        // source another go: a curator asking for the whole cache to be rebuilt
+        // is asking for that too (ADR 0034).
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "again.png",
+            &solid(20, 10, [4, 4, 4, 255]),
+        );
+        note_failure(
+            &conn,
+            id,
+            source_mtime(&tmp.path().join("again.png")).unwrap(),
+            "image: nope",
+        )
+        .unwrap();
+        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
+
+        clear(&conn, cache.path()).unwrap();
+
+        assert_eq!(listed(&conn, cache.path()), vec![(id, Missing::Both)]);
+    }
+
+    #[test]
+    fn a_second_failure_replaces_the_note_rather_than_refusing_it() {
+        // The pass writes the note from inside a loop it will run again, so the
+        // upsert is what keeps a second failure from erroring on the primary
+        // key and leaving the row pinned to a version of the file that is gone.
+        let (conn, tmp) = setup();
+        let id = seed_wallpaper(
+            &conn,
+            tmp.path(),
+            "twice.png",
+            &solid(20, 10, [5, 5, 5, 255]),
+        );
+
+        note_failure(&conn, id, 111, "image: first").unwrap();
+        note_failure(&conn, id, 222, "image: second").unwrap();
+
+        let noted: (i64, String) = conn
+            .query_row(
+                "SELECT source_mtime, message FROM thumbnail_failures WHERE wallpaper_id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(noted, (222, "image: second".to_string()));
     }
 
     #[test]

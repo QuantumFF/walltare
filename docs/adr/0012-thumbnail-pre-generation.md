@@ -205,6 +205,19 @@ A missing or undecodable source increments `failed` and the pass continues.
 There is no per-item event and no `pregen-failed`: the only whole-run failure
 is the database being gone, which is already fatal everywhere else.
 
+> **Amended by [ADR 0034](0034-a-hostile-library-root.md), 2026-09-08.** An
+> **undecodable** source is also written down, in a `thumbnail_failures` row
+> keyed on the mtime it failed at, and [`work_list`](#building-the-work-list-without-reading-the-cache)
+> leaves it out while the note still matches the file. A file that will not
+> decode never gains a `thumbnails` row, so under the rule above it was due on
+> every launch forever — one full decode attempt per broken file per launch, and
+> the same `n failed` reported each time. It now costs one attempt in total, and
+> a re-exported file has a new mtime, so the note stops applying and it is tried
+> again. A **missing** source is not noted, because there is no mtime to key on
+> and it costs a `stat` rather than a decode; it stays listed and stays counted.
+> `thumbnails::clear` deletes the notes with the rows, which makes Clear
+> thumbnail cache the one control that gives a broken source another go.
+
 When the work list comes back empty, which is every launch after the first, the
 pass emits nothing at all. Otherwise every launch would flash a finished
 progress bar for work that never happened.

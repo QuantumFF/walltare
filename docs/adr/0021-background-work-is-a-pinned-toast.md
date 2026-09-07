@@ -178,6 +178,18 @@ content is that a background task stopped is the thing that trains people to
 dismiss notifications unread. The report appearing and then being gone says it.
 A cancel says it more directly, since the user pressed the button.
 
+> **Amended by [ADR 0034](0034-a-hostile-library-root.md), 2026-09-08.** The
+> `scan-failed` row now also carries a Library root that was never walkable —
+> deleted since it was set, unmounted, or a file where a folder was.
+> `start_scan` used to refuse that on the IPC thread with `InvalidPath`, which
+> reached only a curator standing on Settings; `CONTEXT.md` calls the Library
+> root a stated preference that may point somewhere that no longer exists, so it
+> is how the scan ended rather than a refusal of the request. The row's shape is
+> unchanged, and so is every line of the frontend: the title stays `Couldn't
+> finish the scan`, the description stays the backend message, and the message
+> is now a written sentence naming the folder and saying that the wallpapers an
+> earlier scan found are still in the library.
+
 `No supported images found` is `ScanView`'s `NO_IMAGES_ERROR`, which
 ADR 0015 handed here with the event it arrives on. It pins because ADR 0017
 pins errors, and it keeps the distinction `ScanView.tsx:47-55` already draws:
