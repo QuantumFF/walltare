@@ -286,6 +286,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const readLibrary = useCallback(async () => {
     const stats = await client.getStats();
     setLibraryTotal(stats.total_wallpapers);
+    // A read that now succeeds retires the account of one that did not. The
+    // notice is why boot opened Settings, and the page shows a boot landing —
+    // the block, and the Library root section on its own — for as long as one
+    // stands: a Retry that fixed nothing but the block would leave the curator
+    // on a page still missing four of its five sections (ADR 0033).
+    //
+    // Only the fault. A first-run notice is about what the library holds rather
+    // than about whether it could be read, and this same read is what follows
+    // every scan — so clearing that one here would drop the invitation on a scan
+    // that found nothing, which is exactly when it is still true.
+    setNavigation((current) =>
+      current?.notice?.kind === "unreadable_library"
+        ? { ...current, notice: null }
+        : current,
+    );
     return stats;
   }, []);
 
