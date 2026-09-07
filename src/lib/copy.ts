@@ -91,6 +91,34 @@ export const STATUS_LABEL: Record<Status, string> = {
 };
 
 /**
+ * What a wallpaper whose file will not load says about itself.
+ *
+ * Three surfaces write this fact: the card in the grid, the lightbox, and the
+ * count on the Settings page. It is here for the reason the Status labels and
+ * the Score wording are — one fact, one phrasing — and the phrasing is the part
+ * that matters, because the sentence has one job: telling the curator the app
+ * did not break. A stranger's library changes underneath the app constantly, so
+ * the reading has to be "your file went" rather than "something failed".
+ *
+ * Not a Status, and not written like one. `CONTEXT.md` has three and a file that
+ * comes back when a drive is plugged in is not a fourth: this is what the app
+ * can see right now, which is why the word is `gone` rather than a term the
+ * glossary would have to carry (ADR 0032).
+ */
+export const FILE_IS_GONE = "File is gone";
+
+/**
+ * The lightbox's second line, which has the room for it.
+ *
+ * It names the cause, because that is the half the curator cannot see and the
+ * whole reason this state exists: nothing in the app deleted the file. The card
+ * says only `FILE_IS_GONE`, since a tile in a grid of hundreds has room for a
+ * label and not for a sentence (ADR 0032).
+ */
+export const FILE_IS_GONE_DETAIL =
+  "It was moved or deleted outside walltare. Nothing here has changed.";
+
+/**
  * A Score as every surface showing one writes it: μ to one decimal, or `Unrated`.
  *
  * The answer is not simply the number, because a wallpaper in no Comparison has

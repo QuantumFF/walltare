@@ -8,6 +8,7 @@ import {
   usePathField,
   type PathLineTone,
 } from "@/components/PathField";
+import { MissingFilesSection } from "@/components/MissingFilesSection";
 import {
   NoticeBlock,
   UnreadableLibraryBlock,
@@ -486,11 +487,19 @@ export function SettingsView() {
 
         {/* First-run need first, maintenance last, and the order does not change
             with what the library holds: a page that grows sections after a scan
-            is what ADR 0020 refused. */}
+            is what ADR 0020 refused.
+
+            Missing files is fifth and last for that same rule. It is the most
+            maintenance-shaped thing on the page — a question nobody asks until
+            something looks wrong — and putting it under the Library root, where
+            it is about the same folder, would sit a filesystem walk between a
+            first-run curator and the Scan button that is the only thing they
+            need (ADR 0032). */}
         <LibraryRootSection />
         <RejectDestinationSection />
         <AppearanceSection />
         <ThumbnailsSection />
+        <MissingFilesSection />
       </div>
     </>
   );

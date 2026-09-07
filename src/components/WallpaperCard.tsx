@@ -1,15 +1,23 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { wallpaperImageUrl, type Status, type Wallpaper } from "@/lib/client";
-import { counted, isEvaluated, score, STATUS_LABEL } from "@/lib/copy";
+import {
+  counted,
+  FILE_IS_GONE,
+  isEvaluated,
+  score,
+  STATUS_LABEL,
+} from "@/lib/copy";
 import { cn } from "@/lib/utils";
 import {
   Check,
   FolderInput,
+  ImageOff,
   RotateCcw,
   Undo2,
   type LucideIcon,
 } from "lucide-react";
+import { useState } from "react";
 
 /**
  * The four transitions a card can offer, named after the resulting Status where
@@ -183,6 +191,25 @@ export function WallpaperCard({
   // exactly this: the frontend can refuse without asking the backend.
   const restorable = wallpaper.origin_path !== null;
   const folder = rejected ? containingFolder(wallpaper.path) : "";
+  /**
+   * Whether the picture failed to arrive, which is how this card learns its
+   * file is gone.
+   *
+   * The `wallpaper://` request is already being made, so the answer costs
+   * nothing and catches every cause: a deleted file, a renamed folder, an
+   * unplugged drive, a permission the curator lost, a source that will not
+   * decode. That is the whole reason detection is a load failure rather than a
+   * field on the row — a flag on the listing would need a `stat` per card on
+   * every visit to a grid ADR 0016 sizes at 5,000, and it would still be one
+   * pass behind the truth (ADR 0032).
+   *
+   * `load` clears it as well as `error` setting it, so a card is never stuck on
+   * an answer the browser has since revised. There is no effect and no reset on
+   * the wallpaper, because the grid keys every card on its id: the row can be
+   * rewritten under this card by a transition, but it is never a different
+   * wallpaper.
+   */
+  const [gone, setGone] = useState(false);
   // Inside a grid the buttons leave the tab order, and the cell is the only
   // stop. Leaving them in it is the alternative ADR 0019 rejected under "the
   // buttons in the tab order and the card out of it": Review's fifty cards
@@ -210,7 +237,15 @@ export function WallpaperCard({
       // cards are a window: their order in the DOM is not their order in the
       // list, and only the index the grid wrote is.
       data-cell={cell?.index}
-      aria-label={`${wallpaper.filename}, ${STATUS_LABEL[wallpaper.status]}`}
+      // The label carries the gone state for the reason it carries the Status:
+      // what is otherwise a pill and a dimming, or here an icon and a label
+      // inside a cell whose own `aria-label` hides its contents, reaches nobody
+      // reading with a screen reader unless the name says it (ADR 0019).
+      aria-label={
+        gone
+          ? `${wallpaper.filename}, ${STATUS_LABEL[wallpaper.status]}, ${FILE_IS_GONE}`
+          : `${wallpaper.filename}, ${STATUS_LABEL[wallpaper.status]}`
+      }
       // See `onOpen`. Nothing is prevented and nothing is stopped: this is the
       // end of the bubble path, and a card outside a grid with no host asking
       // for the gesture simply does not fire it.
@@ -221,6 +256,11 @@ export function WallpaperCard({
         src={wallpaperImageUrl(wallpaper.id, "small")}
         alt={wallpaper.filename}
         loading="lazy"
+        // See `gone`. The element stays mounted whichever way this went, so the
+        // browser's answer can still change: unmounting it on the failure would
+        // leave nothing left to fire `load`.
+        onLoad={() => setGone(false)}
+        onError={() => setGone(true)}
         className={cn(
           "h-full w-full object-cover",
           // The dimming of a Rejected card sits here and not on the wrapper,
@@ -241,6 +281,42 @@ export function WallpaperCard({
             "transition-transform duration-500 group-hover:scale-105 will-change-transform",
         )}
       />
+
+      {/*
+        The file is gone, said in the space the picture would have taken.
+
+        Over the `<img>` rather than instead of it, so the element that would
+        report a change is still there, and opaque so the browser's own broken-
+        image glyph does not show through the label. It is before the badge, the
+        pill and the reveal layer in the DOM and none of the four is positioned
+        in a stacking context of its own, so those three still paint on top: a
+        card whose file is gone keeps its Score, keeps its Status and keeps every
+        transition the Status offers. Rejecting or restoring one is exactly the
+        thing the curator might want to do about it, and ADR 0009's
+        `file_missing` is what answers if the move has nothing to move.
+
+        `pointer-events-none` because the cell underneath is the click target: a
+        gone card still opens the lightbox, which is where the path and the
+        explanation are (ADR 0022, ADR 0032).
+
+        This is what makes the state distinguishable from a thumbnail that is
+        still generating, which is the plain frame with nothing in it. There is
+        no skeleton and no spinner on that one, deliberately: ADR 0016 mounts a
+        window of cards out of five thousand and a wheel pass remounts them
+        continuously, so a placeholder per card would animate the whole grid to
+        say something a card resolves in a few hundred milliseconds — while a
+        file that is gone never resolves, which is why it is the one that gets
+        the words (ADR 0006, ADR 0032).
+      */}
+      {gone && (
+        <div
+          data-slot="wallpaper-gone"
+          className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 bg-muted text-muted-foreground"
+        >
+          <ImageOff className="h-5 w-5" aria-hidden />
+          <span className="text-[11px] font-medium">{FILE_IS_GONE}</span>
+        </div>
+      )}
 
       {/*
         μ to one decimal, or `Unrated`, and nothing else: no unit, no second

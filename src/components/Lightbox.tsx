@@ -14,9 +14,17 @@ import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useLightboxHost } from "@/context/LightboxHostContext";
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
-import { counted, grouped, isEvaluated, score, STATUS_LABEL } from "@/lib/copy";
+import {
+  counted,
+  FILE_IS_GONE,
+  FILE_IS_GONE_DETAIL,
+  grouped,
+  isEvaluated,
+  score,
+  STATUS_LABEL,
+} from "@/lib/copy";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
 import { Dialog } from "radix-ui";
 import {
   useCallback,
@@ -347,6 +355,25 @@ export function Lightbox({
     if (!open) setArrived(false);
   }, [open]);
 
+  /**
+   * Whether the picture failed to arrive, which is how this surface learns the
+   * file is gone.
+   *
+   * The same answer the card reads, off the same request, so the two surfaces
+   * cannot disagree about one wallpaper: a card that says the file is gone opens
+   * onto a lightbox that says so too (ADR 0032).
+   *
+   * Reset per wallpaper, unlike `arrived`. A step is a different file, and the
+   * `<img>` has no `key` — it keeps painting the outgoing picture while the next
+   * one decodes — so without this the message would sit over a picture that is
+   * still there, and stay there for a wallpaper that loads fine.
+   */
+  const [gone, setGone] = useState(false);
+
+  useEffect(() => {
+    setGone(false);
+  }, [wallpaper?.id]);
+
   // The painted picture's width, which is what the row shrink-wraps to.
   //
   // Measured rather than expressed in CSS, and that is not a shortcut: during
@@ -504,12 +531,23 @@ export function Lightbox({
                   // frame (ADR 0022).
                   //
                   // `load` is what retires the placeholder above, and `error`
-                  // counts as arrival for the reason ADR 0006's rank panes count
-                  // it: a missing source file leaves one visibly broken picture,
-                  // which is what ADR 0022 says this surface does about it,
-                  // rather than a thumbnail held up in front of it for good.
-                  onLoad={() => setArrived(true)}
-                  onError={() => setArrived(true)}
+                  // counts as arrival too, for the reason ADR 0006's rank panes
+                  // count it: a thumbnail held up in front of a picture that is
+                  // never coming would be the spinner that never resolves.
+                  //
+                  // What the failure leaves is no longer ADR 0022's visibly
+                  // broken picture. It is the panel below, which says the file
+                  // is gone — the one thing a broken image did not say, and the
+                  // reading that keeps a library changing underneath the app
+                  // from looking like the app breaking (ADR 0032).
+                  onLoad={() => {
+                    setArrived(true);
+                    setGone(false);
+                  }}
+                  onError={() => {
+                    setArrived(true);
+                    setGone(true);
+                  }}
                   // Not dimmed and not desaturated, whatever the card does. The
                   // card fades a Rejected `<img>` so it recedes in a mixed
                   // grid; this surface exists to show one picture at full size,
@@ -517,6 +555,48 @@ export function Lightbox({
                   // carries the signal instead (ADR 0019, ADR 0022).
                   className="col-start-1 row-start-1 max-h-full max-w-full object-contain"
                 />
+
+                {/*
+                  The file is gone, said where the picture would have been.
+
+                  In the same grid cell as the two images and after them in the
+                  DOM, so it covers whatever the failed request left behind
+                  without a z-index and without the row below moving: the row is
+                  absolutely positioned and comes later still, so every control
+                  stays where it was and stays pressable. Rejecting or restoring
+                  a wallpaper whose file is gone is exactly what the curator
+                  might want to do about it, and the read-out under the picture
+                  is already naming the path (ADR 0022).
+
+                  Two lines, where the card has room for one. The second names
+                  the cause, which is the half the curator cannot see and the
+                  whole point: a file that vanished from under the app reads as
+                  their own library changing rather than as the app breaking
+                  (ADR 0032).
+
+                  It fills the cell in the dialog's own colour rather than
+                  shrink-wrapping the message, because what a failed `<img>`
+                  paints is its `alt` — the filename, which is on the row below
+                  already — and a panel sized to its text would leave that
+                  showing around the edges of it.
+
+                  `pointer-events-none` so the arrows and the Close behind the
+                  edges of the box keep taking their own clicks.
+                */}
+                {gone && (
+                  <div
+                    data-slot="lightbox-gone"
+                    className="pointer-events-none col-start-1 row-start-1 flex h-full w-full flex-col items-center justify-center gap-2 bg-neutral-950 px-8 text-center"
+                  >
+                    <ImageOff className="h-10 w-10 text-white/40" aria-hidden />
+                    <p className="text-sm font-medium text-white">
+                      {FILE_IS_GONE}
+                    </p>
+                    <p className="max-w-sm text-xs text-white/60">
+                      {FILE_IS_GONE_DETAIL}
+                    </p>
+                  </div>
+                )}
 
                 {/* The row, at the picture's width and absolutely positioned so
                     it cannot affect the layout it is measured against — in flow

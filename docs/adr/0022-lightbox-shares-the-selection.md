@@ -426,6 +426,20 @@ list closes before the lightbox does.
 that is most visible, and the actionable control is Restore, which answers with
 ADR 0009's `FileMissing` sentence. Nothing here improves on that.
 
+> **Amended by [ADR 0032](0032-a-missing-file-reads-as-gone.md), 2026-09-08.**
+> Reversed. A broken image says something failed, not that the file went, and on
+> a library that changes underneath the app — which is every library but the
+> maintainer's — that reads as the app breaking. The failure now paints **File is
+> gone** in the picture's place, with a second line naming the cause. `error`
+> still counts as arrival for the reason above; what it leaves behind is the
+> panel rather than the broken image. It sits in the same grid cell as the two
+> images and after them in the DOM, so the row, its read-out and all four
+> possible actions stay exactly where they were, and Restore still answers with
+> `FileMissing` for the wallpaper it can no longer move. Unlike the card's, the
+> state resets per wallpaper: the `<img>` has no `key`, so without that the
+> message would sit over the outgoing picture that "The picture never blanks"
+> deliberately keeps painted.
+
 **No `CONTEXT.md` change.** The selection model, the keys and the housing are
 UI, and the one vocabulary decision in this ADR settles which of two existing
 words the docs use rather than adding a term. Lightbox stays out of the glossary

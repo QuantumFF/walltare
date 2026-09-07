@@ -46,6 +46,16 @@ A single column at `max-w-2xl`, four sections, in this order: Library root,
 Reject destination, Appearance, Thumbnails. First-run need first, maintenance
 last.
 
+> **Amended by [ADR 0032](0032-a-missing-file-reads-as-gone.md), 2026-09-08.**
+> Five sections. **Missing files** is fifth, by the same rule that put
+> Thumbnails fourth: a filesystem walk of somebody's library is the most
+> maintenance-shaped thing on the page, and putting it under the Library root —
+> where it is about the same folder — would sit that walk between a first-run
+> curator and the Scan button that is the only thing they need. It is one button
+> and one line, and unlike the Thumbnails line beside it, **nothing reads it on
+> mount**: `get_cache_size` reads one directory the app owns, while this is a
+> `stat` per Active or Kept row against paths that may be on an external drive.
+
 Sections rather than a flat list of label-and-control rows. The ticket called
 four groups of one or two controls thin, and it would be, except the two path
 items are each a field, a Browse button, and a status line under them. In a flat

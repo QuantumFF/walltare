@@ -92,6 +92,21 @@ function badge(): HTMLElement {
 const buttonNames = () =>
   screen.getAllByRole("button").map((el) => el.getAttribute("aria-label"));
 
+/**
+ * The `wallpaper://` request failing, which is the whole of how a card learns
+ * its file is gone.
+ *
+ * happy-dom fetches no `<img>` and so fires neither event of its own, which is
+ * what makes both frames reachable: the one before this is a thumbnail still on
+ * its way, and the one after is a file that is not there (ADR 0032).
+ */
+async function failedToLoad() {
+  await act(async () => {
+    fireEvent.error(screen.getByAltText("wall-1.jpg"));
+  });
+  await flush();
+}
+
 test("the badge is the Score to one decimal, and Unrated for a wallpaper in no Comparison", async () => {
   await mount(card({ rating_mu: 22.45 }));
   expect(badge().textContent).toBe("22.4");
@@ -306,4 +321,73 @@ test("the card animates nothing unless the page asks for it", async () => {
   expect(
     frame.querySelector(".absolute.inset-0")?.className ?? "",
   ).not.toContain("will-change");
+});
+
+test("a card whose picture will not load says the file is gone", async () => {
+  await mount(card());
+
+  // The plain frame is what a thumbnail still generating looks like: nothing in
+  // the space, because ADR 0016's grid mounts a window out of five thousand
+  // cards and a placeholder per card would animate the whole grid to say
+  // something a request resolves in a few hundred milliseconds. So the words
+  // belong to the state that never resolves, and that is what tells the two
+  // apart (ADR 0032).
+  expect(screen.queryByText("File is gone")).toBeNull();
+  expect(document.querySelector('[data-slot="wallpaper-gone"]')).toBeNull();
+
+  await failedToLoad();
+
+  // Not a blank tile and not a spinner: the card reacts to the `wallpaper://`
+  // request it was already making, which costs nothing and catches every cause
+  // — a deleted file, a renamed folder, an unplugged drive, a permission the
+  // curator lost (#200).
+  expect(screen.getByText("File is gone")).toBeTruthy();
+  expect(cardElement("wall-1.jpg, Active, File is gone")).toBeTruthy();
+});
+
+test("a gone card keeps its Score, its Status and its transitions", async () => {
+  await mount(rejected());
+  await failedToLoad();
+
+  // The panel covers the picture and nothing else. Rejecting or restoring a
+  // wallpaper whose file is gone is exactly what the curator might want to do
+  // about it, and ADR 0009's `file_missing` is what answers if the move has
+  // nothing to move — so none of these leaves the card (ADR 0032).
+  expect(badge().textContent).toBe("22.4");
+  expect(screen.queryByText("Rejected")).not.toBeNull();
+  expect(buttonNames()).toEqual(["Restore wall-1.jpg"]);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Restore wall-1.jpg" }));
+  });
+  expect(asked).toEqual([{ action: "restore", id: 1 }]);
+});
+
+test("a gone card is still the way into the lightbox", async () => {
+  await mount(card());
+  await failedToLoad();
+
+  // The panel takes no pointer events, so the cell underneath is still the
+  // click target — which matters most here, because the lightbox is where the
+  // path and the explanation are (ADR 0022, ADR 0032).
+  await act(async () => {
+    fireEvent.click(screen.getByText("File is gone"));
+  });
+  expect(opened).toEqual([1]);
+});
+
+test("a picture that arrives after a failure takes the message back off", async () => {
+  await mount(card());
+  await failedToLoad();
+  expect(screen.queryByText("File is gone")).not.toBeNull();
+
+  // The element stays mounted through the failure, which is what leaves
+  // anything to fire `load`: a card is never stuck on an answer the browser has
+  // since revised.
+  await act(async () => {
+    fireEvent.load(screen.getByAltText("wall-1.jpg"));
+  });
+
+  expect(screen.queryByText("File is gone")).toBeNull();
+  expect(cardElement("wall-1.jpg, Active")).toBeTruthy();
 });

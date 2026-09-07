@@ -178,7 +178,7 @@ export interface BackendEvents {
  *
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
  * `BackendEvents` does above for the five event names: the one place in the
- * frontend where these 16 strings are written down. `client`'s methods below
+ * frontend where these 17 strings are written down. `client`'s methods below
  * are the only callers in the app; the test suite's `mockCommand` is the other
  * reader, which is why the names are exported rather than inlined (ADR 0031).
  *
@@ -192,6 +192,7 @@ export type Command =
   | "cancel_pregen"
   | "get_cache_size"
   | "clear_cache"
+  | "count_missing_files"
   | "expand_path"
   | "get_pair"
   | "vote"
@@ -222,6 +223,7 @@ export interface BackendCommands {
   cancel_pregen: { args: undefined; answer: null };
   get_cache_size: { args: undefined; answer: CacheSize };
   clear_cache: { args: undefined; answer: null };
+  count_missing_files: { args: undefined; answer: MissingFiles };
   expand_path: { args: { input: string }; answer: Expanded };
   get_pair: {
     args: { exclude?: number[] };
@@ -260,6 +262,22 @@ export interface BackendCommands {
 export interface CacheSize {
   bytes: number;
   files: number;
+}
+
+/**
+ * Mirrors missing::MissingFiles: what one check of the library found.
+ *
+ * `eligible` is the pool the check walked — Active plus Kept, which is
+ * CONTEXT.md's Eligible — so the line can say what the `missing` count is out
+ * of. A Rejected wallpaper is not in either number: its file moved to the
+ * reject destination on purpose and its row followed it there.
+ *
+ * Both numbers come from one pass, so the line cannot print a ratio that was
+ * never true.
+ */
+export interface MissingFiles {
+  missing: number;
+  eligible: number;
 }
 
 /**
@@ -522,6 +540,21 @@ export const client = {
    * calls `startPregen` itself (ADR 0012).
    */
   clearCache: () => invokeVoid("clear_cache"),
+
+  /**
+   * Walks the Eligible pool and answers how many of those wallpapers have no
+   * file behind them: one `stat` per Active or Kept row, and no reads.
+   *
+   * Only ever on the curator's own press. Nothing about a missing file is on a
+   * listing, because a filesystem check per row would tax every visit to the
+   * library grid to serve the rare case, and the card already learns the same
+   * thing for free from the `wallpaper://` request it makes anyway (ADR 0032).
+   *
+   * It counts files that are not there, not every wallpaper the grid cannot
+   * paint: a file that is present and will not decode reads as gone on its card
+   * and is not in this number.
+   */
+  countMissingFiles: () => invoke<MissingFiles>("count_missing_files"),
 
   /**
    * Hands `handler` every emission of one backend event, resolving with the
