@@ -1,5 +1,6 @@
 mod db;
 mod error;
+mod missing;
 mod paths;
 mod pregen;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
@@ -328,6 +329,26 @@ fn clear_cache(
     thumbnails::clear(&lock_conn(db), &cache_dir.0)
 }
 
+/// How many Eligible wallpapers have no file behind them, for the Settings
+/// read-out.
+///
+/// A thin wrapper over the two halves of [`missing`], called in the order that
+/// module documents: the pool comes off the database, and the `stat` per row
+/// happens with the connection already released. That ordering is ADR 0004's —
+/// the temporary guard drops at the end of the `let`, so 5,000 filesystem calls
+/// do not queue every command and every `wallpaper://` request behind them.
+///
+/// Nothing calls this but the button the curator presses. A listing does no
+/// filesystem work at all, and the card's own answer to a missing file is the
+/// `wallpaper://` request it was already making (ADR 0032).
+#[tauri::command]
+fn count_missing_files(
+    state: tauri::State<'_, Db>,
+) -> Result<missing::MissingFiles, error::AppError> {
+    let paths = missing::eligible_paths(&lock_conn(state))?;
+    Ok(missing::count_missing(&paths))
+}
+
 /// Where a Written path points, and whether a folder is there.
 ///
 /// `exists` is `is_dir()`, so a file at that path reads as nothing there:
@@ -631,6 +652,7 @@ pub fn run() {
             cancel_pregen,
             get_cache_size,
             clear_cache,
+            count_missing_files,
             expand_path,
             get_pair,
             vote,

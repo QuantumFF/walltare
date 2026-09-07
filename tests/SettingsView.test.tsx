@@ -11,10 +11,11 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import type { CacheSize } from "@/lib/client";
+import type { CacheSize, MissingFiles } from "@/lib/client";
 import {
   cacheSize,
   click,
+  deferred,
   desktopColorScheme,
   emptyStats,
   flush,
@@ -53,6 +54,10 @@ let cacheSizeCalls = 0;
 /** Every pass command the backend heard, including the one the shell makes on boot. */
 let pregenCommands: string[];
 let clearCalls = 0;
+/** What the next walk of the library finds, so a check can change between two. */
+let missingReading: MissingFiles;
+/** Walks of the library, which only the curator's own press ever spends (ADR 0032). */
+let missingChecks = 0;
 
 afterEach(cleanup);
 
@@ -73,6 +78,8 @@ beforeEach(() => {
   cacheSizeCalls = 0;
   pregenCommands = [];
   clearCalls = 0;
+  missingReading = { missing: 0, eligible: 0 };
+  missingChecks = 0;
 
   mockBootedApp();
   // A library with wallpapers in it, so boot lands on Rank and the curator
@@ -102,6 +109,12 @@ beforeEach(() => {
   mockCommand("clear_cache", () => {
     clearCalls++;
     return null;
+  });
+  // A walk of the Eligible pool, answering with whatever is on disk now — so a
+  // drive coming back can change the answer between two presses.
+  mockCommand("count_missing_files", () => {
+    missingChecks++;
+    return missingReading;
   });
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockCommand("list_wallpapers", () => []);
@@ -210,18 +223,22 @@ async function openSettingsFromLibrary() {
   expect(showingView()).toBe("settings");
 }
 
-test("the page is one column of four sections, in first-run order", async () => {
+test("the page is one column of five sections, in first-run order", async () => {
   await openSettingsFromLibrary();
 
+  // Missing files is fifth for the rule that put Thumbnails fourth: first-run
+  // need first, maintenance last, and a filesystem walk of somebody's library
+  // is the most maintenance-shaped thing on the page (ADR 0020, ADR 0032).
   expect(sectionHeadings()).toEqual([
     "Library root",
     "Reject destination",
     "Appearance",
     "Thumbnails",
+    "Missing files",
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: four groups of one or two controls
+  // assert — and the width is the decision: five groups of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document.querySelector('[data-slot="settings-section"]')
     ?.parentElement as HTMLElement;
@@ -356,6 +373,7 @@ test("a library that would not read reads as a fault, in the backend's own words
     "Reject destination",
     "Appearance",
     "Thumbnails",
+    "Missing files",
   ]);
 });
 
@@ -393,7 +411,7 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
   // The page is still the page: clearing the slot leaves the sections where
   // they were, and the curator on Settings.
   expect(showingView()).toBe("settings");
-  expect(sectionHeadings().length).toBe(4);
+  expect(sectionHeadings().length).toBe(5);
 });
 
 test("neither block is up when boot found a library it could read", async () => {
@@ -401,7 +419,7 @@ test("neither block is up when boot found a library it could read", async () => 
 
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(sectionHeadings().length).toBe(4);
+  expect(sectionHeadings().length).toBe(5);
 });
 
 // The Library root section. Most of what follows came from `tests/ScanView.test.tsx`
@@ -1390,4 +1408,168 @@ test("leaving the page drops its pass subscriptions", async () => {
   // Settings is the one view the shell unmounts, so this one has to go and the
   // shell's has to stay.
   expect(await emit("pregen-progress", { done: 2, total: 10 })).toBe(1);
+});
+
+// The Missing files section, which is the fifth and the only one that walks the
+// filesystem on the curator's own press. What the curator reads is one line and
+// one verb, so that is what the tests assert; the one thing that does not show
+// on screen is how often the walk happens, and it is pinned by call because a
+// count read on mount would `stat` every Active and Kept row on a visit to
+// change the theme (#200, ADR 0032).
+
+const missingSection = () => sectionAt(4);
+const missingLine = () =>
+  document.querySelector(
+    '[data-slot="missing-files-status"]',
+  ) as HTMLElement | null;
+const checkButton = () =>
+  within(missingSection()).getByRole("button", {
+    name: /^(check now|checking)/i,
+  }) as HTMLButtonElement;
+
+test("the section is a button and nothing else until it is pressed", async () => {
+  await openSettingsFromLibrary();
+
+  const section = missingSection();
+  expect(section.querySelector("h2")?.textContent).toBe("Missing files");
+  // No line, because nothing has been checked. A count from a previous visit
+  // would be a claim about a filesystem that has moved on, and the app keeps
+  // none.
+  expect(missingLine()).toBeNull();
+  expect(
+    within(section)
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Check now"]);
+});
+
+test("nothing walks the library until the curator asks", async () => {
+  await openSettingsFromLibrary();
+
+  // The whole reason this is a button and not a line that fills itself in. The
+  // check is a `stat` per Active and Kept row against paths that may be on an
+  // external drive, so opening Settings to change the theme must not spend one
+  // — unlike the Thumbnails line beside it, which reads a directory the app
+  // owns (ADR 0032).
+  expect(missingChecks).toBe(0);
+
+  await click(checkButton());
+
+  expect(missingChecks).toBe(1);
+});
+
+test("the line says how many files are missing, and out of what", async () => {
+  missingReading = { missing: 3, eligible: 120 };
+  await openSettingsFromLibrary();
+
+  await click(checkButton());
+
+  // The second half names the pool rather than the library, because a Rejected
+  // wallpaper's file moved to the reject destination on purpose and its row
+  // followed it there — so it is not missing and is not counted (CONTEXT.md's
+  // Eligible).
+  expect(missingLine()?.textContent).toBe(
+    "3 files missing · 120 wallpapers checked",
+  );
+});
+
+test("a library with nothing missing says so rather than printing a zero", async () => {
+  missingReading = { missing: 0, eligible: 120 };
+  await openSettingsFromLibrary();
+
+  await click(checkButton());
+
+  // `0 files missing` is a number the eye has to read before it knows there is
+  // nothing wrong, which is the same correction ADR 0020 made for an empty
+  // cache.
+  expect(missingLine()?.textContent).toBe(
+    "No files missing · 120 wallpapers checked",
+  );
+});
+
+test("one missing file out of one wallpaper reads in the singular", async () => {
+  missingReading = { missing: 1, eligible: 1 };
+  await openSettingsFromLibrary();
+
+  await click(checkButton());
+
+  expect(missingLine()?.textContent).toBe(
+    "1 file missing · 1 wallpaper checked",
+  );
+});
+
+test("the count refreshes on demand, and reads what the library says now", async () => {
+  missingReading = { missing: 3, eligible: 120 };
+  await openSettingsFromLibrary();
+  await click(checkButton());
+  expect(missingLine()?.textContent).toBe(
+    "3 files missing · 120 wallpapers checked",
+  );
+
+  // The curator plugged the drive back in. Nothing tells the app that, which is
+  // why the button is the refresh: a count is about the moment it was taken.
+  missingReading = { missing: 0, eligible: 120 };
+  await click(checkButton());
+
+  expect(missingChecks).toBe(2);
+  expect(missingLine()?.textContent).toBe(
+    "No files missing · 120 wallpapers checked",
+  );
+});
+
+test("a check that is running says so on the button and holds the line empty", async () => {
+  missingReading = { missing: 3, eligible: 120 };
+  await openSettingsFromLibrary();
+  await click(checkButton());
+  expect(missingLine()?.textContent).toBe(
+    "3 files missing · 120 wallpapers checked",
+  );
+
+  // A second walk, held open inside the window the curator is looking at. The
+  // verb carries it the way the Scan button carries a scan, and the previous
+  // count comes off the line rather than sitting there as though it were this
+  // walk's answer.
+  const walk = deferred<MissingFiles>();
+  mockCommand("count_missing_files", () => {
+    missingChecks++;
+    return walk.promise;
+  });
+  await click(checkButton());
+  expect(checkButton().textContent).toBe("Checking…");
+  expect(checkButton().disabled).toBe(true);
+  expect(missingLine()).toBeNull();
+
+  await act(async () => {
+    walk.resolve({ missing: 0, eligible: 120 });
+  });
+  await flush();
+
+  expect(checkButton().textContent).toBe("Check now");
+  expect(missingLine()?.textContent).toBe(
+    "No files missing · 120 wallpapers checked",
+  );
+});
+
+test("a check that would not run says so instead of leaving a count up", async () => {
+  missingReading = { missing: 3, eligible: 120 };
+  expectConsoleError(/Failed to check the library for missing files/);
+  await openSettingsFromLibrary();
+  await click(checkButton());
+
+  mockCommand("count_missing_files", () => {
+    missingChecks++;
+    return Promise.reject({ kind: "db", message: "database is locked" });
+  });
+  await click(checkButton());
+
+  // One sentence for every kind: nothing that can fail here gives the curator
+  // anything to act on, and what matters is that the line stops showing a count
+  // the failed check did not produce.
+  expect(missingLine()?.textContent).toBe(
+    "Couldn't check the library for missing files.",
+  );
+  expect(missingLine()?.className).toContain("text-destructive");
+  // And the button is pressable again, because the fault is usually outside the
+  // app and pressing it is the whole of the retry.
+  expect(checkButton().disabled).toBe(false);
 });

@@ -154,6 +154,22 @@ async function loaded(element: Element) {
 }
 
 /**
+ * An image that will not arrive, which is the whole of how this surface learns
+ * the file is gone. Same reason `loaded` exists: happy-dom fires neither event
+ * of its own, so a test has to say which of the two happened (ADR 0032).
+ */
+async function failed(element: Element) {
+  await act(async () => {
+    fireEvent.error(element);
+  });
+  await flush();
+}
+
+/** The panel that says the file is gone, or `null` when the picture arrived. */
+const gonePanel = () =>
+  document.querySelector('[data-slot="lightbox-gone"]') as HTMLElement | null;
+
+/**
  * Land on Review with its grid up, and focus the first card the way Tab does.
  *
  * The rows are the two the `beforeEach` arranged unless a test hands over its
@@ -992,4 +1008,89 @@ test("closing after a sweep focuses the card the selection ended on", async () =
   expect(document.activeElement?.getAttribute("aria-label")).toBe(
     "third.jpg, Active",
   );
+});
+
+// A file that has gone. The lightbox is where a missing file is most visible,
+// and ADR 0022 left it as a broken image on the grounds that Restore's own
+// `FileMissing` sentence was the actionable part. It is not: a stranger's
+// library changes underneath the app constantly, and a broken image reads as
+// the app breaking rather than as their own file going (#200, ADR 0032).
+
+test("a picture that will not load says the file is gone, and why", async () => {
+  await enterReview();
+  await press("Enter");
+
+  expect(gonePanel()).toBeNull();
+
+  await failed(picture());
+
+  const panel = gonePanel() as HTMLElement;
+  expect(panel.textContent).toContain("File is gone");
+  // The second line, which the card has no room for. It names the cause,
+  // because that is the half the curator cannot see: nothing in the app moved
+  // the file.
+  expect(panel.textContent).toContain(
+    "It was moved or deleted outside walltare. Nothing here has changed.",
+  );
+  // And the thumbnail is not held up in front of a picture that is never
+  // coming, which would be the spinner that never resolves (ADR 0006).
+  expect(placeholder()).toBeNull();
+});
+
+test("a gone picture keeps the row, its read-out and its actions", async () => {
+  await enterReview();
+  await press("Enter");
+
+  await failed(picture());
+
+  // Everything the curator could act on stays where it was: the row is
+  // positioned over the picture rather than after it, so the panel covers the
+  // failed request and nothing else. The path is on the read-out, which is the
+  // one place in the app that says where the file was meant to be.
+  expect(readOut().textContent).toBe("/library/first.jpg");
+  expect(actions()).toEqual(["Keep K", "Reject Del"]);
+  expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
+});
+
+test("stepping off a gone wallpaper leaves the message behind", async () => {
+  await enterReview(threeRows());
+  await press("Enter");
+  await failed(picture());
+  expect(gonePanel()).not.toBeNull();
+
+  await press("ArrowRight");
+
+  // The `<img>` has no `key`, so it is the same element with a new `src`
+  // (ADR 0022). Without a reset per wallpaper the message would sit over the
+  // outgoing picture and stay there for a wallpaper that loads fine.
+  expect(gonePanel()).toBeNull();
+
+  await loaded(picture());
+  expect(gonePanel()).toBeNull();
+});
+
+test("stepping onto a second gone wallpaper says so again", async () => {
+  await enterReview(threeRows());
+  await press("Enter");
+  await failed(picture());
+
+  await press("ArrowRight");
+  await failed(picture());
+
+  expect(gonePanel()?.textContent).toContain("File is gone");
+});
+
+test("a card that reads as gone opens onto a lightbox that says the same", async () => {
+  await enterLibrary([wallpaper(9, { filename: "shared.jpg" })]);
+
+  // One request, read by two surfaces. The card learned it from the `small` and
+  // the lightbox learns it from the `medium`, so the two cannot come to
+  // disagree about one wallpaper (ADR 0032).
+  await failed(screen.getByAltText("shared.jpg"));
+  expect(cell("shared.jpg, Active, File is gone")).toBeTruthy();
+
+  await click(cell("shared.jpg, Active, File is gone"));
+  await failed(picture());
+
+  expect(gonePanel()?.textContent).toContain("File is gone");
 });

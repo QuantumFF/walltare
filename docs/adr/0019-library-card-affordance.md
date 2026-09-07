@@ -162,6 +162,17 @@ Restore lives there. Keeping the card's border and surface at full strength also
 does some of the work the prototype's note asked for: a solid frame around a
 faded image reads less like a failed load than a faded frame around one.
 
+> **Amended by [ADR 0032](0032-a-missing-file-reads-as-gone.md), 2026-09-08.**
+> The failed load this section was worried about resembling now has a state of
+> its own, so the resemblance is gone rather than mitigated: a card whose
+> `wallpaper://` request fails paints **File is gone** over the picture, with an
+> icon, and a Rejected card is a dimmed picture and a pill. The panel sits over
+> the `<img>` and before the badge, the pill and the reveal layer, so the
+> refinement above is what makes it work — everything this section kept at full
+> strength stays readable and pressable on a card whose file has gone. The gone
+> state joins the accessible name too, for the reason the Status is in it: the
+> cell's own `aria-label` hides its contents.
+
 ### The card names the folder that took the file
 
 The overlay's second line reads the comparison count and, for a Rejected card,
