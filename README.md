@@ -74,3 +74,7 @@ Rust tests live beside the code they cover, in `#[cfg(test)]` modules.
 
 Packaging (.deb, AppImage), multiple libraries, and importing data from the old
 app. See [#1](https://github.com/QuantumFF/walltare/issues/1).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
