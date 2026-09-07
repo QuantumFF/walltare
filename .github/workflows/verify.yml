@@ -1,0 +1,70 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    name: six commands
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Tauri crate links against WebKitGTK, so `cargo test`, `cargo fmt`
+      # and `cargo clippy` all need these present before Rust runs. The runner
+      # image does not carry them. This list is the Tauri v2 Linux prerequisite
+      # set for Ubuntu 24.04; the release workflow reuses it.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Caches ~/.cargo (registry and git checkouts) and src-tauri/target, so a
+      # re-run compiles walltare rather than the whole dependency tree.
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: bun test
+        run: bun test
+
+      - name: bun run typecheck
+        run: bun run typecheck
+
+      - name: bun run lint
+        run: bun run lint
