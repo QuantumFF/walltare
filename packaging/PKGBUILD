@@ -123,9 +123,13 @@ package() {
 
 	install -Dm644 packaging/walltare.desktop "$pkgdir/usr/share/applications/$pkgname.desktop"
 
-	# The four sizes the icon set ships at, each under the name the desktop
-	# entry's `Icon=walltare` looks up.
+	# Every size the icon set ships at, each under the name the desktop entry's
+	# `Icon=walltare` looks up. 64x64 earns its line because a theme with no
+	# exact match scales the nearest size it has. The 48px slot docks and
+	# launchers ask for was landing on the 256px file and being quartered,
+	# with 64x64 sitting unused in the repo the whole time.
 	install -Dm644 src-tauri/icons/32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/$pkgname.png"
+	install -Dm644 src-tauri/icons/64x64.png "$pkgdir/usr/share/icons/hicolor/64x64/apps/$pkgname.png"
 	install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/$pkgname.png"
 	install -Dm644 'src-tauri/icons/128x128@2x.png' "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"
 	install -Dm644 src-tauri/icons/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"

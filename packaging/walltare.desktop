@@ -13,3 +13,10 @@ Terminal=false
 Categories=Graphics;Viewer;
 Keywords=wallpaper;image;ranking;curation;
 StartupNotify=true
+# What ties an open window back to this entry, and so to the Icon above. GTK
+# names the toplevel `walltare`, the WM_CLASS on X11 and the app_id on
+# Wayland, both taken from the binary. A dock or an alt-tab switcher looks
+# that string up here to learn what the window is. A matcher that reads this
+# field and nothing else found no entry while the field was missing, and drew
+# its own placeholder instead of walltare's icon (#223).
+StartupWMClass=walltare
