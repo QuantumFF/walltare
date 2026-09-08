@@ -18,7 +18,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' wallpaper:; connect-src 'self' ipc:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'"
     }
   },
   "bundle": {
