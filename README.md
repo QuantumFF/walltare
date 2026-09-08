@@ -6,9 +6,7 @@ from your picks so you can move the bottom of the pile out. **It does not set
 your wallpaper.** Nothing in it touches your desktop background; that stays
 your desktop's job.
 
-Linux, x86_64, single user, no server. A Rust/Tauri port of rate-wallpaper,
-which was Python/FastAPI. The port is tracked in
-[#1](https://github.com/QuantumFF/walltare/issues/1).
+Linux, x86_64, single user, no server. A Rust/Tauri port of [rate-wallpaper](https://github.com/QuantumFF/rate-wallpaper), which was Python/FastAPI.
 
 ## Install
 
