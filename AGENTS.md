@@ -24,8 +24,12 @@ The original Python/FastAPI + React app lives at `/home/qdes/repos/rate-wallpape
 ## Commands
 
 - Dev run: `bun tauri dev`, from the graphical session — an SSH shell has no
-  display and GTK panics. Native Wayland needs `GDK_BACKEND=x11
-  WEBKIT_DISABLE_DMABUF_RENDERER=1`, plus `__NV_DISABLE_EXPLICIT_SYNC=1` on NVIDIA.
+  display and GTK panics. One environment variable matters, and `main.rs` sets
+  it for itself: `__NV_DISABLE_EXPLICIT_SYNC=1` on Wayland with NVIDIA. This
+  line used to list three. `WEBKIT_DISABLE_DMABUF_RENDERER=1` made no
+  observable difference, and `GDK_BACKEND=x11` is not needed — forcing X11
+  would cost fractional scaling and per-monitor DPI in an app whose whole job
+  is showing images (#195).
 - Rust: `cargo test`, `cargo fmt`, `cargo clippy --all-targets` (from `src-tauri/`)
 - Frontend: `bun test`, `bun run typecheck`, `bun run lint` (from the repo root)
 
