@@ -674,7 +674,6 @@ fn refuse_the_database(app: &AppHandle, database: i64, supported: i64) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(window_state::plugin())
         // The Browse button beside each path field on Settings. A folder picker
         // cannot be hand-rolled in a WebView, so this is a dependency rather
@@ -808,6 +807,58 @@ mod tests {
             parse("wallpaper://localhost/image/1?v=2&size=small").unwrap(),
             (1, Size::Small)
         );
+    }
+
+    /// The configured content security policy, directive by directive, read
+    /// out of the `tauri.conf.json` this crate actually ships.
+    fn content_security_policy() -> Vec<(String, Vec<String>)> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("the config is readable"))
+                .expect("the config is well-formed JSON");
+        let csp = config["app"]["security"]["csp"]
+            .as_str()
+            .expect("a content security policy is set")
+            .to_owned();
+        csp.split(';')
+            .filter_map(|directive| {
+                let mut words = directive.split_whitespace().map(str::to_owned);
+                Some((words.next()?, words.collect()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_policy_lets_the_wallpaper_protocol_through() {
+        // The other half of the pairing in
+        // `the_url_the_frontend_builds_is_the_url_this_handler_accepts`: the
+        // handler can answer every request the frontend makes and still render
+        // blank cards, because the webview never sends the request. A missing
+        // `wallpaper:` here has no symptom a test can otherwise see.
+        let policy = content_security_policy();
+        let (_, sources) = policy
+            .iter()
+            .find(|(name, _)| name == "img-src")
+            .expect("the policy names img-src");
+        assert!(
+            sources.iter().any(|source| source == "wallpaper:"),
+            "img-src {sources:?} does not allow the wallpaper protocol"
+        );
+    }
+
+    #[test]
+    fn the_policy_names_no_remote_origin() {
+        // An allowlist rather than a pattern, so that widening the policy has
+        // to be argued for here as well as in the config.
+        for (directive, sources) in content_security_policy() {
+            for source in sources {
+                let local = matches!(
+                    source.as_str(),
+                    "'self'" | "'none'" | "'unsafe-inline'" | "ipc:" | "wallpaper:"
+                );
+                assert!(local, "{directive} allows {source}, which is not local");
+            }
+        }
     }
 
     #[test]
