@@ -124,6 +124,15 @@ beforeEach(() => {
     resolved: args.input.replace(/^~/, HOME),
     exists: true,
   }));
+  // The other field asks the other question: whether a reject could land there.
+  // Absolute and able to take a file, or relative and so resolved per wallpaper
+  // — which is what the default `./rejected` is (ADR 0035).
+  mockCommand("check_reject_destination", (args) => {
+    const resolved = args.written.replace(/^~/, HOME);
+    return resolved.startsWith("/")
+      ? { state: "ready", resolved }
+      : { state: "relative" };
+  });
   mockCommand("set_setting", (args) => {
     settingWrites.push({
       key: args.key,
@@ -911,11 +920,11 @@ test("a relative destination states the rule instead of a place", async () => {
 });
 
 test("whether a destination is relative is not read off the string", async () => {
-  // `$HOME/bin` looks relative and expands absolute, which is why only
-  // `expand_path` gets to decide which of the two lines is up (ADR 0018).
-  mockCommand("expand_path", (args) => ({
-    resolved: args.input.replace(/^\$HOME/, HOME),
-    exists: true,
+  // `$HOME/bin` looks relative and expands absolute, which is why only the
+  // backend gets to decide which of the two lines is up (ADR 0018).
+  mockCommand("check_reject_destination", (args) => ({
+    state: "ready",
+    resolved: args.written.replace(/^\$HOME/, HOME),
   }));
   await openSettingsFromLibrary();
   await typeDestination("$HOME/bin");
@@ -925,7 +934,7 @@ test("whether a destination is relative is not read off the string", async () =>
 });
 
 test("a mistyped variable replaces the destination line, in the backend's own words", async () => {
-  mockCommand("expand_path", () =>
+  mockCommand("check_reject_destination", () =>
     Promise.reject({
       kind: "invalid_path_syntax",
       message: "unknown environment variable HOEM",
@@ -934,32 +943,100 @@ test("a mistyped variable replaces the destination line, in the backend's own wo
   await openSettingsFromLibrary();
   await typeDestination("$HOEM/rejected");
 
-  // It fails every reject of the pass with a message naming the variable, so
-  // reading it here beats reading it fifty times afterwards (ADR 0018).
+  // An unset variable is an error rather than an empty string — expanded to
+  // nothing, `$HOEM/rejected` would be `/rejected` and get created at the root
+  // of the disk. It fails every reject of the pass with a message naming the
+  // variable, so reading it here beats reading it fifty times afterwards
+  // (ADR 0011, ADR 0018).
   expect(destinationLine().textContent).toBe(
     "unknown environment variable HOEM",
   );
   expect(destinationLine().className).toContain("text-destructive");
 });
 
-test("no destination is ever reported as not found", async () => {
-  // Nothing has to be there: a soft reject creates the destination on demand
-  // (ADR 0003), so this field ignores the `exists` its own resolution answered
-  // with — the one thing it reads past that the Library root reports.
-  mockCommand("expand_path", (args) => ({
-    resolved: args.input.replace(/^~/, HOME),
-    exists: false,
+test("a destination that is not there yet says so, and is not an error", async () => {
+  // Nothing has to be there. A soft reject creates the destination on demand
+  // (ADR 0003), so this is the one thing the field reports without treating it
+  // as a mistake — and the resolved path is shown, because that is what the
+  // curator has to recognise to spot a typo (ADR 0035).
+  mockCommand("check_reject_destination", (args) => ({
+    state: "absent",
+    resolved: args.written.replace(/^~/, HOME),
   }));
   await openSettingsFromLibrary();
+  await typeDestination("~/bin/nowhere");
 
   expect(destinationLine().textContent).toBe(
-    "Relative, so one rejected folder beside each wallpaper.",
+    `${HOME}/bin/nowhere · created on the first reject`,
   );
-
-  await typeDestination("~/bin/nowhere");
-  expect(destinationLine().textContent).toBe(`${HOME}/bin/nowhere`);
-  expect(destinationLine().textContent).not.toContain("not found");
   expect(destinationLine().className).not.toContain("text-destructive");
+  // Not the Library root's clause: that field reports a preference pointing at
+  // an unmounted drive, and this one reports a folder about to exist (ADR 0020).
+  expect(destinationLine().textContent).not.toContain("not found");
+});
+
+test("a destination that cannot be written to is an error in the backend's own words", async () => {
+  // The case this field had no answer for. A reject folder on a read-only
+  // mount, or one owned by another user, takes no file — and the curator reads
+  // that here rather than after fifty failed rejects (ADR 0035).
+  mockCommand("check_reject_destination", (args) => ({
+    state: "refused",
+    resolved: args.written,
+    reason:
+      "/mnt/rejects cannot be written to: Permission denied (os error 13)",
+  }));
+  await openSettingsFromLibrary();
+  await typeDestination("/mnt/rejects");
+
+  // Verbatim, for the reason the syntax error is verbatim: no canned string
+  // here could say which of a permission, a read-only mount and a file in the
+  // way it was.
+  expect(destinationLine().textContent).toBe(
+    "/mnt/rejects cannot be written to: Permission denied (os error 13)",
+  );
+  expect(destinationLine().className).toContain("text-destructive");
+});
+
+test("a file where the destination should be is an error too", async () => {
+  mockCommand("check_reject_destination", (args) => ({
+    state: "refused",
+    resolved: args.written,
+    reason: `${HOME}/rejected is not a folder, so rejects cannot go there`,
+  }));
+  await openSettingsFromLibrary();
+  await typeDestination("~/rejected");
+
+  expect(destinationLine().textContent).toBe(
+    `${HOME}/rejected is not a folder, so rejects cannot go there`,
+  );
+  expect(destinationLine().className).toContain("text-destructive");
+});
+
+test("the destination field asks about a reject, and the Library root asks where it points", async () => {
+  // Two Written path fields and two questions, which is why there are two
+  // commands. The destination's answer needs a write to the folder to be true,
+  // so the Library root's field must not be the thing that asks for it
+  // (ADR 0035).
+  const asked: Array<[string, string]> = [];
+  mockCommand("expand_path", (args) => {
+    asked.push(["expand_path", args.input]);
+    return { resolved: args.input.replace(/^~/, HOME), exists: true };
+  });
+  mockCommand("check_reject_destination", (args) => {
+    asked.push(["check_reject_destination", args.written]);
+    return { state: "ready", resolved: args.written };
+  });
+  await openSettingsFromLibrary();
+  await type("/pics");
+  await typeDestination("/pics/rejected");
+
+  expect(asked).toContainEqual(["expand_path", "/pics"]);
+  expect(asked).toContainEqual(["check_reject_destination", "/pics/rejected"]);
+  // And neither string reached the other command: the Library root is never
+  // probed for writability, and the destination is never resolved without being
+  // checked.
+  expect(asked).not.toContainEqual(["check_reject_destination", "/pics"]);
+  expect(asked).not.toContainEqual(["expand_path", "/pics/rejected"]);
 });
 
 test("the destination commits on blur, and a keystroke commits nothing", async () => {

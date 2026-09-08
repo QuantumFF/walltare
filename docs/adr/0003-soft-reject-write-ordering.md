@@ -107,3 +107,14 @@ in [#34](https://github.com/QuantumFF/walltare/issues/34).
 > two remaining failure paths — `move_file`'s cross-device fallback and a full
 > disk — need a seam over `std::fs` that
 > [the map](https://github.com/QuantumFF/walltare/issues/149) rules out of scope.
+>
+> **Amended by [ADR 0035](0035-a-reject-destination-is-checked-first.md),
+> 2026-09-08.** The ordering is unchanged; a check now runs in front of it.
+> `reject_destination::prepare` resolves the destination, creates it, and then
+> *proves* it can take a file, all above the `UPDATE` — so a folder on a
+> read-only mount, one owned by another user, or a file sitting on the name
+> refuses the transition where a failure is still free, rather than being found
+> out by the `rename` with the row already written and rolled back. That test
+> is now `a_destination_the_process_cannot_write_to_is_refused_before_the_move`
+> and keeps every assertion named above; what changed is the error it reads,
+> from an `Io` errno to a sentence naming the folder.

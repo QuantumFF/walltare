@@ -71,6 +71,13 @@ beforeEach(() => {
     resolved: args.input,
     exists: true,
   }));
+  // And the Reject destination field asks its own question of what it holds, so
+  // every visit to Settings reaches this one too (ADR 0035).
+  mockCommand("check_reject_destination", (args) =>
+    args.written.startsWith("/")
+      ? { state: "ready", resolved: args.written }
+      : { state: "relative" },
+  );
   mockCommand("set_setting", () => settings());
   // And its Thumbnails section walks the cache directory on mount, for the line
   // it reads out (ADR 0020).

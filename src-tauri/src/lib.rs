@@ -4,6 +4,7 @@ mod missing;
 mod paths;
 mod pregen;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
+mod reject_destination;
 mod scanner;
 mod settings;
 mod soft_reject;
@@ -435,6 +436,23 @@ fn expand_path(input: String) -> Result<Expanded, error::AppError> {
     })
 }
 
+/// Whether the Soft reject destination the curator is writing can take a file.
+///
+/// The second half of the pair with [`expand_path`], and a separate command
+/// rather than a field on that one because the two questions have different
+/// costs. `expand_path` reads the environment and stats, and the Library root's
+/// field must stay that cheap and that harmless; this one writes a probe file
+/// into the folder and takes it away again, which is the only way to know
+/// whether a reject could land there (ADR 0035).
+///
+/// It creates no destination. Only a reject does that (ADR 0003), so a curator
+/// typing their way to `~/pics/rejected` does not leave a folder behind for
+/// every prefix on the way.
+#[tauri::command]
+fn check_reject_destination(written: String) -> Result<reject_destination::Check, error::AppError> {
+    reject_destination::check(&written)
+}
+
 #[tauri::command]
 fn get_settings(state: tauri::State<Db>) -> Result<settings::Settings, error::AppError> {
     let conn = lock_conn(state);
@@ -714,6 +732,7 @@ pub fn run() {
             clear_cache,
             count_missing_files,
             expand_path,
+            check_reject_destination,
             get_pair,
             vote,
             get_stats,

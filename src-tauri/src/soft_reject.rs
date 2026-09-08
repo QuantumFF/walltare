@@ -10,6 +10,12 @@
 //! another filesystem operation that can fail. ADR 0003 decided it outbound and
 //! ADR 0009 mirrors it inbound, step for step.
 //!
+//! The destination is *proven* above the `UPDATE` as well, by
+//! [`reject_destination::prepare`]: a folder that will not take a file refuses
+//! the transition there rather than being found out by the `rename` afterwards.
+//! That is one more fallible line in the free half rather than a change to the
+//! ordering, which is exactly where the rule below says it belongs (ADR 0035).
+//!
 //! What that forbids is a line below the move. Anything that can fail belongs
 //! above [`move_file`], where a failure is still free; a fallible line after it
 //! — a second write, a log that touches disk, another `UPDATE` — is a failure
@@ -33,6 +39,7 @@ use rusqlite::Connection;
 
 use crate::db::{self, Status, Wallpaper};
 use crate::error::AppError;
+use crate::reject_destination;
 
 /// How many ` (n)` variants to try before giving up on a colliding destination.
 const MAX_COLLISION_SUFFIXES: u32 = 1000;
@@ -179,20 +186,18 @@ pub fn restore(conn: &Connection, wallpaper_id: i64) -> Result<Wallpaper, AppErr
 }
 
 /// Expands `destination_folder`, resolves it against the wallpaper's own folder
-/// when it is relative, creates it, and canonicalizes the result.
+/// when it is relative, and hands it to [`reject_destination::prepare`], which
+/// creates it, canonicalizes it and proves it can take a file.
 ///
 /// Expansion goes first so that the directory is created only after the Written
 /// path has resolved: `~/rejected` used to produce a folder literally named `~`
 /// beside the wallpaper, and `$HOEM/rejected` must not create anything at all.
-/// Creating the destination on demand stays, because `./rejected` has to come
-/// from somewhere on the first reject.
 ///
-/// Canonicalizing is what keeps a rejected file rejected: the default `./rejected`
-/// would otherwise be stored verbatim as `/lib/./rejected/x.jpg`, which is a
-/// different string from the `/lib/rejected/x.jpg` a rescan produces, so
-/// `UNIQUE(path)` wouldn't match and the file would come back as a new Active row.
-/// It is also what stops `~/pics` and `$HOME/pics` becoming two spellings of one
-/// folder.
+/// Called from [`reject`] above the `UPDATE`, which is what makes a destination
+/// that has gone bad since it was set cost an error and nothing else. The
+/// destination was always resolved here; what is new is that it is now *proven*
+/// here, rather than found out by a `rename` with the row already written
+/// (ADR 0035).
 fn resolve_destination_dir(source: &Path, destination_folder: &str) -> Result<PathBuf, AppError> {
     create_destination_dir(source, crate::paths::expand(destination_folder)?)
 }
@@ -218,7 +223,11 @@ fn resolve_destination_dir_with(
 }
 
 /// Everything after expansion: resolve a relative destination against the
-/// wallpaper's own folder, create it, canonicalize.
+/// wallpaper's own folder, then prepare it.
+///
+/// A relative destination is relative to the wallpaper's own folder, so a nested
+/// library gets one reject folder per source folder (ADR 0011). That is also why
+/// Settings can only say so much about one: it does not know which wallpaper.
 fn create_destination_dir(source: &Path, expanded: PathBuf) -> Result<PathBuf, AppError> {
     let raw = if expanded.is_absolute() {
         expanded
@@ -228,8 +237,7 @@ fn create_destination_dir(source: &Path, expanded: PathBuf) -> Result<PathBuf, A
             .unwrap_or_else(|| Path::new("/"))
             .join(expanded)
     };
-    std::fs::create_dir_all(&raw)?;
-    raw.canonicalize().map_err(Into::into)
+    reject_destination::prepare(&raw)
 }
 
 /// Picks a filename in `dir` that no file currently occupies.
@@ -762,12 +770,17 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn a_destination_the_process_cannot_write_to_leaves_the_row_untouched() {
+    fn a_destination_the_process_cannot_write_to_is_refused_before_the_move() {
         // The arm most likely to reach a real curator: a reject folder on a
         // read-only mount, or one owned by another user. Its neighbour above
         // fails the move by deleting the source, so it only exercises `rename`'s
-        // missing-source arm; this one fails the move with the source right
-        // where it belongs and the destination refusing the write.
+        // missing-source arm; this one has the source right where it belongs and
+        // the destination refusing the write.
+        //
+        // Refused rather than attempted: `reject_destination::prepare` proves
+        // the folder before the `UPDATE`, so nothing is written and nothing is
+        // rolled back (ADR 0035). What the row and the file do is what this test
+        // held before that change, and holds unaltered.
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -780,6 +793,14 @@ mod tests {
         let readonly = dest.path().join("readonly");
         std::fs::create_dir(&readonly).unwrap();
         std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores the mode bits, so on such a run the folder takes a file
+        // after all and there is no refusal to assert. Asked the way the module
+        // asks it, and asked before the reject so the test knows which half of
+        // its claim holds here. CI runs as a non-root user, so the refusal is
+        // the half normally exercised (ADR 0034 took the same shape).
+        let probe = readonly.join(".root-check");
+        let mode_bits_ignored = std::fs::File::create(&probe).is_ok();
+        let _ = std::fs::remove_file(&probe);
 
         let result = reject(&conn, id, readonly.to_str().unwrap());
 
@@ -787,22 +808,107 @@ mod tests {
         // still leaves `tempfile` a directory it can clean up.
         std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        // Permission denied rather than any other `Io`: the destination exists
-        // and canonicalizes, and `create_dir_all` is a no-op on a directory that
-        // is already there, so the only step left to refuse is the move itself.
+        if mode_bits_ignored {
+            // Running as root, so the reject is one that can finish. The half
+            // that holds either way is that the row and the disk agree: the file
+            // is where the row says it is, and nowhere else.
+            let row = result.unwrap();
+            assert_eq!(row.status, Status::Rejected);
+            assert!(PathBuf::from(&row.path).is_file());
+            assert!(!tmp.path().join("locked-out.jpg").exists());
+            return;
+        }
+
+        // A sentence naming the folder, not an errno: the toast prints this
+        // verbatim under `Couldn't reject locked-out.jpg`.
         let err = result.unwrap_err();
         assert!(
-            matches!(err, crate::error::AppError::Io(ref m) if m.contains("Permission denied")),
+            matches!(err, crate::error::AppError::InvalidPath(ref m)
+                if m.contains("cannot be written to") && m.contains("Permission denied")),
             "got {err:?}"
         );
         assert_eq!(row_status_and_path(&conn, id), before);
-        // The rollback takes the Origin with it: a wallpaper that is not
-        // Rejected must not read as one a Restore could move.
+        // No Origin either: a wallpaper that is not Rejected must not read as
+        // one a Restore could move.
         assert_eq!(origin_path_of(&conn, id), None);
         // And the file never left, so the reject is one the curator can retry
         // once they have fixed the folder.
         assert!(tmp.path().join("locked-out.jpg").is_file());
         assert_eq!(std::fs::read_dir(&readonly).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_destination_that_went_bad_after_it_was_set_refuses_the_second_reject() {
+        // The whole reason the check runs twice. The curator sets a destination
+        // that works, rejects into it, and then the folder goes: unmounted,
+        // tidied up, or — as here — replaced by a file of the same name. The
+        // second reject refuses, and neither wallpaper is left half moved
+        // (ADR 0035).
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let first = seed_real_wallpaper(&conn, tmp.path(), "one.jpg");
+        let second = seed_real_wallpaper(&conn, tmp.path(), "two.jpg");
+        let destination = dest.path().join("rejected");
+        let written = destination.to_str().unwrap();
+
+        let landed = reject(&conn, first, written).unwrap().path;
+        assert!(PathBuf::from(&landed).is_file());
+
+        // The folder goes, and something else takes its name.
+        std::fs::remove_dir_all(&destination).unwrap();
+        std::fs::write(&destination, b"in the way").unwrap();
+
+        let err = reject(&conn, second, written).unwrap_err();
+
+        assert!(
+            matches!(err, crate::error::AppError::InvalidPath(ref m)
+                if m.contains("is not a folder")),
+            "got {err:?}"
+        );
+        // The refused wallpaper is exactly as it was, file included.
+        assert_eq!(status_of(&conn, second), "active");
+        assert_eq!(origin_path_of(&conn, second), None);
+        assert!(tmp.path().join("two.jpg").is_file());
+        // And the one that was already rejected is untouched: the row still
+        // points where its file went, and nothing overwrote the file in the way.
+        assert_eq!(status_of(&conn, first), "rejected");
+        assert_eq!(std::fs::read(&destination).unwrap(), b"in the way");
+    }
+
+    #[test]
+    fn a_row_rejected_by_an_older_version_still_restores() {
+        // The destination check is in front of a reject, and a Restore does not
+        // go through it, so every wallpaper rejected before it existed must
+        // still come back. This row is seeded the way an older version left one
+        // — Rejected, path in the reject folder, Origin recorded — rather than
+        // by calling `reject`, so nothing about the new check is in its history.
+        let tmp = tempfile::tempdir().unwrap();
+        let library = tmp.path().join("library");
+        let rejected = tmp.path().join("rejected");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&rejected).unwrap();
+        let moved = rejected.join("old.jpg");
+        std::fs::File::create(&moved).unwrap();
+        let origin = library.join("old.jpg");
+
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, moved.to_str().unwrap(), "rejected", 9.0);
+        conn.execute(
+            "UPDATE wallpapers SET origin_path = ?1 WHERE id = ?2",
+            rusqlite::params![origin.to_str().unwrap(), id],
+        )
+        .unwrap();
+
+        let row = restore(&conn, id).unwrap();
+
+        assert_eq!(row.status, Status::Active);
+        assert_eq!(row.path, origin.display().to_string());
+        assert_eq!(row.origin_path, None);
+        assert!(origin.is_file());
+        assert!(!moved.exists());
     }
 
     #[test]

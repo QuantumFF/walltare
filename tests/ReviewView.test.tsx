@@ -114,6 +114,14 @@ beforeEach(() => {
     expansions.push(input);
     return { resolved: input.replace(/^~/, HOME), exists: true };
   });
+  // Settings, which one test in this file navigates to, asks a different
+  // question of the same setting: whether a reject could land there (ADR 0035).
+  mockCommand("check_reject_destination", (args) => {
+    const resolved = args.written.replace(/^~/, HOME);
+    return resolved.startsWith("/")
+      ? { state: "ready", resolved }
+      : { state: "relative" };
+  });
   // Every transition answers with the row it wrote, off the worklist the test
   // arranged (ADR 0023). The tests below override the one they are about.
   mockTransitions(() => reviewed);
