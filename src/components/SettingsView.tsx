@@ -28,7 +28,6 @@ import {
 // prints, written once so that one fact keeps one phrasing (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
 import { useBackendEvents } from "@/lib/useBackendEvents";
-import { isAbsolute } from "@/lib/useExpansion";
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useState, type ReactNode, type Ref } from "react";
 
@@ -128,7 +127,7 @@ function LibraryRootSection() {
   const path = usePathField("library_root", {
     onEdit: () => setScanError(null),
   });
-  const { value, commit, expansion } = path;
+  const { value, commit, resolution } = path;
 
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
@@ -197,11 +196,11 @@ function LibraryRootSection() {
   const status = ((): { tone: PathLineTone; text: string } | null => {
     if (!value) return null;
     if (scanError) return { tone: "error", text: scanError };
-    if (expansion?.kind === "invalid") {
-      return { tone: "error", text: expansion.message };
+    if (resolution?.kind === "invalid") {
+      return { tone: "error", text: resolution.message };
     }
-    if (expansion?.kind === "expanded") {
-      const { resolved, exists } = expansion.expanded;
+    if (resolution?.kind === "expanded") {
+      const { resolved, exists } = resolution.expanded;
       return {
         tone: "path",
         text: exists ? resolved : `${resolved} · folder not found`,
@@ -271,8 +270,20 @@ const RELATIVE_DESTINATION =
   "Relative, so one rejected folder beside each wallpaper.";
 
 /**
+ * What a destination that is not there yet means, which is not a problem.
+ *
+ * ADR 0003 creates the destination on the first reject, so a folder that is
+ * absent is a folder that is about to exist — the reason this field had no
+ * not-found state for as long as `exists` was all it knew. What it could not say
+ * before is the case this clause is beside: a folder that *is* there and will
+ * not take a file, which is an error and reads as one (ADR 0035).
+ */
+const DESTINATION_ABSENT = "created on the first reject";
+
+/**
  * The Reject destination section: the field, Browse, and one status line that
- * explains rather than resolves.
+ * explains a rule it cannot resolve and reports a folder that will not take a
+ * file.
  *
  * The only place `reject_destination` can be edited. ADR 0018 took the field out
  * of Review because a control sitting under fifty cards, which may have come
@@ -287,28 +298,46 @@ function RejectDestinationSection() {
   const path = usePathField("reject_destination");
 
   /**
-   * The one status line, which explains instead of resolving (ADR 0020).
+   * The one status line, which explains where it cannot resolve and reports
+   * where it can (ADR 0020, as amended by ADR 0035).
    *
-   * Three answers and three lines, and nothing in the list is a not-found state.
-   * A reject destination cannot fail to exist: ADR 0003 creates it on demand, so
-   * `exists` is the one field of `Expanded` this section reads past — which is
-   * the same reason ADR 0018 gave for leaving not-found off the two read-out
-   * bars.
+   * Five answers now. A malformed path replaces the line with the backend's own
+   * words, because there is no destination to describe. A relative destination
+   * states the rule, since it resolves per wallpaper and this page does not know
+   * which wallpaper. An absolute one that takes a file is a place, and prints as
+   * one. An absolute one that is not there yet prints as a place with a clause,
+   * because the first reject creates it (ADR 0003) — the one thing this field
+   * still does not treat as an error. And an absolute one that is there and will
+   * not take a file is the case this ticket exists for: the backend's sentence,
+   * in the destructive colour, before a file moves rather than after.
    *
    * A field the curator has emptied says nothing, for the want of anything to
-   * resolve. ADR 0020's table has three rows and none of them is that, and a
-   * fourth line invented here would be inventing a rule with it.
+   * resolve.
    */
   const status = ((): { tone: PathLineTone; text: string } | null => {
-    const { expansion } = path;
-    if (expansion === null) return null;
-    if (expansion.kind === "invalid") {
-      return { tone: "error", text: expansion.message };
+    const { resolution } = path;
+    if (resolution === null) return null;
+    if (resolution.kind === "invalid") {
+      return { tone: "error", text: resolution.message };
     }
-    const { resolved } = expansion.expanded;
-    return isAbsolute(resolved)
-      ? { tone: "path", text: resolved }
-      : { tone: "rule", text: RELATIVE_DESTINATION };
+    if (resolution.kind !== "checked") return null;
+    switch (resolution.check.state) {
+      case "relative":
+        return { tone: "rule", text: RELATIVE_DESTINATION };
+      case "ready":
+        return { tone: "path", text: resolution.check.resolved };
+      case "absent":
+        return {
+          tone: "path",
+          text: `${resolution.check.resolved} · ${DESTINATION_ABSENT}`,
+        };
+      case "refused":
+        // The backend's sentence verbatim, for the reason the syntax error is
+        // rendered verbatim: it names the folder and what refused it, and no
+        // canned string here could say which of a permission, a read-only mount
+        // and a file in the way it was (ADR 0035).
+        return { tone: "error", text: resolution.check.reason };
+    }
   })();
 
   return (

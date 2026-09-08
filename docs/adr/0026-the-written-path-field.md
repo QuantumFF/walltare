@@ -190,3 +190,14 @@ unaltered.
 both lines through their `data-slot`, and both survive the move, so the suite
 should pass unedited. If it does not, the move changed something this ADR says
 it does not.
+
+> **Amended by [ADR 0035](0035-a-reject-destination-is-checked-first.md),
+> 2026-09-08.** "`useExpansion` and `RejectDestination` do not change" no longer
+> holds for the field. The two settings ask different questions of their
+> strings — a Library root, where it points; a reject destination, whether a
+> reject could land there — so `useExpansion.ts` grows a second hook over one
+> shared effect, and `PathField.expansion` becomes `PathField.resolution`, a
+> union of the two answers. `usePathField` picks by key, handing the other hook
+> an empty string, which it answers `null` to without calling the backend.
+> Everything else here stands: one hook, one object, one row, and the sentence
+> under the field is still the caller's. `useRejectDestination` is untouched.

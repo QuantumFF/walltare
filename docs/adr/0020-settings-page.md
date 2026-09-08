@@ -459,3 +459,14 @@ ADR 0010 specified and nobody notices the dead code.
 `ScanView.tsx` is deleted by this ADR rather than emptied. Its input, its
 button, its progress line and three of its four error strings all land here or
 in the shell, and the file's hero layout was for a screen that no longer exists.
+
+> **Amended by [ADR 0035](0035-a-reject-destination-is-checked-first.md),
+> 2026-09-08.** "There is no not-found state, ever" was two claims wearing one
+> sentence. A destination that is *absent* is still not an error — ADR 0003
+> creates it on the first reject — but it now prints as the resolved path with
+> `· created on the first reject` after it, so a typo is recognisable. And a
+> destination that is **there** and will not take a file is an error, in the
+> destructive colour, in the backend's own words. The three-row table above
+> gains those two rows, and the field asks
+> `check_reject_destination` rather than `expand_path`, because only a write
+> can answer the second question.

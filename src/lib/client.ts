@@ -178,7 +178,7 @@ export interface BackendEvents {
  *
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
  * `BackendEvents` does above for the five event names: the one place in the
- * frontend where these 17 strings are written down. `client`'s methods below
+ * frontend where these 18 strings are written down. `client`'s methods below
  * are the only callers in the app; the test suite's `mockCommand` is the other
  * reader, which is why the names are exported rather than inlined (ADR 0031).
  *
@@ -194,6 +194,7 @@ export type Command =
   | "clear_cache"
   | "count_missing_files"
   | "expand_path"
+  | "check_reject_destination"
   | "get_pair"
   | "vote"
   | "get_stats"
@@ -225,6 +226,10 @@ export interface BackendCommands {
   clear_cache: { args: undefined; answer: null };
   count_missing_files: { args: undefined; answer: MissingFiles };
   expand_path: { args: { input: string }; answer: Expanded };
+  check_reject_destination: {
+    args: { written: string };
+    answer: DestinationCheck;
+  };
   get_pair: {
     args: { exclude?: number[] };
     answer: [Wallpaper, Wallpaper];
@@ -288,6 +293,30 @@ export interface Expanded {
   resolved: string;
   exists: boolean;
 }
+
+/**
+ * Mirrors reject_destination::Check: whether the Soft reject destination the
+ * curator is writing can take a file.
+ *
+ * A different question from `Expanded`'s, which is why it is a different command
+ * and a different shape (ADR 0035). There is no `exists` flag, because "there"
+ * and "not there" are not the interesting cases: a folder that is there and will
+ * not take a file is the one that costs a curator a reject, and one that is not
+ * there yet is no problem at all, since the first reject creates it (ADR 0003).
+ *
+ * `relative` carries no path. A relative destination resolves against each
+ * wallpaper's own folder (ADR 0011), so there is no one place to name.
+ *
+ * `reason` on `refused` is the backend's own sentence, naming the folder and
+ * what refused it, and it is the same string a refused reject carries — so the
+ * curator reading it under the field and the curator reading it in a toast are
+ * being told one thing.
+ */
+export type DestinationCheck =
+  | { state: "relative" }
+  | { state: "ready"; resolved: string }
+  | { state: "absent"; resolved: string }
+  | { state: "refused"; resolved: string; reason: string };
 
 /** Tagged `{ kind, message }` union mirroring error::AppError (serde snake_case) */
 export type AppErrorKind =
@@ -392,6 +421,23 @@ export const client = {
    * malformed, so there is no resolved path to show.
    */
   expandPath: (input: string) => invoke<Expanded>("expand_path", { input }),
+
+  /**
+   * Answers whether a Written path can serve as the Soft reject destination:
+   * relative and so resolved per wallpaper, there and able to take a file, not
+   * there yet, or refused with the backend's own sentence.
+   *
+   * Creates nothing and stores nothing, but it is not free of the filesystem the
+   * way `expandPath` is: proving a folder can take a file means writing one into
+   * it and removing it again, which is why this is its own call and the Library
+   * root's field keeps the read-only one (ADR 0035).
+   *
+   * Rejects with `invalid_path_syntax` for a malformed path, exactly as
+   * `expandPath` does, because there is no destination to have an opinion about
+   * until the string resolves.
+   */
+  checkRejectDestination: (written: string) =>
+    invoke<DestinationCheck>("check_reject_destination", { written }),
 
   /**
    * Opens the desktop's folder picker and resolves with the folder the curator

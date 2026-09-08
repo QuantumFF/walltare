@@ -67,6 +67,33 @@ describe("client seam", () => {
     });
   });
 
+  test("checkRejectDestination forwards the written path and answers with the check", async () => {
+    let receivedWritten: string | undefined;
+    mockCommand("check_reject_destination", (args) => {
+      receivedWritten = args.written;
+      return { state: "ready", resolved: "/home/me/rejected" };
+    });
+    const check = await client.checkRejectDestination("~/rejected");
+    expect(receivedWritten).toBe("~/rejected");
+    expect(check).toEqual({ state: "ready", resolved: "/home/me/rejected" });
+  });
+
+  test("checkRejectDestination surfaces a refusal as the answer, not as a failure", async () => {
+    // A folder that will not take a file is a verdict about the path rather
+    // than a fault, so it comes back as a state and the caller decides what to
+    // say (ADR 0035).
+    mockCommand("check_reject_destination", () => ({
+      state: "refused",
+      resolved: "/mnt/rejects",
+      reason: "/mnt/rejects cannot be written to: Permission denied",
+    }));
+    expect(await client.checkRejectDestination("/mnt/rejects")).toEqual({
+      state: "refused",
+      resolved: "/mnt/rejects",
+      reason: "/mnt/rejects cannot be written to: Permission denied",
+    });
+  });
+
   test("pickFolder asks for one folder rather than for files", async () => {
     // `directory` is what makes the native dialog a folder picker rather than a
     // file picker, and `multiple` is what makes its answer one path rather than

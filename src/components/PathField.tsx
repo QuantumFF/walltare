@@ -4,9 +4,15 @@ import { useApp } from "@/context/AppContext";
 import { client } from "@/lib/client";
 // The field resolves the string the curator has *typed*, which moves per
 // keystroke and does not reach the store until blur. That is a different string
-// from the stored one `useRejectDestination` resolves, and the same hook and the
-// same `expand_path` answer serve both (ADR 0018, ADR 0026).
-import { useExpansion, type Expansion } from "@/lib/useExpansion";
+// from the stored one `useRejectDestination` resolves, and both go through this
+// module's neighbours in `useExpansion.ts` (ADR 0018, ADR 0026) — one hook per
+// question, and the two fields here ask different ones (ADR 0035).
+import {
+  useDestinationCheck,
+  useExpansion,
+  type Destination,
+  type Expansion,
+} from "@/lib/useExpansion";
 import { FolderOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
@@ -41,6 +47,23 @@ const STATUS_SLOT: Record<PathSetting, string> = {
  * the line shareable while the sentences stay with the sections (ADR 0026).
  */
 export type PathLineTone = "path" | "rule" | "error";
+
+/**
+ * What the backend says about the string in a path field, whichever of the two
+ * fields it is.
+ *
+ * The two settings hold Written paths and ask different questions of them, so
+ * this is a union of two answers rather than one shape: a Library root is asked
+ * where it points and whether a folder is there, and a reject destination is
+ * asked whether a file could land in it (ADR 0035). `invalid` is common to both,
+ * because a malformed path leaves neither question with a subject.
+ *
+ * Each field only ever sees its own kind. That is not in the type, and would
+ * cost a generic on `PathField`, on `PathFieldRow` and on both sections to put
+ * there — for a distinction each section's status line makes in the one `switch`
+ * it already has.
+ */
+export type PathResolution = Expansion | Destination;
 
 const PATH_LINE_CLASS: Record<PathLineTone, string> = {
   // A place: where the string resolves to, in muted mono because that is what a
@@ -80,8 +103,11 @@ export interface PathField {
    * (ADR 0010).
    */
   value: string;
-  /** What `expand_path` says about it; `null` for an empty field or an answer in flight. */
-  expansion: Expansion | null;
+  /**
+   * What the backend says about it — which question was asked depends on which
+   * setting this is. `null` for an empty field or an answer in flight.
+   */
+  resolution: PathResolution | null;
   field: RefObject<HTMLInputElement | null>;
   section: RefObject<HTMLElement | null>;
   /** Store the Written path, if the store does not already hold it. */
@@ -120,7 +146,15 @@ export function usePathField(
   const field = useRef<HTMLInputElement>(null);
   const section = useRef<HTMLElement>(null);
 
-  const expansion = useExpansion(value);
+  // The question this setting's own field asks, and only that one. Both hooks
+  // are called because hooks are, and the one that is not this field's is handed
+  // an empty string, which is the value it already answers `null` to without
+  // asking the backend anything (ADR 0035).
+  const expansion = useExpansion(key === "library_root" ? value : "");
+  const destination = useDestinationCheck(
+    key === "reject_destination" ? value : "",
+  );
+  const resolution = key === "library_root" ? expansion : destination;
 
   // Focus, and the scroll that makes focusing mean anything on a page four
   // sections long. The text is deliberately not selected: these fields write on
@@ -188,7 +222,7 @@ export function usePathField(
   return {
     setting: key,
     value,
-    expansion,
+    resolution,
     field,
     section,
     commit,
