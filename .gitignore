@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# makepkg's working directories and its output, from packaging/PKGBUILD
+packaging/src/
+packaging/pkg/
+packaging/*.pkg.tar.*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
