@@ -1,0 +1,213 @@
+name: release
+
+# A tag is the only trigger. Everything below is either slow (a from-source
+# build of the whole app, twice, on two distributions) or irreversible (a
+# published release), so neither belongs on the push gate that verify.yml
+# holds.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Creating the release and uploading its assets is the only write this
+# workflow makes. The container job needs nothing but the checkout.
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    name: appimage and checksums
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # src-tauri/Cargo.toml is the one place the version lives (#196), and the
+      # tag is a second copy of it whether anybody likes it or not: the AppImage
+      # is named from the manifest and the release is named from the tag, so a
+      # tag that disagrees publishes walltare 1.1.0 carrying a 1.0.0 binary.
+      # Checked here, before anything is built, rather than noticed on the
+      # releases page.
+      #
+      # A tag with a suffix — v1.0.0-rc1 — is a prerelease, and its version is
+      # the part in front of the suffix. That is the whole rule; there is no
+      # list of accepted suffixes, because the point is only that an rc does
+      # not present itself as the release.
+      - name: The tag and the crate version agree
+        id: version
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          crate="$(awk -F'"' '/^version = /{print $2; exit}' src-tauri/Cargo.toml)"
+
+          if [[ "${version%%-*}" != "$crate" ]]; then
+            echo "::error::tag $tag says ${version%%-*}, src-tauri/Cargo.toml says $crate" >&2
+            exit 1
+          fi
+
+          if [[ $version == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "crate=$crate"
+            echo "prerelease=$prerelease"
+          } >>"$GITHUB_OUTPUT"
+
+          echo "$tag: walltare $crate, prerelease=$prerelease"
+
+      # The same list verify.yml installs, for the same reason: the Tauri crate
+      # links against WebKitGTK and the runner image does not carry it. The
+      # bundler needs the rest of it too — linuxdeploy reads the binary's
+      # dynamic section and copies the libraries it names into the AppDir, so
+      # anything missing here comes out as an AppImage that runs nowhere.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      # No Rust cache, unlike verify.yml. This job runs once per tag and builds
+      # the release profile, which shares nothing with the debug artifacts that
+      # cache holds, so a cache here would only ever be written.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      # `targets: ["appimage"]` in tauri.conf.json decides what comes out of
+      # this: one bundle, no deb and no rpm (ADR 0037).
+      #
+      # NO_STRIP is deliberately not set, and this runner is the reason it can
+      # be left out. linuxdeploy carries its own elderly `strip`, which cannot
+      # read a SHT_RELR section and stops the bundle with `unknown type [0x13]`
+      # — on a current Arch host every library it bundles has one, so a
+      # maintainer building there needs `NO_STRIP=true` and
+      # docs/release-checklist.md says so. On ubuntu-24.04 only `libc.so.6`
+      # has one, and linuxdeploy never copies libc: all 162 shared objects in
+      # the AppDir were measured and none of them carries a SHT_RELR section
+      # (ADR 0038). If that changes, the symptom is this step failing on
+      # `unknown type [0x13]` and the fix is one environment variable.
+      - name: Build the AppImage
+        run: bun run tauri build
+
+      # sha256sums.txt is written beside the AppImage and holds a bare
+      # filename, so `sha256sum -c sha256sums.txt` works in whatever directory
+      # a stranger downloaded the two files into. It covers the AppImage: a
+      # checksum file cannot cover itself, and it is the file whose transfer is
+      # worth checking.
+      - name: Checksum the artifacts
+        id: artifacts
+        working-directory: src-tauri/target/release/bundle/appimage
+        env:
+          CRATE_VERSION: ${{ steps.version.outputs.crate }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundles=(*.AppImage)
+
+          if ((${#bundles[@]} != 1)); then
+            echo "::error::expected one AppImage, found ${#bundles[@]}: ${bundles[*]-none}" >&2
+            exit 1
+          fi
+
+          appimage="${bundles[0]}"
+          if [[ $appimage != *"$CRATE_VERSION"* ]]; then
+            echo "::error::$appimage does not carry the version $CRATE_VERSION" >&2
+            exit 1
+          fi
+
+          sha256sum "$appimage" >sha256sums.txt
+          sha256sum -c sha256sums.txt
+          cat sha256sums.txt
+
+          echo "dir=$PWD" >>"$GITHUB_OUTPUT"
+          echo "appimage=$appimage" >>"$GITHUB_OUTPUT"
+
+      # --verify-tag so a typo in a manually created release cannot be filled
+      # in by this workflow, and --generate-notes so the release is never
+      # published empty. The notes for a release that matters are hand written
+      # (#195) and replaced afterwards with
+      # `gh release edit <tag> --notes-file <file>`; there is no second code
+      # path here that reads a notes file out of the repo, because it would run
+      # on exactly one tag and be untested on every other.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          DIR: ${{ steps.artifacts.outputs.dir }}
+          APPIMAGE: ${{ steps.artifacts.outputs.appimage }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --verify-tag \
+            --generate-notes \
+            --prerelease="$PRERELEASE" \
+            "$DIR/$APPIMAGE" \
+            "$DIR/sha256sums.txt"
+
+  # The one machine that can find a missing entry in packaging/PKGBUILD's
+  # dependency list. The maintainer's machine has everything installed and
+  # cannot reproduce the failure; this container has nothing, so the build
+  # either runs on what the PKGBUILD asked for or it does not run.
+  #
+  # It does not gate the release above and is not gated by it. An AppImage user
+  # does not care whether the Arch dependency list is complete, and holding a
+  # published artifact behind a twenty-minute from-source build in another
+  # distribution would couple two things that fail for unrelated reasons.
+  arch-install:
+    name: install.sh on clean arch
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      # -Syu rather than -Sy: a partial upgrade of an Arch image is its own
+      # class of failure and has nothing to do with walltare. git is for
+      # actions/checkout, and it is the only thing installed by hand here —
+      # every package the app itself needs has to arrive through
+      # `makepkg --syncdeps` reading packaging/PKGBUILD, which is the point of
+      # the job.
+      #
+      # makepkg refuses to run as root, so the build needs an ordinary user,
+      # and `makepkg --syncdeps --install` needs that user to reach pacman
+      # without a password prompt in a job with no terminal.
+      - name: Prepare the container
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm git
+          useradd --create-home builder
+          printf 'builder ALL=(ALL) NOPASSWD: ALL\n' >/etc/sudoers.d/builder
+          chmod 0440 /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+
+      - name: Hand the checkout to that user
+        run: chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      # -H so HOME is builder's: cargo, bun and makepkg all write under it, and
+      # sudo would otherwise leave them pointing at /root.
+      - name: ./install.sh
+        run: sudo -H -u builder ./install.sh --noconfirm
+
+      # The acceptance criterion is that the script installs the app, not that
+      # it compiled it, and pacman is the only thing that can say so.
+      - name: pacman owns the result
+        run: pacman -Qi walltare
