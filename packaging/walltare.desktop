@@ -1,0 +1,15 @@
+[Desktop Entry]
+Version=1.4
+Type=Application
+Name=walltare
+GenericName=Wallpaper curation
+Comment=Decide which wallpapers to keep by comparing them two at a time
+# /usr/bin/walltare is the launcher installed from packaging/walltare.sh, not
+# the binary. It sets __NV_DISABLE_EXPLICIT_SYNC when the environment has not
+# already set it; the binary itself lives in /usr/lib/walltare.
+Exec=walltare
+Icon=walltare
+Terminal=false
+Categories=Graphics;Viewer;
+Keywords=wallpaper;image;ranking;curation;
+StartupNotify=true

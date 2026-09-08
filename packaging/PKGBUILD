@@ -1,0 +1,139 @@
+# Maintainer: QuantumFF <https://github.com/QuantumFF>
+#
+# walltare, packaged from the checkout this file sits in. `../install.sh` runs
+# makepkg here; nobody is expected to trust or maintain a prebuilt package.
+#
+# There is no `source` array on purpose: the sources are the clone the user
+# already has, which is the whole point of the install script. Promoting this
+# to the AUR later means adding `source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")`
+# or a `git+` source with a `pkgver()`, and changing nothing else.
+#
+# It lives in packaging/ rather than the repo root because makepkg builds in
+# `$startdir/src` and packages in `$startdir/pkg`, and the repo root already
+# has a `src/` — the frontend. Run from here, those two directories are
+# packaging/src and packaging/pkg, and `makepkg -C` cannot reach the app.
+
+pkgname=walltare
+pkgrel=1
+pkgdesc='Wallpaper curation via pairwise voting'
+arch=('x86_64')
+url='https://github.com/QuantumFF/walltare'
+license=('MIT')
+
+# The checkout. makepkg sets `startdir` to the directory it runs in; the
+# fallback keeps `bash PKGBUILD` and editor linters working.
+_repo="$(realpath -m "${startdir:-$(dirname "${BASH_SOURCE[0]}")}/..")"
+
+# src-tauri/Cargo.toml is the one place the version lives (#196). Reading it
+# here is what stops this file becoming the second copy.
+#
+# The cost of that is `namcap PKGBUILD`, which sources a PKGBUILD in a
+# restricted shell where no external command runs and no file can be read, so
+# it cannot evaluate this line and lints nothing. `makepkg --printsrcinfo` —
+# makepkg's own parser, and the one every build goes through — reads it fine,
+# and `namcap` on the built package is unaffected.
+_version="$(awk -F'"' '/^version = /{print $2; exit}' "$_repo/src-tauri/Cargo.toml")"
+pkgver="${_version:?the version could not be read from src-tauri/Cargo.toml — is this a walltare checkout?}"
+
+# Every one of these is a library the built binary asks the dynamic linker for
+# by name, read off `readelf -d` rather than copied from a prerequisites page:
+#
+#   webkit2gtk-4.1   libwebkit2gtk-4.1.so.0, libjavascriptcoregtk-4.1.so.0
+#   gtk3             libgtk-3.so.0, libgdk-3.so.0
+#   libsoup3         libsoup-3.0.so.0
+#   glib2            libglib-2.0.so.0, libgobject-2.0.so.0, libgio-2.0.so.0
+#   cairo            libcairo.so.2
+#   gdk-pixbuf2      libgdk_pixbuf-2.0.so.0
+#   dbus             libdbus-1.so.3
+#   libgcc           libgcc_s.so.1
+#   glibc            libc.so.6, libm.so.6
+#
+# `libgcc` and not `gcc-libs`, which namcap asked for and which is now a
+# metapackage pulling in libasan, libgfortran, libtsan and seven more runtimes
+# this app never loads.
+#
+# webkit2gtk-4.1 drags most of the rest in, and they are still listed: an
+# entry that is there because something else happens to pull it today is an
+# entry that breaks on the day that stops being true, and this list is the one
+# thing in the project a stranger's machine tests and the maintainer's does not.
+#
+# libayatana-appindicator is deliberately absent. It is on Tauri's Linux
+# prerequisites page for the tray icon, `tauri` is built with `features = []`,
+# and the binary links neither it nor libappindicator. librsvg is absent for
+# the same reason: nothing here renders an SVG, and the icons are PNG.
+depends=(
+	'webkit2gtk-4.1'
+	'gtk3'
+	'libsoup3'
+	'glib2'
+	'cairo'
+	'gdk-pixbuf2'
+	'dbus'
+	'libgcc'
+	'glibc'
+	'hicolor-icon-theme'
+)
+
+# `rust` is satisfied by the rustup package too, which provides it. bun builds
+# the frontend and runs the Tauri CLI; it is in extra, so `makepkg -s` can
+# install it and nothing here needs the AUR. The C toolchain and pkgconf that
+# rusqlite and webkit2gtk-sys need come from base-devel, which makepkg already
+# requires and which PKGBUILDs do not list.
+makedepends=('rust' 'bun')
+
+# Arch's makepkg.conf turns LTO on for every package, which puts `-flto=auto`
+# into the CFLAGS the cc crate compiles rusqlite's bundled SQLite with. That
+# makes libsqlite3.a a bundle of GCC bitcode, and the linker rustc uses here is
+# lld, which cannot read it: the build dies in a wall of
+# `undefined symbol: sqlite3_open_v2`. Cargo does its own optimizing anyway.
+#
+# !debug because Cargo's release profile hands the linker `--strip-debug`, so
+# the walltare-debug package makepkg would otherwise build carries no symbols —
+# gdb-add-index says so out loud while it is being made — and a second package
+# with nothing in it is a second package the user has to reason about.
+options=('!lto' '!debug')
+
+build() {
+	cd "$_repo" || return 1
+
+	# The Arch convention for a Rust package, and a no-op when rust came from
+	# pacman rather than rustup.
+	export RUSTUP_TOOLCHAIN=stable
+
+	# The lockfile decides the frontend's versions, so the package is built
+	# from what the repo pinned rather than from whatever npm published today.
+	bun install --frozen-lockfile
+
+	# --no-bundle stops the Tauri bundler here: the AppImage target it would
+	# otherwise produce downloads linuxdeploy at build time, and this package
+	# wants the plain binary. `bun tauri build` still runs the frontend build
+	# through beforeBuildCommand.
+	bun run tauri build --no-bundle
+}
+
+package() {
+	cd "$_repo" || return 1
+
+	# The binary goes under /usr/lib so that /usr/bin/walltare can be the
+	# launcher. Nothing in the app resolves a path relative to the executable:
+	# the frontend is compiled into the binary, and the database and thumbnail
+	# cache are found through the XDG app data directory.
+	install -Dm755 src-tauri/target/release/walltare "$pkgdir/usr/lib/$pkgname/$pkgname"
+	install -Dm755 packaging/walltare.sh "$pkgdir/usr/bin/$pkgname"
+
+	install -Dm644 packaging/walltare.desktop "$pkgdir/usr/share/applications/$pkgname.desktop"
+
+	# The four sizes the icon set ships at, each under the name the desktop
+	# entry's `Icon=walltare` looks up.
+	install -Dm644 src-tauri/icons/32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/$pkgname.png"
+	install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/$pkgname.png"
+	install -Dm644 'src-tauri/icons/128x128@2x.png' "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"
+	install -Dm644 src-tauri/icons/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
+
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+	# Nothing else is installed, and there is no .install script. Everything
+	# pacman removes on `pacman -R walltare` is in the list above, so the
+	# database and the thumbnail cache under the user's app data directory are
+	# untouched by the uninstall — pacman never owned them.
+}
