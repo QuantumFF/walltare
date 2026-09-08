@@ -17,12 +17,10 @@ pacman own the result.
 
 ### Any Linux: the AppImage
 
-Download the `.AppImage` and `sha256sums.txt` from the
-[releases page](https://github.com/QuantumFF/walltare/releases), check the file
-arrived intact, and run it:
+Download the `.AppImage` from the
+[releases page](https://github.com/QuantumFF/walltare/releases) and run it:
 
 ```sh
-sha256sum -c sha256sums.txt
 chmod +x walltare_*.AppImage
 ./walltare_*.AppImage
 ```
@@ -30,6 +28,12 @@ chmod +x walltare_*.AppImage
 Nothing is installed: the AppImage is the whole app, and deleting the file is
 the uninstall. Your database and thumbnail cache live elsewhere and survive it,
 as do your wallpapers.
+
+Every release also carries a `sha256sums.txt`. If a download looks wrong,
+fetch that too and run `sha256sum -c sha256sums.txt` beside the AppImage to
+find out whether the file arrived intact. It says nothing about where the file
+came from — the checksums sit on the same page as the binary — so it is a check
+against a bad download, not against a bad actor.
 
 ### Arch: the install script
 
