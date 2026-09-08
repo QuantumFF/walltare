@@ -16,31 +16,6 @@ Decisions that already went a particular way, and the reasoning that would
 otherwise get undone, live in `docs/adr/`. Read the ones covering the area
 you're about to change.
 
-## Reference implementation
-
-The original Python/FastAPI + React app lives at `/home/qdes/repos/rate-wallpaper`
-(see its `memory-bank/` for behavior details).
-
-## Commands
-
-- Dev run: `bun tauri dev`, from the graphical session — an SSH shell has no
-  display and GTK panics. One environment variable matters, and `main.rs` sets
-  it for itself: `__NV_DISABLE_EXPLICIT_SYNC=1` on Wayland with NVIDIA. This
-  line used to list three. `WEBKIT_DISABLE_DMABUF_RENDERER=1` made no
-  observable difference, and `GDK_BACKEND=x11` is not needed — forcing X11
-  would cost fractional scaling and per-monitor DPI in an app whose whole job
-  is showing images (#195).
-- Rust: `cargo test`, `cargo fmt`, `cargo clippy --all-targets` (from `src-tauri/`)
-- Frontend: `bun test`, `bun run typecheck`, `bun run lint` (from the repo root)
-- Icons: `bun tauri icon app-icon.png` regenerates `src-tauri/icons/` from the
-  1024x1024 source at the repo root. It also writes `android/` and `ios/`
-  subdirectories; delete them, this app has no mobile target. `public/favicon.ico`
-  is a copy of the generated `src-tauri/icons/icon.ico`.
-
-Run both sides before opening a PR. The frontend tests drive the real components
-against a mocked IPC seam, so a backend DTO change that the TypeScript types
-don't follow shows up there rather than at runtime.
-
 ## Agent skills
 
 ### Issue tracker
