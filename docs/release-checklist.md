@@ -133,11 +133,58 @@ release that looks like it has a broken thumbnail pipeline.
       `fetch('https://example.com')`. It must fail with a policy error. This is
       the check that the policy is doing anything at all.
 
+## The release artifact and its checksums
+
+**Build under test:** the two files the release workflow attached to the tag,
+downloaded from the releases page onto a machine that did not build them.
+Downloaded, not copied out of `src-tauri/target/`: a checksum file that only
+verifies in the build tree verifies nothing. See
+[ADR 0038](adr/0038-the-release-is-one-tag-triggered-workflow.md).
+
+The workflow already refuses a tag whose version disagrees with
+`src-tauri/Cargo.toml`, refuses a bundle directory holding anything but one
+AppImage, and checks its own checksum file before it uploads. What is left here
+is everything that can only be seen from the far end: that the release page
+carries what it should, and that the file a stranger downloads is the file that
+was built.
+
+- [ ] **The release carries two assets and nothing else.**
+      `gh release view <tag> --json assets --jq '.assets[].name'` lists exactly
+      `walltare_<version>_amd64.AppImage` and `sha256sums.txt`. One missing
+      means the upload half-finished; a third one was attached by hand and
+      nothing in the release notes accounts for it.
+- [ ] **The AppImage filename carries the version in
+      `src-tauri/Cargo.toml`.** For this release, `walltare_1.0.0_amd64.AppImage`.
+      A name and a manifest that disagree mean the tag was built from a
+      different commit than the one being shipped.
+- [ ] **The checksums verify in the directory they were downloaded into.**
+      In an empty directory: `gh release download <tag>`, then
+      `sha256sum -c sha256sums.txt`. A pass is one `... AppImage: OK` line and
+      exit status 0. Run it somewhere that is not the checkout — this is the
+      check that the file holds a bare filename rather than a build path.
+- [ ] **A prerelease is marked as one, and the release is not.**
+      `gh release view <tag> --json isPrerelease` says `true` for an `-rcN` tag
+      and `false` for `v1.0.0`. An rc that presents itself as the release is the
+      failure this flag exists to prevent, and the releases page shows the
+      latest non-prerelease as the download.
+- [ ] **The downloaded AppImage runs on a distribution that is not the build
+      host.** `chmod +x` it and run it on Ubuntu or Fedora, not on the Arch
+      machine that has every build dependency installed. A window paints and all
+      four views open. A missing shared library here means linuxdeploy did not
+      bundle something the binary asks for, and the AppImage's whole promise is
+      that there is nothing to install.
+- [ ] **The Arch container job on the tag is green.**
+      `gh run view <run-id>` for the tag's `release` run: the
+      `install.sh on clean arch` job succeeded. It is the only thing in the
+      project that proves `packaging/PKGBUILD` names every package the build
+      needs, because the maintainer's machine already has them all. A red job
+      here is a release that Arch users cannot build, whatever the AppImage
+      does.
+
 <!--
 Sections below are added by the remaining release issues. Keep the shape: a
 level-two heading, a **Build under test** line, then checkboxes that each say
 what to do and what a pass looks like.
 
-- The release artifact and its checksums — #207
 - The release itself — #208
 -->
