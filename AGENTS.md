@@ -32,6 +32,10 @@ The original Python/FastAPI + React app lives at `/home/qdes/repos/rate-wallpape
   is showing images (#195).
 - Rust: `cargo test`, `cargo fmt`, `cargo clippy --all-targets` (from `src-tauri/`)
 - Frontend: `bun test`, `bun run typecheck`, `bun run lint` (from the repo root)
+- Icons: `bun tauri icon app-icon.png` regenerates `src-tauri/icons/` from the
+  1024x1024 source at the repo root. It also writes `android/` and `ios/`
+  subdirectories; delete them, this app has no mobile target. `public/favicon.ico`
+  is a copy of the generated `src-tauri/icons/icon.ico`.
 
 Run both sides before opening a PR. The frontend tests drive the real components
 against a mocked IPC seam, so a backend DTO change that the TypeScript types
