@@ -122,13 +122,14 @@ type Answer = Result<Arc<Vec<u8>>, AppError>;
 /// Starts the threads that answer `wallpaper://` requests, and the two tables
 /// they answer through.
 ///
-/// Called once from `setup`, so the pool is up before the first card asks. The
-/// pool, the in-flight table and the bytes in memory are private to this module
-/// — nothing outside it names the stack, the threads or the job type, which is
-/// what kept the admission policy a change to this file and to nothing else.
-/// [`ImageCache`] is the one exception and only for what invalidates it: Settings'
-/// Clear thumbnail cache throws away rows and files in `lib.rs`, and the bytes
-/// have to go with them.
+/// Called once from `setup`, so the pool is up before the first card asks.
+/// Nothing outside this module names the stack, either lane or the job type,
+/// which is what keeps the admission policy a change to this file and to nothing
+/// else. Two things are reachable from outside and each is one method wide:
+/// [`ImageCache`] for what invalidates it, since Settings' Clear thumbnail cache
+/// throws away rows and files in `lib.rs` and the bytes have to go with them, and
+/// [`ImageWorkers::background`] for the pre-generation pass, which is the second
+/// producer and cannot reach the lane any other way.
 pub fn start(app: &AppHandle) {
     app.manage(ImageWorkers::new(worker_count()));
     app.manage(ImageCache::new(IMAGE_CACHE_ENTRIES));
@@ -592,11 +593,7 @@ impl Leader<'_> {
         }
         self.settled = true;
         self.in_flight.flights().remove(&self.key);
-        let settled = answer.unwrap_or_else(|| {
-            Arc::new(Err(AppError::Image(
-                "generating the thumbnail panicked".to_string(),
-            )))
-        });
+        let settled = answer.unwrap_or_else(|| Arc::new(Err(panicked())));
         *self
             .flight
             .answer
@@ -616,9 +613,26 @@ impl Drop for Leader<'_> {
     }
 }
 
+/// What image work is answered with when it panicked rather than finished.
+///
+/// One sentence in one place, because both producers can hear it: a follower
+/// gets it from [`Leader`]'s `Drop`, and the pre-generation pass gets it from
+/// [`ImageWorkers::background`] coming back with nothing.
+pub fn panicked() -> AppError {
+    AppError::Image("generating the thumbnail panicked".to_string())
+}
+
 /// A fixed set of threads for image work: `wallpaper://` requests newest first,
 /// and the pre-generation pass behind all of them.
 pub struct ImageWorkers(Arc<Requests>);
+
+/// How often a caller parked in [`ImageWorkers::background`] looks up to ask
+/// whether it still wants its answer.
+///
+/// Short enough that a cancel reaches the pre-generation pass about as fast as
+/// it did when the pass owned the decode, and long enough that a parked thread
+/// costs nothing measurable while it waits.
+const BACKGROUND_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -748,11 +762,26 @@ impl ImageWorkers {
     /// caller's own thread is parked rather than decoding, so the pass costs a
     /// pool slot instead of a core of its own.
     ///
-    /// `None` when the work never ran — a worker that panicked partway, or a
-    /// pool that has been dropped, which only a test does. Both leave the sender
-    /// dropped unsent, and neither leaves the caller waiting for an answer that
-    /// is not coming.
-    pub fn background<T>(&self, work: impl FnOnce() -> T + Send + 'static) -> Option<T>
+    /// The wait is not unbounded, and `abandon` is why. It is asked every
+    /// [`BACKGROUND_POLL`] whether the caller still wants the answer, and a
+    /// caller that says no stops waiting. That is what keeps a stood-down
+    /// pre-generation pass from being pinned behind a burst of fifty requests:
+    /// its own exit is what `start_pregen`'s supervisor joins, and what an IPC
+    /// call to Cancel or to Clear thumbnail cache then queues behind.
+    ///
+    /// An abandoned job is not withdrawn — nothing is dropped from either lane —
+    /// so it runs when its turn comes and the caller has to be able to live with
+    /// that. The pre-generation pass can: the job reads the same cancel flag
+    /// before it starts and does nothing.
+    ///
+    /// `None` when no answer came: the work panicked partway, the pool has been
+    /// dropped, which only a test does, or the caller abandoned the wait. What
+    /// the caller can tell those apart by is whatever made it abandon.
+    pub fn background<T>(
+        &self,
+        work: impl FnOnce() -> T + Send + 'static,
+        abandon: impl Fn() -> bool,
+    ) -> Option<T>
     where
         T: Send + 'static,
     {
@@ -760,7 +789,14 @@ impl ImageWorkers {
         self.0.push_background(Box::new(move || {
             let _ = done.send(work());
         }));
-        answer.recv().ok()
+        loop {
+            match answer.recv_timeout(BACKGROUND_POLL) {
+                Ok(answer) => return Some(answer),
+                Err(mpsc::RecvTimeoutError::Timeout) if abandon() => return None,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
     }
 }
 
@@ -1394,9 +1430,34 @@ mod tests {
         // own, and it comes away with the result as if it had done the work.
         let workers = ImageWorkers::new(1);
 
-        let answer = workers.background(|| "both sizes written");
+        let answer = workers.background(|| "both sizes written", || false);
 
         assert_eq!(answer, Some("both sizes written"));
+    }
+
+    #[test]
+    fn a_caller_that_gives_up_waiting_stops_waiting() {
+        // A pre-generation pass that has been stood down while its wallpaper
+        // sits behind a burst of requests. Its own exit is what a `start_pregen`
+        // supervisor joins while holding the `Pregen` mutex, and an IPC call to
+        // Cancel or to Clear thumbnail cache queues behind that — so a wait
+        // bounded only by the interactive lane draining would be a button that
+        // hangs (#232).
+        let workers = ImageWorkers::new(1);
+        let (worker_busy, holding_the_worker) = mpsc::channel();
+        let (release, may_finish) = mpsc::channel();
+        workers.submit(move || {
+            worker_busy.send(()).unwrap();
+            may_finish.recv().unwrap();
+        });
+        holding_the_worker.recv().unwrap();
+
+        let answer = workers.background(|| "never reached a worker", || true);
+
+        assert_eq!(answer, None);
+        // And the job it left behind still runs, because nothing is dropped from
+        // either lane. It is the caller's business that the work happens anyway.
+        release.send(()).unwrap();
     }
 
     #[test]
@@ -1407,11 +1468,11 @@ mod tests {
         // the next request is still served.
         let workers = ImageWorkers::new(1);
 
-        let answer = workers.background(|| panic!("the decoder gave up"));
+        let answer = workers.background(|| panic!("the decoder gave up"), || false);
 
         assert_eq!(answer, None::<()>);
         assert_eq!(
-            workers.background(|| "the pool still works"),
+            workers.background(|| "the pool still works", || false),
             Some("the pool still works")
         );
     }

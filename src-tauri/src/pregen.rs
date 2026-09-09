@@ -80,12 +80,12 @@ impl Pregen {
 
     /// Sets the running pass's cancel flag and returns.
     ///
-    /// Never joins. The flag is read between wallpapers, and again where a
-    /// wallpaper's work starts on a worker, and the `image` crate cannot be
-    /// interrupted mid-decode, so waiting here would block an IPC call for up to
-    /// one wallpaper's decode. A cancel therefore lands up to one decode late,
-    /// and both callers are fine with that: everything already generated stays
-    /// on disk either way.
+    /// Never joins. The flag is read between wallpapers, and around the gap
+    /// between handing one to the pool and a worker starting it, and the `image`
+    /// crate cannot be interrupted mid-decode, so waiting here would block an
+    /// IPC call for up to one wallpaper's decode. A cancel therefore lands up to
+    /// one decode late, and both callers are fine with that: everything already
+    /// generated stays on disk either way.
     pub fn cancel(&self) {
         if let Some((flag, _)) = self.current().as_ref() {
             flag.store(true, Ordering::SeqCst);
@@ -175,7 +175,7 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
         }
     };
     pass(&db, &work, cancel, &EventReport(app), |pending| {
-        on_the_pool(app, cancel, pending)
+        generate_on_the_pool(app, cancel, pending)
     });
 }
 
@@ -188,21 +188,26 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
 /// is what keeps ADR 0012's one-thread budget: the pass occupies one of the
 /// pool's slots rather than a core beside them.
 ///
-/// The cancel flag is read again where the work starts, which is
+/// The cancel flag is read twice more, and both reads are about the same gap.
+/// Waiting stops when the pass has been stood down, so its exit stays bounded by
+/// a decode rather than by the interactive lane draining — `supervise` joins that
+/// exit while holding the [`Pregen`] mutex, and an IPC call to Cancel or to Clear
+/// thumbnail cache queues behind it. The wallpaper left in the lane reads the
+/// flag for itself where the work starts, which is
 /// [`generate_unless_cancelled`]'s whole job.
-fn on_the_pool(
+fn generate_on_the_pool(
     app: &AppHandle,
     cancel: &Arc<AtomicBool>,
     pending: &thumbnails::Pending,
 ) -> Result<Step, error::AppError> {
     let handle = app.clone();
-    let cancel = Arc::clone(cancel);
+    let flag = Arc::clone(cancel);
     let pending = pending.clone();
-    app.state::<ImageWorkers>()
-        .background(move || {
+    let answer = app.state::<ImageWorkers>().background(
+        move || {
             let db = handle.state::<Db>();
             let cache_dir = handle.state::<CacheDir>();
-            let step = generate_unless_cancelled(&db, &cache_dir.0, &cancel, &pending);
+            let step = generate_unless_cancelled(&db, &cache_dir.0, &flag, &pending);
             if matches!(step, Ok(Step::Generated)) {
                 // The window ADR 0040 left open: this pass wrote files and rows
                 // without going through `serve`, so bytes in memory for this
@@ -212,26 +217,34 @@ fn on_the_pool(
                 handle.state::<ImageCache>().forget(pending.wallpaper_id);
             }
             step
-        })
-        // The job never ran, which in a running app means the decode panicked.
-        // The pool's worker survived it and the pass counts a failure, which
-        // ADR 0034's note then keys to these bytes — so the next pass does not
-        // spend the same panic learning the same thing.
-        .unwrap_or_else(|| {
-            Err(error::AppError::Image(
-                "generating the thumbnail panicked".to_string(),
-            ))
-        })
+        },
+        || cancel.load(Ordering::SeqCst),
+    );
+    match answer {
+        Some(step) => step,
+        // Stood down while this wallpaper waited, so the pass is not waiting for
+        // it any more. It is a skip for the same reason a Rejected one is: the
+        // pass came away having written nothing, and it stops at the top of its
+        // next turn regardless.
+        None if cancel.load(Ordering::SeqCst) => Ok(Step::Skipped),
+        // No answer and nothing was cancelled, which in a running app means the
+        // decode panicked. The pool's worker survived it and the pass counts a
+        // failure, which ADR 0034's note then keys to these bytes — so the next
+        // pass does not spend the same panic learning the same thing.
+        None => Err(crate::serving::panicked()),
+    }
 }
 
 /// One wallpaper, unless the pass was stood down while it waited for a worker.
 ///
 /// The flag is read here as well as between wallpapers because submitting and
 /// starting are no longer the same instant: a wallpaper can sit behind a burst
-/// of interactive requests, and without this a cancel would land a queue wait
-/// later than the one decode ADR 0012 allows it. A wallpaper the pass never
-/// touched is a skip, which is what the Status re-check already calls the same
-/// outcome — the pass stops at the top of its next turn either way.
+/// of interactive requests, and a pass whose thread has already given up on this
+/// job is a pass whose files must not still arrive. Without this read a cancel
+/// would leave a decode running to write a wallpaper nobody is waiting for, into
+/// a cache directory Clear thumbnail cache may have just emptied. A wallpaper the
+/// pass never touched is a skip, which is what the Status re-check already calls
+/// the same outcome.
 ///
 /// A decode already under way is not interrupted. The `image` crate cannot be,
 /// and a partial cache is a correct cache.
@@ -294,8 +307,9 @@ impl Tally {
 ///
 /// Each wallpaper finishes before the next starts, so a cancelled pass leaves a
 /// clean prefix: fully warm, in the order the curator will reach it. The cancel
-/// flag is read between wallpapers, never inside one — and once more where the
-/// next one's work starts, which [`generate_unless_cancelled`] explains.
+/// flag is read between wallpapers, never inside one — and twice more around the
+/// gap between handing a wallpaper to the pool and a worker starting it, which
+/// [`generate_on_the_pool`] explains.
 ///
 /// One wallpaper at a time is the budget rather than an implementation detail.
 /// ADR 0012 gave the pass one thread of an N-core machine while the curator

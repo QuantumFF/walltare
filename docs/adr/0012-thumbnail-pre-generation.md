@@ -350,15 +350,24 @@ machinery than one thread, for a background task nobody is waiting on.
 > fix. A test pins the concurrency at one, so a later change cannot widen it by
 > accident.
 >
-> Three smaller things follow. The cancel flag is read twice, once between
-> wallpapers as before and once where the work starts on a worker, because
-> submitting and starting are no longer the same instant; without the second
-> read a cancel would land a queue wait later than the one decode this ADR
-> allows it. The pass's regenerates now call `ImageCache::forget`, which closes
-> the window ADR 0040 named and left here. And a worker survives a job that
-> panics, because a pool that lost a thread to every malformed JPEG would end up
-> serving nothing at all, silently — the pass counts that wallpaper as failed,
-> and ADR 0034's note keys the failure to those bytes.
+> **A cancel still lands one decode late, and that took two more reads of the
+> flag.** Handing a wallpaper to the pool and a worker starting it are no longer
+> the same instant, and the gap between them is however long the interactive lane
+> takes to drain. So the pass gives up waiting when it has been stood down, and
+> the wallpaper left in the lane reads the flag for itself before it starts and
+> does nothing. Both reads are about the same window and each is load-bearing: the
+> first keeps the pass's *exit* bounded by a decode, which matters because
+> `start_pregen`'s supervisor joins that exit while holding the `Pregen` mutex and
+> an IPC call to Cancel or to Clear thumbnail cache queues behind it; the second
+> keeps a decode nobody is waiting for from writing files into a cache directory
+> that Clear may have just emptied. A decode already under way is still never
+> interrupted.
+>
+> Two smaller things follow. The pass's regenerates now call
+> `ImageCache::forget`, which closes the window ADR 0040 named and left here. And
+> a worker survives a job that panics, because a pool that lost a thread to every
+> malformed JPEG would end up serving nothing at all, silently — the pass counts
+> that wallpaper as failed, and ADR 0034's note keys the failure to those bytes.
 >
 > Two things this does not do. Background work is not starved by a busy grid,
 > because a grid asks for a bounded number of thumbnails and then stops asking,
