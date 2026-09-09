@@ -77,6 +77,20 @@ remount throws it away.
 Settings unmounts, so its fields re-read the store rather than holding a stale
 copy of it.
 
+> **The cost this turns on changed, and the decision has not.
+> [ADR 0040](0040-a-thumbnail-is-served-newest-first.md), 2026-09-09.** A warm
+> remount of Review no longer touches the connection or the disk at all: the
+> serving module holds the last 256 thumbnails' bytes in memory, so the 50 round
+> trips and 50 cache-file reads above become 50 hash lookups. That ADR carries
+> the counts before and after.
+>
+> The other reason this section gives is untouched — rendered DOM, and Rank's
+> prefetched pair, which is state rather than pixels. So whether a view can start
+> unmounting is left open on purpose rather than answered by the cheaper number,
+> and ADR 0040 says what would settle it: the pass condition in this ADR's own
+> consequences, re-run against a remount that now costs much less than the
+> number that condition was written against.
+
 Returning to Library puts the user back where they were, for the lifetime of the
 app run and not across relaunches. The position resets when the filter or the
 ordering changes, because a position means something different in a reordered

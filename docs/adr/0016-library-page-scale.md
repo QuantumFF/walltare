@@ -115,10 +115,35 @@ source file's mtime changing, which happens when the user edits a wallpaper in
 place. That is rare, and being five minutes late about it does not justify a
 versioning scheme.
 
+> **Amended by [#227](https://github.com/QuantumFF/walltare/issues/227),
+> 2026-09-09.** A failed request carries `Cache-Control: max-age=30`, where it
+> carried no header at all. A card whose file has gone reads as gone by way of
+> the request failing ([ADR 0032](0032-a-missing-file-reads-as-gone.md)), so
+> under the virtualisation this ADR ships, the cards that cannot paint were the
+> only ones still paying a full round trip per remount — a library that has
+> drifted from disk was slower than a live one. Thirty seconds rather than five
+> minutes because what invalidates the answer is a curator plugging the drive
+> back in, and they should see the cards paint rather than wonder whether the
+> app noticed.
+
 **Unverified**: whether WebKitGTK's memory cache honours `max-age` for a custom
 scheme at all. If it does not, this header buys nothing and the fallback is a
 frontend-side `Map<id, blob>` bounded to a few hundred entries. See "If the grid
 ever janks" below.
+
+> **Settled by [ADR 0040](0040-a-thumbnail-is-served-newest-first.md),
+> 2026-09-09.** The fallback is built, and it is not in the frontend. A bounded
+> least-recently-used cache of 256 thumbnails' bytes sits behind the serving
+> module, which is the side that already holds them, and it serves all three of
+> the callers named here and in ADR 0022 without any of them knowing it exists.
+> Nothing in `src/` changed.
+>
+> The header stays, and the question above is still open: it is
+> [#225](https://github.com/QuantumFF/walltare/issues/225)'s to answer, and a
+> positive answer is not a reason to take the cache out. What it would overlap
+> with is a remount inside the five minutes; what it cannot cover is the first
+> paint of a view, where there is no webview cache entry yet by definition and
+> where the ~25 dropped frames this ADR cites are measured.
 
 > [ADR 0022](0022-lightbox-shares-the-selection.md) adds two dependents on that
 > unverified header. Stepping backwards through the lightbox assumes the
