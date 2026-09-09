@@ -425,9 +425,14 @@ fn clear_cache(
     // Before anything is deleted, so a pass is not writing files into the
     // directory this is about to empty. It stands down between wallpapers and
     // this does not wait for it, so it can still finish the wallpaper it is on;
-    // [`thumbnails::clear`] orders its two halves around exactly that.
+    // the two halves below are ordered around exactly that, files first and
+    // rows last, and [`thumbnails::clear_cache_files`] is where that ordering is
+    // written down.
     pregen.cancel();
-    db.write(|conn| thumbnails::clear(conn, &cache_dir.0))
+    // Emptying the directory is up to 10,000 unlinks and takes no connection,
+    // so the curator's grid keeps being served while it happens (ADR 0039).
+    thumbnails::clear_cache_files(&cache_dir.0)?;
+    db.write(thumbnails::forget_thumbnails)
 }
 
 /// How many Eligible wallpapers have no file behind them, for the Settings

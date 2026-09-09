@@ -298,11 +298,17 @@ fn remember(db: &Db, wallpaper_id: i64, error: &error::AppError) {
     if !matches!(error, error::AppError::Image(_)) {
         return;
     }
+    // Three steps rather than one, with the `stat` in the middle and outside
+    // both closures (ADR 0039): where the row points now, what that file's
+    // mtime is, then the note.
+    let Some(source) = db.read(|conn| thumbnails::current_source_path(conn, wallpaper_id)) else {
+        return;
+    };
+    let Ok(source_mtime) = thumbnails::source_mtime(&source) else {
+        return;
+    };
     let message = error.to_string();
     db.write(|conn| {
-        let Some(source_mtime) = thumbnails::current_source_mtime(conn, wallpaper_id) else {
-            return;
-        };
         if let Err(e) = thumbnails::note_failure(conn, wallpaper_id, source_mtime, &message) {
             eprintln!("could not record an undecodable source: {e}");
         }

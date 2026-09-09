@@ -425,14 +425,15 @@ pub fn cache_size(cache_dir: &Path) -> Result<CacheSize, AppError> {
     Ok(size)
 }
 
-/// Throws away the whole cache: every file in the directory, then every row in
-/// `thumbnails`.
+/// Empties the cache directory — the first half of throwing the whole cache
+/// away, and the half that touches the disk.
 ///
-/// The caller cancels any running pass first. It does not wait for it, because
-/// the flag is read between wallpapers and joining would block the IPC thread
-/// for up to one decode (ADR 0012), so a pass can still finish the wallpaper it
-/// is on while this runs. That decides the order here: the pass writes a
-/// wallpaper's files and only then records its rows, so removing them in the
+/// Runs before [`forget_thumbnails`], and the order is the whole reason these
+/// are two functions rather than one. The caller cancels any running pass
+/// first. It does not wait for it, because the flag is read between wallpapers
+/// and joining would block the IPC thread for up to one decode (ADR 0012), so a
+/// pass can still finish the wallpaper it is on while this runs. The pass writes
+/// a wallpaper's files and only then records its rows, so removing them in the
 /// same order leaves the row delete last, and every row the pass manages to
 /// write before that instant goes with it. Reversed, a pass recording a row
 /// after the `DELETE` and having its files swept a moment later would leave a
@@ -448,10 +449,11 @@ pub fn cache_size(cache_dir: &Path) -> Result<CacheSize, AppError> {
 /// The directory itself stays, and nothing restarts. Clearing is a rebuild the
 /// next launch pays for rather than a way to reclaim disk (ADR 0012).
 ///
-/// The failure notes go with the rows, which makes Clear thumbnail cache the one
-/// control that gives an undecodable source another go — the curator asking for
-/// the whole cache to be rebuilt is asking for that too (ADR 0034).
-pub fn clear(conn: &Connection, cache_dir: &Path) -> Result<(), AppError> {
+/// It takes no `Connection`, which is what lets `clear_cache` hold the
+/// connection for the `DELETE`s alone: this is up to 10,000 unlinks at
+/// ADR 0016's ceiling, and the curator is free to keep scrolling while they
+/// happen (ADR 0039).
+pub fn clear_cache_files(cache_dir: &Path) -> Result<(), AppError> {
     match std::fs::read_dir(cache_dir) {
         Ok(entries) => {
             for entry in entries {
@@ -471,6 +473,19 @@ pub fn clear(conn: &Connection, cache_dir: &Path) -> Result<(), AppError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
+    Ok(())
+}
+
+/// Forgets every cached thumbnail — the second half, and the database one.
+///
+/// Runs after [`clear_cache_files`], for the ordering that function's doc sets
+/// out, and it is the caller's job to keep them in that order: `clear_cache` in
+/// `lib.rs` is the only one, and says so.
+///
+/// The failure notes go with the rows, which makes Clear thumbnail cache the one
+/// control that gives an undecodable source another go — the curator asking for
+/// the whole cache to be rebuilt is asking for that too (ADR 0034).
+pub fn forget_thumbnails(conn: &Connection) -> Result<(), AppError> {
     conn.execute("DELETE FROM thumbnails", [])?;
     conn.execute("DELETE FROM thumbnail_failures", [])?;
     Ok(())
@@ -505,20 +520,22 @@ pub fn note_failure(
     Ok(())
 }
 
-/// The mtime of the file a wallpaper's row points at, or `None` when it is not
-/// there to be `stat`ed.
+/// Where a wallpaper's file sits now, or `None` when the row is gone.
 ///
-/// What [`note_failure`]'s caller keys its note on, and the reason a missing
-/// source is never noted: there is nothing to say the note is about.
-pub fn current_source_mtime(conn: &Connection, wallpaper_id: i64) -> Option<i64> {
-    let path: String = conn
-        .query_row(
-            "SELECT path FROM wallpapers WHERE id = ?1",
-            [wallpaper_id],
-            |row| row.get(0),
-        )
-        .ok()?;
-    source_mtime(Path::new(&path)).ok()
+/// [`note_failure`]'s caller keys its note on this file's mtime, and reads the
+/// path from the row rather than from the work list's snapshot for
+/// [`still_due`]'s reason: a reject or a Restore moves the file while the pass
+/// is running. The `stat` is [`source_mtime`]'s and happens outside, so the
+/// note costs two short queries rather than one query with a filesystem call in
+/// the middle of it (ADR 0039).
+pub fn current_source_path(conn: &Connection, wallpaper_id: i64) -> Option<PathBuf> {
+    conn.query_row(
+        "SELECT path FROM wallpapers WHERE id = ?1",
+        [wallpaper_id],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .map(PathBuf::from)
 }
 
 /// Which of the two pre-generated sizes a wallpaper is short of.
@@ -798,7 +815,10 @@ fn encode_jpeg(img: &RgbImage) -> Result<Vec<u8>, AppError> {
     Ok(bytes.into_inner())
 }
 
-fn source_mtime(path: &Path) -> Result<i64, AppError> {
+/// One `stat` of a source file, as the nanosecond mtime every freshness rule
+/// here compares against. `pub` for [`current_source_path`]'s caller, which
+/// makes this call with the connection released (ADR 0039).
+pub fn source_mtime(path: &Path) -> Result<i64, AppError> {
     let md = std::fs::metadata(path)
         .map_err(|_| AppError::NotFound(format!("missing source file {}", path.display())))?;
     modified_nanos(&md)
@@ -1297,6 +1317,13 @@ mod tests {
     /// exercises on its own.
     fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
         super::work_list(&candidates(conn)?, cache_dir)
+    }
+
+    /// Both halves of a clear, in the order `clear_cache` calls them: the
+    /// directory, then the rows.
+    fn clear(conn: &Connection, cache_dir: &Path) -> Result<(), AppError> {
+        clear_cache_files(cache_dir)?;
+        forget_thumbnails(conn)
     }
 
     fn listed(conn: &Connection, cache_dir: &Path) -> Vec<(i64, Missing)> {
