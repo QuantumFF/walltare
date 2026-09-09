@@ -55,6 +55,16 @@ already put the whole decode outside the lock: `plan` and `record` are two fast
 queries and `fulfill` holds nothing. Pre-generation takes the mutex for a few
 hundred microseconds per 420ms of work.
 
+> **Amended by [ADR 0039](0039-the-connection-lock-is-taken-for-queries.md),
+> 2026-09-09.** True of the pass, and never true of the work list that feeds it:
+> building it held the mutex across one `read_dir` and one `stat` per row, which
+> is 5,000 filesystem calls at ADR 0016's ceiling, on launch and after every
+> scan. The list is now built in two halves — `thumbnails::candidates` under the
+> connection and `thumbnails::work_list` with it released — and the whole
+> interface to the connection is a closure that cannot be held across a
+> filesystem walk. **Nothing about the list's contents or its order changes**,
+> and every amendment below stands as written.
+
 ### Work order, and one decode for two sizes
 
 The queue is the eligible pool ordered by `comparisons_count ASC, id ASC`.

@@ -52,7 +52,61 @@ struct ScanFailed {
     message: String,
 }
 
-pub struct Db(pub Mutex<rusqlite::Connection>);
+/// The one SQLite connection, reachable only for the length of a query.
+///
+/// The whole interface is [`Db::read`] and [`Db::write`], each of which lends
+/// the connection to a closure and hands back what the closure returns. There
+/// is no accessor for the `Mutex` and no way to come away holding a guard: the
+/// return type is chosen by the caller before the borrow exists, so a closure
+/// that tried to return the connection, a `MutexGuard` or a `Statement` would
+/// have to name a lifetime it cannot name.
+///
+/// That is the point. A `stat` per row under this mutex queues every command
+/// and every `wallpaper://` request behind a walk of somebody's external drive
+/// — `missing.rs` spends twelve lines saying so, and `thumbnails::work_list`
+/// did it anyway for as long as the rule lived only in that prose. The types
+/// now hold the half of the rule that can be held: the borrow cannot leave the
+/// closure. What is left for a reader is the other half, which is short enough
+/// to keep — *nothing called inside one of these closures touches the
+/// filesystem* (ADR 0039).
+pub struct Db(Mutex<rusqlite::Connection>);
+
+impl Db {
+    pub fn new(conn: rusqlite::Connection) -> Self {
+        Self(Mutex::new(conn))
+    }
+
+    /// Runs a query and answers with what it read.
+    pub fn read<T>(&self, query: impl FnOnce(&rusqlite::Connection) -> T) -> T {
+        query(&self.connection())
+    }
+
+    /// Runs a statement that writes, and answers with whatever it reports.
+    ///
+    /// Mechanically [`Db::read`]: one connection means one mutex, and SQLite
+    /// serializes the two the same way. The name is what the call site says
+    /// about itself, and it is the seam a change that treats them differently
+    /// would land on — a second connection for readers, or a `BEGIN IMMEDIATE`
+    /// around the write — without every caller being revisited.
+    pub fn write<T>(&self, statement: impl FnOnce(&rusqlite::Connection) -> T) -> T {
+        statement(&self.connection())
+    }
+
+    /// Locks the connection, recovering from poisoning rather than bricking the
+    /// app.
+    ///
+    /// A panic anywhere under the guard would otherwise make every later
+    /// database call fail for the rest of the process. Nothing here leaves the
+    /// connection logically inconsistent — an in-flight transaction rolls back
+    /// when its guard drops — so reusing it is strictly better than refusing to
+    /// work.
+    fn connection(&self) -> MutexGuard<'_, rusqlite::Connection> {
+        self.0.lock().unwrap_or_else(|poisoned| {
+            self.0.clear_poison();
+            poisoned.into_inner()
+        })
+    }
+}
 
 pub struct CacheDir(pub PathBuf);
 
@@ -116,34 +170,18 @@ fn image_worker_count() -> usize {
         .clamp(IMAGE_WORKER_FLOOR, IMAGE_WORKER_CEILING)
 }
 
-/// Locks the connection, recovering from poisoning rather than bricking the app.
-///
-/// A panic anywhere under the guard would otherwise make every later database
-/// call fail for the rest of the process. Nothing here leaves the connection
-/// logically inconsistent — an in-flight transaction rolls back when its guard
-/// drops — so reusing it is strictly better than refusing to work.
-fn lock(db: &Db) -> MutexGuard<'_, rusqlite::Connection> {
-    db.0.lock().unwrap_or_else(|poisoned| {
-        db.0.clear_poison();
-        poisoned.into_inner()
-    })
-}
-
-fn lock_conn(state: tauri::State<'_, Db>) -> MutexGuard<'_, rusqlite::Connection> {
-    lock(state.inner())
-}
-
 #[tauri::command]
 fn get_pair(
     state: tauri::State<'_, Db>,
     exclude: Option<Vec<i64>>,
 ) -> Result<[voting::Wallpaper; 2], error::AppError> {
-    let conn = lock_conn(state);
-    voting::get_pair(
-        &conn,
-        &exclude.unwrap_or_default(),
-        &mut voting::SystemRng::new(),
-    )
+    state.read(|conn| {
+        voting::get_pair(
+            conn,
+            &exclude.unwrap_or_default(),
+            &mut voting::SystemRng::new(),
+        )
+    })
 }
 
 #[tauri::command]
@@ -153,20 +191,20 @@ fn vote(
     loser_id: i64,
     exclude: Option<Vec<i64>>,
 ) -> Result<voting::VoteOutcome, error::AppError> {
-    let conn = lock_conn(state);
-    voting::vote(
-        &conn,
-        winner_id,
-        loser_id,
-        &exclude.unwrap_or_default(),
-        &mut voting::SystemRng::new(),
-    )
+    state.write(|conn| {
+        voting::vote(
+            conn,
+            winner_id,
+            loser_id,
+            &exclude.unwrap_or_default(),
+            &mut voting::SystemRng::new(),
+        )
+    })
 }
 
 #[tauri::command]
 fn get_stats(state: tauri::State<'_, Db>) -> Result<voting::Stats, error::AppError> {
-    let conn = lock_conn(state);
-    voting::get_stats(&conn)
+    state.read(voting::get_stats)
 }
 
 /// Starts a scan of `path`, a Written path.
@@ -229,7 +267,9 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
         let mut failure: Option<String> = None;
 
         for chunk in files.chunks(SCAN_CHUNK_SIZE) {
-            let result = db::insert_new_wallpapers(&lock(&app.state::<Db>()), chunk);
+            let result = app
+                .state::<Db>()
+                .write(|conn| db::insert_new_wallpapers(conn, chunk));
             match result {
                 Ok(n) => added += n as u64,
                 Err(e) => {
@@ -385,9 +425,14 @@ fn clear_cache(
     // Before anything is deleted, so a pass is not writing files into the
     // directory this is about to empty. It stands down between wallpapers and
     // this does not wait for it, so it can still finish the wallpaper it is on;
-    // [`thumbnails::clear`] orders its two halves around exactly that.
+    // the two halves below are ordered around exactly that, files first and
+    // rows last, and [`thumbnails::clear_cache_files`] is where that ordering is
+    // written down.
     pregen.cancel();
-    thumbnails::clear(&lock_conn(db), &cache_dir.0)
+    // Emptying the directory is up to 10,000 unlinks and takes no connection,
+    // so the curator's grid keeps being served while it happens (ADR 0039).
+    thumbnails::clear_cache_files(&cache_dir.0)?;
+    db.write(thumbnails::forget_thumbnails)
 }
 
 /// How many Eligible wallpapers have no file behind them, for the Settings
@@ -396,8 +441,9 @@ fn clear_cache(
 /// A thin wrapper over the two halves of [`missing`], called in the order that
 /// module documents: the pool comes off the database, and the `stat` per row
 /// happens with the connection already released. That ordering is ADR 0004's —
-/// the temporary guard drops at the end of the `let`, so 5,000 filesystem calls
-/// do not queue every command and every `wallpaper://` request behind them.
+/// [`Db::read`] drops the guard before it returns, so 5,000 filesystem calls do
+/// not queue every command and every `wallpaper://` request behind them
+/// (ADR 0039).
 ///
 /// Nothing calls this but the button the curator presses. A listing does no
 /// filesystem work at all, and the card's own answer to a missing file is the
@@ -406,7 +452,7 @@ fn clear_cache(
 fn count_missing_files(
     state: tauri::State<'_, Db>,
 ) -> Result<missing::MissingFiles, error::AppError> {
-    let paths = missing::eligible_paths(&lock_conn(state))?;
+    let paths = state.read(missing::eligible_paths)?;
     Ok(missing::count_missing(&paths))
 }
 
@@ -455,8 +501,7 @@ fn check_reject_destination(written: String) -> Result<reject_destination::Check
 
 #[tauri::command]
 fn get_settings(state: tauri::State<Db>) -> Result<settings::Settings, error::AppError> {
-    let conn = lock_conn(state);
-    settings::get(&conn)
+    state.read(settings::get)
 }
 
 /// Writes one setting and returns every setting, so a stale read cannot survive
@@ -470,8 +515,7 @@ fn set_setting(
     value: String,
     state: tauri::State<Db>,
 ) -> Result<settings::Settings, error::AppError> {
-    let conn = lock_conn(state);
-    settings::set(&conn, &key, &value)
+    state.write(|conn| settings::set(conn, &key, &value))
 }
 
 /// Every wallpaper matching a named filter, in a named ordering, at most `limit`
@@ -490,14 +534,16 @@ fn list_wallpapers(
     limit: Option<i64>,
     state: tauri::State<Db>,
 ) -> Result<Vec<db::Wallpaper>, error::AppError> {
-    let conn = lock_conn(state);
-    db::list_wallpapers(
-        &conn,
-        filter.unwrap_or_default(),
-        ordering.unwrap_or_default(),
-        limit,
-    )
-    .map_err(Into::into)
+    state
+        .read(|conn| {
+            db::list_wallpapers(
+                conn,
+                filter.unwrap_or_default(),
+                ordering.unwrap_or_default(),
+                limit,
+            )
+        })
+        .map_err(Into::into)
 }
 
 /// Keeps a wallpaper and answers with the row it wrote.
@@ -507,8 +553,7 @@ fn list_wallpapers(
 /// one (ADR 0023).
 #[tauri::command]
 fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
-    let conn = lock_conn(state);
-    db::keep_wallpaper(&conn, id)
+    state.write(|conn| db::keep_wallpaper(conn, id))
 }
 
 /// Undoes a Keep, putting the wallpaper back into review, and answers with the
@@ -519,8 +564,7 @@ fn keep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, err
 /// `restore_wallpaper` is what brings it back.
 #[tauri::command]
 fn unkeep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
-    let conn = lock_conn(state);
-    db::unkeep_wallpaper(&conn, id)
+    state.write(|conn| db::unkeep_wallpaper(conn, id))
 }
 
 /// Soft-rejects a wallpaper and answers with the row it wrote: the path its file
@@ -532,14 +576,20 @@ fn unkeep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, e
 /// shows it and a Restore brings it back, while the row's `path` follows the
 /// file and the move preserves its mtime, so the cache stays valid and
 /// resolves exactly as before (ADR 0012).
+///
+/// The one place the connection is deliberately held across a filesystem call,
+/// and ADR 0003 is why: the row is written first inside a transaction and the
+/// file moves last, so a `UNIQUE(path)` collision aborts while the disk is
+/// still untouched. That ordering cannot survive releasing the connection in
+/// the middle of it. It is one `rename` of one file that the curator is waiting
+/// on, rather than a walk of the whole library (ADR 0039).
 #[tauri::command]
 fn move_wallpaper(
     id: i64,
     destination_folder: String,
     state: tauri::State<Db>,
 ) -> Result<db::Wallpaper, error::AppError> {
-    let conn = lock_conn(state);
-    soft_reject::reject(&conn, id, &destination_folder)
+    state.write(|conn| soft_reject::reject(conn, id, &destination_folder))
 }
 
 /// Undoes a soft reject and answers with the row it wrote: the file is back at
@@ -549,10 +599,12 @@ fn move_wallpaper(
 /// No pre-generation follows. A wallpaper rejected since the purge went still
 /// has its cache, and one rejected before that has no Origin and cannot be
 /// restored at all (ADR 0012).
+///
+/// Holds the connection across the move back, for [`move_wallpaper`]'s reason:
+/// the ordering is that one run backwards, and it is the same single `rename`.
 #[tauri::command]
 fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
-    let conn = lock_conn(state);
-    soft_reject::restore(&conn, id)
+    state.write(|conn| soft_reject::restore(conn, id))
 }
 
 /// Parses `wallpaper://localhost/image/{id}?size={size}`.
@@ -589,9 +641,11 @@ fn resolve_image(app: &AppHandle, uri: &Uri) -> Result<Vec<u8>, error::AppError>
 
     // Three phases so the connection is free while the image work happens
     // (ADR 0004), the same ordering `pregen::generate_one` keeps for the pass.
-    let plan = thumbnails::plan(&lock(&db), wallpaper_id, size)?;
+    // Phase two is outside both closures, which is the whole of what the
+    // interface enforces (ADR 0039).
+    let plan = db.read(|conn| thumbnails::plan(conn, wallpaper_id, size))?;
     let resolved = thumbnails::fulfill(&plan, &cache_dir.0)?;
-    thumbnails::record(&lock(&db), &plan, &resolved)?;
+    db.write(|conn| thumbnails::record(conn, &plan, &resolved))?;
     Ok(resolved.thumbnail.bytes)
 }
 
@@ -704,7 +758,7 @@ pub fn run() {
             let cache_dir = dir.join("thumbnails");
             std::fs::create_dir_all(&cache_dir)?;
             app.manage(CacheDir(cache_dir));
-            app.manage(Db(Mutex::new(conn)));
+            app.manage(Db::new(conn));
             app.manage(ScanRunning::default());
             app.manage(Pregen::default());
             app.manage(ImageWorkers::new(image_worker_count()));
@@ -754,6 +808,27 @@ mod tests {
 
     fn parse(url: &str) -> Result<(i64, Size), error::AppError> {
         parse_image_request(&url.parse::<Uri>().expect("test urls are well-formed"))
+    }
+
+    #[test]
+    fn a_panic_under_the_connection_leaves_it_usable_rather_than_poisoned() {
+        // What `Db::connection` recovers from, and the reason it does: a panic
+        // anywhere under the guard would otherwise make every later database
+        // call fail for the rest of the process, so one bad query would brick
+        // the app until the curator restarted it.
+        let db = Db::new(rusqlite::Connection::open_in_memory().unwrap());
+
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            db.read(|_| panic!("a query panicked"));
+        }));
+
+        assert!(panicked.is_err(), "the panic reached the caller");
+        assert_eq!(
+            db.read(|conn| conn
+                .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                .unwrap()),
+            1
+        );
     }
 
     #[test]
