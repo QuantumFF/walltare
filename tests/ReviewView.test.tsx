@@ -229,6 +229,29 @@ test("the two hover-animated elements declare will-change, so no card promotes m
   }
 });
 
+test("every card in the worklist has a node, and the bottom padding is on the grid", async () => {
+  // The other shape of the shared grid, and the reason it has two: this page
+  // has no scroll box of its own, so it hands the grid no `scroller` and every
+  // row is mounted rather than a window of them (ADR 0016). #231 moved the
+  // virtualiser's call site into the grid and left this call untouched, which
+  // is the half that is easy to break quietly — a window over fifty cards would
+  // put ADR 0007's `will-change` licence on cards that mount mid-gesture.
+  //
+  // `pb-8` is on the same element it has always been on, which is the `p-4` a
+  // windowed grid wears instead (ADR 0027). The class reaching a wrapper rather
+  // than the grid is the visible failure: the last row's overlay is cut off.
+  const worklist = Array.from({ length: 50 }, (_, i) =>
+    wallpaper(i + 1, { filename: `review-${i + 1}.jpg` }),
+  );
+  await openReview(worklist);
+
+  const grid = inReview().getByRole("grid", { name: "Wallpapers to review" });
+  expect(inReview().getAllByRole("gridcell")).toHaveLength(50);
+  expect(grid.className).toContain("pb-8");
+  expect(grid.className).not.toContain("p-4");
+  expect(grid.getAttribute("style")).toBeNull();
+});
+
 test("asks the listing for the 50 Active wallpapers with the lowest Scores", async () => {
   // Review has no command of its own: it is the one listing, filtered to
   // Active, ordered lowest Score first, and bounded to a worklist (ADR 0028).
