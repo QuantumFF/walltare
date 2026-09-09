@@ -67,7 +67,14 @@ jobs:
       # anything missing here comes out as an AppImage that runs nowhere.
       - name: Install system dependencies
         run: |
-          sudo apt-get update
+          # Dropping the runner's third-party apt sources first, for the reason
+          # verify.yml gives at length: one inconsistent source fails the whole
+          # `apt-get update`, and nothing here comes from those sources. It
+          # matters more on this job, where the cost of a red run is a tag that
+          # published no AppImage.
+          sudo rm -f /etc/apt/sources.list.d/*google* \
+            /etc/apt/sources.list.d/*microsoft*
+          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             build-essential \

@@ -18,7 +18,16 @@ jobs:
       # set for Ubuntu 24.04; the release workflow reuses it.
       - name: Install system dependencies
         run: |
-          sudo apt-get update
+          # The runner image ships third-party apt sources — Google Chrome and
+          # Microsoft — that nothing below comes from. `apt-get update` fails as
+          # a whole when any one source is inconsistent, so on 2026-09-09 a
+          # Release file on dl.google.com newer than the Packages.gz it vouched
+          # for turned every job red with a hash-sum mismatch, before a single
+          # test ran. Every package here lives in Ubuntu's own archives, so the
+          # extra lists are dropped rather than trusted.
+          sudo rm -f /etc/apt/sources.list.d/*google* \
+            /etc/apt/sources.list.d/*microsoft*
+          sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
             build-essential \
