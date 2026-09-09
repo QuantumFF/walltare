@@ -6,7 +6,6 @@ import {
 import { WallpaperCard } from "@/components/WallpaperCard";
 import {
   useGridSelection,
-  useGridWindow,
   WallpaperGrid,
   type GridSelection,
 } from "@/components/WallpaperGrid";
@@ -73,21 +72,22 @@ let performs: Array<WallpaperRows["perform"]>;
 let rerender: () => void;
 
 /**
- * The library page's shape, reduced to the three hooks whose identities this is
- * about: the window, the rows-and-transitions module, and the selection.
+ * The library page's shape, reduced to the two hooks whose identities this is
+ * about — the rows-and-transitions module and the selection — inside the scroll
+ * box the grid windows itself against.
  *
  * A harness rather than `LibraryView` itself, because the question is what one
- * render hands the next and a page cannot be asked that. It reads the column
- * count twice for the same reason the real page does — `useGridWindow` counts
- * rows in it and the grid moves the selection by it (ADR 0027) — which is what
- * makes the one-subscription test below a test about two readers.
+ * render hands the next and a page cannot be asked that. The scroll box is what
+ * makes the grid read the column count twice: the window counts rows in it and
+ * the cells move the selection by it, both inside the component since #231
+ * (ADR 0027), which is what makes the one-subscription test below a test about
+ * two readers.
  */
 function Page({ list }: { list: Wallpaper[] }) {
   const [, forceRender] = useReducer((renders: number) => renders + 1, 0);
   rerender = forceRender;
 
   const scroller = useRef<HTMLDivElement | null>(null);
-  const { range, reveal } = useGridWindow(list.length, scroller);
   const { perform } = useWallpaperRows({
     belongs: (status) => status === "active",
     destination: DESTINATION,
@@ -105,8 +105,7 @@ function Page({ list }: { list: Wallpaper[] }) {
         selection={selection}
         label="Wallpapers"
         onAction={perform}
-        range={range}
-        reveal={reveal}
+        scroller={scroller}
       />
     </div>
   );
@@ -306,8 +305,8 @@ test("the column count is answered from a cache, and no query is built during a 
 test("one resize subscription serves every reader", async () => {
   const watch = watchWindow();
   try {
-    // Two readers: the window counting its rows, and the grid moving the
-    // selection by the same count.
+    // Two readers, both inside the grid since #231: the window counting its
+    // rows, and the cells moving the selection by the same count.
     await mount(cards(6));
     expect(watch.counts.subscribed).toBe(1);
     expect(watch.counts.unsubscribed).toBe(0);

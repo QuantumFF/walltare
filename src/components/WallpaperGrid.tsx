@@ -419,8 +419,11 @@ export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
  * `before` and `after` are pixels, and they arrive as padding on the container
  * rather than as spacer elements above and below it: the container is a CSS
  * grid, and a spacer inside one is a cell that takes a column.
+ *
+ * Private. It used to cross the seam between the page and the grid; both ends
+ * of it are inside this file now (#231).
  */
-export interface GridRange {
+interface GridRange {
   start: number;
   end: number;
   before: number;
@@ -438,17 +441,19 @@ export interface GridRange {
  * are told to the virtualiser rather than folded into the row height, so the
  * offsets it hands back are the offsets the CSS produces.
  *
- * It lives here rather than on the page because every number behind it is this
- * module's own CSS. A host that computed its own window would import three
- * constants to work out one, which is the shallow shape ADR 0027 set out to fix
- * — and after this no geometry leaves the file.
+ * Private, and called from `WindowedGrid` below. ADR 0027 exported it for
+ * `LibraryView` to call, on the argument that every number behind it is this
+ * module's own CSS; #231 applied that argument to the call site as well, because
+ * the virtualiser's re-render notification belongs to whoever calls it and the
+ * library page was the wrong tree to rebuild inside a wheel gesture. The hook
+ * has no caller outside this file any more.
  *
  * `count` and not the list: the arithmetic needs the length and nothing else, so
  * the hook never holds the rows. The scroller arrives as a ref the host already
  * owns, because the page needs that same element for its own scroll position and
- * a hook that created it would have to hand it back.
+ * a hook that created it would have to hand it back (ADR 0015, ADR 0027).
  */
-export function useGridWindow(
+function useGridWindow(
   count: number,
   scroller: RefObject<HTMLDivElement | null>,
 ): { range: GridRange; reveal: (index: number) => void } {
@@ -560,32 +565,25 @@ export interface WallpaperGridProps {
    */
   scoresMoved?: ReadonlySet<number>;
   /**
-   * Put the card at `index` on screen. The seam #79 hands its virtualiser to.
+   * The scroll box this grid sits inside, for a host that has one.
    *
-   * It is called before the focus move and never after it, because that is the
-   * order the virtualised case needs: the library grid mounts a window of about
-   * thirty cards out of five thousand, so the card an arrow key selects may have
-   * no DOM node yet, and asking the virtualiser to scroll the row in is what
-   * creates one. The effect below then finds nothing to focus and returns; the
-   * virtualiser's own commit runs it again, and by then the node exists.
-   * Focusing a node that is not there yet is the one way this pattern breaks
-   * (ADR 0019).
+   * With it the grid windows itself: a few dozen cards in the DOM out of the
+   * whole list, measured against this element (ADR 0016). Without it every row
+   * is mounted, which is what Review wants at fifty and what a grid outside a
+   * scroll container has no way to improve on.
    *
-   * #79 passes `(index) => virtualiser.scrollToIndex(Math.floor(index /
-   * columns))`, reading `columns` from `useGridColumns` above — the same count
-   * this grid moves the selection by.
+   * A ref the host owns rather than an element the grid creates. `scrollTop`,
+   * `toTop` and the restore that puts the curator back where they were are the
+   * page's, because the restore turns on `showing` from `useApp()` and on
+   * ADR 0015's rule that Rank, Review and Library stay mounted — and a geometry
+   * module that knew about the navigation shell is what ADR 0027 refused. Only
+   * the arithmetic over the box is here (#231).
    *
-   * The default scrolls the selected cell into view, which is the whole of what
-   * a grid that mounts every row needs.
+   * Whether it is passed at all is fixed for the life of a host: the two shapes
+   * are two components below, so a call that started windowing and stopped
+   * would remount its cards.
    */
-  reveal?: (index: number) => void;
-  /**
-   * Which of the cards to mount. See `GridRange`.
-   *
-   * Every row is mounted without one, which is what Review wants at fifty and
-   * what a grid outside a scroll container has no way to improve on.
-   */
-  range?: GridRange;
+  scroller?: RefObject<HTMLDivElement | null>;
   /**
    * The curator asking to look at a wallpaper properly, carrying the one they
    * asked about: a click on a card that was not on one of its buttons, or
@@ -616,7 +614,80 @@ export interface WallpaperGridProps {
 }
 
 /**
- * The grid, shared by Review and by the library page (#79).
+ * The grid, shared by Review and by the library page (#79), in whichever of its
+ * two shapes the host asked for.
+ *
+ * Two components and not one with a branch in it. A window is a `useVirtualizer`
+ * call, hooks do not run conditionally, and a virtualiser standing by on a host
+ * that has no scroll box is still `setOptions` and three layout effects on every
+ * render of Review's fifty cards. So the choice is a component boundary: pass a
+ * `scroller` and the window is computed one level above the cells; pass none and
+ * nothing about Review's grid runs at all (ADR 0007, ADR 0016).
+ *
+ * This is also what makes a scroll cost what it should. The virtualiser
+ * re-renders whoever called it, inside a `flushSync` from the scroll handler, so
+ * the call site is the tree a wheel gesture rebuilds. Below this line that is
+ * the cells; above it, while the page held the call, it was the filter chips,
+ * the ordering control, the reject destination line and the mounted lightbox
+ * (#231).
+ */
+export function WallpaperGrid({ scroller, ...props }: WallpaperGridProps) {
+  return scroller ? (
+    <WindowedGrid scroller={scroller} {...props} />
+  ) : (
+    <Grid {...props} />
+  );
+}
+
+/**
+ * The cells, plus the window over them when there is one.
+ *
+ * `range` and `reveal` were props of the exported component until #231. They are
+ * still the same two facts crossing the same seam; the seam is inside this file
+ * now, which is the whole of what that ticket moved.
+ */
+interface GridProps extends Omit<WallpaperGridProps, "scroller"> {
+  /**
+   * Which of the cards to mount. See `GridRange`. Absent mounts every row.
+   */
+  range?: GridRange;
+  /**
+   * Put the card at `index` on screen.
+   *
+   * It is called before the focus move and never after it, because that is the
+   * order the virtualised case needs: the library grid mounts a window of about
+   * thirty cards out of five thousand, so the card an arrow key selects may have
+   * no DOM node yet, and asking the virtualiser to scroll the row in is what
+   * creates one. The effect below then finds nothing to focus and returns; the
+   * virtualiser's own commit runs it again, and by then the node exists.
+   * Focusing a node that is not there yet is the one way this pattern breaks
+   * (ADR 0019).
+   *
+   * Absent scrolls the selected cell into view, which is the whole of what a
+   * grid that mounts every row needs.
+   */
+  reveal?: (index: number) => void;
+}
+
+/**
+ * The windowed shape: the same grid, with the window arithmetic one component
+ * above the cells.
+ *
+ * One component's worth of separation is what a scroll now costs. The
+ * virtualiser's notification lands here, so a crossing of a row boundary
+ * re-renders this and the cells and nothing else — not the page that mounted
+ * it, which is what it re-rendered while the call lived up there (#231).
+ */
+function WindowedGrid({
+  scroller,
+  ...props
+}: GridProps & { scroller: RefObject<HTMLDivElement | null> }) {
+  const { range, reveal } = useGridWindow(props.wallpapers.length, scroller);
+  return <Grid {...props} range={range} reveal={reveal} />;
+}
+
+/**
+ * The cells, the focus and the keys.
  *
  * One tab stop with a roving selection: the container is `role="grid"`, each
  * card a `gridcell` at `tabindex="-1"` except the selected one at `0`, so Tab
@@ -637,7 +708,7 @@ export interface WallpaperGridProps {
  * role on it, out of the accessibility tree. The cells are in reading order and
  * the column count above is what says where the rows fall.
  */
-export function WallpaperGrid({
+function Grid({
   wallpapers,
   selection,
   label,
@@ -649,7 +720,7 @@ export function WallpaperGrid({
   onOpen,
   className,
   ref,
-}: WallpaperGridProps) {
+}: GridProps) {
   const columns = useGridColumns();
   const gridRef = useRef<HTMLDivElement>(null);
   // The selection follows the wallpaper, then the position, and the rule that
