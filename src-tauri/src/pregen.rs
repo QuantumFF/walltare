@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{error, lock, thumbnails, CacheDir, Db};
+use crate::{error, thumbnails, CacheDir, Db};
 
 /// How far through its work list the pre-generation pass is.
 ///
@@ -45,7 +45,7 @@ type Run = (Arc<AtomicBool>, std::thread::JoinHandle<()>);
 pub struct Pregen(Mutex<Option<Run>>);
 
 impl Pregen {
-    /// The running pass, recovering from poisoning for [`crate::lock`]'s reason.
+    /// The running pass, recovering from poisoning for [`Db`]'s reason.
     ///
     /// Held across the join in [`supervise`], which is what makes two
     /// `start_pregen` calls queue up here instead of racing.
@@ -151,7 +151,7 @@ fn run(app: &AppHandle, cancel: &AtomicBool) {
     let db = app.state::<Db>();
     let cache_dir = app.state::<CacheDir>();
 
-    let work = match thumbnails::work_list(&lock(&db), &cache_dir.0) {
+    let work = match db.read(|conn| thumbnails::work_list(conn, &cache_dir.0)) {
         Ok(work) => work,
         Err(e) => {
             eprintln!("pre-generation could not read the library: {e}");
@@ -289,14 +289,15 @@ fn remember(db: &Db, wallpaper_id: i64, error: &error::AppError) {
     if !matches!(error, error::AppError::Image(_)) {
         return;
     }
-    let conn = lock(db);
-    let Some(source_mtime) = thumbnails::current_source_mtime(&conn, wallpaper_id) else {
-        return;
-    };
-    if let Err(e) = thumbnails::note_failure(&conn, wallpaper_id, source_mtime, &error.to_string())
-    {
-        eprintln!("could not record an undecodable source: {e}");
-    }
+    let message = error.to_string();
+    db.write(|conn| {
+        let Some(source_mtime) = thumbnails::current_source_mtime(conn, wallpaper_id) else {
+            return;
+        };
+        if let Err(e) = thumbnails::note_failure(conn, wallpaper_id, source_mtime, &message) {
+            eprintln!("could not record an undecodable source: {e}");
+        }
+    });
 }
 
 /// Which way one wallpaper went, short of an error.
@@ -322,34 +323,35 @@ fn generate_one(
     let id = pending.wallpaper_id;
     match pending.missing {
         thumbnails::Missing::Both => {
-            let source = {
-                let conn = lock(db);
-                match thumbnails::still_due(&conn, pending) {
-                    Some(source) => source,
-                    None => return Ok(Step::Skipped),
-                }
+            let Some(source) = db.read(|conn| thumbnails::still_due(conn, pending)) else {
+                return Ok(Step::Skipped);
             };
             let recorded = thumbnails::generate_both(id, &source, cache_dir)?;
-            let conn = lock(db);
-            for r in recorded {
-                thumbnails::record_one(&conn, id, r.size, r.width, r.height, r.source_mtime)?;
-            }
-            Ok(Step::Generated)
+            db.write(|conn| {
+                for r in recorded {
+                    thumbnails::record_one(conn, id, r.size, r.width, r.height, r.source_mtime)?;
+                }
+                Ok(Step::Generated)
+            })
         }
         thumbnails::Missing::Only(size) => {
-            let plan = {
-                // The same lock the plan's own read takes, which is the point:
-                // the Status the pass acts on and the path it acts on come from
-                // one view of the row. The path this drops is the one `plan`
-                // reads for itself a line later.
-                let conn = lock(db);
-                if thumbnails::still_due(&conn, pending).is_none() {
-                    return Ok(Step::Skipped);
-                }
-                thumbnails::plan(&conn, id, size)?
+            // One read for both questions, which is the point: the Status the
+            // pass acts on and the path it acts on come from one view of the
+            // row. The path `still_due` answers with is the one `plan` reads for
+            // itself a line later.
+            //
+            // A skip comes back as `None` rather than returning from here,
+            // because the closure cannot return from its caller. That is the
+            // interface doing its job: what leaves it is owned data.
+            let plan = db.read(|conn| match thumbnails::still_due(conn, pending) {
+                Some(_) => thumbnails::plan(conn, id, size).map(Some),
+                None => Ok(None),
+            })?;
+            let Some(plan) = plan else {
+                return Ok(Step::Skipped);
             };
             let resolved = thumbnails::fulfill(&plan, cache_dir)?;
-            thumbnails::record(&lock(db), &plan, &resolved)?;
+            db.write(|conn| thumbnails::record(conn, &plan, &resolved))?;
             Ok(Step::Generated)
         }
     }
@@ -384,7 +386,7 @@ mod tests {
             let conn = rusqlite::Connection::open_in_memory().unwrap();
             db::init_schema(&conn).unwrap();
             Self {
-                db: Db(Mutex::new(conn)),
+                db: Db::new(conn),
                 sources: tempfile::tempdir().unwrap(),
                 cache: tempfile::tempdir().unwrap(),
             }
@@ -404,14 +406,16 @@ mod tests {
             DynamicImage::ImageRgba8(RgbaImage::from_pixel(width, height, Rgba(colour)))
                 .save_with_format(&path, image::ImageFormat::Png)
                 .unwrap();
-            let conn = lock(&self.db);
-            conn.execute(
-                "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
-                rusqlite::params![name, path.to_str().unwrap()],
-            )
-            .unwrap();
+            let wallpaper_id = self.db.write(|conn| {
+                conn.execute(
+                    "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
+                    rusqlite::params![name, path.to_str().unwrap()],
+                )
+                .unwrap();
+                conn.last_insert_rowid()
+            });
             Pending {
-                wallpaper_id: conn.last_insert_rowid(),
+                wallpaper_id,
                 source: path,
                 status: Status::Active,
                 missing,
@@ -424,14 +428,16 @@ mod tests {
         fn seed_bytes(&self, name: &str, bytes: &[u8]) -> Pending {
             let path = self.sources.path().join(name);
             std::fs::write(&path, bytes).unwrap();
-            let conn = lock(&self.db);
-            conn.execute(
-                "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
-                rusqlite::params![name, path.to_str().unwrap()],
-            )
-            .unwrap();
+            let wallpaper_id = self.db.write(|conn| {
+                conn.execute(
+                    "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
+                    rusqlite::params![name, path.to_str().unwrap()],
+                )
+                .unwrap();
+                conn.last_insert_rowid()
+            });
             Pending {
-                wallpaper_id: conn.last_insert_rowid(),
+                wallpaper_id,
                 source: path,
                 status: Status::Active,
                 missing: Missing::Both,
@@ -441,7 +447,8 @@ mod tests {
         /// What the next pass would be handed, which is the question "is this
         /// wallpaper retried" is actually asking.
         fn work_list(&self) -> Vec<i64> {
-            thumbnails::work_list(&lock(&self.db), self.cache.path())
+            self.db
+                .read(|conn| thumbnails::work_list(conn, self.cache.path()))
                 .unwrap()
                 .into_iter()
                 .map(|p| p.wallpaper_id)
@@ -451,12 +458,13 @@ mod tests {
         /// Rejects a wallpaper, leaving whatever the pass is already holding for
         /// it alone.
         fn reject(&self, wallpaper_id: i64) {
-            lock(&self.db)
-                .execute(
+            self.db.write(|conn| {
+                conn.execute(
                     "UPDATE wallpapers SET status = 'rejected' WHERE id = ?1",
                     [wallpaper_id],
                 )
-                .unwrap();
+                .unwrap()
+            });
         }
 
         /// Moves a wallpaper's file and points its row at where it landed, the
@@ -465,12 +473,13 @@ mod tests {
         fn relocate(&self, pending: &Pending, to: &str) -> PathBuf {
             let moved = self.sources.path().join(to);
             std::fs::rename(&pending.source, &moved).unwrap();
-            lock(&self.db)
-                .execute(
+            self.db.write(|conn| {
+                conn.execute(
                     "UPDATE wallpapers SET path = ?2, filename = ?3 WHERE id = ?1",
                     rusqlite::params![pending.wallpaper_id, moved.to_str().unwrap(), to],
                 )
-                .unwrap();
+                .unwrap()
+            });
             moved
         }
 
@@ -483,14 +492,15 @@ mod tests {
         }
 
         fn row(&self, wallpaper_id: i64, size: &str) -> Option<(u32, u32)> {
-            lock(&self.db)
-                .query_row(
+            self.db.read(|conn| {
+                conn.query_row(
                     "SELECT width, height FROM thumbnails
                      WHERE wallpaper_id = ?1 AND size = ?2",
                     rusqlite::params![wallpaper_id, size],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .ok()
+            })
         }
 
         fn cache_file(&self, wallpaper_id: i64, size: &str) -> PathBuf {
