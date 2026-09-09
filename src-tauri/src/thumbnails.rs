@@ -15,7 +15,7 @@ pub const SMALL_MAX_WIDTH: u32 = 400;
 pub const MEDIUM_MAX_WIDTH: u32 = 1920;
 const JPEG_QUALITY: u8 = 85;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Size {
     Small,
     Medium,
@@ -369,19 +369,28 @@ pub fn resolve(
     Ok(resolved.thumbnail)
 }
 
-/// Throws away one wallpaper's cached thumbnails, rows and files both.
+/// Throws away one wallpaper's cache files — the single-wallpaper half of
+/// [`clear_cache_files`], and the first of the three a purge is made of.
 ///
-/// Nothing in production calls this, which is why the `dead_code` allow is
+/// Nothing in production calls a purge, which is why the `dead_code` allows are
 /// here: the soft reject used to, and stopped, because a Rejected wallpaper is
 /// now shown in the library page and can be restored, so its cache is worth
-/// keeping (ADR 0012). The function stays because it is the single-wallpaper
-/// case of [`clear`], which is what Settings calls.
+/// keeping (ADR 0012). Both halves stay because the single-wallpaper case of
+/// what Settings clears is worth having spelled out.
+///
+/// This was one function doing rows and then files under one connection until
+/// [#228](https://github.com/QuantumFF/walltare/issues/228), and ADR 0039
+/// recorded that whoever gave it a caller owed it two halves. It got a caller in
+/// a test rather than in production, which is enough: a test that has to hold
+/// the connection across three `remove_file`s to say what a purge does is a test
+/// that teaches the shape ADR 0039 forbids.
+///
+/// The order across the three is [`clear_cache_files`]'s, for its reasons: files
+/// first, then the rows, and the bytes the serving module holds in memory last —
+/// a pass or a request that is mid-flight can still write a file or record a row
+/// after this returns, and each residue is one the app already reads as missing.
 #[allow(dead_code)]
-pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM thumbnails WHERE wallpaper_id = ?1",
-        [wallpaper_id],
-    )?;
+pub fn purge_cache_files(cache_dir: &Path, wallpaper_id: i64) -> Result<(), AppError> {
     for size in [Size::Small, Size::Medium, Size::Full] {
         match std::fs::remove_file(cache_path(cache_dir, wallpaper_id, size)) {
             Ok(()) => {}
@@ -389,6 +398,25 @@ pub fn purge(conn: &Connection, cache_dir: &Path, wallpaper_id: i64) -> Result<(
             Err(e) => return Err(e.into()),
         }
     }
+    Ok(())
+}
+
+/// Forgets one wallpaper's thumbnail rows — the database half of a purge, and
+/// the single-wallpaper case of [`forget_thumbnails`].
+///
+/// Runs after [`purge_cache_files`]. The failure note goes with the rows for the
+/// reason [`forget_thumbnails`] gives: a purge asks for this wallpaper's cache to
+/// be rebuilt, and an undecodable source gets another go at it (ADR 0034).
+#[allow(dead_code)]
+pub fn purge_thumbnails(conn: &Connection, wallpaper_id: i64) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM thumbnails WHERE wallpaper_id = ?1",
+        [wallpaper_id],
+    )?;
+    conn.execute(
+        "DELETE FROM thumbnail_failures WHERE wallpaper_id = ?1",
+        [wallpaper_id],
+    )?;
     Ok(())
 }
 
@@ -1275,7 +1303,10 @@ mod tests {
         resolve(&conn, tmp.path(), id, Size::Small).unwrap();
         resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
 
-        purge(&conn, tmp.path(), id).unwrap();
+        // The two halves in the order a caller owes them, files first, which is
+        // `clear_cache_files`' order and its reasons (ADR 0039).
+        purge_cache_files(tmp.path(), id).unwrap();
+        purge_thumbnails(&conn, id).unwrap();
 
         assert_eq!(thumbnail_row(&conn, id, "small"), None);
         assert_eq!(thumbnail_row(&conn, id, "medium"), None);
@@ -1288,7 +1319,8 @@ mod tests {
     fn purge_is_idempotent_for_unknown_wallpaper() {
         let (conn, tmp) = setup();
 
-        purge(&conn, tmp.path(), 12345).unwrap();
+        purge_cache_files(tmp.path(), 12345).unwrap();
+        purge_thumbnails(&conn, 12345).unwrap();
     }
 
     /// Generates and records both pre-generated sizes the way the pass will,
