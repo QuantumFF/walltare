@@ -206,6 +206,13 @@ its only method is the one thing the grid can be asked to do from outside, which
 is a fair trade for two members leaving `GridSelection`, but it is a widening
 and worth saying out loud.
 
+> **Amended by [#231](https://github.com/QuantumFF/walltare/issues/231),
+> 2026-09-09.** `useGridWindow` lost its `export`, so that table reads three:
+> `WallpaperGrid`, `useGridSelection` and `WallpaperGridHandle`. The widening
+> this section owns up to still stands; the name it was counted against is gone.
+> `focusSelection` is unaffected — the reveal it triggers is now the grid's own
+> rather than a prop it was handed, which is invisible from outside the handle.
+
 **One named behaviour change.** Keeping or rejecting the last row from inside
 the lightbox now lands focus on the grid container instead of `body`. Everything
 else about focus behaves exactly as it does today.
