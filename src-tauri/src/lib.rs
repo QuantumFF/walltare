@@ -6,6 +6,7 @@ mod pregen;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod reject_destination;
 mod scanner;
+mod serving;
 mod settings;
 mod soft_reject;
 #[cfg(test)]
@@ -16,21 +17,15 @@ mod window_state;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
-use tauri::http::{StatusCode, Uri};
+use tauri::http::Uri;
 use tauri::{AppHandle, Emitter, Manager};
 
 use pregen::Pregen;
 
 const SCAN_CHUNK_SIZE: usize = 256;
-
-/// Concurrent thumbnail generations. The review grid requests fifty images at
-/// once and a 4K decode holds tens of megabytes, so an unbounded thread per
-/// request would spike memory and thrash the CPU.
-const IMAGE_WORKER_FLOOR: usize = 2;
-const IMAGE_WORKER_CEILING: usize = 8;
 
 #[derive(Clone, Serialize)]
 struct ScanProgress {
@@ -106,6 +101,19 @@ impl Db {
             poisoned.into_inner()
         })
     }
+
+    /// Whether the connection is unheld at this instant.
+    ///
+    /// The one thing that can observe the half of ADR 0039's rule the types do
+    /// not hold. A released guard leaves no trace, but a `try_lock` from the
+    /// thread that would be holding it fails, which is what
+    /// `serving::the_connection_is_free_while_the_image_work_happens` asserts
+    /// about ADR 0004's phase two. Tests only: production code that asks this
+    /// question is deciding whether to wait, which is the mutex's job.
+    #[cfg(test)]
+    pub fn is_free(&self) -> bool {
+        self.0.try_lock().is_ok()
+    }
 }
 
 pub struct CacheDir(pub PathBuf);
@@ -127,47 +135,6 @@ impl Drop for ScanGuard {
             .0
             .store(false, Ordering::SeqCst);
     }
-}
-
-/// A fixed set of threads for `wallpaper://` requests.
-///
-/// The protocol handler must not decode images on the thread Tauri calls it on
-/// — that is the UI thread, and a cache miss freezes the window for as long as
-/// the decode takes.
-pub struct ImageWorkers(std::sync::mpsc::Sender<Box<dyn FnOnce() + Send>>);
-
-impl ImageWorkers {
-    fn new(size: usize) -> Self {
-        let (sender, receiver) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
-        let receiver = Arc::new(Mutex::new(receiver));
-        for _ in 0..size {
-            let receiver = Arc::clone(&receiver);
-            std::thread::spawn(move || loop {
-                // The guard is released at the end of this statement, before the
-                // job runs, so the workers queue rather than serialize.
-                let job = match receiver.lock() {
-                    Ok(receiver) => receiver.recv().ok(),
-                    Err(_) => return,
-                };
-                match job {
-                    Some(job) => job(),
-                    None => return,
-                }
-            });
-        }
-        Self(sender)
-    }
-
-    fn submit(&self, job: impl FnOnce() + Send + 'static) -> bool {
-        self.0.send(Box::new(job)).is_ok()
-    }
-}
-
-fn image_worker_count() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(IMAGE_WORKER_FLOOR)
-        .clamp(IMAGE_WORKER_FLOOR, IMAGE_WORKER_CEILING)
 }
 
 #[tauri::command]
@@ -609,6 +576,11 @@ fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, 
 
 /// Parses `wallpaper://localhost/image/{id}?size={size}`.
 ///
+/// The whole of what the protocol closure does before [`serving::serve`] takes
+/// over, and the result crosses as a `Result` rather than being unwrapped here:
+/// a URL that named no wallpaper still has to be answered, and what status it is
+/// answered with belongs beside every other response the webview gets.
+///
 /// The `image` segment has to sit in the *path*. A custom-scheme URL parses as
 /// `scheme://authority/path`, so `wallpaper://image/7` puts `image` in the
 /// authority and leaves `/7` as the path — see `wallpaperImageUrl` in
@@ -632,55 +604,6 @@ fn parse_image_request(uri: &Uri) -> Result<(i64, thumbnails::Size), error::AppE
             error::AppError::BadRequest(format!("missing or unknown size in {:?}", uri.query()))
         })?;
     Ok((wallpaper_id, size))
-}
-
-fn resolve_image(app: &AppHandle, uri: &Uri) -> Result<Vec<u8>, error::AppError> {
-    let (wallpaper_id, size) = parse_image_request(uri)?;
-    let db = app.state::<Db>();
-    let cache_dir = app.state::<CacheDir>();
-
-    // Three phases so the connection is free while the image work happens
-    // (ADR 0004), the same ordering `pregen::generate_one` keeps for the pass.
-    // Phase two is outside both closures, which is the whole of what the
-    // interface enforces (ADR 0039).
-    let plan = db.read(|conn| thumbnails::plan(conn, wallpaper_id, size))?;
-    let resolved = thumbnails::fulfill(&plan, &cache_dir.0)?;
-    db.write(|conn| thumbnails::record(conn, &plan, &resolved))?;
-    Ok(resolved.thumbnail.bytes)
-}
-
-fn image_response(status: StatusCode, body: Vec<u8>) -> tauri::http::Response<Vec<u8>> {
-    tauri::http::Response::builder()
-        .status(status)
-        .header(tauri::http::header::CONTENT_TYPE, "image/jpeg")
-        // Five minutes is measured against the only thing that invalidates a
-        // thumbnail: the source file's mtime changing when someone edits a
-        // wallpaper in place. That is rare enough that being five minutes stale
-        // about it costs less than a versioning scheme.
-        //
-        // Not `immutable`: the URL is keyed on id and size only, so nothing in
-        // it would change once the source file did.
-        .header(tauri::http::header::CACHE_CONTROL, "max-age=300")
-        .body(body)
-        .unwrap()
-}
-
-fn error_response(e: &error::AppError) -> tauri::http::Response<Vec<u8>> {
-    let status = match e {
-        error::AppError::InvalidPath(_) | error::AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-        // `FileMissing` is a 404 for the same reason `NotFound` is: the thing
-        // asked for is not there. The protocol handler cannot raise it — only a
-        // Restore checks a source file before moving it — but a variant with no
-        // arm here would fall through to a 500 the moment one does.
-        error::AppError::NotFound(_) | error::AppError::FileMissing(_) => StatusCode::NOT_FOUND,
-        error::AppError::InvalidTransition(_) => StatusCode::CONFLICT,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
-    };
-    tauri::http::Response::builder()
-        .status(status)
-        .header(tauri::http::header::CONTENT_TYPE, "application/json")
-        .body(serde_json::to_vec(e).unwrap_or_default())
-        .unwrap()
 }
 
 /// What the curator reads when their database was written by a newer walltare.
@@ -761,21 +684,21 @@ pub fn run() {
             app.manage(Db::new(conn));
             app.manage(ScanRunning::default());
             app.manage(Pregen::default());
-            app.manage(ImageWorkers::new(image_worker_count()));
+            serving::start_workers(app.handle());
             Ok(())
         })
+        // Reads the URL and hands what it says to [`serving::serve`]. Nothing
+        // else: the pool, ADR 0004's three phases, the headers and the statuses
+        // are that module's, so the two decisions still owed to
+        // [#224](https://github.com/QuantumFF/walltare/issues/224) — what order
+        // requests are served in, and what is kept in memory — are changes to
+        // one file rather than to this closure.
         .register_asynchronous_uri_scheme_protocol("wallpaper", |ctx, request, responder| {
-            let app = ctx.app_handle().clone();
-            let uri = request.uri().clone();
-            let respond = move || {
-                responder.respond(match resolve_image(&app, &uri) {
-                    Ok(bytes) => image_response(StatusCode::OK, bytes),
-                    Err(e) => error_response(&e),
-                });
-            };
-            if !ctx.app_handle().state::<ImageWorkers>().submit(respond) {
-                eprintln!("image worker pool is gone; dropping a wallpaper:// request");
-            }
+            serving::serve(
+                ctx.app_handle(),
+                parse_image_request(request.uri()),
+                responder,
+            );
         })
         .invoke_handler(tauri::generate_handler![
             start_scan,
@@ -934,21 +857,6 @@ mod tests {
                 assert!(local, "{directive} allows {source}, which is not local");
             }
         }
-    }
-
-    #[test]
-    fn a_served_image_stays_cached_for_five_minutes() {
-        // A remounted `<img>` for a wallpaper the user already scrolled past
-        // must not cost another mpsc hop, mutex lock and cache-file read.
-        // Lowering this value puts those back, so it is pinned.
-        let response = image_response(StatusCode::OK, vec![0xff, 0xd8]);
-        assert_eq!(
-            response
-                .headers()
-                .get(tauri::http::header::CACHE_CONTROL)
-                .unwrap(),
-            "max-age=300"
-        );
     }
 
     #[test]

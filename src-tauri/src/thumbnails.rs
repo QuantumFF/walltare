@@ -97,13 +97,18 @@ pub struct Resolved {
 }
 
 /// Phase 1 — the only part that touches the database before the image work.
+///
+/// Every statement is `prepare_cached`, the way `db.rs`, `voting.rs`,
+/// `missing.rs` and `settings.rs` all are. This is the crate's hottest query
+/// path — the review grid fires fifty of these at once and every remount of a
+/// card fires another — and it runs inside the critical section, so compiling
+/// three or four statements per request was time no other request could use
+/// (ADR 0039). The cache is per connection and there is one connection, so the
+/// compiles happen once for the life of the process.
 pub fn plan(conn: &Connection, wallpaper_id: i64, size: Size) -> Result<Plan, AppError> {
     let source: String = conn
-        .query_row(
-            "SELECT path FROM wallpapers WHERE id = ?1",
-            [wallpaper_id],
-            |row| row.get::<_, String>(0),
-        )
+        .prepare_cached("SELECT path FROM wallpapers WHERE id = ?1")?
+        .query_row([wallpaper_id], |row| row.get::<_, String>(0))
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
@@ -111,18 +116,18 @@ pub fn plan(conn: &Connection, wallpaper_id: i64, size: Size) -> Result<Plan, Ap
             other => other.into(),
         })?;
 
-    let cached = match conn.query_row(
-        "SELECT width, height, source_mtime FROM thumbnails
+    let cached = match conn
+        .prepare_cached(
+            "SELECT width, height, source_mtime FROM thumbnails
          WHERE wallpaper_id = ?1 AND size = ?2",
-        rusqlite::params![wallpaper_id, size.label()],
-        |row| {
+        )?
+        .query_row(rusqlite::params![wallpaper_id, size.label()], |row| {
             Ok((
                 row.get::<_, i64>(0)? as u32,
                 row.get::<_, i64>(1)? as u32,
                 row.get::<_, i64>(2)?,
             ))
-        },
-    ) {
+        }) {
         Ok(row) => Some(row),
         Err(rusqlite::Error::QueryReturnedNoRows) => None,
         Err(e) => return Err(e.into()),
@@ -156,13 +161,17 @@ fn find_donor(
     let Some(target_width) = size.max_width() else {
         return Ok(None);
     };
+    // One prepared statement for both donors, and for every request after
+    // this one: the size is a parameter rather than part of the SQL, so the
+    // loop reuses one cache entry (ADR 0039).
+    let mut stmt = conn.prepare_cached(
+        "SELECT width, source_mtime FROM thumbnails
+         WHERE wallpaper_id = ?1 AND size = ?2",
+    )?;
     for donor in size.donors() {
-        let row = conn.query_row(
-            "SELECT width, source_mtime FROM thumbnails
-             WHERE wallpaper_id = ?1 AND size = ?2",
-            rusqlite::params![wallpaper_id, donor.label()],
-            |row| Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)?)),
-        );
+        let row = stmt.query_row(rusqlite::params![wallpaper_id, donor.label()], |row| {
+            Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)?))
+        });
         match row {
             Ok((width, mtime)) if width >= target_width => return Ok(Some((*donor, mtime))),
             Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => {}
