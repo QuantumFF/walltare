@@ -304,6 +304,13 @@ change an existing file's mtime. #232 closes it properly by putting the pass
 through the same admission point, at which point its regenerates invalidate the
 same way an on-demand one does.
 
+> **Closed by [#232](https://github.com/QuantumFF/walltare/issues/232),
+> 2026-09-10.** It did. A wallpaper the pass generated calls `ImageCache::forget`
+> before the pass counts it, so the bytes go the same way a regenerate through
+> `generate` takes them. The pass shares the pool's threads and its ordering, and
+> not `InFlight`: a wallpaper it is generating while a card asks for the same size
+> is still two decodes, as it was before. See ADR 0012's amendment.
+
 **Resident memory grows by up to 98MB, and by about 8MB in the shape the app
 actually produces.** Bounded, and it is a bound rather than a measurement.
 

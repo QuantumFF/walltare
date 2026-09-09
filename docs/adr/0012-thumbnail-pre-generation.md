@@ -50,6 +50,12 @@ thread takes 1/N of an N-core machine, the ordering below means the wallpapers
 the user reaches first are done in the opening seconds, and the tail only
 matters once, on a first launch.
 
+> **Amended by [#232](https://github.com/QuantumFF/walltare/issues/232),
+> 2026-09-10.** It is `ImageWorkers` after all, through a lane of its own. The
+> heading's "not" expired with the premise underneath it; the sizing above did
+> not. See [the rejected bullet](#alternatives-rejected) this reverses, which is
+> where both halves are written down.
+
 The single `Db` mutex needs no special handling. ADR 0004's three phases
 already put the whole decode outside the lock: `plan` and `record` are two fast
 queries and `fulfill` holds nothing. Pre-generation takes the mutex for a few
@@ -307,6 +313,68 @@ a pool that already exists and already bounds memory. But `mpsc` has no
 priority, so it would mean replacing the channel with a two-queue structure and
 teaching every worker to drain the interactive queue first. That is more
 machinery than one thread, for a background task nobody is waiting on.
+
+> **Retired by [#232](https://github.com/QuantumFF/walltare/issues/232),
+> 2026-09-10.** The pass submits into `ImageWorkers`. Half of the rejection
+> above expired and half of it did not, and separating them is the whole of this
+> amendment.
+>
+> **The cost argument expired.** There is no channel left to replace:
+> [#228](https://github.com/QuantumFF/walltare/issues/228) made the pool a stack
+> under a condvar for its own reasons, and a stack is not an `mpsc`. What was a
+> two-queue structure is a second lane beside it and a comparison where a worker
+> takes its next job, which is smaller than the thread it replaces. The
+> admission point is [ADR 0040](0040-a-thumbnail-is-served-newest-first.md)'s
+> and it is described there rather than a second time here. What #232 added to
+> it is the second lane, and the pass's way in: it hands the pool one wallpaper
+> and **blocks until the answer comes back**.
+>
+> **"A background task nobody is waiting on" did not expire — it is the reason
+> the pass was competing at all.** The pass ran its own thread beside a pool
+> already sized to `available_parallelism`, so during a pass the machine ran one
+> more full-source decode than the pool was budgeted for, and it ran it in an
+> order unrelated to what is on screen: this ADR's queue is tuned for the pair
+> Rank will draw next, while Library shows `score_desc` and Review `score_asc`.
+> A worker now takes every queued `wallpaper://` request before it takes the
+> pass's wallpaper. Overtaking is the next thing off the stack and never a
+> cancellation — the `image` crate cannot be interrupted mid-decode, so a
+> wallpaper the pass has started is one it finishes, and a request that arrives
+> meanwhile waits for a worker like any other.
+>
+> **The sizing did not expire.** One thread's worth is still the budget: the
+> pass has exactly one wallpaper in flight, and blocking is what enforces it.
+> Filling the pool would cut a 2,000-wallpaper first launch from about fourteen
+> minutes to about three and a half, which is a real feature and belongs to
+> whoever argues it on first-launch time — one thread still takes 1/N of an
+> N-core machine while the curator ranks, and this ticket is a responsiveness
+> fix. A test pins the concurrency at one, so a later change cannot widen it by
+> accident.
+>
+> **A cancel still lands one decode late, and that took two more reads of the
+> flag.** Handing a wallpaper to the pool and a worker starting it are no longer
+> the same instant, and the gap between them is however long the interactive lane
+> takes to drain. So the pass gives up waiting when it has been stood down, and
+> the wallpaper left in the lane reads the flag for itself before it starts and
+> does nothing. Both reads are about the same window and each is load-bearing: the
+> first keeps the pass's *exit* bounded by a decode, which matters because
+> `start_pregen`'s supervisor joins that exit while holding the `Pregen` mutex and
+> an IPC call to Cancel or to Clear thumbnail cache queues behind it; the second
+> keeps a decode nobody is waiting for from writing files into a cache directory
+> that Clear may have just emptied. A decode already under way is still never
+> interrupted.
+>
+> Two smaller things follow. The pass's regenerates now call
+> `ImageCache::forget`, which closes the window ADR 0040 named and left here. And
+> a worker survives a job that panics, because a pool that lost a thread to every
+> malformed JPEG would end up serving nothing at all, silently — the pass counts
+> that wallpaper as failed, and ADR 0034's note keys the failure to those bytes.
+>
+> Two things this does not do. Background work is not starved by a busy grid,
+> because a grid asks for a bounded number of thumbnails and then stops asking,
+> and nothing in either lane is ever dropped. And the pass does not join ADR
+> 0040's flight table: it shares the pool's threads and its ordering, not its
+> deduplication, so a wallpaper the pass is generating while a card asks for the
+> same size is still two decodes — as it was before, and no more often.
 
 **Order by `rating_mu ASC` to match Review.** Review is a considered pass over
 a grid of `small` thumbnails, where a few hundred milliseconds per card is
