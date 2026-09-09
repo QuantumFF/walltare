@@ -115,6 +115,18 @@ pub fn open(db_path: &Path) -> Result<Connection, OpenError> {
     // reports the mode it kept instead of failing, and running slower beats
     // refusing to start.
     conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
+    // The documented pairing for WAL, and a trade worth naming both sides of.
+    // SQLite's default is `FULL`, which fsyncs the write-ahead log on every
+    // commit; `thumbnails::record_one` is a bare `execute`, so it commits, and
+    // a cold burst of fifty cards is fifty serialised fsyncs inside the
+    // connection's critical section — two per Wallpaper for the pre-generation
+    // pass. `NORMAL` gives that up in exchange for a window in which the last
+    // few commits can be lost: on an OS crash or a power cut, not on walltare
+    // itself crashing, and never as a corrupt database, because WAL recovery
+    // replays whatever reached the disk. What is in that window is a Comparison
+    // recorded in the final moments before the power went, plus cache
+    // bookkeeping that regenerates on demand.
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
     Ok(conn)
 }
 
@@ -697,6 +709,26 @@ mod tests {
         let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
         record_full_thumbnail(&conn, id).unwrap();
         assert_eq!(origin_path_of(&conn, id), None);
+    }
+
+    #[test]
+    fn an_opened_database_journals_ahead_and_syncs_at_normal() {
+        // The pair is the decision (ADR 0039), so both halves are pinned. WAL
+        // without `synchronous = NORMAL` leaves SQLite at its default of
+        // `FULL`, which is an fsync per commit inside the connection's critical
+        // section — fifty of them for a cold burst of fifty cards.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+
+        let journal: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal.to_lowercase(), "wal");
+        // 0 is OFF, 1 NORMAL, 2 FULL, 3 EXTRA.
+        let synchronous: i64 = conn
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(synchronous, 1, "expected NORMAL");
     }
 
     #[test]
