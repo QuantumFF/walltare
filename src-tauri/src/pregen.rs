@@ -80,11 +80,12 @@ impl Pregen {
 
     /// Sets the running pass's cancel flag and returns.
     ///
-    /// Never joins. The flag is read between wallpapers and the `image` crate
-    /// cannot be interrupted mid-decode, so waiting here would block an IPC
-    /// call for up to one wallpaper's decode. A cancel therefore lands up to
-    /// one decode late, and both callers are fine with that: everything already
-    /// generated stays on disk either way.
+    /// Never joins. The flag is read between wallpapers, and again where a
+    /// wallpaper's work starts on a worker, and the `image` crate cannot be
+    /// interrupted mid-decode, so waiting here would block an IPC call for up to
+    /// one wallpaper's decode. A cancel therefore lands up to one decode late,
+    /// and both callers are fine with that: everything already generated stays
+    /// on disk either way.
     pub fn cancel(&self) {
         if let Some((flag, _)) = self.current().as_ref() {
             flag.store(true, Ordering::SeqCst);
@@ -293,7 +294,8 @@ impl Tally {
 ///
 /// Each wallpaper finishes before the next starts, so a cancelled pass leaves a
 /// clean prefix: fully warm, in the order the curator will reach it. The cancel
-/// flag is read between wallpapers, never inside one.
+/// flag is read between wallpapers, never inside one — and once more where the
+/// next one's work starts, which [`generate_unless_cancelled`] explains.
 ///
 /// One wallpaper at a time is the budget rather than an implementation detail.
 /// ADR 0012 gave the pass one thread of an N-core machine while the curator
