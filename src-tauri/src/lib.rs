@@ -381,13 +381,15 @@ fn get_cache_size(
 /// Throws the whole thumbnail cache away, and does not start it building again.
 ///
 /// Clearing is a rebuild rather than a way to reclaim disk: the next launch
-/// refills it, because the pass has no opt-out (ADR 0012). `thumbnails::purge`
-/// stays the single-wallpaper case.
+/// refills it, because the pass has no opt-out (ADR 0012).
+/// `thumbnails::purge_cache_files` and `thumbnails::purge_thumbnails` stay the
+/// single-wallpaper case.
 #[tauri::command]
 fn clear_cache(
     pregen: tauri::State<'_, Pregen>,
     db: tauri::State<'_, Db>,
     cache_dir: tauri::State<'_, CacheDir>,
+    images: tauri::State<'_, serving::ImageCache>,
 ) -> Result<(), error::AppError> {
     // Before anything is deleted, so a pass is not writing files into the
     // directory this is about to empty. It stands down between wallpapers and
@@ -399,7 +401,13 @@ fn clear_cache(
     // Emptying the directory is up to 10,000 unlinks and takes no connection,
     // so the curator's grid keeps being served while it happens (ADR 0039).
     thumbnails::clear_cache_files(&cache_dir.0)?;
-    db.write(thumbnails::forget_thumbnails)
+    let forgotten = db.write(thumbnails::forget_thumbnails);
+    // Third, and last for the same ordering reason: a request that was mid-flight
+    // through the two halves above can still have stored bytes, and a curator who
+    // asked for the cache to be thrown away and then saw the same thumbnails come
+    // back would have been told the button does not work (ADR 0040).
+    images.forget_all();
+    forgotten
 }
 
 /// How many Eligible wallpapers have no file behind them, for the Settings
@@ -684,15 +692,16 @@ pub fn run() {
             app.manage(Db::new(conn));
             app.manage(ScanRunning::default());
             app.manage(Pregen::default());
-            serving::start_workers(app.handle());
+            serving::start(app.handle());
             Ok(())
         })
         // Reads the URL and hands what it says to [`serving::serve`]. Nothing
         // else: the pool, ADR 0004's three phases, the headers and the statuses
-        // are that module's, so the two decisions still owed to
-        // [#224](https://github.com/QuantumFF/walltare/issues/224) — what order
-        // requests are served in, and what is kept in memory — are changes to
-        // one file rather than to this closure.
+        // are that module's, and so are the three answers
+        // [#224](https://github.com/QuantumFF/walltare/issues/224) was owed —
+        // the order requests are served in, one answer for two identical
+        // requests, and the bytes kept in memory (ADR 0040). All three landed as
+        // changes to one file rather than to this closure.
         .register_asynchronous_uri_scheme_protocol("wallpaper", |ctx, request, responder| {
             serving::serve(
                 ctx.app_handle(),
