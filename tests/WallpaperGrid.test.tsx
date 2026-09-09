@@ -140,59 +140,43 @@ let gridHandle: RefObject<WallpaperGridHandle | null>;
  * The selection is the host's, resolved over the same list the grid is handed.
  * There is no version of this harness without one: the rule has one home, and
  * the grid reads it rather than keeping a second copy.
+ *
+ * The scroll box is always in the markup and the ref is handed over only when a
+ * test asks for a window, because that prop is the whole of the difference
+ * between the library page's grid and Review's: with it the grid windows itself
+ * against this element, without it every row is mounted (ADR 0016, #231).
  */
 function Harness({
   initial,
-  reveal,
-  window: size,
+  windowed = false,
 }: {
   initial: Wallpaper[];
   /**
-   * The seam the grid calls before it moves focus, which is #79's virtualiser
-   * in the app. Absent leaves the grid's own scroll of the cell.
+   * Whether the grid gets the scroll box, which is what makes it window itself.
+   * A window is what puts a card out of the DOM, and a card with no node is
+   * what a reveal is for.
    */
-  reveal?: (index: number) => void;
-  /**
-   * How many cards have a node at a time, which is the host half of a reveal:
-   * the window moves to the card the grid asked for, and the node arrives on the
-   * commit after. Absent mounts every row, which is Review's grid (ADR 0016).
-   */
-  window?: number;
+  windowed?: boolean;
 }) {
   const [list, set] = useState(initial);
-  const [start, setStart] = useState(0);
   setList = set;
   selection = useGridSelection(list);
   gridHandle = useRef<WallpaperGridHandle | null>(null);
+  const box = useRef<HTMLDivElement | null>(null);
   return (
     <>
       <button type="button">before</button>
-      <WallpaperGrid
-        ref={gridHandle}
-        wallpapers={list}
-        selection={selection}
-        label="Wallpapers"
-        onAction={handleAction}
-        onOpen={(subject) => opened.push(subject.id)}
-        range={
-          size === undefined
-            ? undefined
-            : {
-                start,
-                end: Math.min(start + size, list.length),
-                before: 0,
-                after: 0,
-              }
-        }
-        reveal={
-          reveal === undefined && size === undefined
-            ? undefined
-            : (index) => {
-                reveal?.(index);
-                if (size !== undefined) setStart(Math.max(0, index - size + 1));
-              }
-        }
-      />
+      <div ref={box} data-slot="harness-rows">
+        <WallpaperGrid
+          ref={gridHandle}
+          wallpapers={list}
+          selection={selection}
+          label="Wallpapers"
+          onAction={handleAction}
+          onOpen={(subject) => opened.push(subject.id)}
+          scroller={windowed ? box : undefined}
+        />
+      </div>
       <button type="button">after</button>
     </>
   );
@@ -201,6 +185,53 @@ function Harness({
 async function mount(list: Wallpaper[]) {
   await renderInApp(<Harness initial={list} />);
   await flush();
+}
+
+/** The same grid, windowing itself against the box the harness renders. */
+async function mountWindowed(list: Wallpaper[]) {
+  await renderInApp(<Harness initial={list} windowed />);
+  await flush();
+  browserLaysOutTheScroller();
+}
+
+const scroller = () =>
+  document.querySelector('[data-slot="harness-rows"]') as HTMLElement;
+
+/**
+ * The scroll box a browser's layout produces and happy-dom does not: a box a
+ * screen tall, over content running well past the end of it.
+ *
+ * The virtualiser clamps every scroll it makes to the range the element itself
+ * reports, `scrollHeight - clientHeight`, and happy-dom leaves both at zero. So
+ * with nothing arranged there is no range to move through: every scroll lands
+ * back at the top and no row can be brought in at all. The two numbers only
+ * have to make a range exist — which rows end up mounted at the offset is the
+ * grid's own arithmetic over the row height, not these. The same arrangement
+ * `LibraryView.test.tsx` makes for the real page.
+ */
+function browserLaysOutTheScroller() {
+  const box = scroller();
+  Object.defineProperty(box, "clientHeight", {
+    value: 800,
+    configurable: true,
+  });
+  Object.defineProperty(box, "scrollHeight", {
+    value: 100_000,
+    configurable: true,
+  });
+}
+
+/**
+ * The `scroll` event a browser fires and happy-dom does not.
+ *
+ * happy-dom moves `scrollTop` — for an assignment, and for the `scrollTo` the
+ * virtualiser makes to bring a row in — and dispatches nothing, while the
+ * offset is what the window is read from.
+ */
+async function browserReportsScroll() {
+  await act(async () => {
+    fireEvent.scroll(scroller());
+  });
 }
 
 /** Hand the list back a new one, the way a keep or a refetch does. */
@@ -474,30 +505,26 @@ test("a list that changes while focus is elsewhere does not pull focus in", asyn
 });
 
 test("the selection is scrolled into view when it moves", async () => {
-  // The seam #79 hands ADR 0016's virtualiser: the card an arrow key selects
+  // ADR 0016's window, and the order it forces: the card an arrow key selects
   // may have no DOM node yet, so the row is scrolled in before the focus move
   // rather than inside the key handler. Review mounts every row, so its default
-  // is a scroll of the cell itself; this asserts the order the virtualised case
-  // needs, which is reveal first and focus after.
-  const revealed: number[] = [];
-  await renderInApp(
-    <Harness
-      initial={cards(9)}
-      reveal={(index) => {
-        revealed.push(index);
-        expect(document.activeElement).not.toBe(cell(index + 1));
-      }}
-    />,
-  );
-  await flush();
+  // is a scroll of the cell itself; this is the virtualised case, where the
+  // ordering is what a curator can observe — focus cannot land on a node that
+  // only exists because the reveal brought its row in.
+  await mountWindowed(cards(400));
 
   await act(async () => {
-    cell(1).focus();
+    mountedCells()[0].focus();
   });
-  await press("End");
+  expect(mounted(400)).toBe(false);
 
-  expect(revealed).toEqual([8]);
-  expect(document.activeElement).toBe(cell(9));
+  await press("End");
+  await browserReportsScroll();
+
+  expect(document.activeElement).toBe(cell(400));
+  // And the window moved rather than grew: the card the sweep started on is a
+  // hundred rows behind it and has given its node up.
+  expect(mounted(1)).toBe(false);
 });
 
 // The three things the page holds the selection for (#137). The lightbox is
@@ -548,35 +575,27 @@ test("a focus request from the page puts focus on the selected card", async () =
 });
 
 test("a focus request reveals a card with no node before focusing it", async () => {
-  const revealed: number[] = [];
-  await renderInApp(
-    <Harness
-      initial={cards(9)}
-      window={4}
-      reveal={(index) => revealed.push(index)}
-    />,
-  );
-  await flush();
+  await mountWindowed(cards(400));
 
-  // The window ADR 0016 puts over the library, at the size this file can assert
-  // against: four of the nine cards have a node, and the wallpaper the page
-  // selects is not one of them.
-  expect(mountedCells().length).toBe(4);
+  // The window ADR 0016 puts over the library: a few dozen of the 400 cards
+  // have a node, and the wallpaper the page selects is not one of them.
+  expect(mountedCells().length).toBeLessThan(400);
   await act(async () => {
-    selection.selectId(9);
+    selection.selectId(400);
   });
-  expect(mounted(9)).toBe(false);
+  expect(mounted(400)).toBe(false);
 
   await act(async () => {
     gridHandle.current?.focusSelection();
   });
+  await browserReportsScroll();
 
   // The row was asked for before the focus move: the reveal moves the window,
-  // the commit that follows gives card 9 a node, and the focus lands on the
+  // the commit that follows gives card 400 a node, and the focus lands on the
   // pass after that. Focusing a node that does not exist yet is the one way the
   // pattern breaks (ADR 0019).
-  expect(revealed[0]).toBe(8);
-  expect(document.activeElement).toBe(cell(9));
+  expect(mounted(400)).toBe(true);
+  expect(document.activeElement).toBe(cell(400));
 });
 
 // The direct keys. Each one presses on a card of every Status and asks which

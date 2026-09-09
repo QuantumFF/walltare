@@ -6,7 +6,6 @@ import {
 } from "@/components/RejectDestination";
 import {
   useGridSelection,
-  useGridWindow,
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -121,9 +120,8 @@ function EmptyState({
  * ordering, the fetch behind them, the scroll position, and the moved Scores a
  * vote elsewhere leaves behind. The rows themselves and the four transitions on
  * them are `useWallpaperRows`', and the window of rows that has cards in it is
- * `useGridWindow`'s — which is where this page and Review differ in one
- * predicate and one hook rather than in two implementations (ADR 0023,
- * ADR 0027).
+ * the grid's own — so what separates this page from Review is one predicate and
+ * one prop rather than two implementations (ADR 0023, ADR 0027, #231).
  *
  * There are two empty states and they are two screens: a library nothing has
  * been scanned into, which routes to the Settings field that fixes it, and a
@@ -278,14 +276,6 @@ export function LibraryView() {
   const list = rows ?? [];
 
   /**
-   * The window of rows and the way a selection outside it gets a node, both the
-   * grid's own (ADR 0027). What this page owns about the scroll box is the
-   * position the curator left it at; how tall a row is and which of them have
-   * cards in them is arithmetic over the grid's CSS, and it went back there.
-   */
-  const { range, reveal } = useGridWindow(list.length, scroller);
-
-  /**
    * The grid's selection, held here rather than inside the grid because ADR
    * 0022 has the lightbox render this same selection and keeps the lightbox's
    * state on the page that mounted the grid — for the same reason the rows are
@@ -407,7 +397,14 @@ export function LibraryView() {
       {/* The scroll container the grid sits in, and the position the curator
           left it at is this page's to remember. It scrolls rather than the
           whole page so that the bar above stays put while the grid moves, and
-          it is the element the virtualiser measures its window against. */}
+          it is the element the grid measures its window against — the ref goes
+          down as a prop and the offset stays up here, because the restore below
+          turns on `showing` and on ADR 0015's rule that this view stays mounted
+          (ADR 0027, #231).
+
+          `onScroll` writes a ref and renders nothing, which is what keeps a
+          wheel gesture off this component: the window that moves with it is the
+          grid's, and the grid is what the virtualiser re-renders. */}
       <div
         ref={scroller}
         data-slot="library-rows"
@@ -488,11 +485,15 @@ export function LibraryView() {
              themselves — a name that moved with it would announce a different
              widget every time the same grid was narrowed.
 
-             Every row goes in and a window of them comes out. The grid is what
-             resolves the selection and moves it with the arrows, so it needs the
-             list the curator is browsing rather than the slice of it that has
-             nodes; `range` is the slice, and `reveal` is how a selection that
-             lands outside it gets one (#131). */
+             Every row goes in and a window of a few dozen of them comes out.
+             The grid is what resolves the selection and moves it with the
+             arrows, so it needs the list the curator is browsing rather than
+             the slice of it that has nodes — and it works the slice out for
+             itself, from the scroll box this page hands it. That box is the
+             only thing about the window that crosses this seam now; the row
+             height, the column count and the way a selection outside the window
+             gets a node are all arithmetic over the grid's own CSS (#131, #231,
+             ADR 0027). */
           <WallpaperGrid
             ref={grid}
             wallpapers={list}
@@ -501,8 +502,7 @@ export function LibraryView() {
             onAction={perform}
             onOpen={lightbox.openOn}
             scoresMoved={scoresMoved}
-            reveal={reveal}
-            range={range}
+            scroller={scroller}
           />
         )}
       </div>
