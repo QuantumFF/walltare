@@ -129,6 +129,56 @@ The honest mark against `useGridWindow` is one caller, so the argument is not
 duplication. It is that the arithmetic's inputs are this module's own CSS, and
 after this they never leave it.
 
+> **Amended by [#231](https://github.com/QuantumFF/walltare/issues/231),
+> 2026-09-09.** `useGridWindow` is not exported any more, and it is not a name a
+> host uses. This section's deliverable is gone.
+>
+> It was removed by its own argument. The case above is that the arithmetic's
+> inputs are this module's own CSS and never leave it, and the one caller was
+> conceded as the honest mark against it. Push that one step further and the
+> caller has no business being outside the module either: the inputs stop at the
+> file boundary, so the call should too. Nothing about that reading is new here,
+> which is the uncomfortable part — the argument that created the exported hook
+> was already sufficient to say it should not have been exported, and this ADR
+> stopped one step short.
+>
+> What forced the step was a cost this ADR did not weigh. `useVirtualizer` fires
+> its re-render notification inside a `flushSync`, from the scroll handler, so
+> whoever calls it is the tree a wheel gesture rebuilds. With the call on the
+> page, every crossing of a row boundary — roughly every 154px — synchronously
+> rebuilt the filter chips, the ordering control, the reject destination line,
+> the mounted lightbox and every card. The hook was reachable from `LibraryView`
+> because it was exported, and that is the whole of why the wrong tree was
+> rebuilding.
+>
+> So `useGridWindow` keeps its signature and loses its `export`. `GridRange`
+> loses its `export` with it: both ends of that seam are inside the file now. The
+> table above reads two rather than three:
+>
+> | before | after |
+> | --- | --- |
+> | `WallpaperGrid`, `useGridSelection`, `useGridWindow` | `WallpaperGrid`, `useGridSelection` |
+>
+> (`rowHeight`, `printedKey`, `actionFor`, `GridSelection` and
+> `WallpaperGridHandle` are also exported and are not what this table counts —
+> the first for its unit test, the next two for the lightbox's keys, the last two
+> as types a host holds. The table is the names a host *calls*, which is how it
+> has read since this ADR was written.)
+>
+> `range` and `reveal` leave `WallpaperGridProps` and `scroller` arrives. That is
+> the same ref this section already had the host owning, for the same reason, and
+> the refusal below under "The scroll position stays on the page" is untouched:
+> `scrollTop`, `toTop`, the `onScroll` handler and the restore effect all stay on
+> `LibraryView`, and the grid still imports nothing about the navigation shell.
+> Only the hook call site moved.
+>
+> The two shapes are now two components rather than one component with a branch
+> in it: `WallpaperGrid` chooses, `WindowedGrid` calls the hook, and `Grid` holds
+> the cells, the focus and the keys. Hooks do not run conditionally, and a
+> virtualiser standing by on a host with no scroll box is still `setOptions` and
+> three layout effects on every render of Review's fifty cards — which would have
+> made this a change to Review, and it is not one.
+
 ### A windowed grid wears its own padding
 
 ```ts
@@ -171,6 +221,19 @@ test sets the way `desktopColorScheme` sets the theme."
 What the tests gain instead is the `rowHeight` unit test above, plus
 `useGridWindow` being reachable from `WallpaperGrid.test.tsx` through the same
 harness that already drives `useGridSelection`.
+
+> **Amended by [#231](https://github.com/QuantumFF/walltare/issues/231),
+> 2026-09-09.** The hook is no longer reachable from a test either, since it is
+> no longer exported. `WallpaperGrid.test.tsx`'s harness reaches the window the
+> way a page does instead: it renders a scroll box, hands the grid the ref, and
+> arranges the box with a copy of `browserLaysOutTheScroller`. So there are now
+> two callers of that arrangement rather than one, and the `range` and `reveal`
+> props the harness used to fake a window with are gone — a card with no node is
+> produced by a real window over 400 cards, which is what the app does.
+>
+> `rowHeight` is untouched and so is its test, which is the one this ADR called
+> the thing that went from unwritable to trivial. It is still exported for that
+> test and for nothing else.
 
 ## What this does not touch
 
@@ -235,6 +298,11 @@ same defence `COLUMNS` has had since #131.
 **`useGridColumns` is no longer exported**, so a future second windowed host
 cannot read the count without re-exporting it. If that happens, the thing to
 export is `useGridWindow`, which such a host wants anyway.
+
+> **Amended by [#231](https://github.com/QuantumFF/walltare/issues/231),
+> 2026-09-09.** A second windowed host now needs neither. It passes a `scroller`
+> and the grid does the rest, which is what this consequence was reaching for
+> and did not quite say. Nothing about the window is exported at all.
 
 **Review's grid is now the only caller that passes layout classes**, and it
 passes `pb-8` while the windowed host passes nothing. A reader comparing the two
