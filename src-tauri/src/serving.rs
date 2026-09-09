@@ -92,12 +92,14 @@ pub fn serve(
     asked_for: Result<(i64, Size), AppError>,
     responder: UriSchemeResponder,
 ) {
-    let serving = app.clone();
+    // The clone is the job's own handle: the pool answers after this call has
+    // returned, so it cannot borrow the caller's.
+    let handle = app.clone();
     let job = move || {
         let response = match asked_for {
             Ok((wallpaper_id, size)) => {
-                let db = serving.state::<Db>();
-                let cache_dir = serving.state::<CacheDir>();
+                let db = handle.state::<Db>();
+                let cache_dir = handle.state::<CacheDir>();
                 answer(&db, &cache_dir.0, wallpaper_id, size)
             }
             Err(e) => error_response(&e),
