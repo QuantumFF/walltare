@@ -40,6 +40,17 @@ The handler moved to `register_asynchronous_uri_scheme_protocol` and submits
 work to a fixed pool of threads, sized to `available_parallelism` clamped
 between 2 and 8.
 
+> **Amended by [#227](https://github.com/QuantumFF/walltare/issues/227),
+> 2026-09-09.** The caller is `serving::serve` rather than `resolve_image`, and
+> the pool moved with it: everything about answering a `wallpaper://` request is
+> one module, and the protocol closure reads the URL and calls it. The order and
+> the phases are unchanged. Phase two is now a parameter of the function that
+> sequences them, which production fills with `fulfill` and the test fills with a
+> phase two that asserts the connection is free before it decodes — the half of
+> [ADR 0039](0039-the-connection-lock-is-taken-for-queries.md)'s rule no type can
+> hold, and until now the whole of this decision was written down and pinned by
+> nothing.
+
 `resolve`, the convenience wrapper that runs all three against one connection,
 is now `#[cfg(test)]`. Only the unit tests use it.
 
