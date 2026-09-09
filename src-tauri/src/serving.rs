@@ -32,11 +32,20 @@
 //! A request meets them in that order on the way down and the reverse on the way
 //! back, and none of the three is visible to the webview, to `lib.rs`, or to the
 //! frontend's three callers of `wallpaperImageUrl`.
+//!
+//! [`ImageWorkers`] has two producers rather than one
+//! ([#232](https://github.com/QuantumFF/walltare/issues/232)). The
+//! pre-generation pass hands it one wallpaper at a time through
+//! [`ImageWorkers::background`] and waits, so the machine runs the pool's
+//! threads rather than the pool's threads plus a decode beside them, and a
+//! thumbnail the curator is waiting on is taken off the stack before any of the
+//! pass's work.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Manager, UriSchemeResponder};
@@ -607,22 +616,33 @@ impl Drop for Leader<'_> {
     }
 }
 
-/// A fixed set of threads for `wallpaper://` requests, newest first.
-struct ImageWorkers(Arc<Requests>);
+/// A fixed set of threads for image work: `wallpaper://` requests newest first,
+/// and the pre-generation pass behind all of them.
+pub struct ImageWorkers(Arc<Requests>);
 
 type Job = Box<dyn FnOnce() + Send>;
 
-/// The requests waiting for a worker, as a stack.
+/// The work waiting for a worker: interactive requests as a stack, and the
+/// pre-generation pass's next wallpaper behind them.
 ///
-/// A stack rather than the `mpsc` FIFO this replaces, and that is the whole of
-/// the ordering decision (ADR 0040). Under ADR 0016's virtualisation a wheel
-/// pass mounts and unmounts cards continuously, so by the time a request reaches
-/// a worker the card that asked for it may be long gone — and a FIFO serves it
-/// ahead of the cards now on screen. The newest request is the one whose card is
-/// most likely still visible.
+/// The stack is the whole of the ordering decision for a request (ADR 0040),
+/// replacing an `mpsc` FIFO. Under ADR 0016's virtualisation a wheel pass mounts
+/// and unmounts cards continuously, so by the time a request reaches a worker
+/// the card that asked for it may be long gone — and a FIFO serves it ahead of
+/// the cards now on screen. The newest request is the one whose card is most
+/// likely still visible.
 ///
-/// Nothing is dropped. A card that scrolls back into view is served later, not
-/// left blank, so the stack is unbounded and every job that goes in comes out.
+/// The second lane is the whole of the ordering decision between the two
+/// producers (#232). A worker takes a request whenever there is one, so a
+/// thumbnail the curator is waiting for overtakes one the pass is warming for
+/// later. Overtaking is the next thing off the stack and never a cancellation:
+/// the `image` crate cannot be interrupted mid-decode, so a background job
+/// already running finishes.
+///
+/// Nothing is dropped from either lane. A card that scrolls back into view is
+/// served later, not left blank, and the pass's wallpaper is served once the
+/// requests in front of it are — which they are, because a grid asks for a
+/// bounded number of thumbnails and then stops asking.
 #[derive(Default)]
 struct Requests {
     pending: Mutex<Pending>,
@@ -631,7 +651,13 @@ struct Requests {
 
 #[derive(Default)]
 struct Pending {
+    /// Interactive requests, newest first.
     stack: Vec<Job>,
+    /// The pre-generation pass's work, oldest first. Nothing about a background
+    /// job is about what is on screen, so there is nothing for a stack's
+    /// argument to bite on, and the pass keeps at most one job here anyway: it
+    /// submits one wallpaper and waits for it (ADR 0012's one-thread budget).
+    background: VecDeque<Job>,
     /// Set when the pool is dropped, so a worker parked on the condvar has
     /// something to wake up to. Production never sets it — the pool is app state
     /// until the process exits — and a test does.
@@ -644,15 +670,25 @@ impl Requests {
         self.arrived.notify_one();
     }
 
-    /// Blocks until there is a request, and answers with the newest one.
+    fn push_background(&self, job: Job) {
+        self.pending().background.push_back(job);
+        self.arrived.notify_one();
+    }
+
+    /// Blocks until there is work, and answers with the newest request, or with
+    /// the pass's next wallpaper when no request is waiting.
     ///
-    /// `None` means the pool is gone and the stack is empty, which is the only
-    /// way a worker ever stops. The stack is drained first even then: a job
-    /// dropped without running is a request the webview is still waiting on.
+    /// `None` means the pool is gone and both lanes are empty, which is the only
+    /// way a worker ever stops. They are drained first even then: a job dropped
+    /// without running is a request the webview is still waiting on, or a pass
+    /// waiting on an answer that would never come.
     fn take(&self) -> Option<Job> {
         let mut pending = self.pending();
         loop {
             if let Some(job) = pending.stack.pop() {
+                return Some(job);
+            }
+            if let Some(job) = pending.background.pop_front() {
                 return Some(job);
             }
             if pending.closed {
@@ -682,7 +718,16 @@ impl ImageWorkers {
             let requests = Arc::clone(&requests);
             std::thread::spawn(move || {
                 while let Some(job) = requests.take() {
-                    job();
+                    // A worker outlives whatever it ran. The `image` crate
+                    // decoding somebody's malformed JPEG is the one thing in
+                    // here that could panic, and a pool that lost a thread to
+                    // each one would end up serving nothing at all — which it
+                    // would do silently, since the panic already happened on a
+                    // thread nobody joins. The waiter is answered either way: a
+                    // request by `Leader`'s `Drop`, and a background job by its
+                    // sender being dropped unsent (see
+                    // [`ImageWorkers::background`]).
+                    let _ = std::panic::catch_unwind(AssertUnwindSafe(job));
                 }
             });
         }
@@ -691,6 +736,31 @@ impl ImageWorkers {
 
     fn submit(&self, job: impl FnOnce() + Send + 'static) {
         self.0.push(Box::new(job));
+    }
+
+    /// Runs one piece of background work on these threads, behind every
+    /// interactive request, and answers with what it produced.
+    ///
+    /// The pre-generation pass's way in, and the reason there are two lanes. It
+    /// blocks, which is what keeps ADR 0012's one-thread budget: the pass hands
+    /// over one wallpaper, waits for it, and hands over the next, so the machine
+    /// never has more image work in flight than the pool was sized for. The
+    /// caller's own thread is parked rather than decoding, so the pass costs a
+    /// pool slot instead of a core of its own.
+    ///
+    /// `None` when the work never ran — a worker that panicked partway, or a
+    /// pool that has been dropped, which only a test does. Both leave the sender
+    /// dropped unsent, and neither leaves the caller waiting for an answer that
+    /// is not coming.
+    pub fn background<T>(&self, work: impl FnOnce() -> T + Send + 'static) -> Option<T>
+    where
+        T: Send + 'static,
+    {
+        let (done, answer) = mpsc::channel();
+        self.0.push_background(Box::new(move || {
+            let _ = done.send(work());
+        }));
+        answer.recv().ok()
     }
 }
 
@@ -1234,6 +1304,115 @@ mod tests {
             served.last().copied(),
             Some(1),
             "the request that waited longest was served, and served last"
+        );
+    }
+
+    #[test]
+    fn an_interactive_request_is_served_before_any_queued_background_work() {
+        // The two producers, one worker, and the worker held busy while both
+        // submit — which is the state the app is in whenever the curator browses
+        // during a pre-generation pass. The pass works in an order unrelated to
+        // what is on screen (`status = 'rejected' ASC, comparisons_count ASC`,
+        // for the pair Rank will draw next), so what it has queued is almost
+        // never what the curator is waiting for (#232).
+        let workers = ImageWorkers::new(1);
+        let served = Arc::new(Mutex::new(Vec::new()));
+        let (worker_busy, holding_the_worker) = mpsc::channel();
+        let (release, may_finish) = mpsc::channel();
+
+        workers.submit(move || {
+            worker_busy.send(()).unwrap();
+            may_finish.recv().unwrap();
+        });
+        holding_the_worker.recv().unwrap();
+
+        for wallpaper in 1..=3 {
+            let served = Arc::clone(&served);
+            // Not `background`, which waits for its answer: what is being
+            // asserted is the order the stack is drained in, and a pass that
+            // waited would only ever have one job in it.
+            workers
+                .0
+                .push_background(Box::new(move || served.lock().unwrap().push(-wallpaper)));
+        }
+        for request in 1..=2 {
+            let served = Arc::clone(&served);
+            workers.submit(move || served.lock().unwrap().push(request));
+        }
+        release.send(()).unwrap();
+        wait_until("every job was run", || served.lock().unwrap().len() == 5);
+
+        assert_eq!(
+            *served.lock().unwrap(),
+            vec![2, 1, -1, -2, -3],
+            "the background pass was served ahead of a request the curator is waiting for"
+        );
+    }
+
+    #[test]
+    fn background_work_already_under_way_is_finished_rather_than_overtaken() {
+        // "Overtake" is the next thing off the stack and never a cancellation:
+        // the `image` crate cannot be interrupted mid-decode, so a wallpaper the
+        // pass has started is a wallpaper the pass finishes, and the request
+        // that arrives meanwhile waits for a worker like any other (#232).
+        let workers = ImageWorkers::new(1);
+        let served = Arc::new(Mutex::new(Vec::new()));
+        let (started, has_started) = mpsc::channel();
+        let (release, may_finish) = mpsc::channel();
+
+        {
+            let served = Arc::clone(&served);
+            workers.0.push_background(Box::new(move || {
+                started.send(()).unwrap();
+                may_finish.recv().unwrap();
+                served.lock().unwrap().push("the pass's wallpaper");
+            }));
+        }
+        has_started.recv().unwrap();
+
+        {
+            let served = Arc::clone(&served);
+            workers.submit(move || served.lock().unwrap().push("the curator's request"));
+        }
+        assert!(
+            served.lock().unwrap().is_empty(),
+            "the decode under way was abandoned partway"
+        );
+
+        release.send(()).unwrap();
+        wait_until("both jobs ran", || served.lock().unwrap().len() == 2);
+        assert_eq!(
+            *served.lock().unwrap(),
+            vec!["the pass's wallpaper", "the curator's request"]
+        );
+    }
+
+    #[test]
+    fn the_pass_is_answered_with_what_its_wallpaper_produced() {
+        // What `background` is for: the pass's own thread parks until a worker
+        // takes the wallpaper, so it costs a pool slot rather than a core of its
+        // own, and it comes away with the result as if it had done the work.
+        let workers = ImageWorkers::new(1);
+
+        let answer = workers.background(|| "both sizes written");
+
+        assert_eq!(answer, Some("both sizes written"));
+    }
+
+    #[test]
+    fn a_job_that_panics_costs_its_answer_and_not_the_worker() {
+        // Every thread in this pool is one somebody is waiting on, and a panic
+        // on a thread nobody joins is silent. So the worker outlives a decode
+        // that panicked, the pass hears `None` rather than waiting forever, and
+        // the next request is still served.
+        let workers = ImageWorkers::new(1);
+
+        let answer = workers.background(|| panic!("the decoder gave up"));
+
+        assert_eq!(answer, None::<()>);
+        assert_eq!(
+            workers.background(|| "the pool still works"),
+            Some("the pool still works")
         );
     }
 

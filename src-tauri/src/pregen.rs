@@ -3,6 +3,11 @@
 //!
 //! `start_pregen` and `cancel_pregen` stay in the command surface; everything
 //! they set in motion lives here.
+//!
+//! The decoding does not. Every wallpaper goes through [`crate::serving`]'s
+//! worker pool, one at a time, behind every `wallpaper://` request the curator
+//! is waiting for (#232, ADR 0012's amendment). The thread this module owns
+//! reads the list, waits, and counts.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::serving::{ImageCache, ImageWorkers};
 use crate::{error, thumbnails, CacheDir, Db};
 
 /// How far through its work list the pre-generation pass is.
@@ -147,7 +153,7 @@ pub fn supervise(app: AppHandle) {
 /// A work list that cannot be built emits nothing. The only way that happens is
 /// the database being gone, which is already fatal everywhere else, so there is
 /// no `pregen-failed` event for it (ADR 0012).
-fn run(app: &AppHandle, cancel: &AtomicBool) {
+fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
     let db = app.state::<Db>();
     let cache_dir = app.state::<CacheDir>();
 
@@ -167,7 +173,77 @@ fn run(app: &AppHandle, cancel: &AtomicBool) {
             return;
         }
     };
-    pass(&db, &cache_dir.0, &work, cancel, &EventReport(app));
+    pass(&db, &work, cancel, &EventReport(app), |pending| {
+        on_the_pool(app, cancel, pending)
+    });
+}
+
+/// Generates one wallpaper on the pool that serves `wallpaper://`, and waits for
+/// it.
+///
+/// The pass's whole claim on the machine, and there is exactly one of these in
+/// flight at a time. Submitting is what makes an interactive request overtake
+/// the pass — a worker takes a queued request before it takes this — and waiting
+/// is what keeps ADR 0012's one-thread budget: the pass occupies one of the
+/// pool's slots rather than a core beside them.
+///
+/// The cancel flag is read again where the work starts, which is
+/// [`generate_unless_cancelled`]'s whole job.
+fn on_the_pool(
+    app: &AppHandle,
+    cancel: &Arc<AtomicBool>,
+    pending: &thumbnails::Pending,
+) -> Result<Step, error::AppError> {
+    let handle = app.clone();
+    let cancel = Arc::clone(cancel);
+    let pending = pending.clone();
+    app.state::<ImageWorkers>()
+        .background(move || {
+            let db = handle.state::<Db>();
+            let cache_dir = handle.state::<CacheDir>();
+            let step = generate_unless_cancelled(&db, &cache_dir.0, &cancel, &pending);
+            if matches!(step, Ok(Step::Generated)) {
+                // The window ADR 0040 left open: this pass wrote files and rows
+                // without going through `serve`, so bytes in memory for this
+                // wallpaper were made from an older read of the source it has
+                // just read again. A regenerate invalidates them the same way an
+                // on-demand one does.
+                handle.state::<ImageCache>().forget(pending.wallpaper_id);
+            }
+            step
+        })
+        // The job never ran, which in a running app means the decode panicked.
+        // The pool's worker survived it and the pass counts a failure, which
+        // ADR 0034's note then keys to these bytes — so the next pass does not
+        // spend the same panic learning the same thing.
+        .unwrap_or_else(|| {
+            Err(error::AppError::Image(
+                "generating the thumbnail panicked".to_string(),
+            ))
+        })
+}
+
+/// One wallpaper, unless the pass was stood down while it waited for a worker.
+///
+/// The flag is read here as well as between wallpapers because submitting and
+/// starting are no longer the same instant: a wallpaper can sit behind a burst
+/// of interactive requests, and without this a cancel would land a queue wait
+/// later than the one decode ADR 0012 allows it. A wallpaper the pass never
+/// touched is a skip, which is what the Status re-check already calls the same
+/// outcome — the pass stops at the top of its next turn either way.
+///
+/// A decode already under way is not interrupted. The `image` crate cannot be,
+/// and a partial cache is a correct cache.
+fn generate_unless_cancelled(
+    db: &Db,
+    cache_dir: &Path,
+    cancel: &AtomicBool,
+    pending: &thumbnails::Pending,
+) -> Result<Step, error::AppError> {
+    if cancel.load(Ordering::SeqCst) {
+        return Ok(Step::Skipped);
+    }
+    generate_one(db, cache_dir, pending)
 }
 
 /// Where a pass reports to.
@@ -219,14 +295,25 @@ impl Tally {
 /// clean prefix: fully warm, in the order the curator will reach it. The cancel
 /// flag is read between wallpapers, never inside one.
 ///
+/// One wallpaper at a time is the budget rather than an implementation detail.
+/// ADR 0012 gave the pass one thread of an N-core machine while the curator
+/// ranks, and #232 moved where that thread's work runs without widening it:
+/// filling the pool to finish a first launch faster is a different feature,
+/// argued on first-launch time.
+///
+/// Where a wallpaper is generated is a parameter, for [`Report`]'s reason.
+/// Production passes [`on_the_pool`], which needs a running Tauri app; what the
+/// pass counts, the order it works in and where it stops are worth asserting
+/// without one.
+///
 /// An empty work list — every launch after the first — emits nothing at all,
 /// rather than flashing a finished progress bar for work that never happened.
 fn pass(
     db: &Db,
-    cache_dir: &Path,
     work: &[thumbnails::Pending],
     cancel: &AtomicBool,
     report: &impl Report,
+    generate: impl Fn(&thumbnails::Pending) -> Result<Step, error::AppError>,
 ) {
     if work.is_empty() {
         return;
@@ -244,7 +331,7 @@ fn pass(
             cancelled = true;
             break;
         }
-        step(db, cache_dir, pending, &mut tally);
+        step(db, pending, &mut tally, &generate);
         report.progress(Progress {
             done: tally.done(),
             total,
@@ -264,8 +351,13 @@ fn pass(
 /// file must not stop a pass over the whole library. An undecodable one is also
 /// written down, so the next pass does not spend the same decode learning the
 /// same thing — see [`remember`].
-fn step(db: &Db, cache_dir: &Path, pending: &thumbnails::Pending, tally: &mut Tally) {
-    match generate_one(db, cache_dir, pending) {
+fn step(
+    db: &Db,
+    pending: &thumbnails::Pending,
+    tally: &mut Tally,
+    generate: impl Fn(&thumbnails::Pending) -> Result<Step, error::AppError>,
+) {
+    match generate(pending) {
         Ok(Step::Generated) => tally.generated += 1,
         Ok(Step::Skipped) => tally.skipped += 1,
         Err(e) => {
@@ -324,6 +416,9 @@ enum Step {
 
 /// Generates whichever sizes one wallpaper is short of.
 ///
+/// Runs on a worker of [`crate::serving`]'s pool in production, which is the
+/// only place in this module that decodes anything.
+///
 /// The connection is taken for the reads and again for the writes, and is never
 /// held across a decode (ADR 0004) — the same ordering [`crate::serving`] keeps
 /// for a request that misses. Both sizes missing is the single decode
@@ -380,6 +475,7 @@ mod tests {
     use image::{DynamicImage, Rgba, RgbaImage};
     use std::cell::RefCell;
     use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
     use thumbnails::{Missing, Pending, Size};
 
     /// A library the pre-generation pass can be run against: the connection
@@ -499,12 +595,20 @@ mod tests {
             moved
         }
 
+        /// Where a wallpaper is generated in these tests: on the calling thread,
+        /// which is what production's [`on_the_pool`] arranges for on a worker.
+        /// The pool itself is `serving`'s to test, and reaching it needs a
+        /// running Tauri app.
+        fn generate(&self) -> impl Fn(&Pending) -> Result<Step, error::AppError> + '_ {
+            |pending| generate_one(&self.db, self.cache.path(), pending)
+        }
+
         fn step(&self, pending: &Pending, tally: &mut Tally) {
-            super::step(&self.db, self.cache.path(), pending, tally);
+            super::step(&self.db, pending, tally, self.generate());
         }
 
         fn pass(&self, work: &[Pending], report: &impl Report, cancel: &AtomicBool) {
-            super::pass(&self.db, self.cache.path(), work, cancel, report);
+            super::pass(&self.db, work, cancel, report, self.generate());
         }
 
         fn row(&self, wallpaper_id: i64, size: &str) -> Option<(u32, u32)> {
@@ -934,6 +1038,80 @@ mod tests {
                 cancelled: true,
             }]
         );
+    }
+
+    #[test]
+    fn the_pass_has_one_wallpaper_in_flight_at_a_time() {
+        // ADR 0012 sized the pass at one thread on two grounds, and #232 retires
+        // only one of them. The pass now shares the pool that serves
+        // `wallpaper://` instead of running a decode beside it, and it still
+        // hands over one wallpaper and waits: one thread takes 1/N of an N-core
+        // machine while the curator ranks, and taking half an eight-core machine
+        // to finish a first launch faster is a different feature, argued on
+        // first-launch time (#224, Out of scope). This is the pin, so a later
+        // change cannot widen it by accident.
+        let library = Library::new();
+        let work: Vec<Pending> = (1..=4)
+            .map(|n| {
+                library.seed(
+                    &format!("{n}.png"),
+                    800,
+                    400,
+                    [n as u8, 1, 1, 255],
+                    Missing::Both,
+                )
+            })
+            .collect();
+        let in_flight = AtomicUsize::new(0);
+        let most = AtomicUsize::new(0);
+        let recorder = Recorder::default();
+
+        super::pass(
+            &library.db,
+            &work,
+            &AtomicBool::new(false),
+            &recorder,
+            |pending| {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                let step = generate_one(&library.db, library.cache.path(), pending);
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                step
+            },
+        );
+
+        assert_eq!(
+            most.load(Ordering::SeqCst),
+            1,
+            "the pass had more than one wallpaper in flight"
+        );
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![Complete {
+                generated: 4,
+                failed: 0,
+                cancelled: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_wallpaper_cancelled_while_it_waited_for_a_worker_is_not_generated() {
+        // The pass hands a wallpaper to the pool and waits for a worker to take
+        // it, so a cancel can land in between — behind a burst of fifty
+        // interactive requests, that gap is longer than a decode. Reading the
+        // flag again where the work starts is what keeps a cancel landing one
+        // decode late (ADR 0012).
+        let library = Library::new();
+        let pending = library.seed("queued.png", 800, 400, [7, 7, 7, 255], Missing::Both);
+        let cancelled = AtomicBool::new(true);
+
+        let step =
+            generate_unless_cancelled(&library.db, library.cache.path(), &cancelled, &pending);
+
+        assert_eq!(step.unwrap(), Step::Skipped);
+        assert_eq!(library.row(pending.wallpaper_id, "medium"), None);
+        assert!(!library.cache_file(pending.wallpaper_id, "medium").exists());
     }
 
     #[test]
