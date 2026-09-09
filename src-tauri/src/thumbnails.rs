@@ -551,15 +551,28 @@ pub struct Pending {
     pub missing: Missing,
 }
 
-/// Every wallpaper the pre-generation pass would generate, in the order it
-/// would reach them.
+/// One wallpaper as the query saw it, before anything is asked of the
+/// filesystem.
 ///
-/// One query, one `read_dir` of the cache directory, and one `stat` per source
-/// file. No image bytes are read at all. Running [`plan`] and [`fulfill`] over
-/// the library instead would reuse the freshness rule exactly, and would also
-/// read the whole cache off disk on every launch to discover that nothing needs
-/// doing — 830MB of pointless reads on a two-thousand-wallpaper library
-/// (ADR 0012).
+/// Owned data and no borrow of the connection, which is what lets
+/// [`candidates`] hand the whole library over and be finished with the
+/// connection before the first `stat` (ADR 0039).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub wallpaper_id: i64,
+    /// Where the row says the file is.
+    pub source: PathBuf,
+    pub status: Status,
+    /// The `source_mtime` the `small` was recorded at, if it has a row.
+    pub small_mtime: Option<i64>,
+    /// The same for the `medium`.
+    pub medium_mtime: Option<i64>,
+    /// The mtime an undecodable source was noted at, if one was (ADR 0034).
+    pub failed_mtime: Option<i64>,
+}
+
+/// Every wallpaper the pass might owe something to, in the order it would reach
+/// them — the database half of the work list.
 ///
 /// The order is `status = 'rejected' ASC, comparisons_count ASC, id ASC`.
 /// Rejected is a tail group behind the Eligible pool, so warming rejects costs
@@ -568,18 +581,17 @@ pub struct Pending {
 /// anything can aim at. A scan inserts rows at count 0, so freshly scanned
 /// files land at the head.
 ///
-/// Each entry carries the Status it was listed under, because the pass compares
+/// Each row carries the Status it was listed under, because the pass compares
 /// the row against that rather than against Eligible: a Rejected entry is the
 /// tail group and gets generated, one rejected after the fact does not.
 ///
-/// The length is the honest total for the pass's progress, because a wallpaper
-/// it would skip never enters the list. That is also why a source the pass has
-/// already read and failed to decode is left out while the note still matches
-/// the file: it is not work, and listing it would spend a decode per launch to
-/// re-learn the same answer (ADR 0034).
-pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
-    let cached = cache_filenames(cache_dir)?;
-
+/// One statement over the whole `wallpapers` table and nothing else. Everything
+/// that touches the disk is [`work_list`]'s, which is the split `missing.rs`
+/// already keeps between its own two halves and for the same reason: at
+/// ADR 0016's 5,000-wallpaper ceiling the second half is 5,000 `stat` calls, and
+/// making them under the connection mutex queues every command and every
+/// `wallpaper://` request behind a walk of somebody's external drive (ADR 0039).
+pub fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime
          FROM wallpapers w
@@ -589,42 +601,63 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
          ORDER BY w.status = 'rejected' ASC, w.comparisons_count ASC, w.id ASC",
     )?;
     let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, Status>(2)?,
-            row.get::<_, Option<i64>>(3)?,
-            row.get::<_, Option<i64>>(4)?,
-            row.get::<_, Option<i64>>(5)?,
-        ))
+        Ok(Candidate {
+            wallpaper_id: row.get(0)?,
+            source: PathBuf::from(row.get::<_, String>(1)?),
+            status: row.get(2)?,
+            small_mtime: row.get(3)?,
+            medium_mtime: row.get(4)?,
+            failed_mtime: row.get(5)?,
+        })
     })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Every wallpaper the pre-generation pass would generate, in the order it
+/// would reach them — the filesystem half, run with the connection released.
+///
+/// One `read_dir` of the cache directory and one `stat` per source file, over
+/// the rows [`candidates`] handed over. No image bytes are read at all. Running
+/// [`plan`] and [`fulfill`] over the library instead would reuse the freshness
+/// rule exactly, and would also read the whole cache off disk on every launch to
+/// discover that nothing needs doing — 830MB of pointless reads on a
+/// two-thousand-wallpaper library (ADR 0012).
+///
+/// The order is the one it was handed, and every entry keeps the Status its row
+/// was read under.
+///
+/// The length is the honest total for the pass's progress, because a wallpaper
+/// it would skip never enters the list. That is also why a source the pass has
+/// already read and failed to decode is left out while the note still matches
+/// the file: it is not work, and listing it would spend a decode per launch to
+/// re-learn the same answer (ADR 0034).
+pub fn work_list(candidates: &[Candidate], cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
+    let cached = cache_filenames(cache_dir)?;
 
     let mut pending = Vec::new();
-    for row in rows {
-        let (wallpaper_id, path, status, small_mtime, medium_mtime, failed_mtime) = row?;
-        let source = PathBuf::from(path);
+    for candidate in candidates {
         // A source that is not on disk cannot be stat'd, so no recorded mtime
         // can be said to match it and the wallpaper joins the list. That is
         // what makes a missing file counted and skipped rather than silently
         // absent: the pass fails it, reports it, and carries on.
-        let on_disk = source_mtime(&source).ok();
+        let on_disk = source_mtime(&candidate.source).ok();
         // A source the pass already read and could not decode, still the same
         // bytes it could not decode. Skipped here rather than failed again by
         // the pass, so a folder of years of accumulated downloads costs its
         // broken files one decode each and not one per launch (ADR 0034). A
         // note against an mtime the file no longer has does not apply, which is
         // how a re-exported file gets another go.
-        if matches!((failed_mtime, on_disk), (Some(noted), Some(d)) if noted == d) {
+        if matches!((candidate.failed_mtime, on_disk), (Some(noted), Some(d)) if noted == d) {
             continue;
         }
         let fresh = |recorded: Option<i64>, size: Size| {
             matches!((recorded, on_disk), (Some(r), Some(d)) if r == d)
-                && cached.contains(&cache_filename(wallpaper_id, size))
+                && cached.contains(&cache_filename(candidate.wallpaper_id, size))
         };
 
         let missing = match (
-            fresh(small_mtime, Size::Small),
-            fresh(medium_mtime, Size::Medium),
+            fresh(candidate.small_mtime, Size::Small),
+            fresh(candidate.medium_mtime, Size::Medium),
         ) {
             (true, true) => continue,
             (false, false) => Missing::Both,
@@ -632,9 +665,9 @@ pub fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, Ap
             (true, false) => Missing::Only(Size::Medium),
         };
         pending.push(Pending {
-            wallpaper_id,
-            source,
-            status,
+            wallpaper_id: candidate.wallpaper_id,
+            source: candidate.source.clone(),
+            status: candidate.status,
             missing,
         });
     }
@@ -1256,6 +1289,16 @@ mod tests {
         .unwrap();
     }
 
+    /// Both halves of the work list back to back, for the tests that hold a
+    /// connection anyway — [`super::resolve`]'s arrangement, one seam along.
+    /// Production runs them through two calls so the lock is released between
+    /// them (ADR 0039), which is exactly what
+    /// `the_filesystem_half_decides_the_list_from_rows_and_no_connection_at_all`
+    /// exercises on its own.
+    fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
+        super::work_list(&candidates(conn)?, cache_dir)
+    }
+
     fn listed(conn: &Connection, cache_dir: &Path) -> Vec<(i64, Missing)> {
         work_list(conn, cache_dir)
             .unwrap()
@@ -1493,6 +1536,171 @@ mod tests {
                 (voted, Status::Active),
                 (rejected_fresh, Status::Rejected),
                 (rejected_voted, Status::Rejected),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_two_halves_agree_over_a_library_in_every_state_at_once() {
+        // The whole list, pinned as one value: which wallpapers are in it, what
+        // each is owed, which Status it was listed under, and the order. The
+        // split into a query and a filesystem pass (ADR 0039) is meant to change
+        // none of that, and this is the test that says so.
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let img = solid(20, 10, [1, 2, 3, 255]);
+        let cold = seed_wallpaper(&conn, tmp.path(), "cold.png", &img);
+        let warm_one = seed_wallpaper(&conn, tmp.path(), "warm.png", &img);
+        let half = seed_wallpaper(&conn, tmp.path(), "half.png", &img);
+        let rejected = seed_wallpaper(&conn, tmp.path(), "rejected.png", &img);
+        let noted = seed_wallpaper(&conn, tmp.path(), "noted.png", &img);
+        warm(&conn, cache.path(), warm_one, &tmp.path().join("warm.png"));
+        warm(&conn, cache.path(), half, &tmp.path().join("half.png"));
+        std::fs::remove_file(cache.path().join(format!("{half}_small.jpg"))).unwrap();
+        rank(&conn, cold, "active", 0);
+        rank(&conn, half, "kept", 2);
+        rank(&conn, rejected, "rejected", 0);
+        note_failure(
+            &conn,
+            noted,
+            source_mtime(&tmp.path().join("noted.png")).unwrap(),
+            "image: nope",
+        )
+        .unwrap();
+
+        // The order the two halves are called in production: the query, then
+        // the `read_dir` and the `stat`s, with nothing borrowed in between.
+        let rows = candidates(&conn).unwrap();
+        let list = super::work_list(&rows, cache.path()).unwrap();
+
+        assert_eq!(
+            list,
+            vec![
+                Pending {
+                    wallpaper_id: cold,
+                    source: tmp.path().join("cold.png"),
+                    status: Status::Active,
+                    missing: Missing::Both,
+                },
+                Pending {
+                    wallpaper_id: half,
+                    source: tmp.path().join("half.png"),
+                    status: Status::Kept,
+                    missing: Missing::Only(Size::Small),
+                },
+                Pending {
+                    wallpaper_id: rejected,
+                    source: tmp.path().join("rejected.png"),
+                    status: Status::Rejected,
+                    missing: Missing::Both,
+                },
+            ]
+        );
+        // The two that are not in it, and the two different reasons: one is
+        // fully warm and one has a note against the bytes it still has.
+        assert!(rows.iter().any(|c| c.wallpaper_id == warm_one));
+        assert!(rows.iter().any(|c| c.wallpaper_id == noted));
+    }
+
+    #[test]
+    fn the_filesystem_half_decides_the_list_from_rows_and_no_connection_at_all() {
+        // No `Connection` in this test at all, which is the point: everything
+        // the pass asks the disk is decidable from the rows it was handed, so
+        // the query is finished with — and the lock released — before the first
+        // `stat` (ADR 0039). Unwritable while the two were one function.
+        let sources = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let write = |name: &str| {
+            let path = sources.path().join(name);
+            solid(20, 10, [1, 1, 1, 255])
+                .save_with_format(&path, image::ImageFormat::Png)
+                .unwrap();
+            let mtime = source_mtime(&path).unwrap();
+            (path, mtime)
+        };
+        // The cache files are named rather than generated: freshness reads the
+        // directory for a filename and never opens what it finds.
+        let cache_file = |id: i64, size: Size| {
+            write_cache_file(cache.path(), id, size, b"a cache file").unwrap();
+        };
+
+        let (warm_path, warm_mtime) = write("warm.png");
+        cache_file(1, Size::Small);
+        cache_file(1, Size::Medium);
+        let (cold_path, _) = write("cold.png");
+        let (donor_path, donor_mtime) = write("donor.png");
+        cache_file(3, Size::Medium);
+        let (broken_path, broken_mtime) = write("broken.png");
+        let gone_path = sources.path().join("gone.png");
+
+        let rows = vec![
+            Candidate {
+                wallpaper_id: 1,
+                source: warm_path,
+                status: Status::Active,
+                small_mtime: Some(warm_mtime),
+                medium_mtime: Some(warm_mtime),
+                failed_mtime: None,
+            },
+            Candidate {
+                wallpaper_id: 2,
+                source: cold_path.clone(),
+                status: Status::Active,
+                small_mtime: None,
+                medium_mtime: None,
+                failed_mtime: None,
+            },
+            Candidate {
+                wallpaper_id: 3,
+                source: donor_path.clone(),
+                status: Status::Kept,
+                small_mtime: None,
+                medium_mtime: Some(donor_mtime),
+                failed_mtime: None,
+            },
+            Candidate {
+                wallpaper_id: 4,
+                source: broken_path,
+                status: Status::Active,
+                small_mtime: None,
+                medium_mtime: None,
+                failed_mtime: Some(broken_mtime),
+            },
+            // Recorded as warm against an mtime nothing can be compared to any
+            // more, so it is listed and the pass gets to count it (ADR 0032).
+            Candidate {
+                wallpaper_id: 5,
+                source: gone_path.clone(),
+                status: Status::Rejected,
+                small_mtime: Some(1),
+                medium_mtime: Some(1),
+                failed_mtime: None,
+            },
+        ];
+
+        let list = super::work_list(&rows, cache.path()).unwrap();
+
+        assert_eq!(
+            list,
+            vec![
+                Pending {
+                    wallpaper_id: 2,
+                    source: cold_path,
+                    status: Status::Active,
+                    missing: Missing::Both,
+                },
+                Pending {
+                    wallpaper_id: 3,
+                    source: donor_path,
+                    status: Status::Kept,
+                    missing: Missing::Only(Size::Small),
+                },
+                Pending {
+                    wallpaper_id: 5,
+                    source: gone_path,
+                    status: Status::Rejected,
+                    missing: Missing::Both,
+                },
             ]
         );
     }

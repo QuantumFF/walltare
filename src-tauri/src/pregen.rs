@@ -151,7 +151,16 @@ fn run(app: &AppHandle, cancel: &AtomicBool) {
     let db = app.state::<Db>();
     let cache_dir = app.state::<CacheDir>();
 
-    let work = match db.read(|conn| thumbnails::work_list(conn, &cache_dir.0)) {
+    // Two halves in the order `missing.rs` documents for its own pair: the
+    // query under the connection, and the `read_dir` plus one `stat` per row
+    // with it released. `Db::read` drops the guard before it returns, so the
+    // second half — 5,000 filesystem calls at ADR 0016's ceiling, on whatever
+    // drive the Library root sits on — holds nothing while the first view
+    // fetches its listing and fires fifty thumbnail requests (ADR 0039).
+    let work = match db
+        .read(thumbnails::candidates)
+        .and_then(|candidates| thumbnails::work_list(&candidates, &cache_dir.0))
+    {
         Ok(work) => work,
         Err(e) => {
             eprintln!("pre-generation could not read the library: {e}");
@@ -448,7 +457,8 @@ mod tests {
         /// wallpaper retried" is actually asking.
         fn work_list(&self) -> Vec<i64> {
             self.db
-                .read(|conn| thumbnails::work_list(conn, self.cache.path()))
+                .read(thumbnails::candidates)
+                .and_then(|candidates| thumbnails::work_list(&candidates, self.cache.path()))
                 .unwrap()
                 .into_iter()
                 .map(|p| p.wallpaper_id)
