@@ -115,6 +115,17 @@ source file's mtime changing, which happens when the user edits a wallpaper in
 place. That is rare, and being five minutes late about it does not justify a
 versioning scheme.
 
+> **Amended by [#227](https://github.com/QuantumFF/walltare/issues/227),
+> 2026-09-09.** A failed request carries `Cache-Control: max-age=30`, where it
+> carried no header at all. A card whose file has gone reads as gone by way of
+> the request failing ([ADR 0032](0032-a-missing-file-reads-as-gone.md)), so
+> under the virtualisation this ADR ships, the cards that cannot paint were the
+> only ones still paying a full round trip per remount — a library that has
+> drifted from disk was slower than a live one. Thirty seconds rather than five
+> minutes because what invalidates the answer is a curator plugging the drive
+> back in, and they should see the cards paint rather than wonder whether the
+> app noticed.
+
 **Unverified**: whether WebKitGTK's memory cache honours `max-age` for a custom
 scheme at all. If it does not, this header buys nothing and the fallback is a
 frontend-side `Map<id, blob>` bounded to a few hundred entries. See "If the grid

@@ -325,8 +325,8 @@ enum Step {
 /// Generates whichever sizes one wallpaper is short of.
 ///
 /// The connection is taken for the reads and again for the writes, and is never
-/// held across a decode (ADR 0004) — the same ordering [`crate::resolve_image`]
-/// keeps for a request that misses. Both sizes missing is the single decode
+/// held across a decode (ADR 0004) — the same ordering [`crate::serving`] keeps
+/// for a request that misses. Both sizes missing is the single decode
 /// [`thumbnails::generate_both`] exists for; one size missing goes through
 /// `plan` / `fulfill` / `record`, so the cached size beside it donates its
 /// pixels instead of the source being decoded a second time.
