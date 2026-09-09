@@ -3,7 +3,14 @@ import { NO_ORIGIN_REASON, useToaster } from "@/components/ToastSurface";
 import type { CardAction } from "@/components/WallpaperCard";
 import { useAppEvent, useAppEvents } from "@/context/AppEventsContext";
 import { client, isStaleRow, type Status, type Wallpaper } from "@/lib/client";
-import { useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 
 /**
  * What a failed transition is logged as, per action.
@@ -94,6 +101,14 @@ export interface WallpaperRows {
    * Both pages hand this straight to the grid's and the lightbox's `onAction`,
    * so "one call, one published patch, one toast" is the only path there is
    * rather than a doc comment asking for it.
+   *
+   * One identity for the life of the component. Both pages hand it to the grid,
+   * which hands it to every mounted card, and to the lightbox — so a handler
+   * rebuilt per render was a changed prop on fifty cards every time anything on
+   * the page re-rendered, and it is one of the three identities #229 pinned so
+   * that #230's memoised card sees a changed prop only when something changed.
+   * What the transition reads is latched in a ref instead, the way
+   * `useBackendEvents` latches its handlers.
    */
   perform: (action: CardAction, wallpaper: Wallpaper) => void;
 }
@@ -294,11 +309,29 @@ export function useWallpaperRows({
     optimistic.selectId(wallpaper.id);
   };
 
-  // A declaration rather than a `const`, so the two Undo closures above can name
-  // the transition they are.
-  function perform(action: CardAction, wallpaper: Wallpaper) {
-    void run(action, wallpaper);
-  }
+  /**
+   * The transition as this render would run it, latched so that `perform` below
+   * can be one function for the life of the component.
+   *
+   * The same thing `useBackendEvents` does with a caller's handlers, and for the
+   * same kind of reason: the closure is rebuilt every render because it reads
+   * this render's rows and this page's `owe` and `optimistic` — both of which
+   * are declarations the page rebuilds too — and the ref is what stops that
+   * churn from reaching the fifty cards holding the handler. What a press runs
+   * is the last committed render's transition, which is what a handler rebuilt
+   * per render was giving it anyway.
+   */
+  const latest = useRef(run);
+  useEffect(() => {
+    latest.current = run;
+  });
+
+  // Stable, and the two Undo closures above name it while it is still in its
+  // temporal dead zone — which is fine, because they are called from a toast
+  // long after this render finished.
+  const perform = useCallback((action: CardAction, wallpaper: Wallpaper) => {
+    void latest.current(action, wallpaper);
+  }, []);
 
   return { rows, setRows, perform };
 }

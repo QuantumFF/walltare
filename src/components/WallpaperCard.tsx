@@ -73,25 +73,6 @@ export const ACTION_CONTROLS: Record<
   restore: { label: "Restore", Icon: RotateCcw },
 };
 
-/**
- * Where this card sits in the grid that mounted it, and whether it is the one
- * holding the selection.
- *
- * The card renders itself as a cell from this rather than the grid reaching in
- * and setting attributes on a node it does not own: what a `gridcell` is made of
- * — the role, the roving `tabindex`, the position the grid finds it by — is one
- * fact arriving through one prop, and a card mounted outside a grid simply has
- * no cell and stays the labelled `group` it was.
- *
- * `index` is the index in the whole list, not in what is mounted. ADR 0016's
- * library grid mounts a window of about thirty cards out of five thousand, so
- * the two differ there and the absolute one is what the selection means.
- */
-export interface GridCell {
-  index: number;
-  selected: boolean;
-}
-
 export interface WallpaperCardProps {
   wallpaper: Wallpaper;
   /**
@@ -155,8 +136,29 @@ export interface WallpaperCardProps {
    * selection move, made by the host that holds both (#138).
    */
   onOpen?: (wallpaper: Wallpaper) => void;
-  /** See `GridCell`. Absent for a card standing on its own. */
-  cell?: GridCell;
+  /**
+   * Where this card sits in the grid that mounted it, and absent for a card
+   * standing on its own.
+   *
+   * The card renders itself as a cell from this and from `selected` rather than
+   * the grid reaching in and setting attributes on a node it does not own: what
+   * a `gridcell` is made of — the role, the roving `tabindex`, the position the
+   * grid finds it by — arrives as props, and a card mounted outside a grid has
+   * no cell index and stays the labelled `group` it was.
+   *
+   * The index in the whole list, not in what is mounted. ADR 0016's library grid
+   * mounts a window of about thirty cards out of five thousand, so the two
+   * differ there and the absolute one is what the selection means.
+   *
+   * A number and a boolean and not the one `GridCell` object they used to
+   * arrive in. The grid built that object per card per render, so a card's props
+   * changed identity whenever anything on the page re-rendered even though
+   * neither value in it had moved — which is what #229 removed so that #230's
+   * memoised card sees a changed prop only when something changed.
+   */
+  cellIndex?: number;
+  /** Whether this cell is the one holding the grid's selection. */
+  selected?: boolean;
 }
 
 /**
@@ -183,8 +185,12 @@ export function WallpaperCard({
   animated = false,
   scoreMoved = false,
   onOpen,
-  cell,
+  cellIndex,
+  selected = false,
 }: WallpaperCardProps) {
+  // Whether this card is a cell in a grid at all, which is the one thing the
+  // absent object used to say and the index says now.
+  const inGrid = cellIndex !== undefined;
   const rejected = wallpaper.status === "rejected";
   const evaluated = isEvaluated(wallpaper);
   // Known before the press, because ADR 0009 put `origin_path` on the DTO for
@@ -216,7 +222,7 @@ export function WallpaperCard({
   // would be a hundred stops and the library's window would still strand
   // wallpaper 3,000 behind the end of what is mounted. They stay focusable and
   // clickable, and #125's direct keys are how the keyboard fires them.
-  const buttonTabIndex = cell ? -1 : undefined;
+  const buttonTabIndex = inGrid ? -1 : undefined;
 
   return (
     <div
@@ -230,13 +236,13 @@ export function WallpaperCard({
       // once whatever the row count. Outside a grid the honest role is the
       // labelled `group` this card has always been, and nothing there is
       // focusable but the buttons in the overlay.
-      role={cell ? "gridcell" : "group"}
-      tabIndex={cell ? (cell.selected ? 0 : -1) : undefined}
+      role={inGrid ? "gridcell" : "group"}
+      tabIndex={inGrid ? (selected ? 0 : -1) : undefined}
       // How the grid finds this cell to focus it. An attribute rather than a
       // ref handed back up, because under ADR 0016's virtualisation the mounted
       // cards are a window: their order in the DOM is not their order in the
       // list, and only the index the grid wrote is.
-      data-cell={cell?.index}
+      data-cell={cellIndex}
       // The label carries the gone state for the reason it carries the Status:
       // what is otherwise a pill and a dimming, or here an icon and a label
       // inside a cell whose own `aria-label` hides its contents, reaches nobody
@@ -256,6 +262,11 @@ export function WallpaperCard({
         src={wallpaperImageUrl(wallpaper.id, "small")}
         alt={wallpaper.filename}
         loading="lazy"
+        // Decoded off the main thread. Without it WebKit decodes the JPEG
+        // synchronously when the image has to paint, and Review paints fifty at
+        // once while the library page mounts a fresh row on every wheel notch —
+        // which is the frame ADR 0007 moved the layer promotion out of.
+        decoding="async"
         // See `gone`. The element stays mounted whichever way this went, so the
         // browser's answer can still change: unmounting it on the failure would
         // leave nothing left to fire `load`.

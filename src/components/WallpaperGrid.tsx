@@ -10,6 +10,7 @@ import {
   useCallback,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useReducer,
   useRef,
   useState,
@@ -44,23 +45,83 @@ const COLUMNS = [
 /** What the grid container wears, and the other half of the table above. */
 const GRID_COLUMN_CLASSES = COLUMNS.map((step) => step.className).join(" ");
 
+/**
+ * The queries behind the table, parsed once for the life of the process.
+ *
+ * A `MediaQueryList` answers `matches` off the window it was made from, so four
+ * of them made here answer for every reader forever. Made per call they were on
+ * the hot path twice over: the count below is a `useSyncExternalStore` snapshot,
+ * which React reads on every render of every reader and again to check for
+ * tearing, and two hooks read it.
+ *
+ * The first step has no query. `minWidth: 0` matches every viewport, so it is
+ * the count a window narrower than `md` gets and there is nothing to ask.
+ */
+const QUERIES: ReadonlyArray<MediaQueryList | null> = COLUMNS.map((step) =>
+  step.minWidth === 0
+    ? null
+    : window.matchMedia(`(min-width: ${step.minWidth}px)`),
+);
+
 /** The widest breakpoint the window has reached, as a number of cards. */
-function columnsNow(): number {
+function measureColumns(): number {
   let columns: number = COLUMNS[0].columns;
-  for (const step of COLUMNS) {
-    if (
-      step.minWidth === 0 ||
-      window.matchMedia(`(min-width: ${step.minWidth}px)`).matches
-    ) {
-      columns = step.columns;
-    }
+  for (const [at, step] of COLUMNS.entries()) {
+    const query = QUERIES[at];
+    if (query === null || query.matches) columns = step.columns;
   }
   return columns;
 }
 
-function subscribeToWidth(onChange: () => void): () => void {
-  window.addEventListener("resize", onChange);
-  return () => window.removeEventListener("resize", onChange);
+/**
+ * The count as last measured, and every hook waiting to hear that it moved.
+ *
+ * The cache is what makes `columnsNow` a snapshot rather than a measurement. A
+ * `useSyncExternalStore` getter that measures is a getter that can answer
+ * differently inside one render, and it puts the whole media-query read on every
+ * render of every reader — which after #230 is a read inside a scroll handler.
+ * So the queries are consulted when a `resize` says the viewport moved, and the
+ * number in between is the same number.
+ *
+ * One subscription serves every reader. Each hook registering its own `resize`
+ * listener meant N handlers doing the same work to reach the same conclusion,
+ * and the set is what replaces them: the listener goes on with the first reader
+ * and comes off with the last.
+ */
+let columns = measureColumns();
+const readers = new Set<() => void>();
+
+/** The one `resize` handler, however many hooks are reading the count. */
+function remeasure(): void {
+  const moved = measureColumns();
+  if (moved === columns) return;
+  columns = moved;
+  // Over a copy, the way the event bus fans out: a reader may unsubscribe on
+  // being told, and mutating the set mid-iteration would skip the one after it.
+  for (const reader of [...readers]) reader();
+}
+
+function subscribeToColumns(onChange: () => void): () => void {
+  if (readers.size === 0) window.addEventListener("resize", remeasure);
+  readers.add(onChange);
+  return () => {
+    readers.delete(onChange);
+    if (readers.size === 0) window.removeEventListener("resize", remeasure);
+  };
+}
+
+/**
+ * How many cards are in a row, from the cache above.
+ *
+ * Measured only while nothing is subscribed, which is the one window in which
+ * the cache can be wrong: no listener was there to hear the resize, and the
+ * first reader's first render is where the answer has to be right. Every read
+ * after that is the cached number, so the snapshot React compares is the same
+ * value while the breakpoint holds.
+ */
+function columnsNow(): number {
+  if (readers.size === 0) columns = measureColumns();
+  return columns;
 }
 
 /**
@@ -75,13 +136,13 @@ function subscribeToWidth(onChange: () => void): () => void {
  * viewport, which a test sets the way `desktopColorScheme` sets the theme — the
  * real query, arranged.
  *
- * `resize` is the one subscription. happy-dom fires it from `setViewport` and a
- * real window fires it on every viewport change, while a `MediaQueryList`
- * `change` listener would need one subscription per breakpoint and is not fired
- * by happy-dom at all.
+ * `resize` is the one subscription, and it is one for the whole app rather than
+ * one per hook. happy-dom fires it from `setViewport` and a real window fires it
+ * on every viewport change, while a `MediaQueryList` `change` listener would
+ * need one subscription per breakpoint and is not fired by happy-dom at all.
  */
 function useGridColumns(): number {
-  return useSyncExternalStore(subscribeToWidth, columnsNow);
+  return useSyncExternalStore(subscribeToColumns, columnsNow);
 }
 
 /**
@@ -331,7 +392,18 @@ export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
 
   const selectId = useCallback((id: number) => setSelectedId(id), []);
 
-  return { wallpaper, index, length: wallpapers.length, moveTo, selectId };
+  // Memoised on the five values it carries, because the object crosses two
+  // seams: the grid hands the selected index down to every card, and the
+  // lightbox is a second rendering of the same selection (ADR 0022). A fresh
+  // literal per render is a changed prop on both of them whenever anything on
+  // either page re-renders, which is what #229 is about and what would defeat
+  // memoising the card in #230. The two functions are already stable — `moveTo`
+  // follows the list it clamps against, `selectId` never changes — so the
+  // identity moves when the selection moves or the list does, and not otherwise.
+  return useMemo(
+    () => ({ wallpaper, index, length: wallpapers.length, moveTo, selectId }),
+    [wallpaper, index, wallpapers.length, moveTo, selectId],
+  );
 }
 
 /**
@@ -822,9 +894,15 @@ export function WallpaperGrid({
       }
     >
       {/*
-        `cell.index` is the index in the whole list and not in what is mounted,
+        `cellIndex` is the index in the whole list and not in what is mounted,
         which is what lets the library page render a window of these cards
         without the selection or the arrow keys knowing (#131).
+
+        Two values and not the one object they used to arrive in. The object was
+        built here per card per render, so every mounted card saw a new prop
+        whenever anything on the page re-rendered — a number and a boolean carry
+        the same two facts and carry them by value, which is what lets #230
+        memoise the card and have it mean something.
       */}
       {mounted.map((wallpaper, offset) => {
         const cardIndex = from + offset;
@@ -836,7 +914,8 @@ export function WallpaperGrid({
             animated={animated}
             scoreMoved={scoresMoved?.has(wallpaper.id)}
             onOpen={onOpen}
-            cell={{ index: cardIndex, selected: cardIndex === index }}
+            cellIndex={cardIndex}
+            selected={cardIndex === index}
           />
         );
       })}
