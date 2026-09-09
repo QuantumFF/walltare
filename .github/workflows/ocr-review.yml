@@ -117,11 +117,6 @@ jobs:
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
-          # The action's default extra_body sends {"thinking": {"type":
-          # "disabled"}}, which tokenrouter rejects with HTTP 400. Override it
-          # with reasoning_effort (GLM 5.x steers thinking through that field)
-          # so the thinking key is never sent.
-          llm_extra_body: '{"reasoning_effort": "high"}'
           # For issue_comment triggers, pass the resolved refs; for
           # pull_request_target the action resolves them from the event.
           base_ref: ${{ steps.pr-context.outputs.base_ref }}
