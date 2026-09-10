@@ -236,6 +236,83 @@ one launch that holds an arrow key at key-repeat rate over a mounted grid and
 counts frames. That variant costs one entry in the harness's table and is the
 named follow-up here.
 
+> **Amended 2026-09-10: the variant was run, and it justifies #230 on Review's
+> number.** Twenty launches on the same harness, same binary, same scratch
+> library, same 1269x1388 window as the run above, all twenty at identical
+> geometry. What changes is the gesture: the grid is left where it mounted, the
+> selected cell is focused, and an arrow key repeats at the system rate of 35 a
+> second. Nothing scrolls and nothing mounts, which is what the run above could
+> not arrange and what left the cursor unpriced.
+>
+> The span is 9.8 seconds of key repeat per launch, measured between the first
+> cursor move and the last.
+>
+> | configuration | cells | fps | p90 | dropped |
+> | --- | --- | --- | --- | --- |
+> | idle control, both grids | 32 and 50 | 62.3 | 16ms | **0** |
+> | Library, arrow key held | 32 | 62.2 | 21ms | **5.8** (3 to 8) |
+> | Review, arrow key held | 50 | 52.5 | 28ms | **110.2** (104 to 118) |
+>
+> **The idle control is what makes the rest readable, and it is spotless.** Four
+> launches of a focused, mounted, motionless grid: 62.3fps, a 16ms median, a 16ms
+> p90, and not one frame over 20ms in any of them. Neither grid has any resting
+> noise to confuse a result with. The resolution is the six Review launches,
+> which span 104 to 118 — about 13% — against an effect twenty times that.
+>
+> **Library's arrow key is clean and Review's is not.** Thirty-two cards
+> re-rendering at 35 a second cost six dropped frames in ten seconds and no
+> measurable frame rate at all, 62.2 against 62.3 idle. Fifty cost 110 and take
+> the grid from 62.3fps to 52.5, a 16% frame-rate loss, with the p90 frame going
+> from 16ms to 28ms. This is #230's premise measured: the cost is the number of
+> mounted cards a cursor move re-renders, and between thirty-two and fifty it
+> crosses the frame budget.
+>
+> **It is the card count and not the layers, which is the one thing that had to
+> be ruled out.** Review differs from Library in two ways at once, and the run
+> above found `will-change` expensive, so the 2x2 was measured rather than
+> assumed. Forcing layers onto Library's thirty-two changes nothing — 6.0 dropped
+> against 6.5 shipped. Removing them from Review's fifty changes nothing either —
+> 108.0 against 111.5. Both differences are inside the 13% resolution. Layer
+> promotion is priced by the mount rate, exactly as the run above concluded, and a
+> grid that is not mounting does not pay for it.
+>
+> **The cursor keeps up; the grid stutters.** Every bounded launch recorded 349
+> selection changes against the 344 the key repeat asked for, Review's included.
+> So the user story's "moves through the grid rather than lagging behind it" is
+> already true — the selection lands on every keypress. What fails is the frame
+> the landing is drawn in. That is a smaller complaint than the story implies and
+> a real one.
+>
+> **Holding an arrow key while it drags the window is the wheel run again.**
+> Library's traversal shape, ArrowDown held from the top, walks 343 windows and
+> 64,813px in ten seconds for 338.5 dropped frames at 37.1fps. That is the same
+> regime as the pass above and it is the mount being paid for, not the cursor.
+> Review's traversal clamps at its last row after twelve presses, so its span is
+> 0.6 seconds and it carries no weight; it is recorded for completeness.
+>
+> **So the gate reverses, on evidence the run above could not produce.** #230 is
+> justified, and the number to hold it to is Review's: 110 dropped frames and 16%
+> of the frame rate, per ten seconds of held arrow key, on a fifty-card grid.
+> Library's thirty-two are not worth the change on their own, and #230 covers both
+> because the cursor has one home.
+>
+> One confound survives and does not move the verdict. The two grids are two
+> pages as well as two card counts, so this separates the count from the layers
+> but not the count from the page. Either way #230 is the change that answers it:
+> it moves the cursor out of the page and into the grid, so if the page is what
+> re-renders, that stops too.
+>
+> Two things about how the keys were delivered, because they are the part a
+> re-run would get wrong. The bounded shape **synthesises** the repeat rather
+> than holding one key: it alternates Right and Left, since a held key repeats
+> only itself and Right alone walks the list and drags the window. The events go
+> out in one `ydotool` call at half the repeat interval apart, because a fork per
+> key costs 10 to 20ms of its own and drags the real cadence a quarter below the
+> system rate. The traversal shape does hold the key, and the repeat is the
+> compositor's own. And the grid's own clamping shapes what each key can do:
+> Left and Right walk the list, while Up and Down stop at the ends rather than
+> wrapping, which is why Review's traversal stops after twelve presses.
+
 ### The CSP caveat, for whoever runs this next
 
 [ADR 0036](0036-the-content-security-policy.md) sets `connect-src 'self' ipc:`,
