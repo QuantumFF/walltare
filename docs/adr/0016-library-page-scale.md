@@ -131,6 +131,15 @@ scheme at all. If it does not, this header buys nothing and the fallback is a
 frontend-side `Map<id, blob>` bounded to a few hundred entries. See "If the grid
 ever janks" below.
 
+> **Verified by [ADR 0041](0041-the-library-grid-pays-for-the-mount.md),
+> 2026-09-10, and the answer is no.** One wheel pass through 2,000 wallpapers and
+> back served 2,582 `wallpaper://` requests under `max-age=300` and 2,571 under
+> `max-age=0, must-revalidate` — a difference of 0.4%, inside the run's own
+> resolution. WebKit asks again either way. The header stays because it is a true
+> statement and costs one line; the fallback is not built, because
+> [ADR 0040](0040-a-thumbnail-is-served-newest-first.md) put the byte cache on the
+> Rust side, where it serves all three callers instead of one.
+
 > **Settled by [ADR 0040](0040-a-thumbnail-is-served-newest-first.md),
 > 2026-09-09.** The fallback is built, and it is not in the frontend. A bounded
 > least-recently-used cache of 256 thumbnails' bytes sits behind the serving
@@ -208,6 +217,30 @@ The shared card carries the library's constraint in the library and Review's
 keeps pinning Review and gains no library equivalent.
 
 ## If the grid ever janks
+
+> **Superseded by [ADR 0041](0041-the-library-grid-pays-for-the-mount.md),
+> 2026-09-10.** The plan below was run.
+>
+> The third outcome happened by the letter — no variant passes the pass condition
+> — and ADR 0041 declines its prescription, so the grid stays virtualised and
+> pagination stays rejected. Two of the three clauses stop discriminating at the
+> scroll rate the harness calibrated to, because the median frame is over 33ms in
+> every variant; the third, the one virtualisation added, passes.
+>
+> Three things below turned out differently from how they are written. The card's
+> constraint is now measured: `will-change` costs 15.6% more dropped frames on
+> this grid, so "a card with no animated property has nothing to promote" was
+> right. The reasoning under it was not — first paint and first hover are not the
+> same moment, because **no card takes `:hover` during a virtualised scroll at
+> all**, and what makes a declared layer expensive is that first paint became a
+> rate. And the `max-age` question is answered: 2,582 requests against 2,571, so
+> the header changes nothing, which retires the Unverified flag above. The
+> `Map<id, blob>` fallback is not needed —
+> [ADR 0040](0040-a-thumbnail-is-served-newest-first.md) put that cache on the
+> Rust side, serving all three callers.
+>
+> The numbers below the pass condition are worth reading with ADR 0041's window
+> in hand: four columns, not the five or six this ADR argued from.
 
 No measurement was taken. This section is the plan to run if scrolling the
 library page is reported as janky, or if the `max-age` question above turns out

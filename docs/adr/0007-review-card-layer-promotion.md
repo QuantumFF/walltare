@@ -91,6 +91,15 @@ that would settle whether it could have been extended is written up unrun, under
 "If the grid ever janks" there. Start from it if the library page is ever
 reported as janky.
 
+> **[ADR 0041](0041-the-library-grid-pays-for-the-mount.md), 2026-09-10.** It has
+> been run, and it says the licence was right to stay here. `will-change` costs
+> the virtualised library grid 15.6% more dropped frames, because first paint
+> there is a rate rather than a moment — 176 cards a second — and because no card
+> takes `:hover` during that gesture at all, so the promotion this ADR moved off
+> the hover has nowhere cheaper to go. Review is re-measured in its current shape
+> and is clean: fifty cards, a hundred declared layers, a 16ms median frame, and
+> 13 dropped frames entering rather than the ~25 below.
+
 Entering Review drops ~25 frames while fifty images land. That is untouched by
 this ADR and unexplained by it.
 
