@@ -115,6 +115,20 @@ now Rejected and Library edits that row in place: no query, no thumbnail
 request, and the card is already rendered. Only `library-scanned` changes which
 rows exist, and only it forces a refetch.
 
+> **Measured by [ADR 0043](0043-a-patch-to-a-hidden-view-costs-a-millisecond.md),
+> 2026-09-10.** "Costs nothing" now has a number on the arrangement this section
+> creates. A vote costs a hidden Library holding 2,000 rows and 36 mounted cards
+> about **one millisecond** of React reconciliation, and a `status-changed` costs
+> a hidden Review of fifty about a fifth of that. Both are patches applied to a
+> view under `display: none`, and neither is worth a change:
+> [#233](https://github.com/QuantumFF/walltare/issues/233) put the bar at 4ms and
+> closed `wontfix`.
+>
+> What makes it that cheap is one card render per patch rather than the window's
+> worth. [ADR 0042](0042-the-grid-owns-the-cursor.md)'s memo is what holds the
+> rest, and with it defeated the same vote costs the hidden page 3.1 to 3.8ms.
+> The claim above is true of today's card and not of a card in general.
+
 > **Amended by [#141](https://github.com/QuantumFF/walltare/issues/141),
 > 2026-09-03.** A patch may carry the columns its transition changed, and still
 > cannot insert a row, because nothing in the payload says where an absent row
