@@ -532,6 +532,39 @@ test("the selection is scrolled into view when it moves", async () => {
   expect(mounted(1)).toBe(false);
 });
 
+test("the wheel scrolls past the selected card rather than being pulled back to it", async () => {
+  // The other direction of the same rule, and the one a curator hits first: the
+  // selection is scrolled into view when *it* moves, and not when the window
+  // does. Scrolling the selected card out of the window unmounts it, which takes
+  // the focus with it, and a grid that reads that as focus to re-home puts the
+  // window straight back where it was. The wheel then does nothing at all.
+  await mountWindowed(cards(400));
+  await act(async () => {
+    mountedCells()[0].focus();
+  });
+  expect(document.activeElement).toBe(cell(1));
+
+  await act(async () => {
+    scroller().scrollTop = 4000;
+  });
+  await browserReportsScroll();
+
+  // The gesture stands: the offset the wheel asked for is the offset the box is
+  // at, and the window is the one that offset names rather than the top of the
+  // list.
+  expect(scroller().scrollTop).toBe(4000);
+  expect(mounted(1)).toBe(false);
+
+  // The card the focus was on is gone with the window, so the container holds
+  // it rather than `body`, where the next Tab would start at the top of the
+  // document. The keys are still answered, so one arrow moves the selection and
+  // brings it back on screen.
+  expect(document.activeElement).toBe(grid());
+  await press("ArrowRight");
+  await browserReportsScroll();
+  expect(document.activeElement).toBe(cell(2));
+});
+
 // The three things the page holds the selection for (#137). The lightbox is
 // what calls them: it renders this same selection, so opening on a card the
 // selection was not on is a move, a failed action puts the selection back on the
