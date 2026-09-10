@@ -7,6 +7,7 @@ import {
   flush,
   mockBootedApp,
   mockTransitions,
+  press,
   renderInApp,
   settings,
   viewportWidth,
@@ -14,7 +15,7 @@ import {
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
-// Which tree a scroll rebuilds.
+// Which tree a gesture rebuilds — a wheel notch, and an arrow key.
 //
 // Not a question a curator can put into words, and the reason it is worth a
 // test anyway is that the answer is invisible until the library is large enough
@@ -24,6 +25,13 @@ import { mockCommand } from "./ipc-mocks";
 // every crossing of a row boundary rebuilt the filter chips, the ordering
 // control, the reject destination line and the mounted lightbox along with the
 // cards (#231).
+//
+// The cursor is the same shape of question one level down. While the selection
+// was state in the page, an arrow key re-rendered the page, the grid and every
+// mounted card; ADR 0041's arrow-key run priced that at 110 dropped frames per
+// ten seconds of key repeat on Review's fifty. It is the grid's own now, and
+// what a move costs is the card that lost the selection and the card that
+// gained it (#230).
 //
 // So these are white-box, in the same spirit as `prop-identities.test.tsx` and
 // ADR 0007's `will-change` class-name pin: the property is invisible and the
@@ -186,5 +194,43 @@ test("a scroll that crosses a row boundary re-renders the grid and not the page"
 
   // And the count: the crossing is one commit of the grid's subtree, so nothing
   // above it was dragged in and nothing below it committed twice.
+  expect(commits).toBe(1);
+});
+
+test("an arrow key re-renders the two cards the cursor moved between, and nothing else", async () => {
+  // The grid a curator is actually looking at: mounted, still, and full. 400
+  // wallpapers at four to a row leaves a window of a few dozen cards with
+  // nodes, which is the count ADR 0041 measured an arrow key against — 32 in
+  // Library, 50 in Review, and the frame budget crossed somewhere between them.
+  await openLibrary(400);
+  const cells = screen.queryAllByRole("gridcell") as HTMLElement[];
+  expect(cells.length).toBeGreaterThanOrEqual(24);
+
+  // Into the grid, on the card that holds the tab stop before anyone has
+  // arrowed anywhere.
+  await act(async () => {
+    cells[0].focus();
+  });
+  const pageBefore = renderedProps(scroller());
+  const before = cells.map(renderedProps);
+  commits = 0;
+
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(cells[1]);
+
+  // The card that lost the selection and the card that gained it, and no third
+  // one. Against the code before #230 every mounted card is in this list: the
+  // cursor was state in the page, so a move re-rendered the page, the grid and
+  // all thirty-two cards, each rebuilding a badge, up to two buttons, two icons
+  // and its `twMerge` calls on the way.
+  const moved = cells.flatMap((cell, at) =>
+    untouched(cell, before[at]) ? [] : [at],
+  );
+  expect(moved).toEqual([0, 1]);
+
+  // And the page held still, the way it does under a wheel notch above: the
+  // chips, the ordering control, the destination line and the mounted lightbox
+  // are all outside what a keypress rebuilds.
+  expect(untouched(scroller(), pageBefore)).toBe(true);
   expect(commits).toBe(1);
 });

@@ -5,7 +5,6 @@ import {
   useRejectDestination,
 } from "@/components/RejectDestination";
 import {
-  useGridSelection,
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -276,22 +275,25 @@ export function LibraryView() {
   const list = rows ?? [];
 
   /**
-   * The grid's selection, held here rather than inside the grid because ADR
-   * 0022 has the lightbox render this same selection and keeps the lightbox's
-   * state on the page that mounted the grid — for the same reason the rows are
-   * here, that both change on every action.
+   * The grid, once it has mounted, and the whole of what this page knows about
+   * the selection.
    *
-   * Both surfaces below read this one object, which is what makes the lightbox
-   * a second rendering of the grid rather than a cursor of its own: there is no
-   * sync rule between them because there are not two things to sync. It is
-   * resolved against `list` and not against the `range` above, so wallpaper
-   * 3,000 can hold the selection whichever thirty cards have nodes (#137).
+   * The cursor is the grid's since #230. This page does not read it, does not
+   * hold it and does not hand it down: both surfaces below take the handle, and
+   * the one that draws a selection subscribes to the grid's publication. That is
+   * what keeps ADR 0022's property through the move — the lightbox is a second
+   * rendering of the grid's selection rather than a cursor of its own, so there
+   * is no sync rule between them because there are still not two things to sync
+   * — while a cursor move stops re-rendering this page and every card the window
+   * has mounted under it (ADR 0041, #137).
+   *
+   * State rather than the `useRef` ADR 0029 wrote, because when the handle
+   * exists is now information a subscriber needs: this page renders its empty
+   * state *instead of* the grid, and the lightbox has to hear about that.
+   * `setGrid`'s identity is stable, so nothing downstream churns on it.
    */
-  const selection = useGridSelection(list);
-  // The grid's handle, passed twice: to the grid as its `ref`, and to the
-  // lightbox as the way it hands focus back on the way down (ADR 0029).
-  const grid = useRef<WallpaperGridHandle | null>(null);
-  const lightbox = useLightbox(selection, grid);
+  const [grid, setGrid] = useState<WallpaperGridHandle | null>(null);
+  const lightbox = useLightbox(grid);
 
   return (
     <>
@@ -493,11 +495,12 @@ export function LibraryView() {
              only thing about the window that crosses this seam now; the row
              height, the column count and the way a selection outside the window
              gets a node are all arithmetic over the grid's own CSS (#131, #231,
-             ADR 0027). */
+             ADR 0027). The selection is resolved against this whole list too,
+             so wallpaper 3,000 can hold it whichever thirty cards have nodes
+             (#137, #230). */
           <WallpaperGrid
-            ref={grid}
+            ref={setGrid}
             wallpapers={list}
-            selection={selection}
             label="Wallpapers in the library"
             onAction={perform}
             onOpen={lightbox.openOn}
@@ -507,11 +510,11 @@ export function LibraryView() {
         )}
       </div>
 
-      {/* The same component Review mounts, on the same selection the grid above
-          is showing, with no argument saying which page it is: the action set in
-          it comes off the wallpaper's Status, so this page's Kept and Rejected
-          rows offer Make Active and Restore in there without the lightbox
-          knowing whose grid it opened over (ADR 0022).
+      {/* The same component Review mounts, subscribing to the same selection
+          the grid above is drawing, with no argument saying which page it is:
+          the action set in it comes off the wallpaper's Status, so this page's
+          Kept and Rejected rows offer Make Active and Restore in there without
+          the lightbox knowing whose grid it opened over (ADR 0022).
 
           `onAction` is the same `perform` the grid behind it is handed, so
           nothing a curator does from in there is optimistic either: the published patch is what edits the
@@ -524,7 +527,7 @@ export function LibraryView() {
           focus restore. Its pixels land in the shell regardless, above the
           pages and below the toast. */}
       <Lightbox
-        selection={selection}
+        grid={grid}
         open={lightbox.open}
         onClose={lightbox.close}
         onAction={perform}

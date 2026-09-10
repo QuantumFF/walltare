@@ -17,7 +17,7 @@ import {
   Undo2,
   type LucideIcon,
 } from "lucide-react";
-import { useState } from "react";
+import { memo, useState } from "react";
 
 /**
  * The four transitions a card can offer, named after the resulting Status where
@@ -178,8 +178,19 @@ export interface WallpaperCardProps {
  * the transition still dropped half the frames, so it is the repaint and not
  * the animation. The overlay fade, the image scale, and the backdrop blurs all
  * measured free. See ADR 0006.
+ *
+ * **Memoised, and every one of its props is a value or a stable identity so
+ * that the memo holds.** This is what a card costs when a cursor moves past it:
+ * one shallow comparison of seven props instead of a badge, up to two buttons,
+ * two icons and roughly eight `twMerge` calls. Fifty of those thirty-five times
+ * a second is 110 dropped frames per ten seconds of held arrow key, which is
+ * ADR 0041's arrow-key run and the whole of why the cursor moved into the grid
+ * (#230). The memo on its own buys nothing — #229 is what stabilised
+ * `onAction`, `onOpen` and the two cell props it compares, and #230 is what
+ * stopped the page re-rendering above it. All three are one mechanism, and
+ * undoing any of them undoes it.
  */
-export function WallpaperCard({
+export const WallpaperCard = memo(function WallpaperCard({
   wallpaper,
   onAction,
   animated = false,
@@ -480,7 +491,7 @@ export function WallpaperCard({
       </div>
     </div>
   );
-}
+});
 
 /**
  * The name of the folder a path sits in, for the `now in rejected/` clause.

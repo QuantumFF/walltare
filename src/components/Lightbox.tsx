@@ -6,6 +6,7 @@ import {
 import {
   actionFor,
   printedKey,
+  useGridSelection,
   type GridSelection,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -26,13 +27,7 @@ import {
 import { cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
 import { Dialog } from "radix-ui";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * How narrow the row under the picture is allowed to get, in pixels.
@@ -63,14 +58,51 @@ import {
 const ROW_FLOOR = 500;
 
 /**
+ * The three readings of the grid's publication this file takes, as module-level
+ * functions because `useGridSelection` compares snapshots and a reader rebuilt
+ * per render is a new snapshot per render.
+ *
+ * They are the whole of why the publication carries a reader rather than handing
+ * every subscriber the object. The surface below draws the selection and wants
+ * all of it; the hook above only has to know whether there is one at all; and a
+ * closed lightbox wants none of it, which is what `CLOSED` says — one constant,
+ * so a curator walking the grid with the arrows re-renders neither the page nor
+ * a dialog that is not up. That is the property #230 is about, and it is the one
+ * a `selection` prop threaded down from the page cannot have.
+ *
+ * `CLOSED` rather than passing no grid at all while it is down. Both read as
+ * nothing selected, and the difference is when the subscription is made: a
+ * lightbox that subscribes on the way open is told about the selection it opened
+ * onto one commit late, and one that never unsubscribed is told inside the same
+ * commit — which is the difference between the surface painting the outgoing
+ * wallpaper for a frame and never painting it at all.
+ */
+const WHOLE = (selection: GridSelection) => selection;
+const HAS_WALLPAPER = (selection: GridSelection) => selection.wallpaper !== null;
+const NOTHING: GridSelection = {
+  wallpaper: null,
+  index: -1,
+  length: 0,
+  moveTo: () => {},
+  selectId: () => {},
+};
+const CLOSED = () => NOTHING;
+
+/**
  * Whether a lightbox is up, and the two gestures that change that.
  *
- * The state is the page's, because ADR 0022 has the lightbox render the grid's
- * selection rather than a cursor of its own, and that selection is resolved
- * against a list only the page holds. What is here rather than in the page is
- * the wiring both pages would otherwise write twice — the shell's `inert`, the
- * two things that close it without anyone pressing anything — so that Review
- * and the library page differ in nothing but which list is behind them.
+ * The state is the page's, because it is the page that decides when a lightbox
+ * exists. What it is a lightbox *of* is not the page's and has not been since
+ * #230: ADR 0022 has this surface render the grid's selection rather than a
+ * cursor of its own, and that selection is now published by the grid that
+ * resolves it. So this hook takes the grid's handle and nothing else, and the
+ * two things it needs the cursor for — opening on a card, and closing when there
+ * is nothing left to show — both go through that handle.
+ *
+ * What is here rather than in the page is the wiring both pages would otherwise
+ * write twice — the shell's `inert`, the two things that close it without anyone
+ * pressing anything — so that Review and the library page differ in nothing but
+ * which list is behind them.
  */
 export interface LightboxControls {
   open: boolean;
@@ -118,13 +150,16 @@ export interface LightboxControls {
  * the three apart (ADR 0029).
  */
 export function useLightbox(
-  selection: GridSelection,
-  grid: RefObject<WallpaperGridHandle | null>,
+  grid: WallpaperGridHandle | null,
 ): LightboxControls {
   const { view } = useApp();
   const { setOpen: reportToShell } = useLightboxHost();
   const [open, setOpen] = useState(false);
-  const { wallpaper, selectId } = selection;
+  // Whether the grid has a wallpaper selected at all, which is the one thing on
+  // this page that turns on the cursor — and a boolean, so a curator walking the
+  // grid with the arrows re-renders neither this hook's page nor anything above
+  // it. It flips when the list empties or fills, and on no other keystroke.
+  const anySelection = useGridSelection(grid, HAS_WALLPAPER);
 
   /**
    * The page's flag and the shell's, set together.
@@ -146,12 +181,17 @@ export function useLightbox(
     [reportToShell],
   );
 
+  // The selection move a click is, made through the grid that owns the cursor.
+  // Keyed on the handle rather than on the selection, which is what keeps this
+  // one identity while the curator arrows around — it reaches every mounted card
+  // as `onOpen`, so a version of it that changed with the cursor would defeat the
+  // card's memo and be the thing #230 set out to remove (#229).
   const openOn = useCallback(
     (subject: Wallpaper) => {
-      selectId(subject.id);
+      grid?.selection().selectId(subject.id);
       setOpenEverywhere(true);
     },
-    [selectId, setOpenEverywhere],
+    [grid, setOpenEverywhere],
   );
 
   // The focus restore is asked for here rather than from the content's
@@ -162,7 +202,7 @@ export function useLightbox(
   // grid's own layout effect answers it (ADR 0019, ADR 0022).
   const close = useCallback(() => {
     setOpenEverywhere(false);
-    grid.current?.focusSelection();
+    grid?.focusSelection();
   }, [grid, setOpenEverywhere]);
 
   // The destination change, and the one close that hands nothing back: `Ctrl+2`
@@ -184,15 +224,19 @@ export function useLightbox(
   // page's decision and this rule holds either way. `lightbox.test.tsx` pins
   // what a curator gets today.
   //
+  // A grid that has gone reads as a grid with nothing selected, which is what
+  // makes the two ways this can happen one condition: the list emptied under a
+  // mounted grid, or the page swapped the grid out because the list emptied.
+  //
   // `open` is in the condition and not only in the effect's own bookkeeping,
   // because a page whose first fetch has not landed renders its grid over an
   // empty list: without it, arriving on the library page would hand focus to a
   // grid the curator has not walked into.
   useEffect(() => {
-    if (wallpaper !== null || !open) return;
+    if (anySelection || !open) return;
     setOpenEverywhere(false);
-    grid.current?.focusSelection();
-  }, [wallpaper, open, grid, setOpenEverywhere]);
+    grid?.focusSelection();
+  }, [anySelection, open, grid, setOpenEverywhere]);
 
   // The page that stops rendering while one is still up, which is the one case
   // no handler above covers. Nothing unmounts a view today; this is what stops
@@ -206,14 +250,21 @@ export function useLightbox(
 
 export interface LightboxProps {
   /**
-   * The selection this is a second rendering of, from the page's own
-   * `useGridSelection` over the list the grid is showing (ADR 0022).
+   * The grid whose selection this is a second rendering of (ADR 0022).
    *
-   * The whole selection and not the wallpaper alone, because the position line
-   * counts against the list the selection was resolved over.
+   * The grid and not the selection, and that difference is the whole of what
+   * #230 had to keep true. A `selection` prop would be the page reading the
+   * cursor in order to hand it down, which is a page that re-renders on every
+   * arrow key — and the moment the page holds it, it is a copy somebody has to
+   * keep in step with the grid's. This subscribes to the same publication the
+   * cells were drawn from, so there is still one cursor and still no sync rule.
+   *
+   * `null` while there is no grid mounted, which is how both pages render an
+   * empty list. There is nothing to be a rendering of then, and the hook above
+   * closes this surface in the same pass.
    */
-  selection: GridSelection;
-  /** Whether one is up, from `useLightbox` over that same selection. */
+  grid: WallpaperGridHandle | null;
+  /** Whether one is up, from `useLightbox` over that same grid. */
   open: boolean;
   /**
    * `useLightbox`'s `close`, which is the curator's own way out and the half
@@ -260,14 +311,22 @@ export interface LightboxProps {
  * a keep or a reject does to what is on screen, because a rule here is a second
  * answer to a question the list already answers.
  */
-export function Lightbox({
-  selection,
-  open,
-  onClose,
-  onAction,
-}: LightboxProps) {
+export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   const { container } = useLightboxHost();
-  const { wallpaper, index, length, moveTo } = selection;
+  // The grid's own selection, read out of the same publication the cells were
+  // drawn from — which is the whole of ADR 0022 surviving #230, since a copy
+  // held anywhere on the way here would be a second cursor with a rule keeping
+  // it in step.
+  //
+  // Subscribed whether or not this is up, and reading nothing while it is not.
+  // A closed lightbox that unsubscribed would resubscribe on the way open and
+  // hear about the selection it opened onto one commit later; staying subscribed
+  // costs a constant snapshot that no cursor move changes, so a curator walking
+  // the grid with the arrows re-renders nothing in here (#230).
+  const { wallpaper, index, length, moveTo } = useGridSelection(
+    grid,
+    open ? WHOLE : CLOSED,
+  );
 
   /**
    * One step through the list, which is a selection move and nothing else.
