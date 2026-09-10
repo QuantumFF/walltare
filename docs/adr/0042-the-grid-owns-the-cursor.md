@@ -314,6 +314,21 @@ that is an object or a function built during the grid's render silently costs
 fifty card renders per keypress again. `prop-identities.test.tsx` pins the four
 that exist; a fifth would need its own line there.
 
+> **The memo pays for a second gesture nobody bought it for.
+> [ADR 0043](0043-a-patch-to-a-hidden-view-costs-a-millisecond.md),
+> 2026-09-10.** [#233](https://github.com/QuantumFF/walltare/issues/233) was
+> scheduled to route a card's own row and its own score-moved flag through the
+> publication above, on the premise that a vote re-renders thirty-five cards on a
+> Library page nobody is looking at. Measured, zero of the 36 mounted cards
+> re-render: `scoreMoved` reaches a card as a boolean that is `false` on both
+> sides of a Comparison it was not in, so the memo holds for every card the vote
+> did not name. A vote costs the hidden page about a millisecond, and #233 closed
+> `wontfix` without touching `WallpaperGridHandle`.
+>
+> So this ADR's four prop identities are load-bearing for two things, not one,
+> and the second is priced: with the memo defeated the same vote costs the hidden
+> page 3.1 to 3.8ms.
+
 **Nothing here is measured on the machine.** The render count is asserted under
 happy-dom, which has no compositor. What predicts the frame-time payoff is
 ADR 0041's arrow-key run, and confirming it means re-running that harness's
