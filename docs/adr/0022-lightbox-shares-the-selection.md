@@ -71,6 +71,30 @@ reject fires from.
 Not a cursor of its own. The grid and the lightbox share one selection, and the
 lightbox is a second rendering of it.
 
+> **Amended by [ADR 0042](0042-the-grid-owns-the-cursor.md), 2026-09-10.** The
+> decision is unchanged and the selection moved. It was the page's, held there
+> for the reason "The state is the page's, the DOM is the shell's" gives below,
+> and it is `WallpaperGrid`'s now — the third piece of the grid to come in after
+> ADR 0027's geometry and ADR 0029's focus, and the one an arrow key's render
+> cost hung off. `useGridSelection` is now the hook that *reads* the grid's
+> selection rather than the hook a page called to create one, and neither page
+> calls it.
+>
+> **The property survives because what crosses the seam is a publication and not
+> a copy.** The grid publishes the selection it drew the cells from, and the
+> lightbox subscribes to that same publication through the grid's handle. So
+> there is still one cursor, still no rule keeping two of them in step, and
+> still no question about a `library-scanned` refetch landing between them —
+> the rejected alternative below is rejected for exactly the same reason it
+> always was. What a page holds now is the grid's handle, which is a way to ask
+> and not a place the answer is kept.
+>
+> The one mechanical difference is that the lightbox stays subscribed while it
+> is down, reading a constant. Unsubscribing on close would mean resubscribing
+> on open, and being told about the selection it opened onto one commit late is
+> a frame of the outgoing wallpaper — which is the same failure "The picture
+> never blanks" below is about, arriving by a different route.
+
 That makes [ADR 0019](0019-library-card-affordance.md)'s selection rule the
 answer to what an action does, without writing a second rule. Track by wallpaper
 id; when that id is gone from the new list, fall back to the same index clamped
@@ -332,7 +356,9 @@ the lightbox once per wallpaper.
 The obvious shape, and it needs a sync rule in both directions plus a decision
 about what happens when a `library-scanned` refetch lands between them. Sharing
 one selection has no sync to get wrong, and ADR 0019 already wrote the rule it
-needs.
+needs. [ADR 0042](0042-the-grid-owns-the-cursor.md) re-rejected the same shape in
+its new location: a copy of the grid's cursor kept on the page would fail that
+ticket while passing every test it has.
 
 **Wrapping at the ends.** What the prototype does. See above.
 

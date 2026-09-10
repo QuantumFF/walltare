@@ -280,15 +280,19 @@ export function actionFor(key: string, status: Status): CardAction | null {
 }
 
 /**
- * The grid's selection, held by the page that mounts the grid.
+ * The grid's selection, as the grid publishes it.
  *
- * It lives up there because ADR 0022 has the lightbox render this same
- * selection rather than a cursor of its own, and the lightbox's state is the
- * page's. From here the page can read which wallpaper is up and where it sits
- * in the list, step it, and put it back on the wallpaper a failed action
- * re-inserted. A selection private to the grid answers none of those, and a
- * second cursor beside it would need a sync rule in both directions plus an
- * answer for a refetch landing between them (#137).
+ * The cursor is the grid's own since #230, alongside the geometry ADR 0027 gave
+ * it and the focus ADR 0029 did. What crosses the seam is this reading of it,
+ * and only in one direction: whoever wants to know subscribes through
+ * `WallpaperGridHandle` below, and what they get back is the object the cells
+ * were rendered from rather than a copy anybody has to keep in step.
+ *
+ * That is what keeps ADR 0022's property true through the move. The lightbox is
+ * a second rendering of this selection rather than a cursor of its own, so there
+ * is no sync rule between the two surfaces because there are not two things to
+ * sync — and a second cursor beside this one would need that rule in both
+ * directions plus an answer for a refetch landing between them (#137).
  *
  * Five members and not seven. Where the focus is used to be two of them, and it
  * is the grid's own — `WallpaperGridHandle` below is what a page asks through
@@ -331,22 +335,125 @@ export interface GridSelection {
 }
 
 /**
- * The one thing the grid can be asked to do from outside it.
+ * What the grid can be asked from outside it, and what it says back.
  *
- * A handle rather than a pair on `GridSelection`, because where the focus is
- * belongs to the grid: it already holds what the last commit focused and whether
- * the curator is inside, and a request the page held too made "does the
- * selection have focus" a question with four answers across a seam (ADR 0029).
+ * A handle rather than members on `GridSelection`, because both facts on it
+ * belong to the grid: it holds what the last commit focused and whether the
+ * curator is inside, and since #230 it holds the cursor as well. A request the
+ * page held too made "does the selection have focus" a question with four
+ * answers across a seam (ADR 0029), and a cursor the page held made an arrow key
+ * a re-render of the page (ADR 0041).
  *
- * There is no reader for the fact. Nothing outside asks whether the selection
- * has focus, because the only use for the answer is deciding whether to move it,
- * and that is what the method below is for. The DOM carries it twice anyway —
- * `document.activeElement` is the cell, and that cell is the one at
- * `tabindex="0"`.
+ * The publication is two methods and no value, because that is what
+ * `useSyncExternalStore` reads and what lets a subscriber take only the part it
+ * cares about: the lightbox reads the whole selection, and the hook that decides
+ * whether to close it reads a boolean, so a cursor move re-renders one of them
+ * and not the other. `useGridSelection` below is the way in.
+ *
+ * There is still no reader for where the focus is. Nothing outside asks whether
+ * the selection has focus, because the only use for the answer is deciding
+ * whether to move it, and that is what `focusSelection` is for. The DOM carries
+ * it twice anyway — `document.activeElement` is the cell, and that cell is the
+ * one at `tabindex="0"`.
  */
 export interface WallpaperGridHandle {
   /** Put the selected card on screen and focus it, revealing its row first. */
   focusSelection: () => void;
+  /** Hear about it whenever the published selection is replaced. */
+  subscribe: (listener: () => void) => () => void;
+  /** The selection as last published, which is the one the cells were drawn from. */
+  selection: () => GridSelection;
+}
+
+/**
+ * What a subscriber reads while there is no grid to read from.
+ *
+ * Both pages render their own empty state *instead of* the grid when the list
+ * empties, so the handle is `null` for exactly as long as there is nothing to
+ * select (ADR 0029 as amended by #174). One object for the life of the module
+ * rather than a literal per read, because `useSyncExternalStore` compares
+ * snapshots by identity and a new one per render is a re-render per render.
+ */
+const NO_SELECTION: GridSelection = {
+  wallpaper: null,
+  index: -1,
+  length: 0,
+  moveTo: () => {},
+  selectId: () => {},
+};
+
+/**
+ * The grid's side of the publication: the selection as last committed, and
+ * everyone who asked to hear it move.
+ *
+ * Outside React on purpose. The point of the move is that a cursor step does not
+ * re-render whoever is holding the selection for somebody else, and state held
+ * anywhere above the grid does exactly that — which is what #230 is about. So
+ * the cursor is React state inside the grid, where a move re-renders the cells
+ * and the memo stops it at the two that changed, and this is how the same object
+ * reaches a surface that is not below the grid at all.
+ */
+interface SelectionPublication {
+  subscribe: (listener: () => void) => () => void;
+  get: () => GridSelection;
+  /** Announce a selection, or nothing at all if it is the one already out. */
+  publish: (next: GridSelection) => void;
+}
+
+function createPublication(): SelectionPublication {
+  let current = NO_SELECTION;
+  const listeners = new Set<() => void>();
+  return {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    get: () => current,
+    publish: (next) => {
+      if (next === current) return;
+      current = next;
+      // Over a copy, the way `remeasure` above fans out: a listener may
+      // unsubscribe on being told, and mutating the set mid-iteration would skip
+      // the one after it.
+      for (const listener of [...listeners]) listener();
+    },
+  };
+}
+
+/**
+ * Read the grid's published selection, or the part of it you need.
+ *
+ * The subscribing half of what used to be a hook the page called to *create* a
+ * selection. The rule is the same rule and the object is the same object; what
+ * moved is who holds it, so the caller now names a grid rather than a list
+ * (#230).
+ *
+ * `read` is what keeps a cursor move off the surfaces that do not draw one.
+ * `useSyncExternalStore` re-renders a subscriber only when its own snapshot
+ * changes, so a caller reading `wallpaper !== null` hears the list empty and
+ * hears nothing about an arrow key. It has to be stable for the life of the
+ * caller — a module-level function, not a literal per render — because a fresh
+ * one is a fresh snapshot getter on every render.
+ *
+ * A `null` grid is a grid that is not mounted, which both pages produce by
+ * rendering an empty state in its place. It reads as `NO_SELECTION` and
+ * subscribes to nothing.
+ */
+export function useGridSelection<T>(
+  grid: WallpaperGridHandle | null,
+  read: (selection: GridSelection) => T,
+): T {
+  const subscribe = useCallback(
+    (listener: () => void) => grid?.subscribe(listener) ?? (() => {}),
+    [grid],
+  );
+  const snapshot = useCallback(
+    () => read(grid?.selection() ?? NO_SELECTION),
+    [grid, read],
+  );
+  return useSyncExternalStore(subscribe, snapshot);
 }
 
 /**
@@ -364,8 +471,13 @@ export interface WallpaperGridHandle {
  * The id is kept even when it resolves to nothing, which is what brings the
  * selection back when a failed action re-inserts the card it removed
  * optimistically (ADR 0022).
+ *
+ * Private, and called from `Grid` below. It crossed the seam until #230: both
+ * pages called it and handed the result back down, so a cursor move re-rendered
+ * the page, the grid and every mounted card. Both ends of it are inside this
+ * file now, and what leaves is the publication above.
  */
-export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
+function useSelectionCursor(wallpapers: Wallpaper[]): GridSelection {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Where the selection was, for the fall back below. Also the initial stop:
   // with nothing selected yet the first card holds the tab stop, because a grid
@@ -392,14 +504,13 @@ export function useGridSelection(wallpapers: Wallpaper[]): GridSelection {
 
   const selectId = useCallback((id: number) => setSelectedId(id), []);
 
-  // Memoised on the five values it carries, because the object crosses two
-  // seams: the grid hands the selected index down to every card, and the
-  // lightbox is a second rendering of the same selection (ADR 0022). A fresh
-  // literal per render is a changed prop on both of them whenever anything on
-  // either page re-renders, which is what #229 is about and what would defeat
-  // memoising the card in #230. The two functions are already stable — `moveTo`
-  // follows the list it clamps against, `selectId` never changes — so the
-  // identity moves when the selection moves or the list does, and not otherwise.
+  // Memoised on the five values it carries, because the object is what the grid
+  // publishes and the lightbox is a second rendering of it (ADR 0022). A fresh
+  // literal per render is a fresh snapshot for every subscriber whenever
+  // anything re-renders the grid, which is what #229 is about. The two functions
+  // are already stable — `moveTo` follows the list it clamps against, `selectId`
+  // never changes — so the identity moves when the selection moves or the list
+  // does, and not otherwise.
   return useMemo(
     () => ({ wallpaper, index, length: wallpapers.length, moveTo, selectId }),
     [wallpaper, index, wallpapers.length, moveTo, selectId],
@@ -539,14 +650,6 @@ function useGridWindow(
 export interface WallpaperGridProps {
   wallpapers: Wallpaper[];
   /**
-   * The selection, from the page's own `useGridSelection` over this same list.
-   *
-   * Required, and there is no fallback to a selection of the grid's own: the
-   * rule has one home, and a grid that could resolve its own would be the
-   * second copy of it the moment a page held one too (#137).
-   */
-  selection: GridSelection;
-  /**
    * The grid's accessible name. A composite widget is one stop in the tab order,
    * so the name is all a screen reader gets on the way in (ADR 0019).
    */
@@ -602,13 +705,17 @@ export interface WallpaperGridProps {
   /** Layout the host owns: Review's bottom padding, a page's own gap. */
   className?: string;
   /**
-   * The handle, for the page that has to hand focus back: a
-   * `useRef<WallpaperGridHandle | null>(null)` it also passes to `useLightbox`.
+   * The handle: the way focus is handed back, and the way the published
+   * selection is read.
    *
    * React 19 takes `ref` as an ordinary prop on a function component, so there
-   * is no `forwardRef` in the way. A ref and not a callback the page wraps,
-   * because a callback's identity changes every render and `close`'s
-   * `useCallback` deps would churn on it (ADR 0029).
+   * is no `forwardRef` in the way. Both pages pass the setter of a
+   * `useState<WallpaperGridHandle | null>(null)` rather than the `useRef`
+   * ADR 0029 wrote, because since #230 *when* the handle exists is information:
+   * it is the publication, and a subscriber has to be told to resubscribe when
+   * the grid arrives or goes. The setter's identity is stable, so ADR 0029's
+   * objection to a callback — that `close`'s `useCallback` deps churn on one —
+   * does not apply to this one.
    */
   ref?: Ref<WallpaperGridHandle>;
 }
@@ -677,6 +784,13 @@ interface GridProps extends Omit<WallpaperGridProps, "scroller"> {
  * virtualiser's notification lands here, so a crossing of a row boundary
  * re-renders this and the cells and nothing else — not the page that mounted
  * it, which is what it re-rendered while the call lived up there (#231).
+ *
+ * The cursor sits one level further down, in `Grid`, so the separation runs the
+ * other way too: a cursor move re-renders the cells and leaves the window
+ * arithmetic alone. Nothing about the window depends on which card is selected —
+ * the reveal is asked for, not derived — so a component that recomputes a
+ * virtualiser's options on every arrow key would be recomputing them for nothing
+ * (#230).
  */
 function WindowedGrid({
   scroller,
@@ -687,7 +801,7 @@ function WindowedGrid({
 }
 
 /**
- * The cells, the focus and the keys.
+ * The cells, the cursor, the focus and the keys.
  *
  * One tab stop with a roving selection: the container is `role="grid"`, each
  * card a `gridcell` at `tabindex="-1"` except the selected one at `0`, so Tab
@@ -710,7 +824,6 @@ function WindowedGrid({
  */
 function Grid({
   wallpapers,
-  selection,
   label,
   onAction,
   animated = false,
@@ -723,11 +836,12 @@ function Grid({
 }: GridProps) {
   const columns = useGridColumns();
   const gridRef = useRef<HTMLDivElement>(null);
-  // The selection follows the wallpaper, then the position, and the rule that
-  // says so is the page's `useGridSelection` over this same list (ADR 0019).
-  // What is left here is the focus bookkeeping below, which is the grid's own
-  // business: nothing above this component knows which node holds the focus or
-  // whether a row has been mounted yet.
+  // The cursor, and the rule that resolves it against the list: the selection
+  // follows the wallpaper, then the position (ADR 0019). It is here rather than
+  // in the page since #230, which is what makes a move a re-render of this
+  // component and of the two cards whose `selected` changed, instead of the page
+  // and every card on it (ADR 0041).
+  const selection = useSelectionCursor(wallpapers);
   const { wallpaper: selected, index, moveTo } = selection;
   // What the last commit put focus on, so a re-render that changes nothing does
   // not re-focus and re-scroll.
@@ -747,12 +861,31 @@ function Grid({
   // is never read, which is what keeps it a nudge rather than a second counter.
   const [, askedForFocus] = useReducer((asks: number) => asks + 1, 0);
 
-  useImperativeHandle(ref, () => ({
+  // The publication, and the handle that is the whole of the way to it. Both are
+  // built once and never rebuilt: the handle's identity is what a subscriber
+  // resubscribes on, so a fresh one per render would be a resubscription per
+  // render and, on a page holding it in state, a render that schedules the next
+  // one.
+  const [published] = useState(createPublication);
+  const [handle] = useState<WallpaperGridHandle>(() => ({
     focusSelection: () => {
       wantsFocusRef.current = true;
       askedForFocus();
     },
+    subscribe: published.subscribe,
+    selection: published.get,
   }));
+  useImperativeHandle(ref, () => handle, [handle]);
+
+  // The selection this commit drew the cells from, said out loud once they are
+  // in the DOM. In a layout effect rather than during the render that resolved
+  // it, because a store written mid-render is a store that can be read torn —
+  // and because what a subscriber wants is the selection the cells are actually
+  // showing. A subscriber's own re-render runs inside this same commit, before
+  // anything paints.
+  useLayoutEffect(() => {
+    published.publish(selection);
+  }, [published, selection]);
 
   // What this commit puts in the DOM, which is every row until a host says
   // otherwise. Nothing above this line reads it: the selection, the arrow keys
@@ -972,8 +1105,17 @@ function Grid({
         Two values and not the one object they used to arrive in. The object was
         built here per card per render, so every mounted card saw a new prop
         whenever anything on the page re-rendered — a number and a boolean carry
-        the same two facts and carry them by value, which is what lets #230
-        memoise the card and have it mean something.
+        the same two facts and carry them by value, which is what makes #230's
+        memoised card mean something (#229).
+
+        Every prop below is a value or a stable identity, and that is the whole
+        of what a cursor move costs: this component re-renders, the card's memo
+        compares, and only the card that lost the selection and the card that
+        gained it have a changed `selected` to render for. `onAction` is
+        `useWallpaperRows`' latched handler, `onOpen` the lightbox's open call
+        keyed on the grid rather than on the selection, and `scoreMoved` a
+        boolean read out of the page's set — three identities that all used to
+        churn, and each of which would quietly defeat the memo on its own.
       */}
       {mounted.map((wallpaper, offset) => {
         const cardIndex = from + offset;

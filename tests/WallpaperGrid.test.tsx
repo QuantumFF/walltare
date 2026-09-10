@@ -2,14 +2,13 @@ import type { CardAction } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
 import {
   rowHeight,
-  useGridSelection,
   WallpaperGrid,
   type GridSelection,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { useRef, useState, type RefObject } from "react";
+import { useRef, useState } from "react";
 import {
   flush,
   mockBootedApp,
@@ -121,25 +120,30 @@ function handleAction(action: CardAction, subject: Wallpaper): void {
 
 let setList: (list: Wallpaper[]) => void = () => {};
 /**
- * The selection the host is holding, which is what a page reaches for: the
- * wallpaper on screen, a move, and a set to a named id (#137). The lightbox is
- * the caller; these tests reach them directly, the way it does.
+ * The grid's handle, which is the whole of what a page holds: the one way in
+ * from outside, and the publication a page's lightbox subscribes to (ADR 0029,
+ * #230). `null` until the grid has mounted.
  */
-let selection: GridSelection;
+let gridHandle: WallpaperGridHandle | null = null;
+
 /**
- * The grid's handle, which is the other thing a page holds: the one way in from
- * outside, and what `useLightbox` calls on the way down (ADR 0029).
+ * The selection as the grid last published it: the wallpaper on screen, where it
+ * sits in the list, a move, and a set to a named id (#137). The lightbox is the
+ * caller; these tests read it off the handle the way it does.
  */
-let gridHandle: RefObject<WallpaperGridHandle | null>;
+function selection(): GridSelection {
+  if (gridHandle === null) throw new Error("the grid has not mounted");
+  return gridHandle.selection();
+}
 
 /**
  * The grid between two other tab stops, so a test can walk into it and out the
  * far side, and with the list in state so it can change under the selection the
  * way an action or a filter does.
  *
- * The selection is the host's, resolved over the same list the grid is handed.
- * There is no version of this harness without one: the rule has one home, and
- * the grid reads it rather than keeping a second copy.
+ * The selection is not the host's. The grid resolves it over the list it is
+ * handed and publishes it through the handle, which is what this harness holds
+ * — there is no version of it that keeps a second copy (#230).
  *
  * The scroll box is always in the markup and the ref is handed over only when a
  * test asks for a window, because that prop is the whole of the difference
@@ -160,17 +164,18 @@ function Harness({
 }) {
   const [list, set] = useState(initial);
   setList = set;
-  selection = useGridSelection(list);
-  gridHandle = useRef<WallpaperGridHandle | null>(null);
+  // The shape both pages hold it in: state, because when the handle exists is
+  // what a subscriber has to hear about.
+  const [handle, setHandle] = useState<WallpaperGridHandle | null>(null);
+  gridHandle = handle;
   const box = useRef<HTMLDivElement | null>(null);
   return (
     <>
       <button type="button">before</button>
       <div ref={box} data-slot="harness-rows">
         <WallpaperGrid
-          ref={gridHandle}
+          ref={setHandle}
           wallpapers={list}
-          selection={selection}
           label="Wallpapers"
           onAction={handleAction}
           onOpen={(subject) => opened.push(subject.id)}
@@ -541,7 +546,7 @@ test("the page can select a wallpaper by id, and the tab stop follows it", async
     button("after").focus();
   });
   await act(async () => {
-    selection.selectId(3);
+    selection().selectId(3);
   });
 
   // Focus stayed where they put it, and the selection moved anyway. The way
@@ -560,7 +565,7 @@ test("a focus request from the page puts focus on the selected card", async () =
     button("after").focus();
   });
   await act(async () => {
-    selection.selectId(3);
+    selection().selectId(3);
   });
   expect(document.activeElement).toBe(button("after"));
 
@@ -569,7 +574,7 @@ test("a focus request from the page puts focus on the selected card", async () =
   // the card for the current selection, not the one it was opened from
   // (ADR 0022).
   await act(async () => {
-    gridHandle.current?.focusSelection();
+    gridHandle?.focusSelection();
   });
   expect(document.activeElement).toBe(cell(3));
 });
@@ -581,12 +586,12 @@ test("a focus request reveals a card with no node before focusing it", async () 
   // have a node, and the wallpaper the page selects is not one of them.
   expect(mountedCells().length).toBeLessThan(400);
   await act(async () => {
-    selection.selectId(400);
+    selection().selectId(400);
   });
   expect(mounted(400)).toBe(false);
 
   await act(async () => {
-    gridHandle.current?.focusSelection();
+    gridHandle?.focusSelection();
   });
   await browserReportsScroll();
 

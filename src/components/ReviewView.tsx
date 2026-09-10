@@ -6,7 +6,6 @@ import {
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import {
-  useGridSelection,
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -16,7 +15,7 @@ import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
 import { client } from "@/lib/client";
 import { ArrowLeft, Check, Loader2, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 /**
  * How many cards the worklist holds. The only `limit` the listing is given —
@@ -67,17 +66,18 @@ export function ReviewView() {
   });
   const wallpapers = rows ?? [];
 
-  // The grid's selection, held here rather than inside the grid because ADR
-  // 0022 has the lightbox render this same selection and keeps the lightbox's
-  // state on the page that mounted the grid (#137). Both surfaces below read
-  // this one object, which is what makes the lightbox a second rendering of the
-  // grid rather than a cursor of its own: there is no sync rule between them
-  // because there are not two things to sync.
-  const selection = useGridSelection(wallpapers);
-  // The grid's handle, passed twice: to the grid as its `ref`, and to the
-  // lightbox as the way it hands focus back on the way down (ADR 0029).
-  const grid = useRef<WallpaperGridHandle | null>(null);
-  const lightbox = useLightbox(selection, grid);
+  // The grid, once it has mounted, and the whole of what this page knows about
+  // the selection. The cursor is the grid's since #230, so nothing here holds it
+  // or hands it down: the lightbox below subscribes to the grid's own
+  // publication, which is what keeps it a second rendering of that selection
+  // rather than a cursor of its own — no sync rule, because there are still not
+  // two things to sync (ADR 0022, #137).
+  //
+  // State rather than the `useRef` ADR 0029 wrote, because this page renders its
+  // own empty state instead of the grid, and a subscriber has to hear about the
+  // handle arriving and going. `setGrid`'s identity is stable.
+  const [grid, setGrid] = useState<WallpaperGridHandle | null>(null);
+  const lightbox = useLightbox(grid);
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
@@ -111,7 +111,7 @@ export function ReviewView() {
   // only from a transition: `selectId` from a failed one, `oweRefetch` from one
   // the backend refused over a stale row.
   function selectId(id: number) {
-    selection.selectId(id);
+    grid?.selection().selectId(id);
   }
 
   function oweRefetch() {
@@ -216,9 +216,8 @@ export function ReviewView() {
                of this card no animated property and no `will-change`, and ADR
                0007's licence stays scoped to the fifty rows it was measured on. */
             <WallpaperGrid
-              ref={grid}
+              ref={setGrid}
               wallpapers={wallpapers}
-              selection={selection}
               label="Wallpapers to review"
               onAction={perform}
               onOpen={lightbox.openOn}
@@ -229,11 +228,11 @@ export function ReviewView() {
         </div>
       )}
 
-      {/* The same component the library page mounts, on the same selection the
-          grid above is showing, with no argument saying which page it is: the
-          action set in it comes off the wallpaper's Status, and Review's list
-          holds only Active rows, so Restore and Make Active never appear here
-          without anyone configuring that (ADR 0022).
+      {/* The same component the library page mounts, subscribing to the same
+          selection the grid above is drawing, with no argument saying which page
+          it is: the action set in it comes off the wallpaper's Status, and
+          Review's list holds only Active rows, so Restore and Make Active never
+          appear here without anyone configuring that (ADR 0022).
 
           `onAction` is the same `perform` the grid behind it is handed, so a
           keep from inside the lightbox is this page's keep — the optimistic removal, the published
@@ -247,7 +246,7 @@ export function ReviewView() {
           portal is what keeps a `position: fixed` surface from being clipped to
           the `animate-in` container above. */}
       <Lightbox
-        selection={selection}
+        grid={grid}
         open={lightbox.open}
         onClose={lightbox.close}
         onAction={perform}

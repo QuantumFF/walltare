@@ -213,6 +213,14 @@ and worth saying out loud.
 > `focusSelection` is unaffected — the reveal it triggers is now the grid's own
 > rather than a prop it was handed, which is invisible from outside the handle.
 
+> **Amended by [ADR 0042](0042-the-grid-owns-the-cursor.md), 2026-09-10.** The
+> table still reads three, and the same three. `useGridSelection` changed
+> signature rather than name — it reads the grid's selection now instead of
+> creating one — and `WallpaperGridHandle` gained two members, `subscribe` and
+> `selection`, paid for by `WallpaperGridProps` losing its `selection`. So the
+> widening this section owns up to is still one name, and the members behind it
+> are three rather than one.
+
 **One named behaviour change.** Keeping or rejecting the last row from inside
 the lightbox now lands focus on the grid container instead of `body`. Everything
 else about focus behaves exactly as it does today.
@@ -220,6 +228,24 @@ else about focus behaves exactly as it does today.
 **Two pages gain a ref.** Review and Library both mount a grid and a lightbox,
 so both hold the `useRef` and pass it twice. That is the visible cost of the
 handle, and it is the same two lines in each file.
+
+> **Amended by [ADR 0042](0042-the-grid-owns-the-cursor.md), 2026-09-10.** The
+> two lines are still two lines and the `useRef` is a
+> `useState<WallpaperGridHandle | null>(null)`, with the setter passed as the
+> grid's `ref`. The reason this ADR gave for a ref over a callback — that a
+> callback's identity changes every render, so `close`'s `useCallback` deps churn
+> — does not apply to a `useState` setter, whose identity React guarantees.
+>
+> What forces it is that the handle now carries the grid's cursor as well as its
+> focus, so *when* the handle exists is information a subscriber needs. Both
+> pages render their own empty state instead of the grid, which the #174
+> amendment above records: a ref goes to `null` silently, and the setter tells
+> the page, which is how the lightbox learns there is nothing left to render. The
+> cost is one extra render of each page when its grid mounts or unmounts, never
+> inside a gesture.
+>
+> `focusSelection` itself is untouched, and so is everything above about which of
+> the three closes hands focus back.
 
 **Nothing outside the grid can ask whether the selection has focus.** If some
 future surface needs to know, the thing to add is a reason rather than a getter,

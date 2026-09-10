@@ -5,9 +5,9 @@ import {
 } from "@/components/useWallpaperRows";
 import { WallpaperCard } from "@/components/WallpaperCard";
 import {
-  useGridSelection,
   WallpaperGrid,
   type GridSelection,
+  type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
 import type { Wallpaper } from "@/lib/client";
 import { act, cleanup, screen } from "@testing-library/react";
@@ -66,15 +66,22 @@ const DESTINATION: RejectDestination = {
 };
 
 /** What each render of the page handed over, oldest first. */
-let selections: GridSelection[];
 let performs: Array<WallpaperRows["perform"]>;
+/** The grid's handle, which is what a page holds instead of a selection (#230). */
+let gridHandle: WallpaperGridHandle | null;
 /** Re-render the page with nothing about it changed. */
 let rerender: () => void;
 
+/** The selection as the grid last published it. */
+function selection(): GridSelection {
+  if (gridHandle === null) throw new Error("the grid has not mounted");
+  return gridHandle.selection();
+}
+
 /**
- * The library page's shape, reduced to the two hooks whose identities this is
- * about — the rows-and-transitions module and the selection — inside the scroll
- * box the grid windows itself against.
+ * The library page's shape, reduced to what the identities this is about hang
+ * off — the rows-and-transitions module, and the grid holding the cursor —
+ * inside the scroll box the grid windows itself against.
  *
  * A harness rather than `LibraryView` itself, because the question is what one
  * render hands the next and a page cannot be asked that. The scroll box is what
@@ -93,16 +100,16 @@ function Page({ list }: { list: Wallpaper[] }) {
     destination: DESTINATION,
     owe: () => {},
   });
-  const selection = useGridSelection(list);
+  const [handle, setHandle] = useState<WallpaperGridHandle | null>(null);
+  gridHandle = handle;
 
-  selections.push(selection);
   performs.push(perform);
 
   return (
     <div ref={scroller}>
       <WallpaperGrid
+        ref={setHandle}
         wallpapers={list}
-        selection={selection}
         label="Wallpapers"
         onAction={perform}
         scroller={scroller}
@@ -123,8 +130,8 @@ function Host({ initial }: { initial: Wallpaper[] }) {
 }
 
 async function mount(list: Wallpaper[]) {
-  selections = [];
   performs = [];
+  gridHandle = null;
   await renderInApp(<Host initial={list} />);
   await flush();
 }
@@ -132,11 +139,6 @@ async function mount(list: Wallpaper[]) {
 /** One card, by the accessible name it carries as a cell. */
 function cell(id: number, status = "Active"): HTMLElement {
   return screen.getByRole("gridcell", { name: `wall-${id}.jpg, ${status}` });
-}
-
-/** The last render's selection, which is what the next one is compared to. */
-function lastSelection(): GridSelection {
-  return selections[selections.length - 1];
 }
 
 /** A React fiber, as far as reading the props off one needs to know. */
@@ -217,24 +219,26 @@ function watchWindow() {
   };
 }
 
-test("the selection is one object while the selection and the list are unchanged", async () => {
+test("the published selection is one object while the selection and the list are unchanged", async () => {
   await mount(cards(6));
-  const before = lastSelection();
+  const before = selection();
 
   await act(async () => {
     rerender();
   });
-  expect(selections.length).toBeGreaterThan(1);
-  expect(lastSelection()).toBe(before);
+  // A render of the page above it is not news, and `useSyncExternalStore`
+  // compares snapshots by identity — a fresh object here is a re-render of
+  // every subscriber every time anything moves on the page.
+  expect(selection()).toBe(before);
 
   // And a new one when the selection moves, because a memo that never lets go
-  // is the other way to fail this: the lightbox renders this object, and #230's
-  // card reads the index out of it (ADR 0022).
+  // is the other way to fail this: the lightbox is a rendering of this object
+  // (ADR 0022, #230).
   await act(async () => {
     before.moveTo(1);
   });
-  expect(lastSelection()).not.toBe(before);
-  expect(lastSelection().index).toBe(1);
+  expect(selection()).not.toBe(before);
+  expect(selection().index).toBe(1);
 });
 
 test("the action handler holds one identity for the life of the page", async () => {
@@ -245,7 +249,7 @@ test("the action handler holds one identity for the life of the page", async () 
     rerender();
   });
   await act(async () => {
-    lastSelection().moveTo(2);
+    selection().moveTo(2);
   });
 
   expect(performs.length).toBeGreaterThan(2);
@@ -276,7 +280,7 @@ test("a card's props keep their identity when nothing about the card changed", a
   // The one prop a cursor move may change on a card it leaves, and the whole
   // reason it is a boolean rather than a field of an object built per render.
   await act(async () => {
-    lastSelection().moveTo(1);
+    selection().moveTo(1);
   });
   const afterMove = cardProps(cell(1));
   expect(changed(before, afterMove)).toEqual(["selected"]);
@@ -292,7 +296,7 @@ test("the column count is answered from a cache, and no query is built during a 
       rerender();
     });
     await act(async () => {
-      lastSelection().moveTo(3);
+      selection().moveTo(3);
     });
     // The four queries are the module's, parsed once when it loaded, so a
     // render that reads the count asks the window nothing.
