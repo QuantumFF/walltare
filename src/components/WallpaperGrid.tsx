@@ -936,6 +936,27 @@ function Grid({
       return;
     }
 
+    // The window moved and the selection did not. A wheel gesture scrolled the
+    // selected card out of the mounted range, the node went with the window and
+    // the focus went with the node.
+    //
+    // Re-homing it is what would make the library unscrollable. The reveal below
+    // would put the window back on the selected row, so every notch of the wheel
+    // is undone before it paints and the curator never gets past the card they
+    // are standing on. A reveal is for a selection that moved, and nothing moved
+    // this one: they scrolled.
+    //
+    // The container takes the focus, for the reason the emptied list below takes
+    // it. Focus on `body` starts the next Tab at the top of the document rather
+    // than on the page the curator is looking at, and the keys stay answered on
+    // the way back, since the handler that answers them is this element's own
+    // (ADR 0019). `preventScroll`, because a focus move that scrolled would eat
+    // the same gesture by another route.
+    if (target === focusedRef.current && !requested && !cellAt(index)) {
+      gridRef.current?.focus({ preventScroll: true });
+      return;
+    }
+
     // The list emptied under a selection that had focus, so the container takes
     // it: the alternative is focus on `body`, where the next Tab starts from the
     // top of the document rather than from the page the curator is on.
