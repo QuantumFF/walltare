@@ -4,6 +4,14 @@ import {
   type CardAction,
 } from "@/components/WallpaperCard";
 import type { Status, Wallpaper } from "@/lib/client";
+import {
+  NOTHING_MOUNTED,
+  planUniformGrid,
+  uniformRowHeight,
+  windowOf,
+  type LayoutPlan,
+  type PlannedWindow,
+} from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -147,8 +155,8 @@ function useGridColumns(): number {
 
 /**
  * The grid's own spacing, as numbers beside the classes they restate, because
- * `useGridWindow` below has to know how tall a row is before the row exists and
- * the CSS is the only place that says.
+ * the plan below has to know how tall a row is before the row exists and the
+ * CSS is the only place that says.
  *
  * The same pair `COLUMNS` is: the number and the class are one statement, and
  * two copies of it drift. What it costs when they do is a window positioned
@@ -184,6 +192,14 @@ const UNMEASURED_ROW = 130;
 const UNMEASURED_BOX = 800;
 
 /**
+ * The two spacings a plan is laid out against, as the plan module takes them.
+ *
+ * Written once here rather than at each of the two calls below, which is the
+ * same rule the pairs above follow: a copy of `GAP.px` is a copy that drifts.
+ */
+const SPACING = { gap: GAP.px, padding: PADDING.px };
+
+/**
  * How tall one row of cards is, from the width the row has to fill and the
  * number of cards sharing it.
  *
@@ -195,14 +211,27 @@ const UNMEASURED_BOX = 800;
  * this is a pure function of two numbers that one test can drive over the four
  * column counts — including the zero-width branch every happy-dom run takes.
  * That test is the reason for the `export`, which is the whole of what it is
- * for: nothing in the app calls this from outside the hook below, and the
- * arithmetic is otherwise reachable only through a mounted page whose box
- * measures zero (ADR 0027).
+ * for: nothing in the app calls this from outside this file, and the arithmetic
+ * is otherwise reachable only through a mounted page whose box measures zero
+ * (ADR 0027).
+ *
+ * This is where the grid's four private constants meet the arithmetic over them:
+ * `@/lib/layout-plan` is handed the numbers and holds no copy of them, so the
+ * grid still owns its geometry and the arithmetic is still a pure function
+ * nothing has to mount to drive.
+ *
+ * What it answers is the uniform grid's row height and nothing more general.
+ * The plan below is where a row height becomes a fact per row rather than one
+ * number for all of them.
  */
 export function rowHeight(boxWidth: number, columns: number): number {
-  const cards = boxWidth - 2 * PADDING.px - GAP.px * (columns - 1);
-  if (cards <= 0) return UNMEASURED_ROW;
-  return (cards / columns) * CARD_ASPECT.ratio;
+  return uniformRowHeight({
+    ...SPACING,
+    columns,
+    width: boxWidth,
+    cardRatio: CARD_ASPECT.ratio,
+    unmeasuredHeight: UNMEASURED_ROW,
+  });
 }
 
 /**
@@ -518,39 +547,22 @@ function useSelectionCursor(wallpapers: Wallpaper[]): GridSelection {
 }
 
 /**
- * The slice of the list a virtualising host wants mounted, and the empty space
- * that holds the rest of the scroll height open around it.
- *
- * The grid still receives every wallpaper. It is what resolves the selection,
- * moves it with the arrows and hands each card an index in the whole list, and
- * all of that has to keep working for a wallpaper that has no DOM node at all —
- * so what a range changes is only which cards are rendered (ADR 0016, #131).
- *
- * `start` is inclusive and `end` exclusive, the way `slice` reads them.
- * `before` and `after` are pixels, and they arrive as padding on the container
- * rather than as spacer elements above and below it: the container is a CSS
- * grid, and a spacer inside one is a cell that takes a column.
- *
- * Private. It used to cross the seam between the page and the grid; both ends
- * of it are inside this file now (#231).
- */
-interface GridRange {
-  start: number;
-  end: number;
-  before: number;
-  after: number;
-}
-
-/**
  * The window over a list too long to mount (ADR 0016), and the way in to a card
  * that has no node yet.
  *
  * Thirty cards in the DOM out of five thousand fetched, because 5,000 images and
  * 5,000 overlays is a page that scrolls badly whatever the card is made of. It
- * counts rows and not cards, and the count it divides by is the grid's own:
- * one virtual item is one row of the CSS grid, and the gap and the padding above
- * are told to the virtualiser rather than folded into the row height, so the
- * offsets it hands back are the offsets the CSS produces.
+ * counts rows and not cards, and the rows are the plan's: one virtual item is
+ * one row of the plan, its height is that row's own rather than an estimate for
+ * all of them, and the gap and the padding are told to the virtualiser rather
+ * than folded into the heights, so the offsets it works over are the offsets the
+ * CSS produces.
+ *
+ * Exact sizes and no measurement. A virtualiser given an estimate corrects it
+ * when the row mounts and moves everything below by the difference, which is a
+ * library that shifts under the curator's hand as they reach for a card. The
+ * plan is computable before anything renders, so there is nothing to correct
+ * (#261).
  *
  * Private, and called from `WindowedGrid` below. ADR 0027 exported it for
  * `LibraryView` to call, on the argument that every number behind it is this
@@ -567,20 +579,41 @@ interface GridRange {
 function useGridWindow(
   count: number,
   scroller: RefObject<HTMLDivElement | null>,
-): { range: GridRange; reveal: (index: number) => void } {
+): { mounted: PlannedWindow; reveal: (index: number) => void } {
   const columns = useGridColumns();
-  // The scroll box as last measured, and the width the row height is derived
-  // from. The last non-zero measurement is kept, so a view the shell has hidden
-  // — which zeroes the box — keeps the size it had rather than rebuilding its
-  // whole window on the way back (ADR 0015).
+  // The scroll box as last measured, and the width the plan is computed
+  // against. The last non-zero measurement is kept, so a view the shell has
+  // hidden — which zeroes the box — keeps the size it had rather than rebuilding
+  // its whole window on the way back (ADR 0015).
   const measured = useRef({ width: 0, height: 0 });
   const [boxWidth, setBoxWidth] = useState(0);
-  const rowSize = rowHeight(boxWidth, columns);
+  // Where every card goes, before any of them has a node. Memoised on the three
+  // facts it is computed from, because it is what the virtualiser's options and
+  // the cells are both read out of and a fresh one per render would rebuild both
+  // on every scroll notch.
+  const plan: LayoutPlan = useMemo(
+    () =>
+      planUniformGrid({
+        ...SPACING,
+        count,
+        columns,
+        rowHeight: rowHeight(boxWidth, columns),
+      }),
+    [count, columns, boxWidth],
+  );
 
   const virtualiser = useVirtualizer({
-    count: Math.ceil(count / columns),
+    count: plan.rows.length,
     getScrollElement: () => scroller.current,
-    estimateSize: () => rowSize,
+    // The row's own height, read out of the plan. Named `estimateSize` by the
+    // library and exact here: nothing measures a mounted row and nothing
+    // corrects this afterwards, which is what keeps a scroll from jumping.
+    //
+    // Indexed without a guard, unlike `windowOf` below, because the count on the
+    // line above comes off the same plan in the same render: a row the
+    // virtualiser asks about is a row the plan has. What it hands back is
+    // memoised, which is the case `windowOf` clamps for.
+    estimateSize: (row) => plan.rows[row].height,
     // One row above and one below. Two rows doubles the in-flight image
     // requests to buy a margin the memory cache already provides after the
     // first pass (ADR 0016).
@@ -606,29 +639,26 @@ function useGridWindow(
       }),
   });
 
-  // A changed estimate does not re-measure by itself: the virtualiser caches
-  // what it measured and rebuilds when the row count changes, not when the
-  // function behind the estimate starts answering differently. So the first
-  // real measurement after a mount, and a resize that does not cross a
-  // breakpoint, say so here.
+  // A changed plan does not re-measure by itself: the virtualiser caches what it
+  // measured and rebuilds when the row count changes, not when the function
+  // behind the sizes starts answering differently. So the first real measurement
+  // after a mount, and a resize that does not cross a breakpoint, say so here.
   useLayoutEffect(() => {
     virtualiser.measure();
-  }, [virtualiser, rowSize]);
+  }, [virtualiser, plan]);
 
   const mountedRows = virtualiser.getVirtualItems();
   const firstRow = mountedRows[0];
   const lastRow = mountedRows[mountedRows.length - 1];
-  // The mounted range, as indexes into the whole list, and the empty space that
-  // holds the rest of the scroll height open above and below it.
-  const range =
+  // The mounted cards and the empty space that holds the rest of the scroll
+  // height open above and below them — read off the plan, which is where the
+  // rows and their offsets are. The virtualiser says which rows; the plan says
+  // what is in them and where they sit, so a row that holds a different number
+  // of cards than its neighbour, or a different height, needs nothing here.
+  const mounted =
     firstRow && lastRow
-      ? {
-          start: firstRow.index * columns,
-          end: Math.min((lastRow.index + 1) * columns, count),
-          before: firstRow.start,
-          after: virtualiser.getTotalSize() - lastRow.end,
-        }
-      : { start: 0, end: 0, before: 0, after: 0 };
+      ? windowOf(plan, firstRow.index, lastRow.index)
+      : NOTHING_MOUNTED;
 
   /**
    * Put the card the selection moved to on screen, which under a window means
@@ -638,13 +668,17 @@ function useGridWindow(
    * an arrow key selected may have no node yet and asking the virtualiser to
    * scroll the row in is what creates one. Focusing a node that does not exist
    * is the one way that pattern breaks (ADR 0019).
+   *
+   * Which row that is comes out of the plan rather than out of the column count,
+   * because a card's row is a fact about the layout and not arithmetic a caller
+   * can do for itself.
    */
   const reveal = useCallback(
-    (index: number) => virtualiser.scrollToIndex(Math.floor(index / columns)),
-    [virtualiser, columns],
+    (index: number) => virtualiser.scrollToIndex(plan.rowOfCard[index] ?? 0),
+    [virtualiser, plan],
   );
 
-  return { range, reveal };
+  return { mounted, reveal };
 }
 
 export interface WallpaperGridProps {
@@ -749,15 +783,23 @@ export function WallpaperGrid({ scroller, ...props }: WallpaperGridProps) {
 /**
  * The cells, plus the window over them when there is one.
  *
- * `range` and `reveal` were props of the exported component until #231. They are
- * still the same two facts crossing the same seam; the seam is inside this file
- * now, which is the whole of what that ticket moved.
+ * The window and the reveal were props of the exported component until #231.
+ * They are still the same two facts crossing the same seam; the seam is inside
+ * this file now, which is the whole of what that ticket moved.
  */
 interface GridProps extends Omit<WallpaperGridProps, "scroller"> {
   /**
-   * Which of the cards to mount. See `GridRange`. Absent mounts every row.
+   * Which of the cards to mount, and the empty space that holds the rest of the
+   * scroll height open around them. See `PlannedWindow`. Absent mounts every
+   * row.
+   *
+   * The grid still receives every wallpaper. It is what resolves the selection,
+   * moves it with the arrows and hands each card an index in the whole list, and
+   * all of that has to keep working for a wallpaper that has no DOM node at all
+   * — so what a window changes is only which cards are rendered (ADR 0016,
+   * #131).
    */
-  range?: GridRange;
+  mounted?: PlannedWindow;
   /**
    * Put the card at `index` on screen.
    *
@@ -796,8 +838,8 @@ function WindowedGrid({
   scroller,
   ...props
 }: GridProps & { scroller: RefObject<HTMLDivElement | null> }) {
-  const { range, reveal } = useGridWindow(props.wallpapers.length, scroller);
-  return <Grid {...props} range={range} reveal={reveal} />;
+  const { mounted, reveal } = useGridWindow(props.wallpapers.length, scroller);
+  return <Grid {...props} mounted={mounted} reveal={reveal} />;
 }
 
 /**
@@ -829,7 +871,7 @@ function Grid({
   animated = false,
   scoresMoved,
   reveal,
-  range,
+  mounted,
   onOpen,
   className,
   ref,
@@ -887,12 +929,27 @@ function Grid({
     published.publish(selection);
   }, [published, selection]);
 
-  // What this commit puts in the DOM, which is every row until a host says
-  // otherwise. Nothing above this line reads it: the selection, the arrow keys
-  // and the fall back are about the list, and a card the window left out is a
-  // card with no node rather than a wallpaper that stopped existing.
-  const from = range ? range.start : 0;
-  const mounted = range ? wallpapers.slice(range.start, range.end) : wallpapers;
+  // What this commit puts in the DOM, as positions in the whole list — which is
+  // every card until a host's window says less. Nothing above this line reads
+  // it: the selection, the arrow keys and the fall back are about the list, and
+  // a card the window left out is a card with no node rather than a wallpaper
+  // that stopped existing.
+  //
+  // Positions and not a slice, because which cards a row holds is the plan's to
+  // say. The uniform grid's rows hold runs and a slice would do; a layout that
+  // packs by shortest column does not, and a grid that assumed it would draw the
+  // wrong cards rather than fail (#261).
+  //
+  // Built only for the host that has no window, and memoised on the list, so
+  // Review's fifty positions are not rebuilt on a cursor move and the library's
+  // five thousand are never built at all. Whether a host windows is fixed for
+  // its life, which is what makes that a stable dependency (see `scroller`).
+  const windowed = mounted !== undefined;
+  const everyCard = useMemo(
+    () => (windowed ? [] : wallpapers.map((_, at) => at)),
+    [windowed, wallpapers],
+  );
+  const cards = mounted ? mounted.cards : everyCard;
 
   const cellAt = (at: number) =>
     gridRef.current?.querySelector<HTMLElement>(`[data-cell="${at}"]`) ?? null;
@@ -1099,12 +1156,12 @@ function Grid({
       // A windowed grid wears the padding its window was measured against, which
       // is what keeps every geometry number inside this file: `PADDING.px` is
       // told to the virtualiser and `PADDING.className` is worn here, off the
-      // one pair. Review passes no `range` and its own `pb-8` reaches this same
+      // one pair. Review mounts every card and its own `pb-8` reaches this same
       // element (ADR 0027).
       className={cn(
         "grid",
         GAP.className,
-        range && PADDING.className,
+        mounted && PADDING.className,
         GRID_COLUMN_CLASSES,
         className,
       )}
@@ -1113,8 +1170,8 @@ function Grid({
       // top of that shorthand, so the host's horizontal padding survives being
       // told where the mounted range sits.
       style={
-        range
-          ? { paddingTop: range.before, paddingBottom: range.after }
+        mounted
+          ? { paddingTop: mounted.before, paddingBottom: mounted.after }
           : undefined
       }
     >
@@ -1138,8 +1195,8 @@ function Grid({
         boolean read out of the page's set — three identities that all used to
         churn, and each of which would quietly defeat the memo on its own.
       */}
-      {mounted.map((wallpaper, offset) => {
-        const cardIndex = from + offset;
+      {cards.map((cardIndex) => {
+        const wallpaper = wallpapers[cardIndex];
         return (
           <WallpaperCard
             key={wallpaper.id}
