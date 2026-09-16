@@ -13,6 +13,10 @@ import {
   FirstRunBlock,
   UnreadableLibraryBlock,
 } from "@/components/SettingsNotices";
+import {
+  MinimumResolutionSection,
+  ScreenSection,
+} from "@/components/ScreenSections";
 import { ThumbnailsSection } from "@/components/ThumbnailsSection";
 import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
@@ -48,7 +52,7 @@ const RETURN_LABEL: Record<View, string> = {
 };
 
 /**
- * One of the four sections, heading and all.
+ * One of the page's sections, heading and all.
  *
  * `ref` is here for the one thing a section is addressed by from outside: a
  * navigation that names a field scrolls the section holding it into view, and
@@ -418,13 +422,13 @@ function AppearanceSection() {
 /**
  * The Settings page.
  *
- * One column at `max-w-2xl` holding five sections in first-run order, a slot
+ * One column at `max-w-2xl` holding seven sections in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
  * the way out (ADR 0020, ADR 0032).
  *
  * On the two boot landings that slot is the page rather than a block above it:
  * the invitation, or the fault, with the Library root section under it and the
- * other four withheld until there is a library for them to be about (ADR 0033).
+ * rest withheld until there is a library for them to be about (ADR 0033).
  *
  * Settings is the one destination the shell unmounts, so its fields start from
  * the store rather than from a copy they held across a visit — which is why the
@@ -439,11 +443,11 @@ export function SettingsView() {
    * is the whole of what makes it a landing rather than Settings.
    *
    * Both rows of ADR 0015's boot table that come here are read off one notice —
-   * an empty library and a library that would not read — because what the four
+   * an empty library and a library that would not read — because what the
    * withheld sections have in common is that neither curator has a library for
-   * them to be about. A reject destination, a thumbnail cache and a count of
-   * missing files are all questions about wallpapers the app either has not
-   * found yet or cannot see (ADR 0033).
+   * them to be about. A reject destination, a screen to hang wallpapers on, a
+   * thumbnail cache and a count of missing files are all questions about
+   * wallpapers the app either has not found yet or cannot see (ADR 0033).
    *
    * It is the notice and not `libraryTotal === 0`, so the page stops being a
    * landing on exactly the two occasions the landing is over: the boot rule's
@@ -542,11 +546,10 @@ export function SettingsView() {
             was a page that grows sections after a scan — and it does not: the
             boot rule takes a curator whose scan filled the library off this page
             entirely, and the one place sections do appear in place is a Retry
-            that read, where four sections arriving is the page recovering
+            that read, where the rest of the page arriving is it recovering
             alongside the fault leaving (ADR 0033).
 
-            Missing files is fifth and last for the rule that put Thumbnails
-            fourth. It is the most maintenance-shaped thing on the page — a
+            Missing files is last for the rule that put Thumbnails next to last. It is the most maintenance-shaped thing on the page — a
             question nobody asks until something looks wrong — and putting it
             under the Library root, where it is about the same folder, would sit
             a filesystem walk between a first-run curator and the Scan button
@@ -555,6 +558,13 @@ export function SettingsView() {
           <>
             <RejectDestinationSection />
             <AppearanceSection />
+            {/* The two sizes sit with Appearance rather than with the
+                maintenance pair below, because they are the same kind of thing:
+                what the app looks like and what it is being curated for. Screen
+                first and Minimum resolution under it, because the second's
+                default is the first (ADR 0020, ADR 0032). */}
+            <ScreenSection />
+            <MinimumResolutionSection />
             <ThumbnailsSection />
             <MissingFilesSection />
           </>

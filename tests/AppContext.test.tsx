@@ -1,6 +1,6 @@
 import App from "@/App";
 import { AppProvider, useApp } from "@/context/AppContext";
-import type { Settings, Stats } from "@/lib/client";
+import { DEFAULT_SETTINGS, type Settings, type Stats } from "@/lib/client";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
@@ -262,11 +262,13 @@ test("the stored settings are readable from useApp", async () => {
   );
   await flush();
 
-  expect(probedSettings()).toEqual({
-    theme: "dark",
-    library_root: "~/pics",
-    reject_destination: "/bin/walls",
-  });
+  expect(probedSettings()).toEqual(
+    settings({
+      theme: "dark",
+      library_root: "~/pics",
+      reject_destination: "/bin/walls",
+    }),
+  );
 });
 
 test("a navigation carries where it came from and the field to focus", async () => {
@@ -312,7 +314,11 @@ test("a settings read that fails still starts the app, on the defaults", async (
   );
   await flush();
 
-  expect(probedSettings()).toEqual(settings());
+  // `DEFAULT_SETTINGS` and not the `settings()` fixture: the fixture is an empty
+  // table read back from a backend that detected a monitor, and a read that
+  // failed was told nothing about the monitor either. The screen falls back to
+  // the app's own, which is the whole difference between the two.
+  expect(probedSettings()).toEqual(DEFAULT_SETTINGS);
 });
 
 test("a stored theme of dark paints the dark palette", async () => {

@@ -101,6 +101,19 @@ export type ListOrdering =
 /** Mirrors settings::Theme; each string is what `set_setting` accepts back. */
 export type Theme = "system" | "light" | "dark";
 
+/**
+ * Mirrors settings::Resolution: a size in pixels, width by height.
+ *
+ * The two numbers rather than the `1920x1080` string the column holds, because
+ * the readers want different halves of it — the crop preview the ratio, the
+ * undersized check the pixels — and a string every one of them parses again is
+ * a parse in every reader. `encodeSetting` writes it back in the stored form.
+ */
+export interface Resolution {
+  width: number;
+  height: number;
+}
+
 /** Mirrors settings::Settings, which fills every gap in the table from its own defaults. */
 export interface Settings {
   theme: Theme;
@@ -111,19 +124,71 @@ export interface Settings {
   library_root: string;
   /** A Written path. Relative means one rejected folder beside each wallpaper. */
   reject_destination: string;
+  /**
+   * The screen the curator is curating for, defaulting to the monitor the
+   * backend detected. One screen and not two: the crop preview reads its ratio
+   * and the undersized check reads its pixels, and two settings holding the same
+   * fact can disagree.
+   */
+  screen: Resolution;
+  /**
+   * The smallest a wallpaper may be before it reads as undersized. Defaults to
+   * `screen` rather than to a constant, so a curator who wants exactly their own
+   * pixels has nothing to set.
+   */
+  minimum_resolution: Resolution;
+  /**
+   * What the monitor said, which is what `screen` reads as until the curator
+   * overrides it.
+   *
+   * Not a setting — it is not a `SettingKey` and the backend refuses the key —
+   * but it rides along on the settings answer because Settings is the only
+   * reader and needs it in the same breath as the value it is comparing.
+   */
+  detected_screen: Resolution;
 }
 
 /**
- * What every key means with no row in the table, mirroring `Settings::default`.
+ * The keys `set_setting` takes, which is every setting and nothing else.
+ *
+ * `Settings` is what a read answers with, and one field on it is a readout
+ * rather than a preference. Excluding it here is what stops a caller writing to
+ * it and learning from a backend refusal at runtime.
+ */
+export type SettingKey = Exclude<keyof Settings, "detected_screen">;
+
+/**
+ * What every key means with no row in the table, mirroring `Settings::defaults`.
  *
  * settings.rs owns the answer; this copy exists only for the boot path, which
- * has to render something when `get_settings` fails.
+ * has to render something when `get_settings` fails. The screen here is
+ * `FALLBACK_SCREEN`, not a detected monitor: a boot that could not read the
+ * settings could not have been told what the monitor is either.
  */
 export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   library_root: "",
   reject_destination: "./rejected",
+  screen: { width: 1920, height: 1080 },
+  minimum_resolution: { width: 1920, height: 1080 },
+  detected_screen: { width: 1920, height: 1080 },
 };
+
+/**
+ * One setting as the column holds it, which is the one place in the app a
+ * setting becomes a string.
+ *
+ * The two sizes are the only keys that are not a string already: they cross as
+ * two numbers, for the readers that want one half or the other, and store as
+ * `1920x1080`, which is the form `settings.rs` parses. Keeping both ends of that
+ * in one expression is why `setSetting` calls this rather than each caller
+ * building its own payload (ADR 0031).
+ */
+function encodeSetting(value: Settings[SettingKey]): string {
+  return typeof value === "object"
+    ? `${value.width}x${value.height}`
+    : String(value);
+}
 
 /** Mirrors voting::VoteOutcome */
 export interface VoteOutcome {
@@ -270,7 +335,7 @@ export interface BackendCommands {
   get_settings: { args: undefined; answer: Settings };
   /** The value crosses as a string, which is what the column holds (`setSetting`). */
   set_setting: {
-    args: { key: keyof Settings; value: string };
+    args: { key: SettingKey; value: string };
     answer: Settings;
   };
 }
@@ -493,15 +558,19 @@ export const client = {
 
   /**
    * Writes one setting and answers with all of them, so a stale read cannot
-   * survive a write. Keyed on `keyof Settings` so a caller cannot invent a key
-   * the backend would refuse, or pair a key with the wrong kind of value.
+   * survive a write. Keyed on `SettingKey` so a caller cannot invent a key the
+   * backend would refuse, name the readout that is not one, or pair a key with
+   * the wrong kind of value.
    *
-   * A value crosses as a string because a string is what the column holds. This
-   * is the only stringify of a setting in the app: callers hand over a typed
-   * value and never build the IPC payload themselves.
+   * A value crosses as a string because a string is what the column holds.
+   * `encodeSetting` is the only stringify of a setting in the app: callers hand
+   * over a typed value and never build the IPC payload themselves.
    */
-  setSetting<K extends keyof Settings>(key: K, value: Settings[K]) {
-    return invoke<Settings>("set_setting", { key, value: String(value) });
+  setSetting<K extends SettingKey>(key: K, value: Settings[K]) {
+    return invoke<Settings>("set_setting", {
+      key,
+      value: encodeSetting(value),
+    });
   },
 
   /**

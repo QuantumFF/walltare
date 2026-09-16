@@ -101,7 +101,7 @@ export function FirstRunBlock() {
  * What that read succeeding *does* is not this block's to decide, which is why
  * nothing here remembers having cleared: the notice is boot's account of a read
  * that failed, `readLibrary` retires it, and the page reads the notice to know
- * whether it is showing a boot landing or the ordinary five sections. A local
+ * whether it is showing a boot landing or the ordinary page. A local
  * "cleared" flag would have hidden the block while leaving the page still
  * dressed as a landing (ADR 0033).
  */

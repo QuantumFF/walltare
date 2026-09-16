@@ -9,6 +9,9 @@ const stored: Settings = {
   theme: "dark",
   library_root: "~/pics",
   reject_destination: "/bin/walls",
+  screen: { width: 2560, height: 1440 },
+  minimum_resolution: { width: 1920, height: 1080 },
+  detected_screen: { width: 3840, height: 2160 },
 };
 
 /** Serve `set_setting` and keep the arguments it was handed. */
@@ -159,9 +162,8 @@ describe("client seam", () => {
     // patch.
     mockCommand("set_setting", () => ({ ...stored, theme: "light" }));
     expect(await client.setSetting("theme", "light")).toEqual({
+      ...stored,
       theme: "light",
-      library_root: "~/pics",
-      reject_destination: "/bin/walls",
     });
   });
 

@@ -1018,8 +1018,8 @@ mod tests {
 
         assert!(table_exists(&conn, "settings").unwrap());
         assert_eq!(
-            crate::settings::get(&conn).unwrap(),
-            crate::settings::Settings::default()
+            crate::settings::get(&conn, crate::settings::Detected::default()).unwrap(),
+            crate::settings::Settings::defaults(crate::settings::Detected::default())
         );
     }
 
