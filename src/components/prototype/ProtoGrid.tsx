@@ -88,26 +88,28 @@ function useScreenRatio(): { ratio: number; label: string } {
   }, []);
 }
 
-/** Whether a key is down right now. Held rather than toggled (#254 Q24). */
-function useHeld(key: string): boolean {
-  const [held, setHeld] = useState(false);
+/**
+ * A key that turns something on and leaves it on.
+ *
+ * #254 Q24 settled this as hold-to-preview and the curator reversed it after
+ * seeing it, which is what the prototype was for. Holding is the better gesture
+ * for a glance; the crop is not a glance. You want the bars up while you work
+ * through a run of wallpapers, and a key you have to keep down is a key you
+ * cannot arrow with.
+ */
+function useToggle(key: string): boolean {
+  const [on, setOn] = useState(false);
   useEffect(() => {
-    const match = (event: KeyboardEvent) =>
-      event.key.toLowerCase() === key && !event.ctrlKey && !event.metaKey;
-    const down = (event: KeyboardEvent) => match(event) && setHeld(true);
-    const up = (event: KeyboardEvent) => match(event) && setHeld(false);
-    // A window that loses focus never sees the keyup, so the bars would stay up.
-    const blur = () => setHeld(false);
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
-    window.addEventListener("blur", blur);
-    return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
-      window.removeEventListener("blur", blur);
+    const onKey = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.toLowerCase() !== key) return;
+      event.preventDefault();
+      setOn((was) => !was);
     };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, [key]);
-  return held;
+  return on;
 }
 
 /**
@@ -641,7 +643,7 @@ function CropBars({
 /** One wallpaper at the size you would actually hang it, the queue underneath. */
 function Hero({ list, at, onAct, setOpen, setCursor }: LayoutProps) {
   const screen = useScreenRatio();
-  const cropping = useHeld("c");
+  const cropping = useToggle("c");
   const area = useRef<HTMLDivElement>(null);
   const { width, height } = useBox(area);
   const current = list[at];
@@ -680,7 +682,7 @@ function Hero({ list, at, onAct, setOpen, setCursor }: LayoutProps) {
             {current.filename} · {score(current)}
           </span>
           <span className="text-xs text-muted-foreground/70">
-            hold C to crop
+            C: crop preview
           </span>
           <Button size="sm" onClick={() => onAct(current.id)}>
             Keep

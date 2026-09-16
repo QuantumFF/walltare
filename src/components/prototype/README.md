@@ -46,13 +46,13 @@ so flipping between Review and Library shows the same idea doing its two jobs.
 
 ## The crop preview
 
-In the Review strip view, **hold C**. The hero is drawn at its own ratio and the
+In the Review strip view, press **C**. The hero is drawn at its own ratio and the
 parts your screen would cut off are dimmed, with the kept region outlined and a
-caption saying how much is lost. Release to go back.
+caption saying how much is lost. Press C again to turn it off.
 
-Held rather than toggled on purpose: most of the time the bars are noise, and
-holding a key to check makes comparing two wallpapers one gesture instead of
-three.
+A toggle rather than a hold. Hold-to-preview was the plan until it was on screen:
+the crop is not a glance, you want the bars up while you work through a run of
+wallpapers, and a key you have to keep down is a key you cannot arrow with.
 
 The ratio comes from `window.screen` here. In the real thing it comes from the
 "Your screen" setting, which is detected from the monitor, overridable, and the
