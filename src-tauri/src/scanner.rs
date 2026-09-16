@@ -10,6 +10,25 @@ pub fn is_supported(path: &Path) -> bool {
     })
 }
 
+/// A source file's own pixel dimensions, or `None` when the file is gone or is
+/// not an image this build can read.
+///
+/// A header read and not a decode. `image::image_dimensions` opens the file,
+/// guesses the format and reads as far as the size fields, which is a few
+/// hundred bytes rather than the hundreds of megabytes a 4K PNG expands to. That
+/// is what makes this affordable in the two places it is called from: once per
+/// newly scanned file, and once per wallpaper the pre-generation pass backfills
+/// (ADR 0044).
+///
+/// `None` rather than an error because neither caller has anything to do with
+/// one. A file that will not decode is already the pre-generation pass's to
+/// count and report (ADR 0034), and a scan that failed over a bad `.jpg` would
+/// lose the library behind it. The row keeps its NULL dimensions, which is the
+/// app's ignorance written down rather than a wrong answer.
+pub fn dimensions(path: &Path) -> Option<(u32, u32)> {
+    image::image_dimensions(path).ok()
+}
+
 fn walk(dir: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -77,6 +96,42 @@ mod tests {
         assert!(!is_supported(Path::new("a.jpgx")));
         assert!(!is_supported(Path::new("jpg")));
         assert!(!is_supported(Path::new("")));
+    }
+
+    #[test]
+    fn dimensions_read_the_source_and_not_the_shape_of_a_thumbnail() {
+        // The whole of what puts these numbers on the Wallpaper row rather than
+        // taking them off the `thumbnails` table: a 5120x2160 source whose
+        // medium is 1920 wide has the same ratio at both sizes and only one of
+        // them is the resolution (ADR 0044).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ultrawide.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(5120, 2160))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+
+        assert_eq!(dimensions(&path), Some((5120, 2160)));
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_image_has_no_dimensions_rather_than_wrong_ones() {
+        // The hostile library of ADR 0034, from the other side. Neither caller
+        // can do anything with an error here — a scan that failed over a bad
+        // `.jpg` would lose the library behind it — so the row keeps its NULL
+        // columns, which is the app's ignorance written down.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("empty.jpg"), b"").unwrap();
+        // A PNG signature and a header chunk and then nothing: enough for the
+        // decoder to commit to a format and then run out of file.
+        std::fs::write(
+            tmp.path().join("half.png"),
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR",
+        )
+        .unwrap();
+
+        assert_eq!(dimensions(&tmp.path().join("empty.jpg")), None);
+        assert_eq!(dimensions(&tmp.path().join("half.png")), None);
+        assert_eq!(dimensions(&tmp.path().join("gone.png")), None);
     }
 
     #[test]

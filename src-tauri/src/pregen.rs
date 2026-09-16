@@ -293,13 +293,18 @@ struct Tally {
     /// reported: the curator who rejected one knows, and a count of
     /// their own rejects tells them nothing about the cache.
     skipped: u64,
+    /// Wallpapers that were already warm and only owed their pixel dimensions.
+    /// Not reported either, and for the same kind of reason: `pregen-complete`
+    /// speaks about thumbnails, and nobody acts on how many rows the backfill
+    /// filled in (ADR 0044).
+    measured: u64,
 }
 
 impl Tally {
     /// Wallpapers the pass is finished with, whichever way each of them went.
     /// What `pregen-progress` counts, so the bar reaches its total.
     fn done(&self) -> u64 {
-        self.generated + self.failed + self.skipped
+        self.generated + self.failed + self.skipped + self.measured
     }
 }
 
@@ -375,6 +380,7 @@ fn step(
 ) {
     match generate(pending) {
         Ok(Step::Generated) => tally.generated += 1,
+        Ok(Step::Measured) => tally.measured += 1,
         Ok(Step::Skipped) => tally.skipped += 1,
         Err(e) => {
             eprintln!("pre-generation skipped {}: {e}", pending.source.display());
@@ -427,10 +433,24 @@ fn remember(db: &Db, wallpaper_id: i64, error: &error::AppError) {
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
     Generated,
+    /// Nothing was generated and the row's pixel dimensions were written: a
+    /// wallpaper whose cache was already warm and that was on the list for its
+    /// dimensions alone (ADR 0044).
+    ///
+    /// Apart from `Generated` because the curator's ending counts thumbnails.
+    /// A backfill over a warm library would otherwise report every wallpaper in
+    /// it as a thumbnail made, which is a number nothing on disk agrees with.
+    Measured,
     Skipped,
 }
 
-/// Generates whichever sizes one wallpaper is short of.
+/// Generates whichever sizes one wallpaper is short of, and fills in its pixel
+/// dimensions when the row is still missing them.
+///
+/// Three branches rather than two, because a warm wallpaper can be on the list
+/// for its dimensions alone (ADR 0044). The measurement is a header read outside
+/// the connection either way, so it rides along with a decode rather than
+/// depending on one.
 ///
 /// Runs on a worker of [`crate::serving`]'s pool in production, which is the
 /// only place in this module that decodes anything.
@@ -448,7 +468,19 @@ fn generate_one(
 ) -> Result<Step, error::AppError> {
     let id = pending.wallpaper_id;
     match pending.missing {
-        thumbnails::Missing::Both => {
+        // Nothing to generate: a warm wallpaper listed for its pixel dimensions
+        // alone, which is the whole of a library scanned before the columns
+        // existed (ADR 0044). The Status and the path are re-read the same way
+        // every other branch re-reads them, so a wallpaper rejected since the
+        // list was built is left alone here too.
+        None => {
+            let Some(source) = db.read(|conn| thumbnails::still_due(conn, pending)) else {
+                return Ok(Step::Skipped);
+            };
+            measure(db, id, &source);
+            Ok(Step::Measured)
+        }
+        Some(thumbnails::Missing::Both) => {
             let Some(source) = db.read(|conn| thumbnails::still_due(conn, pending)) else {
                 return Ok(Step::Skipped);
             };
@@ -457,30 +489,61 @@ fn generate_one(
                 for r in recorded {
                     thumbnails::record_one(conn, id, r.size, r.width, r.height, r.source_mtime)?;
                 }
-                Ok(Step::Generated)
-            })
+                Ok::<(), error::AppError>(())
+            })?;
+            if pending.dimensions {
+                measure(db, id, &source);
+            }
+            Ok(Step::Generated)
         }
-        thumbnails::Missing::Only(size) => {
+        Some(thumbnails::Missing::Only(size)) => {
             // One read for both questions, which is the point: the Status the
             // pass acts on and the path it acts on come from one view of the
             // row. The path `still_due` answers with is the one `plan` reads for
-            // itself a line later.
+            // itself a line later, and the one a backfill measures below.
             //
             // A skip comes back as `None` rather than returning from here,
             // because the closure cannot return from its caller. That is the
             // interface doing its job: what leaves it is owned data.
-            let plan = db.read(|conn| match thumbnails::still_due(conn, pending) {
-                Some(_) => thumbnails::plan(conn, id, size).map(Some),
+            let planned = db.read(|conn| match thumbnails::still_due(conn, pending) {
+                Some(source) => thumbnails::plan(conn, id, size).map(|plan| Some((plan, source))),
                 None => Ok(None),
             })?;
-            let Some(plan) = plan else {
+            let Some((plan, source)) = planned else {
                 return Ok(Step::Skipped);
             };
             let resolved = thumbnails::fulfill(&plan, cache_dir)?;
             db.write(|conn| thumbnails::record(conn, &plan, &resolved))?;
+            if pending.dimensions {
+                measure(db, id, &source);
+            }
             Ok(Step::Generated)
         }
     }
+}
+
+/// Reads one source's pixel dimensions and writes them to its row (ADR 0044).
+///
+/// The read is a file open outside the connection and the write is one
+/// statement inside it, which is ADR 0039's split — the same shape [`remember`]
+/// keeps for its `stat`.
+///
+/// A source that will not give up its dimensions leaves the row NULL and stops
+/// nothing. It is the same file the pass has just decoded in two of the three
+/// branches, so the case that reaches here is a file that went missing between
+/// one read and the next; the wallpaper rejoins the next pass's list for the
+/// same columns, and a badge it has no dimensions for is a badge nothing draws.
+/// A write that fails is logged for the reason [`remember`]'s is: the pass has
+/// already done the work the curator is waiting on.
+fn measure(db: &Db, wallpaper_id: i64, source: &Path) {
+    let Some((width, height)) = crate::scanner::dimensions(source) else {
+        return;
+    };
+    db.write(|conn| {
+        if let Err(e) = crate::db::record_dimensions(conn, wallpaper_id, width, height) {
+            eprintln!("could not record pixel dimensions: {e}");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -519,9 +582,31 @@ mod tests {
             }
         }
 
-        /// Writes a source image and inserts its row, answering the [`Pending`]
-        /// the work list would hand the pass for it.
+        /// Writes a source image and inserts its row the way a scan leaves it,
+        /// pixel dimensions recorded and all, answering the [`Pending`] the work
+        /// list would hand the pass for it.
         fn seed(
+            &self,
+            name: &str,
+            width: u32,
+            height: u32,
+            colour: [u8; 4],
+            missing: Missing,
+        ) -> Pending {
+            let pending = self.seed_unmeasured(name, width, height, colour, missing);
+            self.db.write(|conn| {
+                crate::db::record_dimensions(conn, pending.wallpaper_id, width, height).unwrap()
+            });
+            Pending {
+                dimensions: false,
+                ..pending
+            }
+        }
+
+        /// The same, with the dimensions left unknown: a row from a database
+        /// written before the columns existed, which is the cohort the pass
+        /// backfills (ADR 0044).
+        fn seed_unmeasured(
             &self,
             name: &str,
             width: u32,
@@ -545,7 +630,8 @@ mod tests {
                 wallpaper_id,
                 source: path,
                 status: Status::Active,
-                missing,
+                missing: Some(missing),
+                dimensions: true,
             }
         }
 
@@ -567,7 +653,10 @@ mod tests {
                 wallpaper_id,
                 source: path,
                 status: Status::Active,
-                missing: Missing::Both,
+                missing: Some(Missing::Both),
+                // Nothing could have measured it: a scan reads the header of
+                // every file it adds, and this one has no header to read.
+                dimensions: true,
             }
         }
 
@@ -625,6 +714,19 @@ mod tests {
 
         fn pass(&self, work: &[Pending], report: &impl Report, cancel: &AtomicBool) {
             super::pass(&self.db, work, cancel, report, self.generate());
+        }
+
+        /// The wallpaper row's own pixel dimensions, which is what the backfill
+        /// writes and what [`Self::row`]'s thumbnail row cannot answer.
+        fn dimensions(&self, wallpaper_id: i64) -> (Option<u32>, Option<u32>) {
+            self.db.read(|conn| {
+                conn.query_row(
+                    "SELECT width, height FROM wallpapers WHERE id = ?1",
+                    [wallpaper_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap()
+            })
         }
 
         fn row(&self, wallpaper_id: i64, size: &str) -> Option<(u32, u32)> {
@@ -698,8 +800,148 @@ mod tests {
             Tally {
                 generated: 1,
                 failed: 0,
-                skipped: 0
+                skipped: 0,
+                measured: 0,
             }
+        );
+    }
+
+    #[test]
+    fn the_step_backfills_a_warm_wallpapers_dimensions_without_generating_anything() {
+        // ADR 0044's second half: the library a curator scanned before the
+        // columns existed. Its cache is complete, so the only thing the pass
+        // owes it is a header read, and counting that as a thumbnail made would
+        // be a number nothing on disk agrees with.
+        let library = Library::new();
+        let pending = Pending {
+            missing: None,
+            ..library.seed_unmeasured("warm.png", 3440, 1440, [1, 2, 3, 255], Missing::Both)
+        };
+        let id = pending.wallpaper_id;
+        assert_eq!(library.dimensions(id), (None, None));
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert_eq!(library.dimensions(id), (Some(3440), Some(1440)));
+        // Nothing was generated, and the cache it was already holding is
+        // untouched.
+        assert!(!library.cache_file(id, "medium").exists());
+        assert_eq!(library.row(id, "medium"), None);
+        assert_eq!(
+            tally,
+            Tally {
+                generated: 0,
+                failed: 0,
+                skipped: 0,
+                measured: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn a_cold_wallpaper_comes_out_of_the_step_with_its_thumbnails_and_its_dimensions() {
+        // The source's own resolution, not the medium's. The thumbnail rows say
+        // 1920x804 for this file, which is the shape it is and not the size it
+        // is — the distinction ADR 0044 exists for.
+        let library = Library::new();
+        let pending =
+            library.seed_unmeasured("cold.png", 3440, 1440, [4, 5, 6, 255], Missing::Both);
+        let id = pending.wallpaper_id;
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert_eq!(library.dimensions(id), (Some(3440), Some(1440)));
+        assert_eq!(library.row(id, "medium"), Some((1920, 804)));
+        assert_eq!(tally.generated, 1);
+        assert_eq!(tally.measured, 0);
+    }
+
+    #[test]
+    fn a_source_that_will_not_decode_leaves_its_dimensions_null_and_is_only_counted() {
+        // A zero-byte `.jpg` has no header to read, so there is nothing to
+        // record and nothing to guess. The pass counts the failure it already
+        // counted (ADR 0034) and the row keeps the NULL columns that say the app
+        // does not know how big the file is.
+        let library = Library::new();
+        let pending = library.seed_bytes("empty.jpg", b"");
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert_eq!(library.dimensions(pending.wallpaper_id), (None, None));
+        assert_eq!(tally.failed, 1);
+        assert_eq!(tally.measured, 0);
+    }
+
+    #[test]
+    fn a_wallpaper_rejected_since_the_list_was_built_is_not_measured_either() {
+        // The snapshot goes stale the same way for a backfill as for a
+        // thumbnail: a reject rewrites the Status and the path while the pass is
+        // running, and the re-read is what the backfill branch shares with the
+        // other two.
+        let library = Library::new();
+        let pending = Pending {
+            missing: None,
+            ..library.seed_unmeasured("rejected.png", 800, 400, [7, 7, 7, 255], Missing::Both)
+        };
+        library.reject(pending.wallpaper_id);
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert_eq!(library.dimensions(pending.wallpaper_id), (None, None));
+        assert_eq!(
+            tally,
+            Tally {
+                generated: 0,
+                failed: 0,
+                skipped: 1,
+                measured: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn a_backfill_over_a_warm_library_reports_no_thumbnails_and_no_failures() {
+        // What the curator sees on the launch after this ships: a progress bar
+        // over their whole library, and then nothing. `pregen-complete` speaks
+        // about thumbnails, and a pass that made none says so rather than
+        // claiming one per wallpaper it measured (ADR 0044, ADR 0021).
+        let library = Library::new();
+        let work: Vec<Pending> = (1..=3)
+            .map(|n| Pending {
+                missing: None,
+                ..library.seed_unmeasured(
+                    &format!("{n}.png"),
+                    1600,
+                    900,
+                    [n as u8, 1, 1, 255],
+                    Missing::Both,
+                )
+            })
+            .collect();
+        let recorder = Recorder::default();
+
+        library.pass(&work, &recorder, &AtomicBool::new(false));
+
+        for pending in &work {
+            assert_eq!(
+                library.dimensions(pending.wallpaper_id),
+                (Some(1600), Some(900))
+            );
+        }
+        // The bar still reaches its total, so a backfill is not a pass that
+        // stalls at zero.
+        assert_eq!(recorder.progress.borrow().last().unwrap().done, 3);
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![Complete {
+                generated: 0,
+                failed: 0,
+                cancelled: false,
+            }]
         );
     }
 
@@ -735,7 +977,7 @@ mod tests {
             .set_modified(before)
             .unwrap();
 
-        pending.missing = Missing::Only(Size::Small);
+        pending.missing = Some(Missing::Only(Size::Small));
         library.step(&pending, &mut tally);
 
         let id = pending.wallpaper_id;
@@ -771,7 +1013,8 @@ mod tests {
             Tally {
                 generated: 0,
                 failed: 0,
-                skipped: 1
+                skipped: 1,
+                measured: 0,
             }
         );
     }
@@ -802,7 +1045,8 @@ mod tests {
             Tally {
                 generated: 1,
                 failed: 0,
-                skipped: 0
+                skipped: 0,
+                measured: 0,
             }
         );
     }
@@ -830,7 +1074,8 @@ mod tests {
             Tally {
                 generated: 1,
                 failed: 0,
-                skipped: 0
+                skipped: 0,
+                measured: 0,
             }
         );
     }

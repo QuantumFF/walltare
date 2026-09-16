@@ -580,7 +580,10 @@ pub fn current_source_path(conn: &Connection, wallpaper_id: i64) -> Option<PathB
 /// Two variants rather than a set of sizes, because the pass branches on
 /// exactly this: `Both` is the single decode [`generate_both`] exists for, and
 /// one missing size is the donor case [`plan`] and [`fulfill`] already handle.
-/// "Neither" has no variant because such a wallpaper never joins the list.
+/// "Neither" is [`Pending::missing`]'s `None` rather than a third variant: a
+/// wallpaper with both sizes fresh owes the pass no thumbnail at all, and a
+/// variant of this enum meaning "no size" would have to be matched at every
+/// site that asks which size to make.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Missing {
     Both,
@@ -602,7 +605,17 @@ pub struct Pending {
     /// Rejected when it was listed — the tail group ADR 0016 put at the end of
     /// the queue — from one rejected since, which is a snapshot gone stale.
     pub status: Status,
-    pub missing: Missing,
+    /// Which pre-generated sizes this wallpaper is short of, or `None` when both
+    /// are fresh and it is on the list for its dimensions alone.
+    pub missing: Option<Missing>,
+    /// Whether the row's pixel dimensions are still unknown, and the pass owes
+    /// it a header read.
+    ///
+    /// The backfill of ADR 0044. A wallpaper scanned before the columns existed
+    /// has NULL in both of them and may be perfectly warm, so the thumbnails are
+    /// not what puts it on the list. `false` for everything a scan has already
+    /// measured, which is every wallpaper added since.
+    pub dimensions: bool,
 }
 
 /// One wallpaper as the query saw it, before anything is asked of the
@@ -623,6 +636,8 @@ pub struct Candidate {
     pub medium_mtime: Option<i64>,
     /// The mtime an undecodable source was noted at, if one was (ADR 0034).
     pub failed_mtime: Option<i64>,
+    /// Whether the row already carries the source's pixel dimensions (ADR 0044).
+    pub dimensions_known: bool,
 }
 
 /// Every wallpaper the pass might owe something to, in the order it would reach
@@ -647,7 +662,8 @@ pub struct Candidate {
 /// `wallpaper://` request behind a walk of somebody's external drive (ADR 0039).
 pub fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime
+        "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime,
+                w.width IS NOT NULL AND w.height IS NOT NULL
          FROM wallpapers w
          LEFT JOIN thumbnails s ON s.wallpaper_id = w.id AND s.size = 'small'
          LEFT JOIN thumbnails m ON m.wallpaper_id = w.id AND m.size = 'medium'
@@ -662,6 +678,7 @@ pub fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
             small_mtime: row.get(3)?,
             medium_mtime: row.get(4)?,
             failed_mtime: row.get(5)?,
+            dimensions_known: row.get(6)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -685,6 +702,11 @@ pub fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
 /// already read and failed to decode is left out while the note still matches
 /// the file: it is not work, and listing it would spend a decode per launch to
 /// re-learn the same answer (ADR 0034).
+///
+/// Thumbnails are not the only thing that puts a wallpaper on the list. One
+/// whose pixel dimensions are unknown is listed for those alone, however warm
+/// its cache is, and comes off the list for good once they are written
+/// (ADR 0044).
 pub fn work_list(candidates: &[Candidate], cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
     let cached = cache_filenames(cache_dir)?;
 
@@ -713,16 +735,25 @@ pub fn work_list(candidates: &[Candidate], cache_dir: &Path) -> Result<Vec<Pendi
             fresh(candidate.small_mtime, Size::Small),
             fresh(candidate.medium_mtime, Size::Medium),
         ) {
-            (true, true) => continue,
-            (false, false) => Missing::Both,
-            (false, true) => Missing::Only(Size::Small),
-            (true, false) => Missing::Only(Size::Medium),
+            (true, true) => None,
+            (false, false) => Some(Missing::Both),
+            (false, true) => Some(Missing::Only(Size::Small)),
+            (true, false) => Some(Missing::Only(Size::Medium)),
         };
+        // A fully warm wallpaper still joins the list when its dimensions are
+        // unknown, which is the whole cohort of a library scanned before the
+        // columns existed: their thumbnails are fresh, so the freshness rule
+        // above would drop every one of them and the backfill would never
+        // happen (ADR 0044).
+        if missing.is_none() && candidate.dimensions_known {
+            continue;
+        }
         pending.push(Pending {
             wallpaper_id: candidate.wallpaper_id,
             source: candidate.source.clone(),
             status: candidate.status,
             missing,
+            dimensions: !candidate.dimensions_known,
         });
     }
     Ok(pending)
@@ -889,7 +920,25 @@ mod tests {
         DynamicImage::ImageRgba8(RgbaImage::from_pixel(width, height, Rgba(color)))
     }
 
+    /// A wallpaper as a scan leaves it: the file written, the row inserted, and
+    /// its pixel dimensions recorded, which is what a scan does now (ADR 0044).
+    /// So "warm" in these tests means what it means in a library the current
+    /// build scanned, and the one cohort that is not — a row from before the
+    /// columns existed — is seeded by [`seed_unmeasured_wallpaper`].
     fn seed_wallpaper(conn: &Connection, dir: &Path, name: &str, img: &DynamicImage) -> i64 {
+        let id = seed_unmeasured_wallpaper(conn, dir, name, img);
+        crate::db::record_dimensions(conn, id, img.width(), img.height()).unwrap();
+        id
+    }
+
+    /// A wallpaper with NULL dimensions: what a database written before the
+    /// columns existed holds, and the cohort the pre-generation pass backfills.
+    fn seed_unmeasured_wallpaper(
+        conn: &Connection,
+        dir: &Path,
+        name: &str,
+        img: &DynamicImage,
+    ) -> i64 {
         let path = dir.join(name);
         img.save_with_format(&path, image::ImageFormat::Png)
             .unwrap();
@@ -1367,7 +1416,7 @@ mod tests {
         forget_thumbnails(conn)
     }
 
-    fn listed(conn: &Connection, cache_dir: &Path) -> Vec<(i64, Missing)> {
+    fn listed(conn: &Connection, cache_dir: &Path) -> Vec<(i64, Option<Missing>)> {
         work_list(conn, cache_dir)
             .unwrap()
             .into_iter()
@@ -1484,7 +1533,8 @@ mod tests {
                 wallpaper_id: id,
                 source: tmp.path().join("cold.png"),
                 status: Status::Active,
-                missing: Missing::Both,
+                missing: Some(Missing::Both),
+                dimensions: false,
             }]
         );
     }
@@ -1497,7 +1547,10 @@ mod tests {
         let cold = seed_wallpaper(&conn, tmp.path(), "c.png", &solid(20, 10, [2, 2, 2, 255]));
         warm(&conn, cache.path(), warmed, &tmp.path().join("w.png"));
 
-        assert_eq!(listed(&conn, cache.path()), vec![(cold, Missing::Both)]);
+        assert_eq!(
+            listed(&conn, cache.path()),
+            vec![(cold, Some(Missing::Both))]
+        );
     }
 
     #[test]
@@ -1517,7 +1570,59 @@ mod tests {
 
         assert_eq!(
             listed(&conn, cache.path()),
-            vec![(id, Missing::Only(Size::Small))]
+            vec![(id, Some(Missing::Only(Size::Small)))]
+        );
+    }
+
+    #[test]
+    fn a_fully_warm_wallpaper_with_no_dimensions_joins_the_list_for_those_alone() {
+        // The cohort of a library scanned before the columns existed, and the
+        // reason the backfill cannot ride on the thumbnails: every one of these
+        // wallpapers is warm, so the freshness rule on its own drops all of them
+        // and the dimensions never arrive (ADR 0044).
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let id =
+            seed_unmeasured_wallpaper(&conn, tmp.path(), "old.png", &solid(20, 10, [5, 5, 5, 255]));
+        warm(&conn, cache.path(), id, &tmp.path().join("old.png"));
+
+        assert_eq!(listed(&conn, cache.path()), vec![(id, None)]);
+        assert!(
+            work_list(&conn, cache.path()).unwrap()[0].dimensions,
+            "the entry has to say what it is owed"
+        );
+
+        // And it comes off the list for good once they are written, so the
+        // backfill is one pass and not one per launch.
+        crate::db::record_dimensions(&conn, id, 20, 10).unwrap();
+        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_cold_wallpaper_with_no_dimensions_is_owed_both_and_says_so() {
+        // The two reasons to be on the list are independent. A wallpaper can owe
+        // thumbnails, dimensions, or both, and the pass reads each answer off
+        // the entry rather than inferring one from the other.
+        let (conn, tmp) = setup();
+        let cache = tempfile::tempdir().unwrap();
+        let id = seed_unmeasured_wallpaper(
+            &conn,
+            tmp.path(),
+            "cold.png",
+            &solid(20, 10, [6, 6, 6, 255]),
+        );
+
+        let list = work_list(&conn, cache.path()).unwrap();
+
+        assert_eq!(
+            list,
+            vec![Pending {
+                wallpaper_id: id,
+                source: tmp.path().join("cold.png"),
+                status: Status::Active,
+                missing: Some(Missing::Both),
+                dimensions: true,
+            }]
         );
     }
 
@@ -1531,7 +1636,7 @@ mod tests {
 
         touch_later(&tmp.path().join("e.png"));
 
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Missing::Both)]);
+        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
@@ -1547,7 +1652,7 @@ mod tests {
 
         assert_eq!(
             listed(&conn, cache.path()),
-            vec![(id, Missing::Only(Size::Medium))]
+            vec![(id, Some(Missing::Only(Size::Medium)))]
         );
     }
 
@@ -1567,7 +1672,7 @@ mod tests {
         warm(&conn, cache.path(), id, &tmp.path().join("gone.png"));
         std::fs::remove_file(tmp.path().join("gone.png")).unwrap();
 
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Missing::Both)]);
+        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
@@ -1648,19 +1753,22 @@ mod tests {
                     wallpaper_id: cold,
                     source: tmp.path().join("cold.png"),
                     status: Status::Active,
-                    missing: Missing::Both,
+                    missing: Some(Missing::Both),
+                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: half,
                     source: tmp.path().join("half.png"),
                     status: Status::Kept,
-                    missing: Missing::Only(Size::Small),
+                    missing: Some(Missing::Only(Size::Small)),
+                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: rejected,
                     source: tmp.path().join("rejected.png"),
                     status: Status::Rejected,
-                    missing: Missing::Both,
+                    missing: Some(Missing::Both),
+                    dimensions: false,
                 },
             ]
         );
@@ -1709,6 +1817,7 @@ mod tests {
                 small_mtime: Some(warm_mtime),
                 medium_mtime: Some(warm_mtime),
                 failed_mtime: None,
+                dimensions_known: true,
             },
             Candidate {
                 wallpaper_id: 2,
@@ -1717,6 +1826,7 @@ mod tests {
                 small_mtime: None,
                 medium_mtime: None,
                 failed_mtime: None,
+                dimensions_known: true,
             },
             Candidate {
                 wallpaper_id: 3,
@@ -1725,6 +1835,7 @@ mod tests {
                 small_mtime: None,
                 medium_mtime: Some(donor_mtime),
                 failed_mtime: None,
+                dimensions_known: true,
             },
             Candidate {
                 wallpaper_id: 4,
@@ -1733,6 +1844,7 @@ mod tests {
                 small_mtime: None,
                 medium_mtime: None,
                 failed_mtime: Some(broken_mtime),
+                dimensions_known: true,
             },
             // Recorded as warm against an mtime nothing can be compared to any
             // more, so it is listed and the pass gets to count it (ADR 0032).
@@ -1743,6 +1855,7 @@ mod tests {
                 small_mtime: Some(1),
                 medium_mtime: Some(1),
                 failed_mtime: None,
+                dimensions_known: true,
             },
         ];
 
@@ -1755,19 +1868,22 @@ mod tests {
                     wallpaper_id: 2,
                     source: cold_path,
                     status: Status::Active,
-                    missing: Missing::Both,
+                    missing: Some(Missing::Both),
+                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: 3,
                     source: donor_path,
                     status: Status::Kept,
-                    missing: Missing::Only(Size::Small),
+                    missing: Some(Missing::Only(Size::Small)),
+                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: 5,
                     source: gone_path,
                     status: Status::Rejected,
-                    missing: Missing::Both,
+                    missing: Some(Missing::Both),
+                    dimensions: false,
                 },
             ]
         );
@@ -1795,7 +1911,7 @@ mod tests {
         );
         assert_eq!(
             listed(&conn, cache.path()),
-            vec![(broken, Missing::Both), (fine, Missing::Both)]
+            vec![(broken, Some(Missing::Both)), (fine, Some(Missing::Both))]
         );
 
         let broken_path = tmp.path().join("broken.png");
@@ -1808,13 +1924,16 @@ mod tests {
         .unwrap();
 
         // The note only takes the wallpaper it is about out of the list.
-        assert_eq!(listed(&conn, cache.path()), vec![(fine, Missing::Both)]);
+        assert_eq!(
+            listed(&conn, cache.path()),
+            vec![(fine, Some(Missing::Both))]
+        );
 
         touch_later(&broken_path);
 
         assert_eq!(
             listed(&conn, cache.path()),
-            vec![(broken, Missing::Both), (fine, Missing::Both)]
+            vec![(broken, Some(Missing::Both)), (fine, Some(Missing::Both))]
         );
     }
 
@@ -1838,7 +1957,7 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
 
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Missing::Both)]);
+        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
@@ -1865,7 +1984,7 @@ mod tests {
 
         clear(&conn, cache.path()).unwrap();
 
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Missing::Both)]);
+        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
@@ -1922,7 +2041,7 @@ mod tests {
 
         let cache = tmp.path().join("no-such-cache");
 
-        assert_eq!(listed(&conn, &cache), vec![(id, Missing::Both)]);
+        assert_eq!(listed(&conn, &cache), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]

@@ -61,6 +61,10 @@ export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper 
     rating_sigma: 8.333,
     comparisons_count: 0,
     origin_path: null,
+    // A 16:9 wallpaper, which is what roughly half the test library is. Pass
+    // `width: null` for a row the backfill has not reached yet (ADR 0044).
+    width: 1920,
+    height: 1080,
     ...over,
   };
 }

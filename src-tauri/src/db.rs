@@ -10,7 +10,7 @@ use crate::error::AppError;
 /// Adding a whole table is not such a change: `init_schema` runs the DDL before
 /// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
 /// why `settings` arrived without a bump, and `thumbnail_failures` after it.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const DDL: &str = "
 CREATE TABLE IF NOT EXISTS wallpapers (
@@ -26,7 +26,13 @@ CREATE TABLE IF NOT EXISTS wallpapers (
     -- Where the file sat before its current soft reject, so a Restore can put
     -- it back. Last in the list because `ALTER TABLE ADD COLUMN` appends, and a
     -- migrated database should end up the same shape as a fresh one.
-    origin_path       TEXT
+    origin_path       TEXT,
+    -- The source file's own pixel dimensions, NULL until something has read
+    -- them off the file. Not the thumbnail's: `thumbnails` records what the
+    -- cache holds, which gives the aspect ratio and not the resolution
+    -- (ADR 0044). Appended after `origin_path` for the same reason it is last.
+    width             INTEGER,
+    height            INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallpapers_status_comparisons ON wallpapers (status, comparisons_count);
@@ -215,17 +221,45 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         version = 3;
     }
 
+    if version < 4 {
+        // v4 added `wallpapers.width` and `wallpapers.height`. Two more columns
+        // the DDL cannot reach, and nothing to backfill here: reading them costs
+        // a file open per wallpaper, which is the pre-generation pass's work and
+        // not a migration's (ADR 0044). NULL is what says "not read yet", and
+        // every reader treats it as the unknown it is.
+        conn.execute_batch(
+            "ALTER TABLE wallpapers ADD COLUMN width INTEGER;
+             ALTER TABLE wallpapers ADD COLUMN height INTEGER;",
+        )?;
+        version = 4;
+    }
+
     set_schema_version(conn, version)
+}
+
+/// A wallpaper row a scan has just created, and where its file sits.
+///
+/// What [`insert_new_wallpapers`] answers with instead of a bare count, so the
+/// scan can read each new file's pixel dimensions and write them back without
+/// asking the database which of the paths it just handed over were new. `INSERT
+/// OR IGNORE` makes that question real: a rescan hands over the whole library
+/// and only some of it is inserted, and reading the dimensions of every file on
+/// every rescan is a file open per wallpaper for rows that already have them
+/// (ADR 0044).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Added {
+    pub id: i64,
+    pub path: PathBuf,
 }
 
 pub fn insert_new_wallpapers(
     conn: &Connection,
     paths: &[PathBuf],
-) -> Result<usize, rusqlite::Error> {
+) -> Result<Vec<Added>, rusqlite::Error> {
     // One implicit transaction per row means one journal fsync per row; a whole
     // batch under a single transaction is orders of magnitude faster on disk.
     let tx = conn.unchecked_transaction()?;
-    let mut added = 0;
+    let mut added = Vec::new();
     {
         let mut stmt =
             tx.prepare_cached("INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)")?;
@@ -235,16 +269,59 @@ pub fn insert_new_wallpapers(
                 // caller that doesn't can't poison the connection mutex.
                 continue;
             };
-            added += stmt.execute(rusqlite::params![
+            let inserted = stmt.execute(rusqlite::params![
                 path.file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or_default(),
                 path_str,
             ])?;
+            if inserted > 0 {
+                added.push(Added {
+                    id: tx.last_insert_rowid(),
+                    path: path.clone(),
+                });
+            }
         }
     }
     tx.commit()?;
     Ok(added)
+}
+
+/// Writes one wallpaper's pixel dimensions, in one statement per row.
+///
+/// The read that produces them is a file open, so it never happens under the
+/// connection (ADR 0039): both callers measure with the lock released and come
+/// back here with numbers. A row that could not be read is not passed here at
+/// all — NULL is what says the dimensions are unknown, and overwriting a known
+/// pair with NULL would turn a file that went missing for a moment into a
+/// wallpaper the app has forgotten the size of (ADR 0044).
+pub fn record_dimensions(
+    conn: &Connection,
+    id: i64,
+    width: u32,
+    height: u32,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE wallpapers SET width = ?2, height = ?3 WHERE id = ?1",
+        rusqlite::params![id, width, height],
+    )?;
+    Ok(())
+}
+
+/// [`record_dimensions`] for a whole batch, under one transaction.
+///
+/// What a scan's chunk comes back with. One implicit transaction per row is one
+/// journal fsync per row, which is the same reason [`insert_new_wallpapers`]
+/// batches its own inserts.
+pub fn record_dimensions_batch(
+    conn: &Connection,
+    measured: &[(i64, u32, u32)],
+) -> Result<(), rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    for (id, width, height) in measured {
+        record_dimensions(&tx, *id, *width, *height)?;
+    }
+    tx.commit()
 }
 
 /// A wallpaper's Status, the three of `CONTEXT.md`: Active, Kept, Rejected.
@@ -380,13 +457,26 @@ pub struct Wallpaper {
     /// rejected before the column existed — which is the cohort Rejected stays
     /// terminal for.
     pub origin_path: Option<String>,
+    /// The source file's own pixel width, or `None` while nothing has read it.
+    ///
+    /// Not the thumbnail's width. A wallpaper's cached sizes say what shape it
+    /// is; only these say whether the file is large enough for the screen it is
+    /// meant for (ADR 0044).
+    ///
+    /// `None` is the ordinary state of a library that has not finished its
+    /// backfill, so every reader has to have an answer for it rather than
+    /// waiting: no badge, out of the undersized filter, and 16:9 for layout.
+    pub width: Option<i64>,
+    /// The source file's own pixel height. `None` exactly when [`Self::width`]
+    /// is: the two are written in one statement and read off one file.
+    pub height: Option<i64>,
 }
 
 /// The columns every query returning a [`Wallpaper`] selects, in the order
 /// [`wallpaper_from_row`] reads them. One copy, because a query that selects its
 /// own list and a mapper that indexes by position drift apart silently.
 const WALLPAPER_COLUMNS: &str =
-    "id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path";
+    "id, filename, path, status, rating_mu, rating_sigma, comparisons_count, origin_path, width, height";
 
 fn wallpaper_from_row(row: &rusqlite::Row) -> Result<Wallpaper, rusqlite::Error> {
     Ok(Wallpaper {
@@ -398,6 +488,8 @@ fn wallpaper_from_row(row: &rusqlite::Row) -> Result<Wallpaper, rusqlite::Error>
         rating_sigma: row.get(5)?,
         comparisons_count: row.get(6)?,
         origin_path: row.get(7)?,
+        width: row.get(8)?,
+        height: row.get(9)?,
     })
 }
 
@@ -679,6 +771,50 @@ mod tests {
         PRAGMA user_version = 2;
     ";
 
+    /// The v3 schema, as the release before the pixel dimensions shipped it.
+    /// `thumbnail_failures` is in it for the reason `settings` is in `DDL_V2`:
+    /// it arrived without a version bump, so a v3 file that has been opened once
+    /// has it.
+    const DDL_V3: &str = "
+        CREATE TABLE wallpapers (
+            id                INTEGER PRIMARY KEY,
+            filename          TEXT    NOT NULL,
+            path              TEXT    NOT NULL UNIQUE,
+            status            TEXT    NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active', 'kept', 'rejected')),
+            rating_mu         REAL    NOT NULL DEFAULT 25.0,
+            rating_sigma      REAL    NOT NULL DEFAULT 8.333,
+            comparisons_count INTEGER NOT NULL DEFAULT 0,
+            created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+            origin_path       TEXT
+        );
+        CREATE TABLE comparisons (
+            id        INTEGER PRIMARY KEY,
+            winner_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            loser_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            voted_at  INTEGER NOT NULL
+        );
+        CREATE TABLE thumbnails (
+            wallpaper_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE CASCADE,
+            size         TEXT    NOT NULL CHECK (size IN ('small', 'medium', 'full')),
+            width        INTEGER NOT NULL,
+            height       INTEGER NOT NULL,
+            source_mtime INTEGER NOT NULL,
+            PRIMARY KEY (wallpaper_id, size)
+        );
+        CREATE TABLE thumbnail_failures (
+            wallpaper_id INTEGER PRIMARY KEY REFERENCES wallpapers(id) ON DELETE CASCADE,
+            source_mtime INTEGER NOT NULL,
+            message      TEXT    NOT NULL,
+            failed_at    INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE TABLE settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        PRAGMA user_version = 3;
+    ";
+
     fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
         conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
@@ -704,8 +840,10 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 3);
+        assert_eq!(SCHEMA_VERSION, 4);
         assert!(column_exists(&conn, "wallpapers", "origin_path").unwrap());
+        assert!(column_exists(&conn, "wallpapers", "width").unwrap());
+        assert!(column_exists(&conn, "wallpapers", "height").unwrap());
         let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
         record_full_thumbnail(&conn, id).unwrap();
         assert_eq!(origin_path_of(&conn, id), None);
@@ -753,9 +891,48 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert!(column_exists(&conn, "wallpapers", "origin_path").unwrap());
-        assert_eq!(schema_version(&conn).unwrap(), 3);
+        // Every step below the target runs, not just the first one, so a file
+        // two releases behind lands on the current shape in one open.
+        assert!(column_exists(&conn, "wallpapers", "width").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(origin_path_of(&conn, rejected), None);
         assert_eq!(origin_path_of(&conn, active), None);
+        assert_eq!(count_wallpapers(&conn), 2);
+        assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn a_v3_database_gains_the_dimension_columns_with_nothing_in_them() {
+        // The database every curator running the current release is holding.
+        // Two columns on a table that already exists, which is the one shape
+        // change the DDL cannot make: without the step the app opens fine and
+        // then fails on the first `SELECT width`, which is every listing.
+        //
+        // Nothing is backfilled here. A migration that read 5,000 image headers
+        // would put a walk of somebody's external drive between the launch and
+        // the first window; the pre-generation pass already walks every source
+        // with its own progress bar and its own cancel, so the backfill is its
+        // (ADR 0044). NULL is what says the app has not looked yet, and every
+        // reader has an answer for it.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+        conn.execute_batch(DDL_V3).unwrap();
+        let kept = seed_wallpaper(&conn, "/w/keeper.jpg", "kept", 30.0);
+        let rejected = seed_wallpaper(&conn, "/w/rejected/old.jpg", "rejected", 11.0);
+        add_comparison(&conn, kept, rejected);
+        assert_eq!(schema_version(&conn).unwrap(), 3);
+        assert!(!column_exists(&conn, "wallpapers", "width").unwrap());
+
+        init_schema(&conn).unwrap();
+
+        assert!(column_exists(&conn, "wallpapers", "width").unwrap());
+        assert!(column_exists(&conn, "wallpapers", "height").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        for id in [kept, rejected] {
+            let row = get_wallpaper(&conn, id).unwrap();
+            assert_eq!((row.width, row.height), (None, None));
+        }
+        // And the library and its history come through untouched.
         assert_eq!(count_wallpapers(&conn), 2);
         assert_eq!(count_comparisons(&conn), 1);
     }
@@ -927,11 +1104,69 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let paths = vec![PathBuf::from("/w/a.jpg"), PathBuf::from("/w/b.png")];
-        assert_eq!(insert_new_wallpapers(&conn, &paths).unwrap(), 2);
-        assert_eq!(insert_new_wallpapers(&conn, &paths).unwrap(), 0);
+        let first = insert_new_wallpapers(&conn, &paths).unwrap();
+        assert_eq!(
+            first.iter().map(|a| a.path.clone()).collect::<Vec<_>>(),
+            paths
+        );
+        assert!(insert_new_wallpapers(&conn, &paths).unwrap().is_empty());
 
+        // The new rows alone, which is what the scan measures: a rescan hands
+        // over the whole library and only the files it has never seen come back
+        // (ADR 0044).
         let mixed = vec![PathBuf::from("/w/b.png"), PathBuf::from("/w/c.webp")];
-        assert_eq!(insert_new_wallpapers(&conn, &mixed).unwrap(), 1);
+        let added = insert_new_wallpapers(&conn, &mixed).unwrap();
+        assert_eq!(
+            added.iter().map(|a| a.path.clone()).collect::<Vec<_>>(),
+            vec![PathBuf::from("/w/c.webp")]
+        );
+        // And the id is the row's own, so a caller can write back to it.
+        assert_eq!(get_wallpaper(&conn, added[0].id).unwrap().path, "/w/c.webp");
+    }
+
+    #[test]
+    fn a_fresh_row_has_no_dimensions_until_something_records_them() {
+        // NULL is the app's ignorance written down, and it is the ordinary
+        // state of a library still being backfilled. Every reader has to have an
+        // answer for it, so the DTO carries `None` rather than a guess
+        // (ADR 0044).
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        let before = get_wallpaper(&conn, id).unwrap();
+        assert_eq!((before.width, before.height), (None, None));
+
+        record_dimensions(&conn, id, 3840, 2160).unwrap();
+
+        let after = get_wallpaper(&conn, id).unwrap();
+        assert_eq!((after.width, after.height), (Some(3840), Some(2160)));
+        // And they reach the frontend on the row itself, beside the Score.
+        let json = serde_json::to_value(after).unwrap();
+        assert_eq!(json["width"], 3840);
+        assert_eq!(json["height"], 2160);
+        assert_eq!(
+            serde_json::to_value(get_wallpaper(&conn, id).unwrap()).unwrap()["origin_path"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn dimensions_recorded_in_a_batch_land_on_the_rows_they_name() {
+        // What a scan chunk comes back with: one transaction rather than one
+        // implicit transaction per row, and rows it did not name left alone.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let wide = seed_wallpaper(&conn, "/w/wide.jpg", "active", 25.0);
+        let tall = seed_wallpaper(&conn, "/w/tall.jpg", "active", 25.0);
+        let unmeasured = seed_wallpaper(&conn, "/w/broken.jpg", "active", 25.0);
+
+        record_dimensions_batch(&conn, &[(wide, 5120, 2160), (tall, 1440, 2560)]).unwrap();
+
+        assert_eq!(get_wallpaper(&conn, wide).unwrap().width, Some(5120));
+        assert_eq!(get_wallpaper(&conn, tall).unwrap().height, Some(2560));
+        let untouched = get_wallpaper(&conn, unmeasured).unwrap();
+        assert_eq!((untouched.width, untouched.height), (None, None));
     }
 
     #[test]
