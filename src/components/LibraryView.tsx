@@ -9,6 +9,8 @@ import {
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
+import { ProtoGrid } from "@/components/prototype/ProtoGrid";
+import { PROTO } from "@/components/prototype/proto";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import {
@@ -465,15 +467,22 @@ export function LibraryView() {
              ADR 0027). The selection is resolved against this whole list too,
              so wallpaper 3,000 can hold it whichever thirty cards have nodes
              (#137, #230). */
-          <WallpaperGrid
-            ref={setGrid}
-            wallpapers={list}
-            label="Wallpapers in the library"
-            onAction={perform}
-            onOpen={lightbox.openOn}
-            scoresMoved={scoresMoved}
-            scroller={scroller}
-          />
+          /* PROTOTYPE (#254): with `?proto=` in the URL the grid is swapped and
+             the rest of this page — filters, ordering, empty states — stays
+             real. Delete this branch and the `prototype/` folder to remove it. */
+          PROTO ? (
+            <ProtoGrid wallpapers={list} tab="library" />
+          ) : (
+            <WallpaperGrid
+              ref={setGrid}
+              wallpapers={list}
+              label="Wallpapers in the library"
+              onAction={perform}
+              onOpen={lightbox.openOn}
+              scoresMoved={scoresMoved}
+              scroller={scroller}
+            />
+          )
         )}
       </div>
 

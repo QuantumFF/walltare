@@ -1,6 +1,8 @@
 import { EmptyState } from "@/components/EmptyState";
 import { Lightbox, useLightbox } from "@/components/Lightbox";
 import { PageBar } from "@/components/PageBar";
+import { ProtoGrid } from "@/components/prototype/ProtoGrid";
+import { PROTO } from "@/components/prototype/proto";
 import {
   RejectDestinationLine,
   useRejectDestination,
@@ -230,15 +232,22 @@ export function ReviewView() {
                `animated` is Review's alone. ADR 0016 gives the library's instance
                of this card no animated property and no `will-change`, and ADR
                0007's licence stays scoped to the fifty rows it was measured on. */
-            <WallpaperGrid
-              ref={setGrid}
-              wallpapers={wallpapers}
-              label="Wallpapers to review"
-              onAction={perform}
-              onOpen={lightbox.openOn}
-              animated
-              className="pb-8"
-            />
+            /* PROTOTYPE (#254): with `?proto=` in the URL the grid is swapped
+               and the rest of this page stays real. Delete this branch and the
+               `prototype/` folder to remove it. */
+            PROTO ? (
+              <ProtoGrid wallpapers={wallpapers} tab="review" />
+            ) : (
+              <WallpaperGrid
+                ref={setGrid}
+                wallpapers={wallpapers}
+                label="Wallpapers to review"
+                onAction={perform}
+                onOpen={lightbox.openOn}
+                animated
+                className="pb-8"
+              />
+            )
           )}
         </div>
       )}
