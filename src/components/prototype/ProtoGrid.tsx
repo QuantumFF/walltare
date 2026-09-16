@@ -110,25 +110,34 @@ function useHeld(key: string): boolean {
   return held;
 }
 
-/** The box's width, which justified rows need before they can lay anything out. */
-function useWidth(ref: React.RefObject<HTMLElement | null>) {
-  const [width, setWidth] = useState(0);
+/**
+ * The box's size. Justified rows need the width; the hero needs both.
+ *
+ * Measured rather than left to CSS. A box that is only `aspect-ratio` plus
+ * `max-height` inside a flex parent has a definite size in neither axis, so it
+ * resolves to zero and the image disappears — which is exactly what happened
+ * when the hero stopped being `object-contain` inside a `flex-1` div.
+ */
+function useBox(ref: React.RefObject<HTMLElement | null>) {
+  const [box, setBox] = useState({ width: 0, height: 0 });
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node) return;
+    const read = (width: number, height: number) => {
+      // A view hidden with `display: none` measures zero (ADR 0015). Keeping the
+      // last real numbers is what stops the layout collapsing on a tab switch.
+      if (width > 0 && height > 0) setBox({ width, height });
+    };
     // The observer's first callback is a frame away, and a justified row cannot
     // lay out without a width, so read it here as well as subscribing.
-    if (node.offsetWidth > 0) setWidth(node.offsetWidth);
-    const observer = new ResizeObserver(([entry]) => {
-      const next = entry.contentRect.width;
-      // A view hidden with `display: none` measures zero (ADR 0015). Keeping the
-      // last real number is what stops the layout collapsing on a tab switch.
-      if (next > 0) setWidth(next);
-    });
+    read(node.offsetWidth, node.offsetHeight);
+    const observer = new ResizeObserver(([entry]) =>
+      read(entry.contentRect.width, entry.contentRect.height),
+    );
     observer.observe(node);
     return () => observer.disconnect();
   }, [ref]);
-  return width;
+  return box;
 }
 
 /* -------------------------------------------------------------------------
@@ -282,7 +291,7 @@ export function ProtoGrid({
   const variant = useVariant(tab);
   const columns = useZoom(tab, variant);
   const box = useRef<HTMLDivElement>(null);
-  const width = useWidth(box);
+  const { width } = useBox(box);
 
   const ids = useMemo(() => wallpapers.map((w) => w.id), [wallpapers]);
   useRatios(ids);
@@ -633,51 +642,60 @@ function CropBars({
 function Hero({ list, at, onAct, setOpen, setCursor }: LayoutProps) {
   const screen = useScreenRatio();
   const cropping = useHeld("c");
+  const area = useRef<HTMLDivElement>(null);
+  const { width, height } = useBox(area);
   const current = list[at];
-  if (!current) return null;
+
+  // The largest box of the image's own ratio that fits the area, in pixels.
+  // The image needs a box of exactly its own shape for the crop bars to be
+  // percentages of the image rather than of the letterboxing around it, and
+  // that shape cannot come from CSS here: see `useBox`.
+  const ratio = current ? ratioOf(current.id) : 16 / 9;
+  const fitHeight = Math.min(height, width / ratio);
 
   return (
     <div className="flex h-full flex-col gap-3">
-      {/* The image gets its own box at its own ratio rather than being
-          `object-contain` inside a bigger one, because the bars are positioned
-          as percentages of the image and `object-contain` leaves them measuring
-          the letterboxing instead. */}
-      <div className="flex min-h-0 flex-1 items-center justify-center">
-        <div
-          className="relative max-h-full"
-          style={{ aspectRatio: ratioOf(current.id), maxWidth: "100%" }}
-        >
-          <img
-            src={wallpaperImageUrl(current.id, "medium")}
-            alt=""
-            className="h-full w-full rounded-lg object-cover"
-          />
-          {cropping && (
-            <CropBars imageRatio={ratioOf(current.id)} screen={screen} />
-          )}
+      <div
+        ref={area}
+        className="flex min-h-0 flex-1 items-center justify-center"
+      >
+        {current && fitHeight > 0 && (
+          <div
+            className="relative"
+            style={{ height: fitHeight, width: fitHeight * ratio }}
+          >
+            <img
+              src={wallpaperImageUrl(current.id, "medium")}
+              alt=""
+              className="h-full w-full rounded-lg object-cover"
+            />
+            {cropping && <CropBars imageRatio={ratio} screen={screen} />}
+          </div>
+        )}
+      </div>
+
+      {current && (
+        <div className="flex shrink-0 items-center justify-center gap-3">
+          <span className="text-sm text-muted-foreground">
+            {current.filename} · {score(current)}
+          </span>
+          <span className="text-xs text-muted-foreground/70">
+            hold C to crop
+          </span>
+          <Button size="sm" onClick={() => onAct(current.id)}>
+            Keep
+          </Button>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => onAct(current.id)}
+          >
+            Reject
+          </Button>
         </div>
-      </div>
+      )}
 
-      <div className="flex shrink-0 items-center justify-center gap-3">
-        <span className="text-sm text-muted-foreground">
-          {current.filename} · {score(current)}
-        </span>
-        <span className="text-xs text-muted-foreground/70">
-          hold C to crop
-        </span>
-        <Button size="sm" onClick={() => onAct(current.id)}>
-          Keep
-        </Button>
-        <Button
-          size="sm"
-          variant="destructive"
-          onClick={() => onAct(current.id)}
-        >
-          Reject
-        </Button>
-      </div>
-
-      <div className="flex shrink-0 gap-1.5 overflow-x-auto pb-24">
+      <div className="flex shrink-0 gap-1.5 overflow-x-auto pb-36">
         {list.map((wallpaper, index) => (
           <button
             key={wallpaper.id}
@@ -706,7 +724,7 @@ function Compare({ list, at, onAct, setOpen }: LayoutProps) {
   const pair = [list[at], list[at + 1]].filter(Boolean);
 
   return (
-    <div className="grid h-full grid-cols-2 gap-4 pb-24">
+    <div className="grid h-full grid-cols-2 gap-4 pb-36">
       {pair.map((wallpaper) => (
         <div key={wallpaper.id} className="flex min-h-0 flex-col gap-2">
           <button
@@ -745,7 +763,7 @@ function Compare({ list, at, onAct, setOpen }: LayoutProps) {
 function BigCell({ list, at, columns, onAct, setOpen, setCursor }: LayoutProps) {
   return (
     <div
-      className="grid gap-4 pb-24"
+      className="grid gap-4 pb-36"
       style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
     >
       {list.map((wallpaper, index) => (
