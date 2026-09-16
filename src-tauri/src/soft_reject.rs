@@ -431,7 +431,7 @@ mod tests {
         );
 
         let found = crate::scanner::collect_images(std::slice::from_ref(&library));
-        assert_eq!(insert_new_wallpapers(&conn, &found).unwrap(), 0);
+        assert!(insert_new_wallpapers(&conn, &found).unwrap().is_empty());
         assert_eq!(count_wallpapers(&conn), 1);
         assert_eq!(review_ids(&conn), Vec::<i64>::new());
     }
@@ -1190,7 +1190,7 @@ mod tests {
 
         let found = crate::scanner::collect_images(std::slice::from_ref(&library));
         assert_eq!(found.len(), 1);
-        assert_eq!(insert_new_wallpapers(&conn, &found).unwrap(), 0);
+        assert!(insert_new_wallpapers(&conn, &found).unwrap().is_empty());
         assert_eq!(count_wallpapers(&conn), 1);
     }
 }

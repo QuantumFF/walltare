@@ -37,6 +37,23 @@ export interface Wallpaper {
    * restored at all (ADR 0009).
    */
   origin_path: string | null;
+  /**
+   * The source file's own pixel width, or `null` while nothing has read it.
+   *
+   * Not the thumbnail's width. A wallpaper's cached sizes say what shape it is;
+   * only these say whether the file is large enough for the screen it is meant
+   * for (ADR 0044).
+   *
+   * `null` is the ordinary state of a library still being backfilled, so a
+   * reader answers for it rather than waiting: no badge, out of the undersized
+   * filter, and 16:9 for layout.
+   */
+  width: number | null;
+  /**
+   * The source file's own pixel height. `null` exactly when `width` is: the two
+   * are written in one statement and read off one file.
+   */
+  height: number | null;
 }
 
 /**

@@ -238,7 +238,10 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
                 .state::<Db>()
                 .write(|conn| db::insert_new_wallpapers(conn, chunk));
             match result {
-                Ok(n) => added += n as u64,
+                Ok(new_rows) => {
+                    added += new_rows.len() as u64;
+                    record_dimensions_of(&app, &new_rows);
+                }
                 Err(e) => {
                     // Surface it instead of only printing: a silent failure looks
                     // to the user exactly like an empty folder.
@@ -266,6 +269,54 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
         }
     });
     Ok(())
+}
+
+/// Reads each newly scanned file's pixel dimensions and writes them to its row.
+///
+/// Between the chunk's insert and the next one, and in three steps rather than
+/// one: the insert under the connection, the header reads with it released, then
+/// the writes (ADR 0039). A chunk is `SCAN_CHUNK_SIZE` files, so holding the
+/// lock across the reads would queue every command and every `wallpaper://`
+/// request behind that many file opens on whatever drive the Library root sits
+/// on.
+///
+/// Only the rows this chunk actually inserted, which is what makes a rescan of a
+/// warm library cost nothing: `INSERT OR IGNORE` hands back the new rows alone,
+/// and a wallpaper already in the library already has its dimensions or is the
+/// pre-generation pass's to backfill (ADR 0044).
+///
+/// A file whose dimensions cannot be read is left with NULL in both columns and
+/// nothing else happens: the scan does not fail over it, and the pass that
+/// decodes it later is where a broken source is counted and reported (ADR 0034).
+/// A write that fails is logged rather than surfaced — the dimensions are
+/// backfillable and the wallpapers are in the library either way.
+fn record_dimensions_of(app: &AppHandle, new_rows: &[db::Added]) {
+    let measured = measure_new_rows(new_rows);
+    if measured.is_empty() {
+        return;
+    }
+    if let Err(e) = app
+        .state::<Db>()
+        .write(|conn| db::record_dimensions_batch(conn, &measured))
+    {
+        eprintln!("scan could not record pixel dimensions: {e}");
+    }
+}
+
+/// The filesystem half of [`record_dimensions_of`]: every new row whose file
+/// gave up its dimensions, and nothing about the ones that did not.
+///
+/// Split out for the reason [`unwalkable_root`] is a function of its own — the
+/// half worth asserting on needs no running Tauri app. Which files a scan
+/// measures and which it leaves NULL is the whole of the behaviour; the write
+/// beside it is one batched `UPDATE`.
+fn measure_new_rows(new_rows: &[db::Added]) -> Vec<(i64, u32, u32)> {
+    new_rows
+        .iter()
+        .filter_map(|row| {
+            scanner::dimensions(&row.path).map(|(width, height)| (row.id, width, height))
+        })
+        .collect()
 }
 
 /// What the curator reads when a scan's Library root is not a folder it can
@@ -1030,5 +1081,82 @@ mod tests {
         let json = serde_json::to_value(expand_path(written.clone()).unwrap()).unwrap();
         assert_eq!(json["resolved"], written);
         assert_eq!(json["exists"], true);
+    }
+
+    /// One chunk of a scan, as `start_scan` runs it: the insert, the header
+    /// reads with the connection released, then the writes. The thread, the
+    /// events and the Library root are `start_scan`'s and need a running Tauri
+    /// app; which wallpapers come out with dimensions is this.
+    fn scan_a_chunk(conn: &rusqlite::Connection, files: &[std::path::PathBuf]) -> Vec<db::Added> {
+        let added = db::insert_new_wallpapers(conn, files).unwrap();
+        db::record_dimensions_batch(conn, &measure_new_rows(&added)).unwrap();
+        added
+    }
+
+    /// Writes a PNG of the given size, the way a curator's export tool would.
+    fn write_png(path: &std::path::Path, width: u32, height: u32) {
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(width, height))
+            .save_with_format(path, image::ImageFormat::Png)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_scan_records_the_dimensions_of_every_file_it_can_read() {
+        // ADR 0044's first half. The walk reads names rather than bytes, so a
+        // zero-byte `.jpg` and a download that stopped halfway are wallpapers
+        // like any other: they come through with NULL dimensions and the files
+        // beside them are measured, because a scan that failed over a bad file
+        // would lose the library behind it (ADR 0034).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ultrawide = dir.path().join("ultrawide.png");
+        write_png(&ultrawide, 5120, 2160);
+        let empty = dir.path().join("empty.jpg");
+        std::fs::write(&empty, b"").unwrap();
+
+        let added = scan_a_chunk(&conn, &[ultrawide, empty]);
+
+        assert_eq!(added.len(), 2);
+        assert_eq!(
+            testing::dimensions_of(&conn, added[0].id),
+            (Some(5120), Some(2160))
+        );
+        assert_eq!(testing::dimensions_of(&conn, added[1].id), (None, None));
+    }
+
+    #[test]
+    fn a_rescan_measures_the_files_it_has_never_seen_and_no_others() {
+        // What makes a rescan of a warm library cost nothing: `INSERT OR IGNORE`
+        // hands back the new rows alone, so the header reads are one per new
+        // file rather than one per wallpaper in the library (ADR 0044).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_schema(&conn).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.png");
+        write_png(&first, 1920, 1080);
+        let first_id = scan_a_chunk(&conn, std::slice::from_ref(&first))[0].id;
+
+        // The curator re-exports the first at a different size and adds a
+        // second, then scans again.
+        write_png(&first, 800, 600);
+        let second = dir.path().join("second.png");
+        write_png(&second, 2560, 1440);
+
+        let added = scan_a_chunk(&conn, &[first, second]);
+
+        assert_eq!(added.len(), 1);
+        assert_eq!(
+            testing::dimensions_of(&conn, added[0].id),
+            (Some(2560), Some(1440))
+        );
+        // The row already in the library still says what it was scanned at. The
+        // re-export moved the file's mtime, so its thumbnails have stopped being
+        // fresh and the pre-generation pass will decode it again and correct
+        // this — the scan is not where that is fixed (ADR 0044).
+        assert_eq!(
+            testing::dimensions_of(&conn, first_id),
+            (Some(1920), Some(1080))
+        );
     }
 }

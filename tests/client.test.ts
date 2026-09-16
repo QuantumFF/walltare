@@ -235,6 +235,25 @@ describe("client seam", () => {
     ]);
   });
 
+  test("listWallpapers carries a row's pixel dimensions, unknown ones included", async () => {
+    // A library still being backfilled serves both kinds of row at once, and
+    // they are different answers: one says how large the file is, the other says
+    // the app has not looked yet. Folding the unknown into a number is what
+    // would put an undersized badge on a wallpaper nothing has measured
+    // (ADR 0044).
+    mockCommand("list_wallpapers", () => [
+      wallpaper(1, { width: 5120, height: 2160 }),
+      wallpaper(2, { width: null, height: null }),
+    ]);
+
+    const rows = await client.listWallpapers();
+
+    expect(rows.map((w) => [w.width, w.height])).toEqual([
+      [5120, 2160],
+      [null, null],
+    ]);
+  });
+
   test("listWallpapers defaults the ordering while honouring a given filter", async () => {
     // The two arguments default independently, so filtering to one Status does
     // not silently reorder the grid.
