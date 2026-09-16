@@ -606,16 +606,15 @@ pub struct Pending {
     /// the queue — from one rejected since, which is a snapshot gone stale.
     pub status: Status,
     /// Which pre-generated sizes this wallpaper is short of, or `None` when both
-    /// are fresh and it is on the list for its dimensions alone.
-    pub missing: Option<Missing>,
-    /// Whether the row's pixel dimensions are still unknown, and the pass owes
-    /// it a header read.
+    /// are fresh and it is on the list for its pixel dimensions alone.
     ///
-    /// The backfill of ADR 0044. A wallpaper scanned before the columns existed
-    /// has NULL in both of them and may be perfectly warm, so the thumbnails are
-    /// not what puts it on the list. `false` for everything a scan has already
-    /// measured, which is every wallpaper added since.
-    pub dimensions: bool,
+    /// `None` is the backfill of ADR 0044, and it is the only thing the entry
+    /// has to say about dimensions. Every wallpaper the pass reaches is measured
+    /// — a wallpaper in the other two cases is there because its `source_mtime`
+    /// stopped matching, which is the file having been rewritten, and that is
+    /// exactly when stored dimensions go stale. So what the entry records is the
+    /// one thing that is not implied: whether there is anything to generate.
+    pub missing: Option<Missing>,
 }
 
 /// One wallpaper as the query saw it, before anything is asked of the
@@ -753,7 +752,6 @@ pub fn work_list(candidates: &[Candidate], cache_dir: &Path) -> Result<Vec<Pendi
             source: candidate.source.clone(),
             status: candidate.status,
             missing,
-            dimensions: !candidate.dimensions_known,
         });
     }
     Ok(pending)
@@ -1534,7 +1532,6 @@ mod tests {
                 source: tmp.path().join("cold.png"),
                 status: Status::Active,
                 missing: Some(Missing::Both),
-                dimensions: false,
             }]
         );
     }
@@ -1586,11 +1583,9 @@ mod tests {
             seed_unmeasured_wallpaper(&conn, tmp.path(), "old.png", &solid(20, 10, [5, 5, 5, 255]));
         warm(&conn, cache.path(), id, &tmp.path().join("old.png"));
 
+        // Listed, and owing no thumbnail, which is the only thing that puts a
+        // warm wallpaper here.
         assert_eq!(listed(&conn, cache.path()), vec![(id, None)]);
-        assert!(
-            work_list(&conn, cache.path()).unwrap()[0].dimensions,
-            "the entry has to say what it is owed"
-        );
 
         // And it comes off the list for good once they are written, so the
         // backfill is one pass and not one per launch.
@@ -1599,10 +1594,10 @@ mod tests {
     }
 
     #[test]
-    fn a_cold_wallpaper_with_no_dimensions_is_owed_both_and_says_so() {
-        // The two reasons to be on the list are independent. A wallpaper can owe
-        // thumbnails, dimensions, or both, and the pass reads each answer off
-        // the entry rather than inferring one from the other.
+    fn a_cold_wallpaper_with_no_dimensions_is_listed_for_its_thumbnails() {
+        // A wallpaper short of both is listed as owing thumbnails and nothing
+        // else, because the pass measures every wallpaper it reaches: the entry
+        // records only what is not implied (ADR 0044).
         let (conn, tmp) = setup();
         let cache = tempfile::tempdir().unwrap();
         let id = seed_unmeasured_wallpaper(
@@ -1621,7 +1616,6 @@ mod tests {
                 source: tmp.path().join("cold.png"),
                 status: Status::Active,
                 missing: Some(Missing::Both),
-                dimensions: true,
             }]
         );
     }
@@ -1754,21 +1748,18 @@ mod tests {
                     source: tmp.path().join("cold.png"),
                     status: Status::Active,
                     missing: Some(Missing::Both),
-                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: half,
                     source: tmp.path().join("half.png"),
                     status: Status::Kept,
                     missing: Some(Missing::Only(Size::Small)),
-                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: rejected,
                     source: tmp.path().join("rejected.png"),
                     status: Status::Rejected,
                     missing: Some(Missing::Both),
-                    dimensions: false,
                 },
             ]
         );
@@ -1869,21 +1860,18 @@ mod tests {
                     source: cold_path,
                     status: Status::Active,
                     missing: Some(Missing::Both),
-                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: 3,
                     source: donor_path,
                     status: Status::Kept,
                     missing: Some(Missing::Only(Size::Small)),
-                    dimensions: false,
                 },
                 Pending {
                     wallpaper_id: 5,
                     source: gone_path,
                     status: Status::Rejected,
                     missing: Some(Missing::Both),
-                    dimensions: false,
                 },
             ]
         );

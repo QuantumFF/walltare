@@ -71,7 +71,9 @@ NULL together or set together. Nothing has to handle a width without a height.
 Dimensions are never overwritten with NULL. A file that is momentarily
 unreadable — an unmounted drive, a file being rewritten — would otherwise turn a
 measured wallpaper into an unmeasured one, and the app would forget something it
-knew. The write only ever happens with numbers in hand.
+knew. The write only ever happens with numbers in hand, so a row that cannot be
+measured keeps whatever it held: NULL for a wallpaper nothing has measured, the
+last known pair for one that has been.
 
 ### A header read, not a decode
 
@@ -97,28 +99,36 @@ would be a file open per wallpaper for rows that already have their answer.
 
 The three steps are the insert under the connection, the header reads with it
 released, then the writes — [ADR 0039](0039-the-connection-lock-is-taken-for-queries.md)'s
-split. A chunk is 500 files, so holding the lock across the reads would queue
-every command and every `wallpaper://` request behind 500 file opens on whatever
-drive the Library root sits on.
+split. A chunk is `SCAN_CHUNK_SIZE` files, so holding the lock across the reads
+would queue every command and every `wallpaper://` request behind that many file
+opens on whatever drive the Library root sits on.
 
-A wallpaper already in the library keeps whatever it was measured at, even if the
-curator has since re-exported the file at a different size. That is the same
-staleness the `filename` column already has and the same cure: it is corrected by
-the pass, not by the scan.
+A scan measures new files and never re-measures old ones, so a wallpaper the
+curator has since re-exported at a different size keeps the numbers it was
+scanned with. That staleness is corrected by the pass rather than by the scan,
+which is the next section.
 
-### The pre-generation pass backfills, and it is listed for dimensions alone
+### The pre-generation pass backfills, and every wallpaper it reaches is measured
 
 Every wallpaper scanned before this landed has NULL dimensions and, on most
 machines, a perfectly warm cache. So the backfill cannot ride on the thumbnails:
 `work_list`'s freshness rule drops exactly the cohort that needs it.
 
 The work list therefore has two reasons to hold a wallpaper rather than one.
-`Pending::missing` becomes `Option<Missing>` — `None` is a wallpaper that owes no
-thumbnail — and `Pending::dimensions` says whether the row is still short of its
-numbers. A wallpaper can owe thumbnails, dimensions, or both, and the pass reads
-each answer off the entry rather than inferring one from the other. The entry
-leaves the list for good once the dimensions are written, so the backfill is one
-pass and not one per launch.
+`Pending::missing` becomes `Option<Missing>`, and `None` is a wallpaper that owes
+no thumbnail and is listed for its dimensions alone. It leaves the list for good
+once they are written, so the backfill is one pass and not one per launch.
+
+**Every branch measures, and none of them asks whether the row already has
+numbers.** A wallpaper in the other two cases is there because its `source_mtime`
+stopped matching, which is the file having been rewritten — a re-export at a
+different size is exactly the case where the stored dimensions have gone stale,
+and it is also exactly the case the pass is already decoding. Measuring only rows
+with NULL columns would leave the undersized badge and the crop caption describing
+a file the pass had just read and knew better than. Refreshing costs a header read
+against a decode that is happening regardless, so `Pending` carries no second flag:
+what it records is the one thing that is not implied, whether there is anything to
+generate.
 
 The pass is where this goes because it is already the one pass over every source
 in the library, with its own ordering, its own progress bar, its own cancel and
@@ -127,10 +137,13 @@ backfill that needed any of those would be building a second copy of it.
 
 A wallpaper listed for its dimensions alone comes back as `Step::Measured` rather
 than `Step::Generated`. `pregen-complete` speaks about thumbnails, and a backfill
-over a warm library that reported one thumbnail per wallpaper it measured would
-be a number nothing on disk agrees with. The count is not reported at all, for
-the reason the skip count is not: nobody acts on how many rows were filled in.
-The progress bar still reaches its total, so the pass does not appear to stall.
+over a warm library that reported one thumbnail per wallpaper it looked at would
+be a number nothing on disk agrees with. The count is not reported at all, for the
+reason the skip count is not: nobody acts on how many rows were filled in. It is
+still in the pass's `done()`, so the progress bar reaches its total rather than
+appearing to stall — which does leave the Settings readout saying "N of M
+generated" about a pass that generated nothing. That line already counted failures
+and skips the same way; the wording is left to the ticket that owns that view.
 
 ## Alternatives rejected
 
@@ -163,9 +176,12 @@ This is the alternative this ADR exists to refuse.
 v1 or v2 one runs every step below the target and arrives at the same shape.
 
 The first launch after this ships runs a pass over the whole library on most
-machines — one header read per wallpaper, one batched `UPDATE` each — and ends
-saying nothing, because it generated no thumbnails and failed nothing. Every
-launch after that has an empty work list again.
+machines — one header read and one `UPDATE` per wallpaper, one at a time under
+[ADR 0012](0012-thumbnail-pre-generation.md)'s budget — and ends saying nothing,
+because it generated no thumbnails and failed nothing. Every launch after that
+has an empty work list again. The scan batches its writes per chunk; the pass
+does not, because it is already one wallpaper at a time and a batch of one is a
+transaction around a single statement.
 
 Nothing is visible yet. The crop preview, the undersized badge and its filter,
 and the two uncropped Library layouts are the siblings that spend this, and each

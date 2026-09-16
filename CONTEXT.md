@@ -29,6 +29,17 @@ folder, so a nested library gets one reject folder per source folder. A Library
 root is relative to wherever the app was launched from. See
 [ADR 0011](docs/adr/0011-written-paths.md).
 
+## Dimensions
+
+How many pixels wide and tall a wallpaper's file actually is. A fact about the
+source, not about any thumbnail made from it: a thumbnail is capped in width, so
+it carries the wallpaper's shape and not its size.
+
+The app may not know them. A wallpaper whose Dimensions have not been read yet
+has none rather than a guess, and everything that would draw on them says nothing
+instead of saying something wrong. See
+[ADR 0044](docs/adr/0044-pixel-dimensions-live-on-the-wallpaper-row.md).
+
 ## Status
 
 Every wallpaper is exactly one of:

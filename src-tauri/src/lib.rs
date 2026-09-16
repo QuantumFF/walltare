@@ -275,9 +275,10 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
 ///
 /// Between the chunk's insert and the next one, and in three steps rather than
 /// one: the insert under the connection, the header reads with it released, then
-/// the writes (ADR 0039). A chunk is 500 files, so holding the lock across the
-/// reads would queue every command and every `wallpaper://` request behind 500
-/// file opens on whatever drive the Library root sits on.
+/// the writes (ADR 0039). A chunk is `SCAN_CHUNK_SIZE` files, so holding the
+/// lock across the reads would queue every command and every `wallpaper://`
+/// request behind that many file opens on whatever drive the Library root sits
+/// on.
 ///
 /// Only the rows this chunk actually inserted, which is what makes a rescan of a
 /// warm library cost nothing: `INSERT OR IGNORE` hands back the new rows alone,
@@ -290,7 +291,7 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
 /// A write that fails is logged rather than surfaced — the dimensions are
 /// backfillable and the wallpapers are in the library either way.
 fn record_dimensions_of(app: &AppHandle, new_rows: &[db::Added]) {
-    let measured = measure(new_rows);
+    let measured = measure_new_rows(new_rows);
     if measured.is_empty() {
         return;
     }
@@ -309,7 +310,7 @@ fn record_dimensions_of(app: &AppHandle, new_rows: &[db::Added]) {
 /// half worth asserting on needs no running Tauri app. Which files a scan
 /// measures and which it leaves NULL is the whole of the behaviour; the write
 /// beside it is one batched `UPDATE`.
-fn measure(new_rows: &[db::Added]) -> Vec<(i64, u32, u32)> {
+fn measure_new_rows(new_rows: &[db::Added]) -> Vec<(i64, u32, u32)> {
     new_rows
         .iter()
         .filter_map(|row| {
@@ -1086,19 +1087,17 @@ mod tests {
     /// reads with the connection released, then the writes. The thread, the
     /// events and the Library root are `start_scan`'s and need a running Tauri
     /// app; which wallpapers come out with dimensions is this.
-    fn scan_a_chunk(conn: &rusqlite::Connection, files: &[std::path::PathBuf]) -> usize {
+    fn scan_a_chunk(conn: &rusqlite::Connection, files: &[std::path::PathBuf]) -> Vec<db::Added> {
         let added = db::insert_new_wallpapers(conn, files).unwrap();
-        db::record_dimensions_batch(conn, &measure(&added)).unwrap();
-        added.len()
+        db::record_dimensions_batch(conn, &measure_new_rows(&added)).unwrap();
+        added
     }
 
-    fn dimensions_of(conn: &rusqlite::Connection, path: &str) -> (Option<i64>, Option<i64>) {
-        conn.query_row(
-            "SELECT width, height FROM wallpapers WHERE path = ?1",
-            [path],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap()
+    /// Writes a PNG of the given size, the way a curator's export tool would.
+    fn write_png(path: &std::path::Path, width: u32, height: u32) {
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(width, height))
+            .save_with_format(path, image::ImageFormat::Png)
+            .unwrap();
     }
 
     #[test]
@@ -1112,19 +1111,18 @@ mod tests {
         db::init_schema(&conn).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let ultrawide = dir.path().join("ultrawide.png");
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(5120, 2160))
-            .save_with_format(&ultrawide, image::ImageFormat::Png)
-            .unwrap();
+        write_png(&ultrawide, 5120, 2160);
         let empty = dir.path().join("empty.jpg");
         std::fs::write(&empty, b"").unwrap();
 
-        assert_eq!(scan_a_chunk(&conn, &[ultrawide.clone(), empty.clone()]), 2);
+        let added = scan_a_chunk(&conn, &[ultrawide, empty]);
 
+        assert_eq!(added.len(), 2);
         assert_eq!(
-            dimensions_of(&conn, ultrawide.to_str().unwrap()),
+            testing::dimensions_of(&conn, added[0].id),
             (Some(5120), Some(2160))
         );
-        assert_eq!(dimensions_of(&conn, empty.to_str().unwrap()), (None, None));
+        assert_eq!(testing::dimensions_of(&conn, added[1].id), (None, None));
     }
 
     #[test]
@@ -1136,31 +1134,29 @@ mod tests {
         db::init_schema(&conn).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("first.png");
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(1920, 1080))
-            .save_with_format(&first, image::ImageFormat::Png)
-            .unwrap();
-        scan_a_chunk(&conn, std::slice::from_ref(&first));
+        write_png(&first, 1920, 1080);
+        let first_id = scan_a_chunk(&conn, std::slice::from_ref(&first))[0].id;
 
         // The curator re-exports the first at a different size and adds a
-        // second, then scans again. The row already in the library keeps what it
-        // was measured at; the new one is measured now.
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(800, 600))
-            .save_with_format(&first, image::ImageFormat::Png)
-            .unwrap();
+        // second, then scans again.
+        write_png(&first, 800, 600);
         let second = dir.path().join("second.png");
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(2560, 1440))
-            .save_with_format(&second, image::ImageFormat::Png)
-            .unwrap();
+        write_png(&second, 2560, 1440);
 
-        assert_eq!(scan_a_chunk(&conn, &[first.clone(), second.clone()]), 1);
+        let added = scan_a_chunk(&conn, &[first, second]);
 
+        assert_eq!(added.len(), 1);
         assert_eq!(
-            dimensions_of(&conn, first.to_str().unwrap()),
-            (Some(1920), Some(1080))
-        );
-        assert_eq!(
-            dimensions_of(&conn, second.to_str().unwrap()),
+            testing::dimensions_of(&conn, added[0].id),
             (Some(2560), Some(1440))
+        );
+        // The row already in the library still says what it was scanned at. The
+        // re-export moved the file's mtime, so its thumbnails have stopped being
+        // fresh and the pre-generation pass will decode it again and correct
+        // this — the scan is not where that is fixed (ADR 0044).
+        assert_eq!(
+            testing::dimensions_of(&conn, first_id),
+            (Some(1920), Some(1080))
         );
     }
 }

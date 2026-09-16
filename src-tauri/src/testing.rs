@@ -62,6 +62,20 @@ pub(crate) fn origin_path_of(conn: &Connection, id: i64) -> Option<String> {
     .unwrap()
 }
 
+/// A wallpaper's recorded pixel dimensions, `(None, None)` until something has
+/// read them off the file (ADR 0044).
+///
+/// Here because both the scan and the pre-generation pass write them, and their
+/// tests ask the same question of the same two columns.
+pub(crate) fn dimensions_of(conn: &Connection, id: i64) -> (Option<i64>, Option<i64>) {
+    conn.query_row(
+        "SELECT width, height FROM wallpapers WHERE id = ?1",
+        rusqlite::params![id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .unwrap()
+}
+
 pub(crate) fn status_of(conn: &Connection, id: i64) -> String {
     conn.query_row(
         "SELECT status FROM wallpapers WHERE id = ?1",

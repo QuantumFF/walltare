@@ -433,9 +433,11 @@ fn remember(db: &Db, wallpaper_id: i64, error: &error::AppError) {
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
     Generated,
-    /// Nothing was generated and the row's pixel dimensions were written: a
-    /// wallpaper whose cache was already warm and that was on the list for its
-    /// dimensions alone (ADR 0044).
+    /// Nothing was generated: a wallpaper whose cache was already warm and that
+    /// was on the list for its pixel dimensions alone (ADR 0044). It says what
+    /// the pass did not do rather than what it wrote — a source that will not
+    /// give up its dimensions lands here too, because there is no thumbnail to
+    /// report either way.
     ///
     /// Apart from `Generated` because the curator's ending counts thumbnails.
     /// A backfill over a warm library would otherwise report every wallpaper in
@@ -444,13 +446,17 @@ enum Step {
     Skipped,
 }
 
-/// Generates whichever sizes one wallpaper is short of, and fills in its pixel
-/// dimensions when the row is still missing them.
+/// Generates whichever sizes one wallpaper is short of, and records the source's
+/// pixel dimensions.
 ///
 /// Three branches rather than two, because a warm wallpaper can be on the list
-/// for its dimensions alone (ADR 0044). The measurement is a header read outside
-/// the connection either way, so it rides along with a decode rather than
-/// depending on one.
+/// for its dimensions alone (ADR 0044). Every branch measures, and none of them
+/// asks whether the row already has numbers: a wallpaper is only in the other
+/// two branches because its `source_mtime` stopped matching, which is the file
+/// having been rewritten, and a re-export at a different size is exactly the
+/// case where the stored dimensions have gone stale. The measurement is a header
+/// read either way, so refreshing costs a file open against a decode the pass is
+/// doing regardless.
 ///
 /// Runs on a worker of [`crate::serving`]'s pool in production, which is the
 /// only place in this module that decodes anything.
@@ -467,7 +473,10 @@ fn generate_one(
     pending: &thumbnails::Pending,
 ) -> Result<Step, error::AppError> {
     let id = pending.wallpaper_id;
-    match pending.missing {
+    // Where the file sits now and which way this wallpaper went, or a skip. The
+    // three branches differ in what they generate and agree on everything after,
+    // so the measurement below is written once rather than in each of them.
+    let (source, step) = match pending.missing {
         // Nothing to generate: a warm wallpaper listed for its pixel dimensions
         // alone, which is the whole of a library scanned before the columns
         // existed (ADR 0044). The Status and the path are re-read the same way
@@ -477,8 +486,7 @@ fn generate_one(
             let Some(source) = db.read(|conn| thumbnails::still_due(conn, pending)) else {
                 return Ok(Step::Skipped);
             };
-            measure(db, id, &source);
-            Ok(Step::Measured)
+            (source, Step::Measured)
         }
         Some(thumbnails::Missing::Both) => {
             let Some(source) = db.read(|conn| thumbnails::still_due(conn, pending)) else {
@@ -491,16 +499,13 @@ fn generate_one(
                 }
                 Ok::<(), error::AppError>(())
             })?;
-            if pending.dimensions {
-                measure(db, id, &source);
-            }
-            Ok(Step::Generated)
+            (source, Step::Generated)
         }
         Some(thumbnails::Missing::Only(size)) => {
             // One read for both questions, which is the point: the Status the
             // pass acts on and the path it acts on come from one view of the
             // row. The path `still_due` answers with is the one `plan` reads for
-            // itself a line later, and the one a backfill measures below.
+            // itself a line later, and the one the measurement below reads.
             //
             // A skip comes back as `None` rather than returning from here,
             // because the closure cannot return from its caller. That is the
@@ -514,12 +519,11 @@ fn generate_one(
             };
             let resolved = thumbnails::fulfill(&plan, cache_dir)?;
             db.write(|conn| thumbnails::record(conn, &plan, &resolved))?;
-            if pending.dimensions {
-                measure(db, id, &source);
-            }
-            Ok(Step::Generated)
+            (source, Step::Generated)
         }
-    }
+    };
+    measure_and_record(db, id, &source);
+    Ok(step)
 }
 
 /// Reads one source's pixel dimensions and writes them to its row (ADR 0044).
@@ -528,14 +532,16 @@ fn generate_one(
 /// statement inside it, which is ADR 0039's split — the same shape [`remember`]
 /// keeps for its `stat`.
 ///
-/// A source that will not give up its dimensions leaves the row NULL and stops
-/// nothing. It is the same file the pass has just decoded in two of the three
-/// branches, so the case that reaches here is a file that went missing between
-/// one read and the next; the wallpaper rejoins the next pass's list for the
-/// same columns, and a badge it has no dimensions for is a badge nothing draws.
+/// A source that will not give up its dimensions is left as it was: the row
+/// keeps whatever it held, which is NULL for a wallpaper nothing has measured
+/// and the last known pair for one that has been. Overwriting a known pair with
+/// NULL would turn a file that went missing for a moment into a wallpaper the
+/// app has forgotten the size of, and a badge drawn off no dimensions is a badge
+/// nothing draws.
+///
 /// A write that fails is logged for the reason [`remember`]'s is: the pass has
 /// already done the work the curator is waiting on.
-fn measure(db: &Db, wallpaper_id: i64, source: &Path) {
+fn measure_and_record(db: &Db, wallpaper_id: i64, source: &Path) {
     let Some((width, height)) = crate::scanner::dimensions(source) else {
         return;
     };
@@ -597,10 +603,7 @@ mod tests {
             self.db.write(|conn| {
                 crate::db::record_dimensions(conn, pending.wallpaper_id, width, height).unwrap()
             });
-            Pending {
-                dimensions: false,
-                ..pending
-            }
+            pending
         }
 
         /// The same, with the dimensions left unknown: a row from a database
@@ -631,7 +634,6 @@ mod tests {
                 source: path,
                 status: Status::Active,
                 missing: Some(missing),
-                dimensions: true,
             }
         }
 
@@ -654,9 +656,6 @@ mod tests {
                 source: path,
                 status: Status::Active,
                 missing: Some(Missing::Both),
-                // Nothing could have measured it: a scan reads the header of
-                // every file it adds, and this one has no header to read.
-                dimensions: true,
             }
         }
 
@@ -716,17 +715,11 @@ mod tests {
             super::pass(&self.db, work, cancel, report, self.generate());
         }
 
-        /// The wallpaper row's own pixel dimensions, which is what the backfill
+        /// The wallpaper row's own pixel dimensions, which is what the pass
         /// writes and what [`Self::row`]'s thumbnail row cannot answer.
-        fn dimensions(&self, wallpaper_id: i64) -> (Option<u32>, Option<u32>) {
-            self.db.read(|conn| {
-                conn.query_row(
-                    "SELECT width, height FROM wallpapers WHERE id = ?1",
-                    [wallpaper_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap()
-            })
+        fn dimensions(&self, wallpaper_id: i64) -> (Option<i64>, Option<i64>) {
+            self.db
+                .read(|conn| crate::testing::dimensions_of(conn, wallpaper_id))
         }
 
         fn row(&self, wallpaper_id: i64, size: &str) -> Option<(u32, u32)> {
@@ -856,6 +849,49 @@ mod tests {
         assert_eq!(library.row(id, "medium"), Some((1920, 804)));
         assert_eq!(tally.generated, 1);
         assert_eq!(tally.measured, 0);
+    }
+
+    #[test]
+    fn a_re_exported_source_comes_out_of_the_step_with_its_new_dimensions() {
+        // The staleness the scan cannot fix. A curator re-exports a wallpaper at
+        // a different size: the file's mtime moves, so its thumbnails stop being
+        // fresh and the pass decodes it again — and if the measurement were
+        // gated on the row being NULL, the pass would rewrite the thumbnails and
+        // leave the row claiming a resolution the file no longer has. The
+        // undersized badge and the crop caption are read off that row, so this is
+        // the pass knowing better than the row and saying so (ADR 0044).
+        let library = Library::new();
+        let pending = library.seed("exported.png", 3440, 1440, [8, 8, 8, 255], Missing::Both);
+        let id = pending.wallpaper_id;
+        assert_eq!(library.dimensions(id), (Some(3440), Some(1440)));
+
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(800, 600, Rgba([9, 9, 9, 255])))
+            .save_with_format(&pending.source, image::ImageFormat::Png)
+            .unwrap();
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert_eq!(library.dimensions(id), (Some(800), Some(600)));
+        assert_eq!(tally.generated, 1);
+    }
+
+    #[test]
+    fn a_source_that_goes_missing_leaves_the_dimensions_it_was_last_measured_at() {
+        // Never overwritten with NULL. An unmounted drive or a file mid-rewrite
+        // would otherwise turn a measured wallpaper into an unmeasured one, and
+        // the app would forget something it knew for as long as the file was
+        // away.
+        let library = Library::new();
+        let pending = library.seed("gone.png", 2560, 1440, [1, 1, 1, 255], Missing::Both);
+        let id = pending.wallpaper_id;
+        std::fs::remove_file(&pending.source).unwrap();
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert_eq!(library.dimensions(id), (Some(2560), Some(1440)));
+        assert_eq!(tally.failed, 1);
     }
 
     #[test]
