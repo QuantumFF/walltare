@@ -9,12 +9,20 @@ Run it:
 bun tauri dev
 ```
 
-then append `?proto=masonry.hero` to the dev URL, or just `?proto=1` and pick
-from the bar at the bottom of the window.
+then press **Ctrl+Shift+P** in the window. That is the only way in: the Tauri
+webview has no address bar, so `?proto=` cannot be typed there. The chord writes
+`walltare:proto` to `localStorage` and reloads; pressing it again clears the key
+and reloads back to the real grid.
+
+`bun run dev` in a browser does not work at all. Tauri's IPC only exists inside
+the webview, so the first call the app makes dies on
+`Cannot read properties of undefined (reading 'invoke')`. In a browser the query
+string is available and `?proto=masonry.hero` works, but nothing will load.
 
 ## What it does
 
-`?proto=` swaps the grid inside Library and Review for `ProtoGrid`. Everything
+`?proto=`, or the stored key, swaps the grid inside Library and Review for
+`ProtoGrid`. Everything
 else on both pages stays real: the page bar, the filters, the sort, the empty
 states, the chrome. The floating bar switches the variant for both tabs at once,
 so flipping between Review and Library shows the same idea doing its two jobs.

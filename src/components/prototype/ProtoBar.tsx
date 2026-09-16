@@ -53,8 +53,9 @@ export function ProtoBar({ tab }: { tab: ProtoTab }) {
         <Row tab="library" />
         <Row tab="review" />
         <p className="max-w-[28rem] px-1 text-[11px] leading-snug text-muted-foreground">
-          {active.blurb} Ctrl+wheel or +/- to zoom. Nothing here writes: Keep and
-          Reject only hide a card until you refresh.
+          {active.blurb} Ctrl+wheel or +/- to zoom, Ctrl+Shift+P to leave the
+          prototype. Nothing here writes, so Keep and Reject only hide a card
+          until you refresh.
         </p>
       </div>
     </div>

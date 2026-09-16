@@ -89,9 +89,18 @@ interface ProtoState {
   review: string;
 }
 
+/** Where the choice is kept between launches, since the webview has no URL bar. */
+const STORE_KEY = "walltare:proto";
+
 function readUrl(): ProtoState | null {
   if (typeof window === "undefined") return null;
-  const raw = new URLSearchParams(window.location.search).get("proto");
+  // The query string first, for `bun run dev` in a browser where it can be
+  // typed. Then storage, which is the only way in under `bun tauri dev`: the
+  // Tauri window has no address bar, so `?proto=` is unreachable there and the
+  // chord below is what turns this on.
+  const raw =
+    new URLSearchParams(window.location.search).get("proto") ??
+    window.localStorage.getItem(STORE_KEY);
   if (raw === null) return null;
   const [library, review] = raw.split(".");
   const has = (list: ProtoVariant[], key: string) =>
@@ -111,10 +120,38 @@ export const PROTO = state !== null;
 export function setVariant(tab: ProtoTab, key: string) {
   if (!state) return;
   state = { ...state, [tab]: key };
+  const pair = `${state.library}.${state.review}`;
+  window.localStorage.setItem(STORE_KEY, pair);
   const url = new URL(window.location.href);
-  url.searchParams.set("proto", `${state.library}.${state.review}`);
+  url.searchParams.set("proto", pair);
   window.history.replaceState(null, "", url);
   for (const listener of listeners) listener();
+}
+
+/**
+ * Ctrl+Shift+P turns the whole thing on and off, and reloads.
+ *
+ * `PROTO` is read once at module load and both views branch on it, so flipping
+ * it has to be a reload rather than a re-render. That is also what makes the
+ * const the right shape: nothing in either page has to handle the grid changing
+ * identity underneath it.
+ *
+ * Registered on import, so it works whether or not the prototype is on. This is
+ * the whole reason the folder is imported by both views unconditionally.
+ */
+if (typeof window !== "undefined") {
+  window.addEventListener("keydown", (event) => {
+    if (!event.ctrlKey || !event.shiftKey || event.key.toLowerCase() !== "p") {
+      return;
+    }
+    event.preventDefault();
+    if (state) window.localStorage.removeItem(STORE_KEY);
+    else window.localStorage.setItem(STORE_KEY, "masonry.hero");
+    const url = new URL(window.location.href);
+    url.searchParams.delete("proto");
+    window.history.replaceState(null, "", url);
+    window.location.reload();
+  });
 }
 
 function subscribe(listener: () => void) {
