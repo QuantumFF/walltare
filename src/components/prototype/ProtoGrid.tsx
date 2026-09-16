@@ -72,6 +72,44 @@ function useZoom(tab: ProtoTab, variant: ProtoVariant) {
   return columns;
 }
 
+/**
+ * The screen's own ratio, for the crop preview.
+ *
+ * `window.screen` rather than Tauri's `currentMonitor`, because this is a
+ * prototype and the browser already knows. The real one is the "Your screen"
+ * setting (#254 Q26): detected from the monitor, overridable, and the same
+ * number the minimum-resolution check measures against.
+ */
+function useScreenRatio(): { ratio: number; label: string } {
+  return useMemo(() => {
+    const width = window.screen?.width ?? 1920;
+    const height = window.screen?.height ?? 1080;
+    return { ratio: width / height, label: `${width}x${height}` };
+  }, []);
+}
+
+/** Whether a key is down right now. Held rather than toggled (#254 Q24). */
+function useHeld(key: string): boolean {
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const match = (event: KeyboardEvent) =>
+      event.key.toLowerCase() === key && !event.ctrlKey && !event.metaKey;
+    const down = (event: KeyboardEvent) => match(event) && setHeld(true);
+    const up = (event: KeyboardEvent) => match(event) && setHeld(false);
+    // A window that loses focus never sees the keyup, so the bars would stay up.
+    const blur = () => setHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, [key]);
+  return held;
+}
+
 /** The box's width, which justified rows need before they can lay anything out. */
 function useWidth(ref: React.RefObject<HTMLElement | null>) {
   const [width, setWidth] = useState(0);
@@ -537,24 +575,95 @@ function Sheet({ list, at, columns, onAct, setOpen, setCursor }: LayoutProps) {
 
 /* --- Review ------------------------------------------------------------- */
 
+/**
+ * What the screen would keep of this wallpaper, and what it would throw away.
+ *
+ * Cropping to fill means scaling until the image covers the screen and cutting
+ * whatever hangs over, so the overflow is on one axis only: an image wider in
+ * ratio than the screen loses its sides, a narrower one loses its top and
+ * bottom. The bars are drawn over the discarded part rather than hiding it,
+ * because the question is what you are about to lose.
+ */
+function CropBars({
+  imageRatio,
+  screen,
+}: {
+  imageRatio: number;
+  screen: { ratio: number; label: string };
+}) {
+  const wider = imageRatio > screen.ratio;
+  const kept = wider ? screen.ratio / imageRatio : imageRatio / screen.ratio;
+  const bar = `${((1 - kept) / 2) * 100}%`;
+  const lost = Math.round((1 - kept) * 100);
+
+  return (
+    <>
+      <div
+        className="pointer-events-none absolute bg-black/70"
+        style={
+          wider
+            ? { top: 0, bottom: 0, left: 0, width: bar }
+            : { left: 0, right: 0, top: 0, height: bar }
+        }
+      />
+      <div
+        className="pointer-events-none absolute bg-black/70"
+        style={
+          wider
+            ? { top: 0, bottom: 0, right: 0, width: bar }
+            : { left: 0, right: 0, bottom: 0, height: bar }
+        }
+      />
+      <div
+        className="pointer-events-none absolute border border-white/70"
+        style={
+          wider
+            ? { top: 0, bottom: 0, left: bar, right: bar }
+            : { left: 0, right: 0, top: bar, bottom: bar }
+        }
+      />
+      <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-md bg-black/80 px-2 py-1 text-[11px] text-white">
+        {screen.label} · {lost}% of the {wider ? "width" : "height"} is cut
+      </span>
+    </>
+  );
+}
+
 /** One wallpaper at the size you would actually hang it, the queue underneath. */
 function Hero({ list, at, onAct, setOpen, setCursor }: LayoutProps) {
+  const screen = useScreenRatio();
+  const cropping = useHeld("c");
   const current = list[at];
   if (!current) return null;
 
   return (
     <div className="flex h-full flex-col gap-3">
-      <div className="relative min-h-0 flex-1">
-        <img
-          src={wallpaperImageUrl(current.id, "medium")}
-          alt=""
-          className="h-full w-full rounded-lg object-contain"
-        />
+      {/* The image gets its own box at its own ratio rather than being
+          `object-contain` inside a bigger one, because the bars are positioned
+          as percentages of the image and `object-contain` leaves them measuring
+          the letterboxing instead. */}
+      <div className="flex min-h-0 flex-1 items-center justify-center">
+        <div
+          className="relative max-h-full"
+          style={{ aspectRatio: ratioOf(current.id), maxWidth: "100%" }}
+        >
+          <img
+            src={wallpaperImageUrl(current.id, "medium")}
+            alt=""
+            className="h-full w-full rounded-lg object-cover"
+          />
+          {cropping && (
+            <CropBars imageRatio={ratioOf(current.id)} screen={screen} />
+          )}
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center justify-center gap-3">
         <span className="text-sm text-muted-foreground">
           {current.filename} · {score(current)}
+        </span>
+        <span className="text-xs text-muted-foreground/70">
+          hold C to crop
         </span>
         <Button size="sm" onClick={() => onAct(current.id)}>
           Keep

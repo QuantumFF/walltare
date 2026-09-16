@@ -44,6 +44,20 @@ so flipping between Review and Library shows the same idea doing its two jobs.
   failed in the suite. The production shape is right and the test was wrong, so
   the test went.
 
+## The crop preview
+
+In the Review strip view, **hold C**. The hero is drawn at its own ratio and the
+parts your screen would cut off are dimmed, with the kept region outlined and a
+caption saying how much is lost. Release to go back.
+
+Held rather than toggled on purpose: most of the time the bars are noise, and
+holding a key to check makes comparing two wallpapers one gesture instead of
+three.
+
+The ratio comes from `window.screen` here. In the real thing it comes from the
+"Your screen" setting, which is detected from the monitor, overridable, and the
+same number the minimum-resolution badge measures against.
+
 ## The dimensions problem
 
 `Wallpaper` carries no pixel dimensions. The `thumbnails` table has width and
