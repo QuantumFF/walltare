@@ -1,3 +1,4 @@
+import { EmptyState } from "@/components/EmptyState";
 import { Lightbox, useLightbox } from "@/components/Lightbox";
 import { PageBar } from "@/components/PageBar";
 import {
@@ -28,9 +29,8 @@ import {
 // The words for a Status, from the file that holds the app's phrasings, so the
 // empty state and the card's own pill spell them alike.
 import { STATUS_LABEL } from "@/lib/copy";
-import { Filter, Images, type LucideIcon } from "lucide-react";
+import { Filter, Images } from "lucide-react";
 import {
-  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -72,39 +72,6 @@ const ORDERINGS: Array<{ value: ListOrdering; label: string }> = [
 /** Whether a row still belongs in a list filtered this way. */
 function matchesFilter(status: Status, filter: StatusFilter): boolean {
   return filter === "all" || filter === status;
-}
-
-/**
- * The shape both of this page's empty states share: an icon, one sentence
- * saying why there is nothing here, and the control that leads out of it.
- *
- * One component rather than two blocks, because ADR 0015's rule is about the
- * pair and not about either half — no tab is ever disabled, so every
- * destination owes a sentence saying why it is empty *and* where to go instead
- * — and two independently written blocks are how one of them ends up with the
- * sentence and no route. What differs between the two states is the wording and
- * where the control leads, which is the whole of what this takes.
- */
-function EmptyState({
-  icon: Icon,
-  action,
-  onAction,
-  children,
-}: {
-  icon: LucideIcon;
-  action: string;
-  onAction: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-3 p-10 text-center">
-      <Icon className="h-10 w-10 text-muted-foreground/30" aria-hidden />
-      <p className="text-sm text-muted-foreground">{children}</p>
-      <Button variant="link" onClick={onAction}>
-        {action}
-      </Button>
-    </div>
-  );
 }
 
 /**

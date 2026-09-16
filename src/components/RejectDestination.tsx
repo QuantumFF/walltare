@@ -129,7 +129,11 @@ export function RejectDestinationLine({
           sentence and a control laid out as a box does not. */}
       <button
         type="button"
-        className="underline underline-offset-2 hover:text-foreground"
+        // The focus ring the rest of the app's hand-rolled controls wear. This
+        // one had none, so the only visible focus it took was the UA's own
+        // default — which is the one thing a curator tabbing the bar could not
+        // tell apart from the paragraph it sits in.
+        className="rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         onClick={() =>
           setView("settings", { returnTo: view, focus: "reject_destination" })
         }

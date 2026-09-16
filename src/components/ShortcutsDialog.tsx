@@ -1,3 +1,4 @@
+import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 import { Dialog } from "radix-ui";
@@ -85,14 +86,6 @@ const GROUPS = [
   },
 ] as const;
 
-function Key({ children }: { children: string }) {
-  return (
-    <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] leading-none text-foreground">
-      {children}
-    </kbd>
-  );
-}
-
 /**
  * The shortcut list, opened by `?` and mounted in the shell.
  *
@@ -163,7 +156,7 @@ export function ShortcutsDialog({
                       </dt>
                       <dd className="flex shrink-0 items-center gap-1">
                         {binding.keys.map((key) => (
-                          <Key key={key}>{key}</Key>
+                          <Kbd key={key}>{key}</Kbd>
                         ))}
                       </dd>
                     </div>

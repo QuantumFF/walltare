@@ -1,5 +1,6 @@
 import { PageBar } from "@/components/PageBar";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { Progress } from "@/components/ui/progress";
 import { useApp } from "@/context/AppContext";
 import { useAppEvent, useAppEvents } from "@/context/AppEventsContext";
@@ -10,12 +11,13 @@ import {
   type Stats,
   type Wallpaper,
 } from "@/lib/client";
+import { cn } from "@/lib/utils";
 import {
   ArrowLeft,
   ArrowRight,
   Loader2,
   SkipForward,
-  StopCircle,
+  type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -61,6 +63,129 @@ function preloadPair(pair: [Wallpaper, Wallpaper]): void {
     const img = new Image();
     img.src = wallpaperImageUrl(wallpaper.id, IMAGE_SIZE);
   }
+}
+
+/**
+ * Everything that differs between the two sides, which is four strings and an
+ * icon.
+ *
+ * The accessible name is worded the way the shortcuts dialog words the key that
+ * does the same thing, so the two surfaces describing one action agree. The
+ * `alt` stays positional and names no file: CONTEXT.md has the pair presented
+ * in random order so that a habit does not become part of the rating, and a
+ * filename is a second thing to form a habit about.
+ */
+const PANES: Record<
+  Side,
+  { alt: string; label: string; key: string; Icon: LucideIcon }
+> = {
+  left: {
+    alt: "Left Wallpaper",
+    label: "Pick the wallpaper on the left",
+    key: "←",
+    Icon: ArrowLeft,
+  },
+  right: {
+    alt: "Right Wallpaper",
+    label: "Pick the wallpaper on the right",
+    key: "→",
+    Icon: ArrowRight,
+  },
+};
+
+/**
+ * One side of the Comparison: the picture, what a pick does to it, and the key
+ * that makes the pick.
+ *
+ * One component for both sides rather than the two near-identical blocks this
+ * file carried — fifty lines duplicated with `left` and `right` swapped in eight
+ * places, which is a correction somebody has to remember to make twice.
+ *
+ * **The frame is a real button.** It was a `<div>` with an `onClick`, which made
+ * it the one interactive surface in the app that Tab could not reach and a
+ * screen reader could not name. Rank's arrows are a `window` fallback that
+ * stands down as soon as anything else answers the key (ADR 0015, as amended by
+ * ADR 0019), so they are not a substitute for the control being focusable: they
+ * are what fires when nothing is.
+ *
+ * The key below it is the whole of what used to be two labels. A `Select Left`
+ * pill faded in on hover over a persistent `← Left Arrow` caption, so one action
+ * carried two names, neither of which the card grids give their own click
+ * target (ADR 0019). The name is on the button now, and what is left on screen
+ * is the shortcut, which is the part the curator cannot discover by looking.
+ */
+function Pane({
+  side,
+  src,
+  loaded,
+  voting,
+  onPick,
+  onSettled,
+}: {
+  side: Side;
+  src: string;
+  loaded: boolean;
+  voting: Side | null;
+  onPick: () => void;
+  onSettled: () => void;
+}) {
+  const { alt, label, key, Icon } = PANES[side];
+  const picked = voting === side;
+  const passedOver = voting !== null && !picked;
+
+  return (
+    <div className="group flex flex-col gap-3">
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onPick}
+        // The transition names its properties. `transition-all` animates every
+        // one of them, which on a full-width `aspect-video` frame is the blunt
+        // shape ADR 0007 measured the cost of — and the three below are the
+        // three that ever move.
+        className={cn(
+          "relative aspect-video w-full cursor-pointer rounded-xl transition-[transform,opacity,filter] duration-300 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+          passedOver && "scale-95 opacity-50 grayscale",
+          picked
+            ? "scale-[1.02] ring-4 ring-primary"
+            : "group-hover:scale-[1.01]",
+        )}
+      >
+        <div className="absolute inset-0 overflow-hidden rounded-xl border border-border bg-card">
+          {/* Keyed on src so a pane swap discards the old element rather than
+              repainting the previous wallpaper until the new one arrives — the
+              state in which a pick lands on a wallpaper the user never saw. */}
+          <img
+            key={src}
+            src={src}
+            alt={alt}
+            onLoad={onSettled}
+            onError={onSettled}
+            className="h-full w-full bg-black/20 object-cover"
+          />
+          {!loaded && (
+            <div className="absolute inset-0 flex items-center justify-center bg-card">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          {picked && (
+            <div className="absolute inset-0 flex animate-in fade-in items-center justify-center bg-primary/20 duration-200">
+              <div className="rounded-full bg-primary p-4 text-primary-foreground">
+                <Icon className="h-8 w-8" />
+              </div>
+            </div>
+          )}
+        </div>
+      </button>
+
+      {/* The shortcut, drawn as a key rather than spelled out as prose, which
+          is how the shortcuts dialog draws the same one. Hidden where the two
+          panes are narrow enough that the keyboard is not the likely input. */}
+      <div className="hidden justify-center md:flex" aria-hidden>
+        <Kbd>{key}</Kbd>
+      </div>
+    </div>
+  );
 }
 
 export function RankView() {
@@ -406,125 +531,37 @@ export function RankView() {
           </p>
         )}
 
-        {/* Comparison area */}
+        {/* The Comparison itself: the same component twice, with the side and
+            the wallpaper as the only difference between the two. */}
         <div className="grid grid-cols-2 items-start gap-4 md:gap-8">
-          {/* Left option */}
-          <div
-            className="group flex cursor-pointer flex-col gap-3"
-            onClick={() => void handleVote(left, right, "left")}
-          >
-            <div
-              className={`relative aspect-video w-full rounded-xl transition-all duration-300 ${
-                voting === "right" ? "scale-95 opacity-50 grayscale" : ""
-              } ${
-                voting === "left"
-                  ? "scale-[1.02] ring-4 ring-primary"
-                  : "group-hover:scale-[1.01]"
-              }`}
-            >
-              <div className="absolute inset-0 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-                {/* Keyed on src so a pane swap discards the old element
-                    rather than repainting the previous wallpaper until the
-                    new one arrives — the state in which a pick lands on a
-                    wallpaper the user never saw. */}
-                <img
-                  key={leftSrc}
-                  src={leftSrc}
-                  alt="Left Wallpaper"
-                  onLoad={() => markFetched(leftSrc)}
-                  onError={() => markFetched(leftSrc)}
-                  className="h-full w-full bg-black/20 object-cover"
-                />
-                {!fetched.has(leftSrc) && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-card">
-                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                  </div>
-                )}
-                {/* Hover overlay */}
-                <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/10">
-                  <span className="rounded-full bg-background/80 px-4 py-2 text-sm font-medium text-foreground opacity-0 shadow-lg backdrop-blur-sm transition-opacity group-hover:opacity-100">
-                    Select Left
-                  </span>
-                </div>
-                {/* Pick feedback */}
-                {voting === "left" && (
-                  <div className="absolute inset-0 flex animate-in fade-in items-center justify-center bg-primary/20 duration-200">
-                    <div className="rounded-full bg-primary p-4 text-primary-foreground shadow-xl">
-                      <ArrowLeft className="h-8 w-8" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-            <span className="hidden text-center text-xs font-medium text-muted-foreground opacity-50 transition-opacity group-hover:opacity-100 md:block">
-              ← Left Arrow
-            </span>
-          </div>
-
-          {/* Right option */}
-          <div
-            className="group flex cursor-pointer flex-col gap-3"
-            onClick={() => void handleVote(right, left, "right")}
-          >
-            <div
-              className={`relative aspect-video w-full rounded-xl transition-all duration-300 ${
-                voting === "left" ? "scale-95 opacity-50 grayscale" : ""
-              } ${
-                voting === "right"
-                  ? "scale-[1.02] ring-4 ring-primary"
-                  : "group-hover:scale-[1.01]"
-              }`}
-            >
-              <div className="absolute inset-0 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-                <img
-                  key={rightSrc}
-                  src={rightSrc}
-                  alt="Right Wallpaper"
-                  onLoad={() => markFetched(rightSrc)}
-                  onError={() => markFetched(rightSrc)}
-                  className="h-full w-full bg-black/20 object-cover"
-                />
-                {!fetched.has(rightSrc) && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-card">
-                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                  </div>
-                )}
-                {/* Hover overlay */}
-                <div className="absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover:bg-black/10">
-                  <span className="rounded-full bg-background/80 px-4 py-2 text-sm font-medium text-foreground opacity-0 shadow-lg backdrop-blur-sm transition-opacity group-hover:opacity-100">
-                    Select Right
-                  </span>
-                </div>
-                {/* Pick feedback */}
-                {voting === "right" && (
-                  <div className="absolute inset-0 flex animate-in fade-in items-center justify-center bg-primary/20 duration-200">
-                    <div className="rounded-full bg-primary p-4 text-primary-foreground shadow-xl">
-                      <ArrowRight className="h-8 w-8" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-            <span className="hidden text-center text-xs font-medium text-muted-foreground opacity-50 transition-opacity group-hover:opacity-100 md:block">
-              Right Arrow →
-            </span>
-          </div>
+          <Pane
+            side="left"
+            src={leftSrc}
+            loaded={fetched.has(leftSrc)}
+            voting={voting}
+            onPick={() => void handleVote(left, right, "left")}
+            onSettled={() => markFetched(leftSrc)}
+          />
+          <Pane
+            side="right"
+            src={rightSrc}
+            loaded={fetched.has(rightSrc)}
+            voting={voting}
+            onPick={() => void handleVote(right, left, "right")}
+            onSettled={() => markFetched(rightSrc)}
+          />
         </div>
 
-        {/* Footer controls */}
-        <div className="flex items-center justify-center gap-4 pt-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setView("review")}
-            className="text-muted-foreground hover:text-foreground"
-          >
-            <StopCircle className="mr-2 h-4 w-4" />
-            Stop &amp; Review
-          </Button>
+        {/* Skip, and nothing beside it.
 
-          <div className="h-4 w-px bg-border" />
-
+            A **Stop & Review** button used to sit here behind a divider, which
+            is the shape ADR 0015 replaced: the chrome's tabs are the app's
+            navigation, and a second control going to a destination already one
+            click away in a fixed bar is the "two `setView` calls buried in a
+            view's header" that ADR removed from Review. Skip stays because it
+            is the one control here that has nowhere else to live — it changes
+            the pair rather than the destination. */}
+        <div className="flex items-center justify-center pt-2">
           <Button
             variant="ghost"
             size="sm"
@@ -532,8 +569,8 @@ export function RankView() {
             disabled={voting !== null || skipping}
             className="text-muted-foreground hover:text-foreground"
           >
-            <SkipForward className="mr-2 h-4 w-4" />
-            Skip Pair
+            <SkipForward className="h-4 w-4" />
+            Skip pair
           </Button>
         </div>
       </div>

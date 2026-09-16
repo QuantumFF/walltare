@@ -603,21 +603,24 @@ test("change in Settings opens the field the line is about", async () => {
   ).toBe("Back to Review· Esc");
 });
 
-test("the empty state offers a way back to ranking", async () => {
+test("the empty state offers a way to Rank", async () => {
   await openReview([]);
 
   expect(inReview().queryByText(/no wallpapers to review\./i)).not.toBeNull();
-  await click(inReview().getByRole("button", { name: /return to ranking/i }));
+  await click(inReview().getByRole("button", { name: /go to rank/i }));
 
   expect(showingView()).toBe("rank");
 });
 
-test("back returns to ranking", async () => {
+test("the bar offers Refresh and no second route to another view", async () => {
   await openReview([wallpaper(2, { filename: "a.jpg" })]);
 
-  await click(inReview().getByRole("button", { name: /^back$/i }));
-
-  expect(showingView()).toBe("rank");
+  // ADR 0015 makes the chrome's tabs the app's navigation, and the **Back**
+  // control that stood beside Refresh is one of the two `setView` calls buried
+  // in this view's header that the ADR's own Context was correcting. A list
+  // that is not empty owes no route out of itself.
+  expect(inReview().queryByRole("button", { name: /refresh/i })).not.toBeNull();
+  expect(inReview().queryByRole("button", { name: /^back$/i })).toBeNull();
 });
 
 test("a load failure surfaces readably instead of console-only", async () => {

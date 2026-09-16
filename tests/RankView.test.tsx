@@ -661,13 +661,40 @@ test("a skip that fails keeps the pair on screen and says so", async () => {
   expect(skipButton().disabled).toBe(false);
 });
 
-test("Stop & Review navigates to review", async () => {
+test("the footer offers Skip and no second route to another view", async () => {
   servePairs(pair(1, 2), pair(3, 4));
 
   await renderRankView();
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: /stop & review/i }));
-  });
 
-  expect(currentView()).toBe("review");
+  // ADR 0015 makes the chrome's tabs the app's navigation, so the **Stop &
+  // Review** control that used to sit beside Skip is gone: the destination it
+  // named is one click away in a bar that is on screen on every view.
+  expect(skipButton()).not.toBeNull();
+  expect(screen.queryByRole("button", { name: /review/i })).toBeNull();
+});
+
+test("each pane is a named control the keyboard can reach", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  serveVote(() => ({ next_pair: pair(5, 6), stats: stats() }));
+
+  await renderRankView();
+
+  // A `<div onClick>` could be neither. The arrows are a `window` fallback that
+  // stands down as soon as anything else answers the key, so they are what
+  // fires when nothing has focus rather than a substitute for the pane being
+  // focusable.
+  const left = screen.getByRole("button", {
+    name: "Pick the wallpaper on the left",
+  });
+  expect(
+    screen.getByRole("button", { name: "Pick the wallpaper on the right" }),
+  ).not.toBeNull();
+
+  await act(async () => {
+    left.focus();
+    fireEvent.click(left);
+  });
+  await runPickFeedback();
+
+  expect(votes).toEqual([[1, 2]]);
 });
