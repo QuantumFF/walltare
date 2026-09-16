@@ -219,6 +219,22 @@ Library" rather than surfacing `NotEnoughWallpapers` as an error string.
 A disabled tab is a dead end that explains nothing, and the states this app can
 reach all have an explanation worth reading.
 
+> **Amended by [#250](https://github.com/QuantumFF/walltare/issues/250),
+> 2026-09-17.** The corollary, which this ADR shipped without: a destination the
+> tabs always reach owes no second control reaching it. Rank's footer carried a
+> **Stop & Review** button behind a divider and Review's bar carried a **Back**
+> to Rank, and both outlived the switch this ADR replaced — they are literally
+> the "two `setView` calls buried in Review's header" the Context above names as
+> the state of the app before it. Both are deleted. What stays beside each is
+> the control that does something other than leave: Skip changes the pair, and
+> Refresh refetches the list.
+>
+> The rule this draws is about duplicates and not about routes. A view's own
+> empty state still names a destination and offers it — that is the paragraph
+> above, and the sentence is what earns the control. So Rank's dead end keeps
+> **Go to Review**, because the sentence beside it names Review as the fix, and
+> Review's empty state keeps **Go to Rank**.
+
 ### Keyboard
 
 Bare arrows are spoken for twice: Rank votes with them and the lightbox walks

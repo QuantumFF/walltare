@@ -1,3 +1,4 @@
+import { EmptyState } from "@/components/EmptyState";
 import { Lightbox, useLightbox } from "@/components/Lightbox";
 import { PageBar } from "@/components/PageBar";
 import {
@@ -14,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
 import { client } from "@/lib/client";
-import { ArrowLeft, Check, Loader2, RefreshCw } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Check, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 /**
@@ -135,27 +137,24 @@ export function ReviewView() {
           Lowest Scores first
         </span>
         <RejectDestinationLine destination={destination} />
-        <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void fetchReviewList()}
-            className="gap-2"
-            disabled={loading}
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setView("rank")}
-            className="gap-2"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back
-          </Button>
-        </div>
+        {/* Refresh, and nothing beside it.
+
+            A **Back** button went to Rank from here, which is the shape
+            ADR 0015 replaced with the chrome's tabs: a fixed bar one click away
+            already names that destination, and the "two `setView` calls buried
+            in Review's header" this ADR's own Context describes were half of
+            what it was correcting. Refresh stays because it acts on this list
+            rather than leaving it. */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void fetchReviewList()}
+          className="gap-2"
+          disabled={loading}
+        >
+          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+          Refresh
+        </Button>
       </PageBar>
     </>
   );
@@ -176,28 +175,44 @@ export function ReviewView() {
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       ) : (
-        /* `w-full` beside the `mx-auto`, and it is load-bearing rather than
-           tidiness. Auto cross-axis margins on a flex item suppress the
-           `stretch` that would otherwise give it the line's full width, so
-           without a width of its own this centred box is sized `fit-content` —
-           and the grid inside it is `minmax(0, 1fr)` columns, whose intrinsic
-           contribution is nothing. WebKitGTK's first layout of the subtree
-           stretched it anyway and its relayout does not, so the collapse
-           appeared only on the second visit: ADR 0015 hides this view with
-           `display: none` rather than unmounting it, and the way back is a
-           fresh layout. Fifty cards twelve pixels wide, until a reload made it
-           a first visit again. Rank and Settings pair the two classes for the
-           same reason (#190). */
-        <div className="mx-auto flex h-full w-full max-w-[1920px] flex-col gap-8 p-6 animate-in fade-in duration-500">
-          {/* Content */}
+        /* The same box the library page gives the same grid, which is the whole
+           of what this line is now: full width, and the `p-4` the virtualiser
+           over there was measured against (ADR 0027). It used to be
+           `mx-auto max-w-[1920px] p-6`, so one page capped and centred its
+           cards and the other let them fill the window — the same fifty-card
+           grid at two card sizes with two gutters, decided by which tab was up.
+           The cap is what went: a library of 5,000 cannot have one, because the
+           grid derives its row height from the scroller's width and a narrower
+           box inside that scroller would put the window against a row height
+           nothing has. So Review gives up the cap rather than Library going and
+           getting one.
+
+           `w-full` stays, and it is load-bearing rather than tidiness. The grid
+           inside is `minmax(0, 1fr)` columns, whose intrinsic contribution is
+           nothing, so a box that is ever sized `fit-content` collapses to fifty
+           cards twelve pixels wide — which is what the `mx-auto` above used to
+           risk, since auto cross-axis margins suppress a flex item's `stretch`.
+           WebKitGTK's first layout stretched it anyway and its relayout did
+           not, so the collapse appeared only on the second visit: ADR 0015
+           hides this view with `display: none` rather than unmounting it, and
+           the way back is a fresh layout (#190).
+
+           The `animate-in fade-in duration-500` went with the padding. It fired
+           on every refetch, so a Refresh flashed the whole grid out and back,
+           and no other view in the app announces itself that way. */
+        <div className="flex h-full w-full flex-col p-4">
           {wallpapers.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground gap-4">
-              <Check className="h-12 w-12 opacity-20" />
-              <p>No wallpapers to review.</p>
-              <Button variant="link" onClick={() => setView("rank")}>
-                Return to Ranking
-              </Button>
-            </div>
+            /* The shared state, so this page's "nothing here" is built the same
+               way the library page's two are (ADR 0015). The route out names
+               the destination the way the chrome's tab does — Rank is the view,
+               and "Ranking" was a fourth word for it. */
+            <EmptyState
+              icon={Check}
+              action="Go to Rank"
+              onAction={() => setView("rank")}
+            >
+              No wallpapers to review.
+            </EmptyState>
           ) : (
             /* The grid is the shared one, and Review's own `div.grid` went with
                the card markup it used to hold. One tab stop with a roving
