@@ -130,13 +130,21 @@ function ViewTabs() {
           onClick={() => setView(tab.view)}
           onKeyDown={(event) => handleKeyDown(event, index)}
           className={cn(
-            "relative h-12 px-4 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+            "h-8 rounded-md px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
             view === tab.view
-              ? // The chrome's own bottom edge is the indicator. Navigation
-                // should not assert itself as hard as a primary button does, so
-                // the active tab is underlined rather than inverted (#44).
-                "font-medium text-foreground after:absolute after:inset-x-3 after:bottom-0 after:h-[2px] after:bg-foreground"
-              : "text-muted-foreground hover:text-foreground",
+              ? // A filled tab, where a 2px underline in the foreground colour
+                // used to be. #44 ruled that navigation should not assert itself
+                // as hard as a primary button, and that still holds: the fill is
+                // `secondary`, one step off the background rather than inverted,
+                // so the tab reads as the surface the page hangs from instead of
+                // as the thing to press. What the underline could not do is say
+                // which view is up from across the room, which is the whole job
+                // of this control. The view's own heading stays `sr-only`: a
+                // visible one would render the tab's own word twice, twelve
+                // pixels apart, which is the duplicate ADR 0015 came back to
+                // delete.
+                "bg-secondary font-medium text-foreground"
+              : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
           )}
         >
           {tab.label}

@@ -303,19 +303,26 @@ test("the tab group is a tablist with one Tab stop, wherever the curator is", as
   expect(allTabs().map((el) => el.tabIndex)).toEqual([0, -1, -1]);
 });
 
-test("the active tab is underlined by the chrome's own bottom edge", async () => {
+test("the active tab is the filled one", async () => {
   await openApp();
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and it is the whole difference between an underline and the
-  // inverted chip #44 turned down: navigation should not shout as loudly as a
-  // primary button.
-  expect(tab("Rank").className).toContain("after:bottom-0");
-  expect(tab("Review").className).not.toContain("after:bottom-0");
+  // assert. `secondary` is the assertion: one step off the background, not the
+  // inverted `primary` chip #44 turned down. A 2px underline held this spot
+  // until it turned out to be unreadable at a glance, which is the one thing
+  // the control exists to do.
+  // The inactive tab's own fill is `hover:bg-secondary/50`, so the assertion
+  // has to be the unprefixed utility rather than a substring of it.
+  const filled = (label: string) =>
+    tab(label).className.split(" ").includes("bg-secondary");
+
+  expect(filled("Rank")).toBe(true);
+  expect(tab("Rank").className).not.toContain("bg-primary");
+  expect(filled("Review")).toBe(false);
 
   await click(tab("Review"));
-  expect(tab("Review").className).toContain("after:bottom-0");
-  expect(tab("Rank").className).not.toContain("after:bottom-0");
+  expect(filled("Review")).toBe(true);
+  expect(filled("Rank")).toBe(false);
 });
 
 test("the chrome row is the same row on every view, and each page carries the bar below it", async () => {
