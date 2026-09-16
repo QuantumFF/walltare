@@ -104,6 +104,11 @@ export type Theme = "system" | "light" | "dark";
 /**
  * Mirrors settings::Resolution: a size in pixels, width by height.
  *
+ * What the Screen and the Minimum resolution settings hold. Not a wallpaper's
+ * Dimensions, which are the same two numbers about a different thing — a fact
+ * about a file rather than a stated preference — and live on `Wallpaper` as
+ * nullable `width` and `height` (CONTEXT.md, ADR 0044).
+ *
  * The two numbers rather than the `1920x1080` string the column holds, because
  * the readers want different halves of it — the crop preview the ratio, the
  * undersized check the pixels — and a string every one of them parses again is
@@ -158,36 +163,55 @@ export interface Settings {
 export type SettingKey = Exclude<keyof Settings, "detected_screen">;
 
 /**
+ * The Screen to assume when nothing has said what the monitor is, mirroring
+ * `settings::FALLBACK_SCREEN`.
+ *
+ * Only reachable through `DEFAULT_SETTINGS` below: the backend does its own
+ * falling back, so the frontend lands here when the settings read itself failed.
+ */
+const FALLBACK_SCREEN: Resolution = { width: 1920, height: 1080 };
+
+/**
  * What every key means with no row in the table, mirroring `Settings::defaults`.
  *
  * settings.rs owns the answer; this copy exists only for the boot path, which
- * has to render something when `get_settings` fails. The screen here is
- * `FALLBACK_SCREEN`, not a detected monitor: a boot that could not read the
- * settings could not have been told what the monitor is either.
+ * has to render something when `get_settings` fails. The Screen here is the
+ * fallback and not a detected monitor: a boot that could not read the settings
+ * could not have been told what the monitor is either.
  */
 export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   library_root: "",
   reject_destination: "./rejected",
-  screen: { width: 1920, height: 1080 },
-  minimum_resolution: { width: 1920, height: 1080 },
-  detected_screen: { width: 1920, height: 1080 },
+  screen: FALLBACK_SCREEN,
+  minimum_resolution: FALLBACK_SCREEN,
+  detected_screen: FALLBACK_SCREEN,
 };
 
 /**
  * One setting as the column holds it, which is the one place in the app a
  * setting becomes a string.
  *
- * The two sizes are the only keys that are not a string already: they cross as
- * two numbers, for the readers that want one half or the other, and store as
- * `1920x1080`, which is the form `settings.rs` parses. Keeping both ends of that
- * in one expression is why `setSetting` calls this rather than each caller
- * building its own payload (ADR 0031).
+ * Keyed on the setting rather than on the shape of the value, so a later key
+ * that happens to hold an object cannot fall through to the size encoding by
+ * accident. Everything else is what the column already holds: a theme is one of
+ * three strings, a Written path is the string the curator typed, and turning
+ * either into anything but itself would make the empty Library root — the write
+ * that deletes the row — unreachable.
+ *
+ * `setSetting` is the only caller, which is what stops any other part of the app
+ * building a settings payload for itself (ADR 0031).
  */
-function encodeSetting(value: Settings[SettingKey]): string {
-  return typeof value === "object"
-    ? `${value.width}x${value.height}`
-    : String(value);
+function encodeSetting(key: SettingKey, value: Settings[SettingKey]): string {
+  switch (key) {
+    case "screen":
+    case "minimum_resolution": {
+      const { width, height } = value as Resolution;
+      return `${width}x${height}`;
+    }
+    default:
+      return String(value);
+  }
 }
 
 /** Mirrors voting::VoteOutcome */
@@ -569,7 +593,7 @@ export const client = {
   setSetting<K extends SettingKey>(key: K, value: Settings[K]) {
     return invoke<Settings>("set_setting", {
       key,
-      value: encodeSetting(value),
+      value: encodeSetting(key, value),
     });
   },
 

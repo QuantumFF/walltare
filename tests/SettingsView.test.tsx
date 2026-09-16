@@ -1380,13 +1380,29 @@ test("the screen starts on the detected monitor, and the line says so", async ()
   expect(sizeIn("Screen")).toEqual(["3840", "2160"]);
   // The one default on this page a curator could not otherwise recover, which
   // is why it is printed rather than left to the empty settings table to imply
-  // (ADR 0010, ADR 0020).
-  expect(screenLine()?.textContent).toContain("Detected 3840 × 2160.");
-  // Nothing to go back to yet: the screen already is the detected one.
-  expect(
-    within(screenSection()).queryByRole("button", { name: "Use detected" }),
-  ).toBeNull();
+  // — and why the sentence says what to do with it, there being no Reset
+  // control to do it in one click (ADR 0010, ADR 0020).
+  expect(screenLine()?.textContent).toBe(
+    "Detected 3840 × 2160. Type it back to use it again.",
+  );
   expect(settingWrites).toEqual([]);
+});
+
+test("no section on this page offers a Reset control", async () => {
+  // ADR 0020: no Reset button anywhere, because writing the default back is
+  // what deletes the row and a control for it would only explain a rule the
+  // write path already enforces. The two sizes are the first settings whose
+  // default is a number rather than something the curator is looking at, so
+  // this is where that rule was most tempting to break.
+  storedSettings = settings({
+    screen: { width: 2560, height: 1440 },
+    minimum_resolution: { width: 1280, height: 720 },
+  });
+  await openSettingsFromLibrary();
+
+  for (const label of [/reset/i, /use detected/i, /use screen/i]) {
+    expect(screen.queryByRole("button", { name: label })).toBeNull();
+  }
 });
 
 test("a screen the curator types is stored as width by height", async () => {
@@ -1446,18 +1462,47 @@ test("a size that is not one is refused before it is written", async () => {
 
   await typeSize("Screen", "2560", "0");
   expect(settingWrites).toEqual([]);
+
+  // And a number no `u32` will hold, which the backend would refuse with a
+  // sentence nothing on this page shows: the field's rule and the column's
+  // reader have to be the same rule, or a write looks accepted and is not.
+  await typeSize("Screen", "4294967296", "1440");
+  expect(settingWrites).toEqual([]);
+  await typeSize("Screen", "4294967295", "1440");
+  expect(settingWrites).toEqual([
+    { key: "screen", value: "4294967295x1440" },
+  ]);
 });
 
-test("Use detected appears once the screen is overridden, and puts it back", async () => {
+test("a blur that changed nothing writes nothing", async () => {
+  await openSettingsFromLibrary();
+
+  // Tabbing through the section, which is two blurs and no edit. A field that
+  // wrote on every blur would spend a `set_setting` on each of them — the guard
+  // `usePathField` keeps for the same reason (ADR 0026).
+  await blurAxis("Screen width");
+  await blurAxis("Screen height");
+  await blurAxis("Minimum width");
+
+  expect(settingWrites).toEqual([]);
+
+  // And a size typed back to what it already was is still nothing to write.
+  await typeSize("Screen", "3840", "2160");
+  expect(settingWrites).toEqual([]);
+});
+
+test("an overridden screen still names the monitor it can be changed back to", async () => {
   storedSettings = settings({ screen: { width: 2560, height: 1440 } });
   await openSettingsFromLibrary();
 
   expect(sizeIn("Screen")).toEqual(["2560", "1440"]);
-  expect(screenLine()?.textContent).toContain("Detected 3840 × 2160.");
-
-  await click(
-    within(screenSection()).getByRole("button", { name: "Use detected" }),
+  // Without this line the detected size is unrecoverable: nothing else on the
+  // page shows it once the curator has typed over it.
+  expect(screenLine()?.textContent).toBe(
+    "Detected 3840 × 2160. Type it back to use it again.",
   );
+
+  await typeSize("Screen", "3840", "2160");
 
   // Changing it back is a write of the detected size, which is what the backend
   // reads as the default and answers by deleting the row.
@@ -1471,12 +1516,9 @@ test("the minimum resolution starts on the screen, and the line names it", async
     "Minimum resolution",
   );
   expect(sizeIn("Minimum")).toEqual(["3840", "2160"]);
-  expect(minimumLine()?.textContent).toContain(
-    "Defaults to your screen, 3840 × 2160.",
+  expect(minimumLine()?.textContent).toBe(
+    "Defaults to your screen, 3840 × 2160. Type it back to use it again.",
   );
-  expect(
-    within(minimumSection()).queryByRole("button", { name: "Use screen" }),
-  ).toBeNull();
 });
 
 test("a minimum resolution the curator types is stored under its own key", async () => {
@@ -1489,7 +1531,7 @@ test("a minimum resolution the curator types is stored under its own key", async
   ]);
 });
 
-test("Use screen appears once the minimum is set, and puts it back", async () => {
+test("a minimum that was set names the screen it can be changed back to", async () => {
   storedSettings = settings({
     screen: { width: 2560, height: 1440 },
     minimum_resolution: { width: 1280, height: 720 },
@@ -1500,13 +1542,11 @@ test("Use screen appears once the minimum is set, and puts it back", async () =>
   // The screen as the curator overrode it, not the monitor: the minimum follows
   // the screen setting, which is the whole reason there is one screen and not
   // two.
-  expect(minimumLine()?.textContent).toContain(
-    "Defaults to your screen, 2560 × 1440.",
+  expect(minimumLine()?.textContent).toBe(
+    "Defaults to your screen, 2560 × 1440. Type it back to use it again.",
   );
 
-  await click(
-    within(minimumSection()).getByRole("button", { name: "Use screen" }),
-  );
+  await typeSize("Minimum", "2560", "1440");
 
   expect(settingWrites).toEqual([
     { key: "minimum_resolution", value: "2560x1440" },

@@ -549,7 +549,8 @@ export function SettingsView() {
             that read, where the rest of the page arriving is it recovering
             alongside the fault leaving (ADR 0033).
 
-            Missing files is last for the rule that put Thumbnails next to last. It is the most maintenance-shaped thing on the page — a
+            Missing files is last for the rule that put Thumbnails next to
+            last. It is the most maintenance-shaped thing on the page — a
             question nobody asks until something looks wrong — and putting it
             under the Library root, where it is about the same folder, would sit
             a filesystem walk between a first-run curator and the Scan button

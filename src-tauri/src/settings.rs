@@ -51,6 +51,11 @@ impl Theme {
 
 /// A size in pixels, width by height.
 ///
+/// What the Screen and the Minimum resolution hold. Not a wallpaper's
+/// Dimensions, which are the same two numbers about a different thing — a fact
+/// about a file rather than a stated preference — and live as nullable columns
+/// on the row (`CONTEXT.md`, [ADR 0044](../../docs/adr/0044-pixel-dimensions-live-on-the-wallpaper-row.md)).
+///
 /// Stored as `WIDTHxHEIGHT` and crossing the IPC as the two numbers, because the
 /// callers want different halves of it: the crop preview takes the ratio and the
 /// undersized check takes the pixels. Zero in either axis is not a size, so it
@@ -89,11 +94,31 @@ impl fmt::Display for Resolution {
 /// What the machine, rather than the curator, contributes to the defaults.
 ///
 /// It arrives from `lib.rs`, which is the only place that can ask a monitor its
-/// size, and it is a struct rather than a bare [`Resolution`] so that the next
-/// detected default has somewhere to go.
+/// size. A named type rather than a bare [`Resolution`] parameter so that every
+/// signature it threads through says which of the two sizes in this module it
+/// is, and so that "detection found nothing" has a spelling —
+/// [`Detected::default`] — rather than being a constant each caller reaches for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Detected {
     pub screen: Resolution,
+}
+
+impl Detected {
+    /// What detection amounts to, given whatever the platform said the primary
+    /// monitor measures.
+    ///
+    /// The decision `lib.rs` cannot test, split from the Tauri call that cannot
+    /// run without an app handle: `None` is a platform with no monitor to name
+    /// or an error reading it, and a zero axis is a monitor it would not
+    /// measure. Both leave [`FALLBACK_SCREEN`] standing, because a curator with
+    /// an undescribable monitor gets a working app and a field to correct rather
+    /// than a launch that failed over a default.
+    pub fn from_monitor(measured: Option<(u32, u32)>) -> Self {
+        match measured.and_then(|(width, height)| Resolution::new(width, height)) {
+            Some(screen) => Self { screen },
+            None => Self::default(),
+        }
+    }
 }
 
 impl Default for Detected {
@@ -395,6 +420,25 @@ mod tests {
 
         assert_eq!(settings.screen, FALLBACK_SCREEN);
         assert_eq!(settings.minimum_resolution, FALLBACK_SCREEN);
+    }
+
+    #[test]
+    fn every_way_the_platform_can_fail_to_name_a_monitor_lands_on_the_fallback() {
+        // The three answers `lib.rs` can get out of `primary_monitor`, which it
+        // hands straight to this function: a size, no monitor at all or an error
+        // reading one, and a monitor it would not measure.
+        assert_eq!(
+            Detected::from_monitor(Some((2560, 1440))).screen,
+            size(2560, 1440)
+        );
+
+        for unusable in [None, Some((0, 1080)), Some((1920, 0)), Some((0, 0))] {
+            assert_eq!(
+                Detected::from_monitor(unusable).screen,
+                FALLBACK_SCREEN,
+                "{unusable:?}"
+            );
+        }
     }
 
     #[test]

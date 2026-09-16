@@ -1,19 +1,35 @@
 import { Section } from "@/components/SettingsView";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
-import { type Resolution } from "@/lib/client";
-import { useEffect, useState } from "react";
+import { type Resolution, type SettingKey } from "@/lib/client";
+import { useEffect, useRef, useState } from "react";
 
-// The two sections about the curator's screen, in one module because the second
-// is defined in terms of the first: the minimum resolution's default *is* the
-// screen, so a reader working out what the field means has to have the section
-// above it in front of them. They share one field, which is the other reason
-// (ADR 0020).
+// The two sections about the curator's Screen, in one module because the second
+// is defined in terms of the first: a Minimum resolution's default *is* the
+// Screen, so a reader working out what the field means has to have the section
+// above it in front of them. They are one component twice over, which is the
+// other reason (ADR 0026).
 //
-// The screen is one setting and not two. The crop preview will read its ratio
-// and the undersized check will read its pixels, and two settings holding the
-// same fact can disagree about it.
+// One Screen and not two. The crop preview will read its ratio and the
+// undersized check will read its pixels, and two settings holding the same fact
+// can disagree about it.
+//
+// No Reset control on either, which is ADR 0020's rule and is why each section
+// prints what it falls back to instead: the line names the Detected 3840 × 2160,
+// and typing that back is what deletes the row. A button would have been one
+// click rather than four digits, and the ADR's own reason for refusing one — it
+// needs a command for the `DELETE` — does not apply, since writing the default
+// through `set_setting` already deletes the row. Reopening that is an ADR, not a
+// section.
+
+/** The two settings this module is about, which is the two that hold a size. */
+type SizeSetting = Extract<SettingKey, "screen" | "minimum_resolution">;
+
+/** The `data-slot` on the line under each field, off the key, as `PathField` does. */
+const STATUS_SLOT: Record<SizeSetting, string> = {
+  screen: "screen-status",
+  minimum_resolution: "minimum-resolution-status",
+};
 
 /** A size as the curator reads it, which is not the `1920x1080` the column holds. */
 function readableSize({ width, height }: Resolution): string {
@@ -36,35 +52,65 @@ const asDraft = ({ width, height }: Resolution): Draft => ({
 });
 
 /**
- * A whole number of pixels above zero, or nothing.
+ * The largest number the column's reader will take, because `settings.rs` parses
+ * a size into two `u32`s.
  *
- * Deliberately as strict as `settings.rs`, which refuses a zero axis and would
- * answer a bad request the page would then have to explain in the backend's
- * words. Saying it here means the curator reads the sentence before the write
- * rather than after it, which is the same rule the Library root's failed Scan
- * follows (ADR 0020).
+ * Without it this field's "whole number above zero" and the backend's are two
+ * different rules, and the gap between them is a write that looks accepted and
+ * comes back a refusal the curator never sees.
  */
+const MAX_PIXELS = 4_294_967_295;
+
+/** A whole number of pixels the backend would take, or nothing. */
 function pixels(typed: string): number | null {
   const trimmed = typed.trim();
   if (!/^\d+$/.test(trimmed)) return null;
   const value = Number(trimmed);
-  return value > 0 ? value : null;
+  return value > 0 && value <= MAX_PIXELS ? value : null;
 }
 
 const REFUSED_SIZE = "Width and height are whole numbers of pixels above zero.";
 
+/** One axis of a size, which is the same input twice but for which half it is. */
+function AxisInput({
+  label,
+  value,
+  onEdit,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  onEdit: (next: string) => void;
+  onCommit: () => void;
+}) {
+  return (
+    <Input
+      aria-label={label}
+      inputMode="numeric"
+      className="w-24"
+      value={value}
+      onChange={(event) => onEdit(event.target.value)}
+      // On blur and never on keystroke, for the reason the path fields are:
+      // `2560` is four keystrokes and three of them are a different Screen
+      // (ADR 0010).
+      onBlur={onCommit}
+      // Enter commits, which is all there is to do in a field that writes on
+      // blur — the same rule the Reject destination's Enter follows (ADR 0020).
+      onKeyDown={(event) => {
+        if (event.key === "Enter") onCommit();
+      }}
+    />
+  );
+}
+
 /**
  * A size as two inputs, width by height, writing on blur.
- *
- * On blur and not on keystroke, for the reason the path fields are: `2560` is
- * four keystrokes and three of them are a different screen (ADR 0010). Enter
- * commits too, since there is nothing else to run here.
  *
  * The draft follows the store when the stored numbers move, and only then — a
  * write of some other setting re-renders this field and must not take a
  * half-typed number away from the curator.
  */
-function ResolutionField({
+function SizeField({
   label,
   stored,
   onCommit,
@@ -77,8 +123,15 @@ function ResolutionField({
   const [draft, setDraft] = useState(() => asDraft(stored));
   const [refused, setRefused] = useState(false);
 
+  // What the store was last told, so a blur on the way out of the section does
+  // not write a size the store already holds — the guard `usePathField` keeps
+  // for the same reason, and the reason a Tab through two inputs is not two
+  // writes (ADR 0026).
+  const committed = useRef(stored);
+
   useEffect(() => {
     setDraft(asDraft(stored));
+    committed.current = stored;
     setRefused(false);
   }, [stored.width, stored.height]);
 
@@ -90,11 +143,10 @@ function ResolutionField({
       return;
     }
     setRefused(false);
-    // The store is told even when the numbers have not moved: `saveSetting`
-    // answers with the whole struct and the backend deletes a row that equals
-    // the default, so a blur that changes nothing costs one call and keeps the
-    // write path the only thing that decides what a default is.
-    onCommit({ width, height });
+    const next = { width, height };
+    if (sameSize(next, committed.current)) return;
+    committed.current = next;
+    onCommit(next);
   };
 
   const edit = (axis: keyof Draft, next: string) => {
@@ -105,30 +157,20 @@ function ResolutionField({
   return (
     <>
       <div className="flex items-center gap-2">
-        <Input
-          aria-label={`${label} width`}
-          inputMode="numeric"
-          className="w-24"
+        <AxisInput
+          label={`${label} width`}
           value={draft.width}
-          onChange={(event) => edit("width", event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") commit();
-          }}
+          onEdit={(next) => edit("width", next)}
+          onCommit={commit}
         />
         <span aria-hidden className="text-muted-foreground">
           ×
         </span>
-        <Input
-          aria-label={`${label} height`}
-          inputMode="numeric"
-          className="w-24"
+        <AxisInput
+          label={`${label} height`}
           value={draft.height}
-          onChange={(event) => edit("height", event.target.value)}
-          onBlur={commit}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") commit();
-          }}
+          onEdit={(next) => edit("height", next)}
+          onCommit={commit}
         />
         <span className="text-xs text-muted-foreground">pixels</span>
       </div>
@@ -139,42 +181,71 @@ function ResolutionField({
 }
 
 /**
- * The line under a size field: what the default is, and the control that goes
- * back to it.
+ * One size section: a heading, what the setting is for, the field, and the line
+ * naming what it falls back to.
  *
- * A Reset the theme deliberately does not have, and for the reason it does not:
- * ADR 0020 refused one there because writing `system` back is a radio button the
- * curator is looking at. A detected screen is a number nothing on the page shows
- * once it has been overridden, so without this the "change it back" is a value
- * the curator has to remember (ADR 0010).
+ * Both sections are this component, for the reason the two Written path fields
+ * are one `PathFieldRow`: what differs between them is prose and which key is
+ * written, and a second copy of the shape is a second place for the blur rule to
+ * drift (ADR 0026).
  */
-function DefaultLine({
-  slot,
-  sentence,
-  reset,
+function SizeSection({
+  heading,
+  setting,
+  purpose,
+  fieldLabel,
+  stored,
+  fallback,
 }: {
-  slot: string;
-  sentence: string;
-  /** The label and the write, or `null` when the setting is already its default. */
-  reset: { label: string; onReset: () => void } | null;
+  heading: string;
+  setting: SizeSetting;
+  /** What the setting is for, in the sentence under the heading. */
+  purpose: string;
+  /**
+   * What the two inputs are called, which is not the heading: "Minimum
+   * resolution height" is a mouthful for a four-digit box.
+   */
+  fieldLabel: string;
+  stored: Resolution;
+  /** What this setting reads as with no row, and the sentence that names it. */
+  fallback: { size: Resolution; sentence: (size: string) => string };
 }) {
+  const { saveSetting } = useApp();
+
   return (
-    <p
-      data-slot={slot}
-      className="flex items-center gap-2 text-xs text-muted-foreground"
-    >
-      {sentence}
-      {reset && (
-        <Button variant="ghost" size="sm" onClick={reset.onReset}>
-          {reset.label}
-        </Button>
-      )}
-    </p>
+    <Section heading={heading}>
+      <p className="text-sm text-muted-foreground">{purpose}</p>
+
+      <SizeField
+        label={fieldLabel}
+        stored={stored}
+        onCommit={(next) => {
+          void saveSetting(setting, next).catch((error: unknown) => {
+            console.error(
+              `Failed to store the ${heading.toLowerCase()}:`,
+              error,
+            );
+          });
+        }}
+      />
+
+      {/* The one default on this page a curator could not otherwise recover, so
+          it is printed rather than left to an empty settings table to imply. It
+          is also the whole of how the setting is changed back, with no Reset
+          control to do it in one click (ADR 0010, ADR 0020). */}
+      <p
+        data-slot={STATUS_SLOT[setting]}
+        className="text-xs text-muted-foreground"
+      >
+        {fallback.sentence(readableSize(fallback.size))}
+      </p>
+    </Section>
   );
 }
 
 /**
- * The Screen section: the size the curator is curating for, detected by default.
+ * The Screen section: the display the curator is curating for, detected by
+ * default.
  *
  * The detected monitor rides along on the settings answer rather than arriving
  * on a read of its own. It is not a setting — the backend refuses the key — but
@@ -183,79 +254,47 @@ function DefaultLine({
  * test file that opens this page for no question it answers better.
  */
 export function ScreenSection() {
-  const { settings, saveSetting } = useApp();
-  const { screen, detected_screen } = settings;
-
-  const write = (next: Resolution) => {
-    void saveSetting("screen", next).catch((error: unknown) => {
-      console.error("Failed to store the screen:", error);
-    });
-  };
+  const { settings } = useApp();
 
   return (
-    <Section heading="Screen">
-      <p className="text-sm text-muted-foreground">
-        The screen wallpapers are being curated for.
-      </p>
-
-      <ResolutionField label="Screen" stored={screen} onCommit={write} />
-
-      <DefaultLine
-        slot="screen-status"
-        sentence={`Detected ${readableSize(detected_screen)}.`}
-        reset={
-          sameSize(screen, detected_screen)
-            ? null
-            : {
-                label: "Use detected",
-                onReset: () => write(detected_screen),
-              }
-        }
-      />
-    </Section>
+    <SizeSection
+      heading="Screen"
+      setting="screen"
+      purpose="The display wallpapers are being curated for."
+      fieldLabel="Screen"
+      stored={settings.screen}
+      fallback={{
+        size: settings.detected_screen,
+        sentence: (size) => `Detected ${size}. Type it back to use it again.`,
+      }}
+    />
   );
 }
 
 /**
- * The Minimum resolution section: the size below which a wallpaper is too small
- * for the screen above.
+ * The Minimum resolution section: the size below which a wallpaper counts as
+ * undersized for the Screen above.
  *
- * Its default is the screen rather than a constant, so a curator who wants
+ * Its default is the Screen rather than a constant, so a curator who wants
  * exactly their own pixels has nothing to set here — and one who wants to be
- * stricter or looser than exact has somewhere to say so without lying to the
- * crop preview about what they are looking at.
+ * stricter or looser has somewhere to say so without lying to the crop preview
+ * about what they are looking at.
  */
 export function MinimumResolutionSection() {
-  const { settings, saveSetting } = useApp();
-  const { screen, minimum_resolution } = settings;
-
-  const write = (next: Resolution) => {
-    void saveSetting("minimum_resolution", next).catch((error: unknown) => {
-      console.error("Failed to store the minimum resolution:", error);
-    });
-  };
+  const { settings } = useApp();
 
   return (
-    <Section heading="Minimum resolution">
-      <p className="text-sm text-muted-foreground">
-        Wallpapers smaller than this are flagged as too small to hang.
-      </p>
-
-      <ResolutionField
-        label="Minimum"
-        stored={minimum_resolution}
-        onCommit={write}
-      />
-
-      <DefaultLine
-        slot="minimum-resolution-status"
-        sentence={`Defaults to your screen, ${readableSize(screen)}.`}
-        reset={
-          sameSize(minimum_resolution, screen)
-            ? null
-            : { label: "Use screen", onReset: () => write(screen) }
-        }
-      />
-    </Section>
+    <SizeSection
+      heading="Minimum resolution"
+      setting="minimum_resolution"
+      purpose="Wallpapers smaller than this count as undersized for your screen."
+      fieldLabel="Minimum"
+      stored={settings.minimum_resolution}
+      fallback={{
+        size: settings.screen,
+        sentence: (size) =>
+          `Defaults to your screen, ${size}. Type it back to use it again.`,
+      }}
+    />
   );
 }

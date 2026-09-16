@@ -727,34 +727,39 @@ fn refuse_the_database(app: &AppHandle, database: i64, supported: i64) {
 /// to answer, and guessing it from a window position would change the default
 /// every time they dragged the app across.
 fn detect_screen(app: &AppHandle) -> settings::Detected {
-    let monitor = match app.primary_monitor() {
-        Ok(Some(monitor)) => monitor,
+    // Physical pixels, which is what a wallpaper's own Dimensions are measured
+    // in. A scale factor belongs to how big things look, not to how big the
+    // Screen is.
+    //
+    // What each answer means is `Detected::from_monitor`'s, which is where it
+    // can be tested: this reaches for the monitor and says out loud what it
+    // found, and nothing here decides anything.
+    let measured = match app.primary_monitor() {
+        Ok(Some(monitor)) => {
+            let size = monitor.size();
+            // The same rule `from_monitor` applies, asked rather than restated,
+            // so the log cannot come to disagree with the decision.
+            if settings::Resolution::new(size.width, size.height).is_none() {
+                eprintln!(
+                    "settings: the primary monitor reports {}x{}; using the fallback screen",
+                    size.width, size.height
+                );
+            }
+            Some((size.width, size.height))
+        }
         Ok(None) => {
             eprintln!("settings: no primary monitor; using the fallback screen");
-            return settings::Detected::default();
+            None
         }
         Err(error) => {
             eprintln!(
                 "settings: could not read the primary monitor ({error}); using the fallback screen"
             );
-            return settings::Detected::default();
+            None
         }
     };
 
-    // Physical pixels, which is what a wallpaper's own dimensions are measured
-    // in. A scale factor belongs to how big things look, not to how big the
-    // screen is.
-    let size = monitor.size();
-    match settings::Resolution::new(size.width, size.height) {
-        Some(screen) => settings::Detected { screen },
-        None => {
-            eprintln!(
-                "settings: the primary monitor reports {}x{}; using the fallback screen",
-                size.width, size.height
-            );
-            settings::Detected::default()
-        }
-    }
+    settings::Detected::from_monitor(measured)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
