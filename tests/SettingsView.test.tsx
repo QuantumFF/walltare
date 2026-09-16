@@ -1463,11 +1463,24 @@ test("a size that is not one is refused before it is written", async () => {
   await typeSize("Screen", "2560", "0");
   expect(settingWrites).toEqual([]);
 
-  // And a number no `u32` will hold, which the backend would refuse with a
-  // sentence nothing on this page shows: the field's rule and the column's
-  // reader have to be the same rule, or a write looks accepted and is not.
-  await typeSize("Screen", "4294967296", "1440");
-  expect(settingWrites).toEqual([]);
+  // And a number no `u32` will hold. `settings.rs` parses a size into two of
+  // them, so this is the far end of the same rule: a field that took it would
+  // send a write the backend answers `BadRequest` to, and the only thing this
+  // page does with a failed write is `console.error` — leaving the curator with
+  // an oversized draft on screen and no sentence saying why it did not take.
+  for (const oversized of ["4294967296", "9999999999"]) {
+    await typeSize("Screen", oversized, "1440");
+    expect(settingWrites).toEqual([]);
+    // The same sentence a word in the box gets, and for the same reason: the
+    // curator reads it before the write rather than never.
+    expect(
+      within(screenSection()).getByText(
+        "Width and height are whole numbers of pixels above zero.",
+      ),
+    ).not.toBeNull();
+  }
+
+  // The boundary itself is a size, so the rule stops exactly where `u32` does.
   await typeSize("Screen", "4294967295", "1440");
   expect(settingWrites).toEqual([
     { key: "screen", value: "4294967295x1440" },
