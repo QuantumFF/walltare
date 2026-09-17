@@ -1,4 +1,6 @@
 import {
+  densityColumns,
+  densityZoom,
   layoutPlan,
   planUniformGrid,
   uniformRowHeight,
@@ -30,6 +32,72 @@ function uniformGrid(count: number, columns: number, width: number) {
     rowHeight: uniformRowHeight({ ...UNIFORM, columns, width }),
   });
 }
+
+// The density: how far a zoom moves the column count, and where it stops
+// (#264). Arithmetic over four numbers, so it is asserted here rather than
+// through a grid — what a mounted grid can show is that the arrows move by the
+// count, which is `WallpaperGrid.test.tsx`'s question.
+
+/** Library's range and Review's, which differ at the far end only. */
+const LIBRARY = { min: 2, max: 8 };
+const REVIEW = { min: 2, max: 6 };
+
+test("a zoom of nothing is the count the viewport asked for", () => {
+  // The curator who never makes the gesture gets exactly the grid that was
+  // there before, at every breakpoint the app has.
+  for (const base of [2, 3, 4, 5]) {
+    expect(densityColumns(base, 0, LIBRARY)).toBe(base);
+    expect(densityColumns(base, 0, REVIEW)).toBe(base);
+  }
+});
+
+test("a step in is a card fewer, and a step out a card more", () => {
+  // In is larger cards, which is fewer of them — the direction a map and a
+  // browser both move under the same gesture.
+  expect(densityColumns(4, 1, LIBRARY)).toBe(3);
+  expect(densityColumns(4, 2, LIBRARY)).toBe(2);
+  expect(densityColumns(4, -1, LIBRARY)).toBe(5);
+  expect(densityColumns(4, -3, LIBRARY)).toBe(7);
+});
+
+test("the breakpoints keep applying underneath a zoom", () => {
+  // The reason the state is a number of steps and not a column count. A curator
+  // one step in is one step in at every width, rather than pinned to whatever
+  // number the width they were at happened to be showing — so a window dragged
+  // narrow narrows the grid with it.
+  expect(densityColumns(5, 1, LIBRARY)).toBe(4);
+  expect(densityColumns(3, 1, LIBRARY)).toBe(2);
+});
+
+test("the count stops at each tab's own bounds", () => {
+  // Review's far end is six and Library's is eight: a worklist of fifty has no
+  // scale to buy at the far end, and a browse surface over five thousand does.
+  expect(densityColumns(4, -8, REVIEW)).toBe(6);
+  expect(densityColumns(4, -8, LIBRARY)).toBe(8);
+  // And both go equally large, which is the end where the wallpaper is the
+  // point on either page.
+  expect(densityColumns(4, 9, REVIEW)).toBe(2);
+  expect(densityColumns(4, 9, LIBRARY)).toBe(2);
+});
+
+test("a step at the wall banks nothing for the way back to spend", () => {
+  // The zoom is clamped where it is written rather than where it is read. Six
+  // steps out of Review's range leaves the zoom at the wall, so one step back
+  // in moves the grid — where an unclamped zoom of -6 would need five presses
+  // before anything on screen changed, which is a curator making a gesture and
+  // watching it do nothing.
+  let zoom = 0;
+  for (let at = 0; at < 6; at++) zoom = densityZoom(4, zoom, -1, REVIEW);
+  expect(densityColumns(4, zoom, REVIEW)).toBe(6);
+
+  zoom = densityZoom(4, zoom, 1, REVIEW);
+  expect(densityColumns(4, zoom, REVIEW)).toBe(5);
+
+  // The same at the other end.
+  for (let at = 0; at < 9; at++) zoom = densityZoom(4, zoom, 1, REVIEW);
+  expect(densityColumns(4, zoom, REVIEW)).toBe(2);
+  expect(densityColumns(4, densityZoom(4, zoom, -1, REVIEW), REVIEW)).toBe(3);
+});
 
 test("a row is as tall as the cards sharing its width, at every column count", () => {
   // The box less the padding at both ends, less a gap between every pair,

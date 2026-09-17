@@ -60,6 +60,62 @@ export interface LayoutPlan {
   total: number;
 }
 
+/**
+ * How far a tab's density may be moved, as the column counts at either end.
+ *
+ * Per tab rather than one pair for the app, because the two tabs are doing
+ * different jobs with the same cards: Library is a browse surface where going
+ * wide is the point, and Review is a worklist of fifty where a card too small to
+ * judge is a card the curator has to open to use. The bound is what keeps either
+ * gesture off a density that renders nothing usefully (#264).
+ */
+export interface DensityRange {
+  /** The largest the cards go, as the fewest that share a row. */
+  min: number;
+  /** The smallest they go, as the most that share a row. */
+  max: number;
+}
+
+/**
+ * How many cards share a row once the curator has zoomed, from the count the
+ * viewport asks for on its own.
+ *
+ * A zoom of zero is the responsive count and nothing else, so a curator who
+ * never makes the gesture gets exactly the grid that was there before. A step in
+ * is a card fewer — the direction the word means, and the direction a map and a
+ * browser both move under the same gesture — and the breakpoints keep applying
+ * underneath, so a narrowed window still narrows the grid by one.
+ *
+ * Offsetting the responsive count rather than replacing it is what makes the
+ * second half true. A stored column count would be the curator's answer to a
+ * question the viewport had not asked yet, and a window dragged narrow would
+ * hold eight columns of nothing.
+ */
+export function densityColumns(
+  base: number,
+  zoom: number,
+  { min, max }: DensityRange,
+): number {
+  return Math.max(min, Math.min(base - zoom, max));
+}
+
+/**
+ * The zoom one step leaves behind: `by` of 1 for a step in, -1 for a step out.
+ *
+ * Clamped as a column count and expressed as a zoom again, rather than clamped
+ * where it is read. Ten steps in at the top of the range would otherwise bank
+ * nine that the way back has to spend before anything on screen moved, which is
+ * a gesture the curator makes and watches do nothing.
+ */
+export function densityZoom(
+  base: number,
+  zoom: number,
+  by: number,
+  range: DensityRange,
+): number {
+  return base - densityColumns(base, zoom + by, range);
+}
+
 /** The space a plan lays its rows out against. Both are the grid's own CSS. */
 export interface PlanSpacing {
   /** Between two rows, and between two cards in a row. */

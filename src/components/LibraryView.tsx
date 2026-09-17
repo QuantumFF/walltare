@@ -6,6 +6,7 @@ import {
   useRejectDestination,
 } from "@/components/RejectDestination";
 import {
+  LIBRARY_DENSITY,
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -464,7 +465,14 @@ export function LibraryView() {
              gets a node are all arithmetic over the grid's own CSS (#131, #231,
              ADR 0027). The selection is resolved against this whole list too,
              so wallpaper 3,000 can hold it whichever thirty cards have nodes
-             (#137, #230). */
+             (#137, #230).
+
+             `density` is how far Ctrl and the wheel may go on this page, and
+             the browse surface is the wide end of it: two enormous cards to a
+             row or eight small ones, against Review's six. The numbers are the
+             grid's, for the same reason its row height and column count are
+             (ADR 0027); which of the two ranges this page is, is the page's
+             (#264). */
           <WallpaperGrid
             ref={setGrid}
             wallpapers={list}
@@ -473,6 +481,7 @@ export function LibraryView() {
             onOpen={lightbox.openOn}
             scoresMoved={scoresMoved}
             scroller={scroller}
+            density={LIBRARY_DENSITY}
           />
         )}
       </div>

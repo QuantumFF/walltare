@@ -4,6 +4,7 @@ import type { Settings, Wallpaper } from "@/lib/client";
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   screen,
   within,
@@ -256,6 +257,61 @@ async function enterGrid() {
     mountedCards()[0].focus();
   });
 }
+
+/**
+ * Ctrl and the wheel over the grid, as a browser delivers it.
+ *
+ * `ctrlKey` is set on the event rather than passed to `fireEvent`: happy-dom's
+ * `WheelEvent` takes the init and leaves the modifier flags undefined, so the
+ * flag is arranged on the real event the way `browserLaysOutTheScroller`
+ * arranges a real box.
+ */
+async function ctrlWheel(deltaY: number): Promise<void> {
+  const target = screen.getByRole("grid", {
+    name: "Wallpapers in the library",
+  });
+  const event = createEvent.wheel(target, { deltaY });
+  Object.defineProperty(event, "ctrlKey", { value: true });
+  await act(async () => {
+    fireEvent(target, event);
+  });
+  await flush();
+}
+
+/** Which card `ArrowDown` reaches from the first, which is the row's width. */
+async function cardsInARow(): Promise<number> {
+  await press("Home");
+  await press("ArrowDown");
+  const name = document.activeElement?.getAttribute("aria-label") ?? "";
+  return Number(/^wall-(\d+)\.jpg/.exec(name)?.[1]) - 1;
+}
+
+test("the density gesture reaches this page, and stops at the browse surface's bound", async () => {
+  // The count the curator sees is how many cards share a row, and `ArrowDown`
+  // is what says so without a layout: it moves by exactly that number, so a
+  // step in that made the cards larger is a Down that lands one card earlier
+  // (#264). happy-dom reports every card as the same zero-sized box at any
+  // density, which is why the assertion is the keyboard's answer.
+  await openLibrary(400);
+  browserLaysOutTheScroller();
+  await enterGrid();
+  expect(await cardsInARow()).toBe(4);
+
+  await ctrlWheel(-100);
+  expect(await cardsInARow()).toBe(3);
+
+  // Eight is where Library stops, which is wider than Review goes: this is the
+  // browse surface, and going wide over five thousand wallpapers is the point.
+  for (let at = 0; at < 8; at++) await ctrlWheel(100);
+  expect(await cardsInARow()).toBe(8);
+
+  // The keys are the same gesture, and the same wall.
+  await press("+");
+  expect(await cardsInARow()).toBe(7);
+  await press("-");
+  await press("-");
+  expect(await cardsInARow()).toBe(8);
+});
 
 test("a library past the window has only a window of it in the DOM", async () => {
   await openLibrary(400);

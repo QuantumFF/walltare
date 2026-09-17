@@ -7,6 +7,7 @@ import {
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import {
+  REVIEW_DENSITY,
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -229,7 +230,13 @@ export function ReviewView() {
 
                `animated` is Review's alone. ADR 0016 gives the library's instance
                of this card no animated property and no `will-change`, and ADR
-               0007's licence stays scoped to the fifty rows it was measured on. */
+               0007's licence stays scoped to the fifty rows it was measured on.
+
+               `density` is the same gesture Library answers, bounded shorter:
+               six cards to a row rather than eight, because this page's fifty
+               are wallpapers the curator is deciding about and a card too small
+               to judge has stopped doing that job. Two is the same at the other
+               end, so both tabs go equally large (#264). */
             <WallpaperGrid
               ref={setGrid}
               wallpapers={wallpapers}
@@ -238,6 +245,7 @@ export function ReviewView() {
               onOpen={lightbox.openOn}
               animated
               className="pb-8"
+              density={REVIEW_DENSITY}
             />
           )}
         </div>
