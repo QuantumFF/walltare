@@ -1294,6 +1294,31 @@ test("the badge is on the card in masonry too, not only in the grid", async () =
   expect(cardName(2)).toBe("wall-2.jpg, Active");
 });
 
+test("the badge is on the card in justified rows too", async () => {
+  // The third layout, on the same reasoning: a wallpaper too small for the
+  // screen is too small however the rows were packed, and the rank drawn across
+  // the card paints under the badge rather than over it (ADR 0045, #263).
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: 1280, height: 720 }),
+      wallpaper(2, { width: 3840, height: 2160 }),
+    ],
+    { ...MINIMUM, library_layout: "justified" },
+  );
+
+  expect(pressedLayout()).toBe("Justified");
+  expect(positionedCards().length).toBe(mountedCards().length);
+
+  expect(cardName(1)).toBe("wall-1.jpg, Active, Undersized");
+  expect(within(cardFor(1) as HTMLElement).getByText("Undersized")).toBeTruthy();
+  expect(cardName(2)).toBe("wall-2.jpg, Active");
+  // And the badged card still carries its rank, which is the pair this layout
+  // puts on one card for the first time.
+  expect(
+    cardFor(1)?.querySelector("[data-slot='wallpaper-rank']")?.textContent,
+  ).toBe("1");
+});
+
 // Justified rows, the third layout on the same control (#263). The same grid,
 // the same cards, the same cursor and the same keys — what these ask is that the
 // rank the layout exists for is on every card and follows the ordering, and that
