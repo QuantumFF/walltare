@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { wallpaperImageUrl, type Status, type Wallpaper } from "@/lib/client";
+import type { PlannedBox } from "@/lib/layout-plan";
 import {
   counted,
   FILE_IS_GONE,
@@ -173,7 +174,7 @@ export interface WallpaperCardProps {
    * stable for as long as the plan is — which is what keeps the memo above
    * holding through a scroll (ADR 0045, #230).
    */
-  box?: { left: number; top: number; width: number; height: number };
+  box?: PlannedBox;
 }
 
 /**

@@ -291,7 +291,7 @@ export interface MasonryPlan extends LayoutPlan {
 }
 
 /** What masonry is laid out from. */
-export interface MasonryColumns extends PlanSpacing {
+export interface MasonryGrid extends PlanSpacing {
   /**
    * Each wallpaper's shape, as height over width, in list order — or `null` for
    * one whose Dimensions the app has not read yet (CONTEXT.md, ADR 0044).
@@ -339,30 +339,38 @@ export interface MasonryColumns extends PlanSpacing {
  * order is the Score ordering the curator asked for — a layout that shuffles it
  * is answering a different question. Greedy keeps reading order down the columns
  * and still leaves the columns within one card of each other.
+ *
+ * It costs a box and a band per wallpaper, where the uniform grid costs a row
+ * per `columns` of them: at ADR 0016's ceiling that is about ten thousand small
+ * objects against a thousand. Both are rebuilt when the count, the column count
+ * or the box width moves and neither is on a scroll, which is where ADR 0041
+ * puts the gesture's cost.
  */
 export function planMasonry({
   ratios,
-  columns,
+  columns: asked,
   width,
   gap,
   padding,
   unknownRatio,
   unmeasuredHeight,
-}: MasonryColumns): MasonryPlan {
-  const lanes = Math.max(1, columns);
-  const available = width - 2 * padding - gap * (lanes - 1);
+}: MasonryGrid): MasonryPlan {
+  // At least one, because every division below is by this number and a grid
+  // that reported none would divide the width by nothing.
+  const columns = Math.max(1, asked);
+  const available = width - 2 * padding - gap * (columns - 1);
   // A box with nothing to divide gives every card the same height, which packs
   // the columns round-robin and is the uniform grid's own degenerate answer.
-  const cardWidth = available > 0 ? available / lanes : 0;
+  const cardWidth = available > 0 ? available / columns : 0;
 
   // How far down each column has reached, as the top the next card in it takes.
-  const columnTop: number[] = Array.from({ length: lanes }, () => padding);
+  const columnTop: number[] = Array.from({ length: columns }, () => padding);
   const boxes: PlannedBox[] = [];
 
   for (const ratio of ratios) {
     let shortest = 0;
-    for (let lane = 1; lane < lanes; lane++) {
-      if (columnTop[lane] < columnTop[shortest]) shortest = lane;
+    for (let column = 1; column < columns; column++) {
+      if (columnTop[column] < columnTop[shortest]) shortest = column;
     }
     const shape = ratio === null || ratio <= 0 ? unknownRatio : ratio;
     const height = cardWidth > 0 ? cardWidth * shape : unmeasuredHeight;
@@ -395,6 +403,12 @@ export function planMasonry({
 function bandsOf(boxes: readonly PlannedBox[], padding: number): RowOfCards[] {
   if (boxes.length === 0) return [];
 
+  // Compared exactly, because the tops are sums of the same terms in the same
+  // order and two columns that agree agree to the bit. Two that disagree by a
+  // rounding epsilon cost one extra band a fraction of a pixel tall, which the
+  // window reads and nothing else notices — rounding them into agreement would
+  // be the worse trade, since the boxes are drawn at the unrounded numbers and a
+  // band edge that no card starts on is the thing `rowOfCard` relies on.
   const tops = [...new Set(boxes.map((box) => box.top))].sort((a, b) => a - b);
   const bottom = boxes.reduce(
     (lowest, box) => Math.max(lowest, box.top + box.height),

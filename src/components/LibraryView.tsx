@@ -398,7 +398,10 @@ export function LibraryView() {
             return (
               <Button
                 key={value}
-                size="sm"
+                // The chips' 28px, as a square: the control carries an icon and
+                // no word, so a button sized for a label would be a chip's worth
+                // of empty space either side of it.
+                size="icon-sm"
                 variant={current ? "secondary" : "ghost"}
                 aria-pressed={current}
                 aria-label={label}

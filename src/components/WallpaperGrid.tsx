@@ -347,6 +347,11 @@ export function rowHeight(boxWidth: number, columns: number): number {
  * A wallpaper's shape, as height over width, or `null` while the app has not
  * read its Dimensions.
  *
+ * Named for the wallpaper's own shape rather than for the card's, because
+ * `UniformRow.cardRatio` next door is the other thing: the one shape every card
+ * is cropped to. A layout reads exactly one of the two, and which one it reads
+ * is the whole of what separates the plans.
+ *
  * `null` and not a guess, because the guess belongs to the layout rather than to
  * the row: a plan that draws uncropped answers for an unknown shape with the one
  * the uniform grid crops to, and a plan that crops never asks. CONTEXT.md is
@@ -356,7 +361,7 @@ export function rowHeight(boxWidth: number, columns: number): number {
  * Exported for its test, the way `rowHeight` above is: the arithmetic is
  * otherwise reachable only through a mounted grid whose every box measures zero.
  */
-export function cardRatio(wallpaper: Wallpaper): number | null {
+export function shapeOf(wallpaper: Wallpaper): number | null {
   const { width, height } = wallpaper;
   if (width === null || height === null || width <= 0) return null;
   return height / width;
@@ -370,6 +375,27 @@ export function cardRatio(wallpaper: Wallpaper): number | null {
  * every scroll notch.
  */
 const NO_RATIOS: ReadonlyArray<number | null> = [];
+
+/**
+ * A layout that puts its own cards where they go, said as the two facts that go
+ * with each other and never apart.
+ *
+ * One object rather than two props, because either alone is a layout that cannot
+ * be drawn: cards out of the flow hold no scroll height open, and a scroll height
+ * with no boxes under it is an empty page. Its presence is also what says which
+ * of the two shapes the grid below is drawing, so there is one question to ask
+ * rather than two that could disagree.
+ *
+ * The boxes are the plan's, so a card's size is the size the window was measured
+ * against rather than one the browser worked out afterwards — the same exactness
+ * the row heights have, for the same reason (ADR 0045).
+ */
+interface PlacedCards {
+  /** Where each card goes, by its position in the whole list. */
+  boxes: PlannedBox[];
+  /** The whole scroll height those boxes occupy, both paddings included. */
+  total: number;
+}
 
 /**
  * The direct keys, as the actions each one names.
@@ -728,10 +754,8 @@ function useGridWindow(
 ): {
   mounted: PlannedWindow;
   reveal: (index: number) => void;
-  /** Where each card goes, for a layout that positions its own; absent for the grid. */
-  boxes?: PlannedBox[];
-  /** The whole scroll height, which a self-positioning layout has to hold open itself. */
-  total: number;
+  /** Where the cards go, for a layout that positions its own; absent for the grid. */
+  placed?: PlacedCards;
 } {
   // The scroll box as last measured, and the width the plan is computed
   // against. The last non-zero measurement is kept, so a view the shell has
@@ -788,7 +812,14 @@ function useGridWindow(
     // One row above and one below. Two rows doubles the in-flight image
     // requests to buy a margin the memory cache already provides after the
     // first pass (ADR 0016).
-    overscan: 1,
+    //
+    // A masonry row is not a row of cards, so the same number would not be the
+    // same margin: its rows are bands between consecutive card tops, and a card
+    // height holds about as many of those as there are columns. So masonry
+    // overscans by the column count, which buys it the one card of lead-in the
+    // grid gets — inheriting the 1 unchanged would mount cards at the viewport
+    // edge, and ADR 0041 puts the gesture's cost in card mount.
+    overscan: masonry ? columns : 1,
     // The space between two rows, which masonry has already spent. Its rows are
     // bands running from one card top to the next, so the gaps between cards are
     // inside those heights and a gap between bands would be counted twice — the
@@ -857,8 +888,8 @@ function useGridWindow(
   return {
     mounted,
     reveal,
-    boxes: "boxes" in plan ? plan.boxes : undefined,
-    total: plan.total,
+    placed:
+      "boxes" in plan ? { boxes: plan.boxes, total: plan.total } : undefined,
   };
 }
 
@@ -1019,21 +1050,10 @@ interface GridProps
    */
   onDensityStep: (by: number) => void;
   /**
-   * Where each mounted card goes, by its position in the whole list, for a
-   * layout that positions its own cards. Absent lets the CSS grid below place
-   * them, which is every layout that crops to one shape.
-   *
-   * The boxes are the plan's, so a card's size is the size the window was
-   * measured against rather than one the browser worked out afterwards — the
-   * same exactness the row heights have, for the same reason (ADR 0045).
+   * Where the cards go, for a layout that positions its own. Absent lets the CSS
+   * grid below place them, which is every layout that crops to one shape.
    */
-  boxes?: PlannedBox[];
-  /**
-   * The whole scroll height, which a self-positioning layout holds open itself
-   * because its cards are out of the flow and hold nothing open at all. Absent
-   * with `boxes`.
-   */
-  total?: number;
+  placed?: PlacedCards;
   /**
    * Which of the cards to mount, and the empty space that holds the rest of the
    * scroll height open around them. See `PlannedWindow`. Absent mounts every
@@ -1095,25 +1115,17 @@ function WindowedGrid({
   // depends on a length and not on a list.
   const ratios = useMemo(
     () =>
-      layout === "masonry" ? props.wallpapers.map(cardRatio) : NO_RATIOS,
+      layout === "masonry" ? props.wallpapers.map(shapeOf) : NO_RATIOS,
     [layout, props.wallpapers],
   );
-  const { mounted, reveal, boxes, total } = useGridWindow(
+  const { mounted, reveal, placed } = useGridWindow(
     props.wallpapers.length,
     props.columns,
     scroller,
     layout,
     ratios,
   );
-  return (
-    <Grid
-      {...props}
-      mounted={mounted}
-      reveal={reveal}
-      boxes={boxes}
-      total={total}
-    />
-  );
+  return <Grid {...props} mounted={mounted} reveal={reveal} placed={placed} />;
 }
 
 /**
@@ -1148,8 +1160,7 @@ function Grid({
   mounted,
   columns,
   onDensityStep,
-  boxes,
-  total,
+  placed,
   onOpen,
   className,
   ref,
@@ -1420,6 +1431,13 @@ function Grid({
       // that column of the next row. Clamping to the last card instead would
       // make Down mean two different things depending on how full the last row
       // happens to be.
+      //
+      // The column count and not the plan, in every layout. Under masonry the
+      // card that number lands on is usually the one below and is not obliged to
+      // be, since a tall card makes its column take fewer of them — and reading
+      // the plan here is the version where Down means one thing in the grid and
+      // another in masonry. #255 asks for navigation that works identically in
+      // every layout, and one rule over one list is what that is.
       case "ArrowDown":
         next = index + columns > last ? index : index + columns;
         break;
@@ -1487,7 +1505,7 @@ function Grid({
       // already inside the boxes — what this element is then is the box those
       // offsets are measured from, which is what `relative` says.
       className={
-        boxes
+        placed
           ? cn("relative", className)
           : cn(
               "grid",
@@ -1512,8 +1530,8 @@ function Grid({
       // space above and below the window is the space nothing is drawn in, and
       // an absolutely positioned card adds none of it.
       style={
-        boxes
-          ? { height: total }
+        placed
+          ? { height: placed.total }
           : mounted
             ? { paddingTop: mounted.before, paddingBottom: mounted.after }
             : undefined
@@ -1551,7 +1569,7 @@ function Grid({
             onOpen={onOpen}
             cellIndex={cardIndex}
             selected={cardIndex === index}
-            box={boxes?.[cardIndex]}
+            box={placed?.boxes[cardIndex]}
           />
         );
       })}

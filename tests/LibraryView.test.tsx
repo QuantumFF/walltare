@@ -1055,3 +1055,31 @@ test("a wallpaper whose Dimensions are unknown keeps a card in masonry", async (
   expect(positionedCards().length).toBe(2);
   expect(card(1)?.style.height).not.toBe("0px");
 });
+
+test("a layout switch under a window keeps the selection on the wallpaper, node or no node", async () => {
+  // The switch the other selection test cannot reach: at ADR 0016's scale the
+  // plan is replaced wholesale, and the card the selection is on may be mounted
+  // before it and not after. The cursor follows the wallpaper rather than a
+  // position in the mounted window, so neither answer is a lost selection
+  // (ADR 0019, #230).
+  await openLibraryOf(Array.from({ length: 400 }, (_, at) => wallpaper(at + 1)));
+  mockCommand("set_setting", () => settings({ library_layout: "masonry" }));
+  browserLaysOutTheScroller();
+  await enterGrid();
+  await press("End");
+  await browserReportsScroll();
+  expect(document.activeElement).toBe(card(400));
+
+  await click(layoutButton("Masonry"));
+
+  // The wallpaper the curator was on is still the selection, and the grid is
+  // still the one holding it: the layout is a plan the grid reads, so a switch
+  // rebuilds where the cards go and nothing about which one is chosen.
+  expect(pressedLayout()).toBe("Masonry");
+  const selected = mountedCards().filter(
+    (el) => el.getAttribute("tabindex") === "0",
+  );
+  expect(
+    selected.map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["wall-400.jpg, Active"]);
+});
