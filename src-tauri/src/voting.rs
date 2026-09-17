@@ -37,6 +37,9 @@ pub struct Stats {
     pub eligible_count: u32,
     pub round: u32,
     pub round_participated_count: u32,
+    /// How many of the eligible pool the app is confident about, counted against
+    /// the curator's Evaluated threshold rather than against a constant — so the
+    /// headline and the badge on every card move together (ADR 0046).
     pub evaluated_count: u32,
     pub total_comparisons: u32,
 }
@@ -185,12 +188,18 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
         [round],
         |r| r.get(0),
     )?;
+    // The σ bound is the curator's, not this module's: they decide how many
+    // Comparisons make a Score trustworthy, and the headline has to count what
+    // the badges are showing (CONTEXT.md, ADR 0046). Read here rather than passed
+    // in, so `vote`'s follow-up snapshot and a bare `get_stats` cannot be
+    // counting against two different thresholds.
+    let threshold = crate::settings::evaluated_threshold(conn)?;
     let evaluated_count: u32 = conn.query_row(
         &format!(
             "SELECT COUNT(*) FROM wallpapers
-             WHERE {eligible} AND rating_sigma < 4.0"
+             WHERE {eligible} AND rating_sigma < ?1"
         ),
-        [],
+        [threshold],
         |r| r.get(0),
     )?;
     Ok(Stats {
@@ -734,5 +743,69 @@ mod tests {
         let s = get_stats(&conn).unwrap();
         assert_eq!(s.eligible_count, 4);
         assert_eq!(s.evaluated_count, 2);
+    }
+
+    #[test]
+    fn the_evaluated_count_moves_with_the_threshold_the_curator_set() {
+        // The whole of what ADR 0046 changed: the same four eligible rows, and
+        // three different answers depending on how sure the curator asked the app
+        // to be before it says Evaluated.
+        let conn = test_conn();
+        seed_on(&conn, "active", 25.0, 4.5, 6);
+        seed_on(&conn, "active", 25.0, 3.5, 6);
+        seed_on(&conn, "kept", 25.0, 2.5, 6);
+        seed_on(&conn, "active", 25.0, 8.333, 0);
+        let detected = crate::settings::Detected::default();
+
+        // The default is what it was while Evaluated was a constant, and it is
+        // reached with nothing written at all.
+        assert_eq!(get_stats(&conn).unwrap().evaluated_count, 2);
+
+        crate::settings::set(&conn, "evaluated_threshold", "5", detected).unwrap();
+        assert_eq!(get_stats(&conn).unwrap().evaluated_count, 3);
+
+        crate::settings::set(&conn, "evaluated_threshold", "3", detected).unwrap();
+        assert_eq!(get_stats(&conn).unwrap().evaluated_count, 1);
+
+        // And back, which is the write that deletes the row (ADR 0010).
+        crate::settings::set(&conn, "evaluated_threshold", "4", detected).unwrap();
+        assert_eq!(get_stats(&conn).unwrap().evaluated_count, 2);
+    }
+
+    #[test]
+    fn a_vote_reports_the_count_against_the_threshold_too() {
+        // `vote` takes its own snapshot after committing, so a threshold honoured
+        // by `get_stats` and ignored there would leave the headline wrong until
+        // the next fetch.
+        let conn = test_conn();
+        let winner = seed_on(&conn, "active", 25.0, 4.5, 6);
+        let loser = seed_on(&conn, "active", 25.0, 4.6, 6);
+        crate::settings::set(
+            &conn,
+            "evaluated_threshold",
+            "5",
+            crate::settings::Detected::default(),
+        )
+        .unwrap();
+
+        let outcome = vote(&conn, winner, loser, &[], &mut rng()).unwrap();
+
+        assert_eq!(outcome.stats.evaluated_count, 2);
+    }
+
+    #[test]
+    fn an_evaluated_threshold_row_that_will_not_read_counts_against_the_default() {
+        // Boot never fails over a preference, and neither does the headline: a
+        // row someone edited by hand is the count the app has always shown.
+        let conn = test_conn();
+        seed_on(&conn, "active", 25.0, 4.5, 6);
+        seed_on(&conn, "active", 25.0, 3.5, 6);
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('evaluated_threshold', '9.9')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(get_stats(&conn).unwrap().evaluated_count, 1);
     }
 }

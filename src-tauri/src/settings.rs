@@ -25,6 +25,24 @@ const LIBRARY_LAYOUT: &str = "library_layout";
 const REVIEW_WORKLIST_SIZE: &str = "review_worklist_size";
 const STARTUP_VIEW: &str = "startup_view";
 const REVIEW_ORDERING: &str = "review_ordering";
+const EVALUATED_THRESHOLD: &str = "evaluated_threshold";
+
+/// The σ a wallpaper's rating has to fall below to count as Evaluated, unless
+/// the curator says otherwise.
+///
+/// The number Evaluated meant when it was a constant, so a curator who never
+/// opens the control sees the same count and the same badges they always did
+/// (`CONTEXT.md`, [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
+pub const DEFAULT_EVALUATED_THRESHOLD: f64 = 4.0;
+
+/// The three thresholds Settings offers, loosest first.
+///
+/// A preset list and not a free number, which is the rule the epic already set
+/// for the Review worklist size: σ is the app's own uncertainty scale, and a
+/// curator typing `6.5` into it is guessing at a unit nothing on the page can
+/// explain. Three named confidences bracket the starting σ of 8.333 — half of
+/// it, and a step either side.
+pub const EVALUATED_THRESHOLDS: [f64; 3] = [5.0, DEFAULT_EVALUATED_THRESHOLD, 3.0];
 
 /// The screen to assume when the platform will not name one.
 ///
@@ -292,7 +310,27 @@ impl ReviewOrdering {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// The stored Evaluated threshold, or nothing when it is not one of the three
+/// the page offers.
+///
+/// Strict for the same reason [`Resolution::parse`] is: a row holding `4.2` is
+/// one someone edited by hand, and honouring it would put the curator on a
+/// confidence no control can show them or change back. Reading it as the default
+/// is the rule the whole module already follows.
+fn parse_threshold(value: &str) -> Option<f64> {
+    let parsed: f64 = value.parse().ok()?;
+    // Exact equality over a parsed float, which is safe because every offered
+    // threshold is a short decimal that binary floating point holds exactly, and
+    // `f64::to_string` writes each of them back as the same short decimal.
+    EVALUATED_THRESHOLDS.contains(&parsed).then_some(parsed)
+}
+
+/// Every setting, with the gaps filled from the defaults.
+///
+/// `Eq` is deliberately absent: [`Settings::evaluated_threshold`] is a float, and
+/// the three values it can hold compare exactly, but the trait would be claiming
+/// more than a float can keep.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Settings {
     pub theme: Theme,
     /// A Written path, stored exactly as the user typed it, `~` and variables
@@ -325,6 +363,14 @@ pub struct Settings {
     /// Which layout Review draws its worklist in, remembered across launches
     /// and held apart from whatever Library is drawing.
     pub review_layout: ReviewLayout,
+    /// The σ below which a wallpaper's rating counts as Evaluated.
+    ///
+    /// The curator's answer to how many Comparisons make a Score trustworthy,
+    /// rather than a fact about the wallpaper: it moves the count in the Rank
+    /// headline and the badge on every card together, because both read this one
+    /// number (`CONTEXT.md`,
+    /// [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
+    pub evaluated_threshold: f64,
     /// What the monitor said, which is what [`Settings::screen`] reads as until
     /// the curator overrides it.
     ///
@@ -361,9 +407,25 @@ impl Settings {
             screen: detected.screen,
             minimum_resolution: detected.screen,
             review_layout: ReviewLayout::default(),
+            // What Evaluated meant while it was a constant, so nothing moves for
+            // a curator who ignores the control.
+            evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
             detected_screen: detected.screen,
         }
     }
+}
+
+/// The Evaluated threshold alone, for the one caller that wants it without the
+/// rest of the struct.
+///
+/// `voting::get_stats` counts the Evaluated wallpapers against it and has no
+/// [`Detected`] to hand, which every other reader of this module arrives with.
+/// It goes through the same [`stored`], the same [`read`] and the same default as
+/// [`resolve`], so the count and the struct the card reads cannot disagree about
+/// what the row says.
+pub fn evaluated_threshold(conn: &Connection) -> Result<f64, AppError> {
+    Ok(read(&stored(conn)?, EVALUATED_THRESHOLD, parse_threshold)
+        .unwrap_or(DEFAULT_EVALUATED_THRESHOLD))
 }
 
 /// Every setting, with the gaps filled from the defaults, so a caller always
@@ -453,6 +515,8 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         minimum_resolution: read(stored, MINIMUM_RESOLUTION, Resolution::parse).unwrap_or(screen),
         review_layout: read(stored, REVIEW_LAYOUT, ReviewLayout::parse)
             .unwrap_or(defaults.review_layout),
+        evaluated_threshold: read(stored, EVALUATED_THRESHOLD, parse_threshold)
+            .unwrap_or(defaults.evaluated_threshold),
         // Never read off the table: it is what the monitor said, and the table
         // holds what the curator said.
         detected_screen: detected.screen,
@@ -537,6 +601,14 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
             })?;
             Ok(layout == without.review_layout)
         }
+        EVALUATED_THRESHOLD => {
+            let threshold = parse_threshold(value).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{value:?} is not an Evaluated threshold; expected one of {EVALUATED_THRESHOLDS:?}"
+                ))
+            })?;
+            Ok(threshold == without.evaluated_threshold)
+        }
         _ => Err(AppError::BadRequest(format!("unknown setting {key:?}"))),
     }
 }
@@ -615,6 +687,7 @@ mod tests {
                 screen: size(3840, 2160),
                 minimum_resolution: size(3840, 2160),
                 review_layout: ReviewLayout::Grid,
+                evaluated_threshold: 4.0,
                 detected_screen: size(3840, 2160),
             }
         );
@@ -1029,6 +1102,7 @@ mod tests {
         set(&conn, "review_worklist_size", "10", detected()).unwrap();
         set(&conn, "startup_view", "library", detected()).unwrap();
         set(&conn, "review_ordering", "score_desc", detected()).unwrap();
+        set(&conn, "evaluated_threshold", "3", detected()).unwrap();
 
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
@@ -1038,6 +1112,7 @@ mod tests {
         set(&conn, "review_worklist_size", "50", detected()).unwrap();
         set(&conn, "startup_view", "rank", detected()).unwrap();
         set(&conn, "review_ordering", "score_asc", detected()).unwrap();
+        set(&conn, "evaluated_threshold", "4", detected()).unwrap();
         // The minimum resolution goes back first, against the overridden screen
         // it currently defaults to. Doing it the other way round would mean
         // writing 3840x2160 into a key whose default had already moved there,
@@ -1310,5 +1385,129 @@ mod tests {
         // A layout crosses as the same string a write accepts, so the frontend
         // can hand a read value straight back to `set_setting`.
         assert_eq!(json["review_layout"], "strip");
+        // The threshold crosses as the number itself, because the card compares a
+        // wallpaper's σ against it directly: a name here would need the same
+        // three numbers on both sides of the IPC, which is the duplication this
+        // epic already refused over the Screen (ADR 0046).
+        assert_eq!(json["evaluated_threshold"], 4.0);
+    }
+
+    #[test]
+    fn the_evaluated_threshold_defaults_to_what_it_meant_as_a_constant() {
+        let conn = store();
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().evaluated_threshold,
+            DEFAULT_EVALUATED_THRESHOLD
+        );
+        assert_eq!(DEFAULT_EVALUATED_THRESHOLD, 4.0);
+        // Nothing was written to reach it, so a curator who never opens the
+        // control has the count and the badges they always had.
+        assert_eq!(stored_rows(&conn), 0);
+        assert_eq!(evaluated_threshold(&conn).unwrap(), 4.0);
+    }
+
+    #[test]
+    fn the_evaluated_threshold_round_trips_and_survives_the_connection_that_wrote_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            crate::db::init_schema(&conn).unwrap();
+            let written = set(&conn, "evaluated_threshold", "3", detected()).unwrap();
+            assert_eq!(written.evaluated_threshold, 3.0);
+        }
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+
+        assert_eq!(get(&conn, detected()).unwrap().evaluated_threshold, 3.0);
+        // The count reads the same row through the same default, which is what
+        // keeps the headline and the badges saying one thing (ADR 0046).
+        assert_eq!(evaluated_threshold(&conn).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn an_evaluated_threshold_write_leaves_the_other_keys_alone() {
+        let conn = store();
+        set(&conn, "theme", "dark", detected()).unwrap();
+        set(&conn, "screen", "2560x1440", detected()).unwrap();
+        set(&conn, "review_layout", "strip", detected()).unwrap();
+
+        let settings = set(&conn, "evaluated_threshold", "5", detected()).unwrap();
+
+        assert_eq!(settings.evaluated_threshold, 5.0);
+        assert_eq!(settings.theme, Theme::Dark);
+        assert_eq!(settings.screen, size(2560, 1440));
+        assert_eq!(settings.minimum_resolution, size(2560, 1440));
+        assert_eq!(settings.review_layout, ReviewLayout::Strip);
+        assert_eq!(settings.reject_destination, "./rejected");
+    }
+
+    #[test]
+    fn the_evaluated_threshold_goes_back_to_its_default_by_being_written_it() {
+        let conn = store();
+        set(&conn, "evaluated_threshold", "3", detected()).unwrap();
+        assert_eq!(stored_rows(&conn), 1);
+
+        let returned = set(&conn, "evaluated_threshold", "4", detected()).unwrap();
+
+        assert_eq!(returned.evaluated_threshold, DEFAULT_EVALUATED_THRESHOLD);
+        assert_eq!(get(&conn, detected()).unwrap(), returned);
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn an_evaluated_threshold_the_page_does_not_offer_is_a_bad_request_and_changes_nothing() {
+        // Strict on the way in, for the reason a size is: a confidence no control
+        // can show the curator is one they cannot change back.
+        let conn = store();
+        set(&conn, "evaluated_threshold", "3", detected()).unwrap();
+        let before = get(&conn, detected()).unwrap();
+
+        for refused in ["4.2", "0", "-4", "", "balanced", "8.333", "NaN"] {
+            let err = set(&conn, "evaluated_threshold", refused, detected()).unwrap_err();
+            assert!(
+                matches!(err, AppError::BadRequest(_)),
+                "{refused:?}: {err:?}"
+            );
+        }
+
+        assert_eq!(get(&conn, detected()).unwrap(), before);
+    }
+
+    #[test]
+    fn the_three_offered_thresholds_are_all_writable_and_read_back_exactly() {
+        // Written the way `client.ts` writes a number, which is `String(value)`.
+        let conn = store();
+
+        for offered in EVALUATED_THRESHOLDS {
+            let written = set(
+                &conn,
+                "evaluated_threshold",
+                &offered.to_string(),
+                detected(),
+            )
+            .unwrap();
+            assert_eq!(written.evaluated_threshold, offered);
+            assert_eq!(evaluated_threshold(&conn).unwrap(), offered);
+        }
+    }
+
+    #[test]
+    fn an_evaluated_threshold_row_that_will_not_read_falls_back_to_the_default() {
+        // Boot never fails over a preference, and a threshold is one more row
+        // someone can edit by hand.
+        let conn = store();
+        write_raw_row(&conn, "evaluated_threshold", "very sure");
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().evaluated_threshold,
+            DEFAULT_EVALUATED_THRESHOLD
+        );
+        assert_eq!(
+            evaluated_threshold(&conn).unwrap(),
+            DEFAULT_EVALUATED_THRESHOLD
+        );
     }
 }

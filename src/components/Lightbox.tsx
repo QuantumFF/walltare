@@ -313,6 +313,11 @@ export interface LightboxProps {
  */
 export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   const { container } = useLightboxHost();
+  // The Evaluated threshold, read straight off the store rather than passed in
+  // from whichever page opened this: the lightbox is a second rendering of the
+  // selection and not a child of the grid, so a prop would have to be threaded
+  // through both pages to reach it (ADR 0022, ADR 0046).
+  const { settings } = useApp();
   // The grid's own selection, read out of the same publication the cells were
   // drawn from — which is the whole of ADR 0022 surviving #230, since a copy
   // held anywhere on the way here would be a second cursor with a rule keeping
@@ -678,16 +683,18 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                         it, with the same solid-means-Evaluated dimming the card
                         carries. Both read `score` and `isEvaluated` out of
                         `copy.ts`, so there is one definition of confidence in
-                        the app rather than one per surface (ADR 0013).
+                        the app rather than one per surface (ADR 0013) — and both
+                        read it against the curator's threshold, which is the
+                        number the Rank headline counted with (ADR 0046).
                       */}
                       <Badge
                         title={
-                          isEvaluated(wallpaper)
+                          isEvaluated(wallpaper, settings.evaluated_threshold)
                             ? "Evaluated"
                             : "Not yet Evaluated"
                         }
                         className={
-                          isEvaluated(wallpaper)
+                          isEvaluated(wallpaper, settings.evaluated_threshold)
                             ? "bg-white text-neutral-900"
                             : "border-white/30 bg-black/50 text-white/70"
                         }

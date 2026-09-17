@@ -92,6 +92,11 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
       return { startup_view: value as StartupView };
     case "review_ordering":
       return { review_ordering: value as ReviewOrdering };
+    // The column holds the σ as the string `client.ts` sent, and a read answers
+    // with the number, which is the one thing this key's round trip has to get
+    // right for the card and the count to agree (#260).
+    case "evaluated_threshold":
+      return { evaluated_threshold: Number(value) };
   }
 }
 
@@ -314,15 +319,17 @@ async function openSettingsFromLibrary() {
   expect(showingView()).toBe("settings");
 }
 
-test("the page is one column of ten sections, in first-run order", async () => {
+test("the page is one column of eleven sections, in first-run order", async () => {
   await openSettingsFromLibrary();
 
   // Missing files is last for the rule that put Thumbnails next to last:
   // first-run need first, maintenance last, and a filesystem walk of somebody's
   // library is the most maintenance-shaped thing on the page (ADR 0020,
   // ADR 0032). The two sizes sit with Appearance, because what the app looks
-  // like and what it is being curated for are the same kind of choice, and the
-  // three preferences about how the app runs follow them — the whole app's
+  // like and what it is being curated for are the same kind of choice. The
+  // Evaluated threshold follows them, being neither a size nor maintenance but
+  // the one setting that changes what a word in the app means (ADR 0046), and
+  // then the three preferences about how the app runs — the whole app's
   // startup before the two that are about one page (#259).
   expect(sectionHeadings()).toEqual([
     "Library root",
@@ -330,6 +337,7 @@ test("the page is one column of ten sections, in first-run order", async () => {
     "Appearance",
     "Screen",
     "Minimum resolution",
+    "Evaluated threshold",
     "Startup view",
     "Review worklist",
     "Review ordering",
@@ -338,7 +346,7 @@ test("the page is one column of ten sections, in first-run order", async () => {
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: ten groups of one or two controls
+  // assert — and the width is the decision: eleven groups of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document.querySelector('[data-slot="settings-section"]')
     ?.parentElement as HTMLElement;
@@ -584,6 +592,7 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
     "Appearance",
     "Screen",
     "Minimum resolution",
+    "Evaluated threshold",
     "Startup view",
     "Review worklist",
     "Review ordering",
@@ -597,7 +606,7 @@ test("neither block is up when boot found a library it could read", async () => 
 
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(sectionHeadings().length).toBe(10);
+  expect(sectionHeadings().length).toBe(11);
 });
 
 // The Library root section. Most of what follows came from `tests/ScanView.test.tsx`
@@ -1259,7 +1268,7 @@ function palette(): { light: boolean; dark: boolean } {
  * Whichever of a section's choices is taken, by name. There is always exactly
  * one, which is the property a radio group has and a row of toggles does not.
  *
- * Scoped to the section, because four of them are radio groups and "Lowest
+ * Scoped to the section, because five of them are radio groups and "Lowest
  * Score" would otherwise be one of the answers to which palette is chosen.
  */
 function chosenIn(section: HTMLElement): string[] {
@@ -1825,6 +1834,128 @@ test("a preference the store refused stays on screen as the one it holds", async
   // never landed leaves the section saying what the store actually holds
   // (ADR 0015).
   expect(chosenIn(worklistSection())).toEqual(["50"]);
+});
+
+// The Evaluated threshold section: three named confidences, one of them always
+// chosen, and a line saying what the choice means and what the default is. What
+// the curator reads is the words on the control and that line; the write is
+// pinned by key and value, because a threshold stored in the wrong form is a
+// count and a wall of badges that disagree on the next launch (#260, ADR 0046).
+//
+// That this page is where the count moves from is not asserted here. The
+// headline is Rank's, the count is the backend's, and both are `voting.rs`'s
+// tests — this page's job ends at the row.
+
+const evaluatedSection = () => sectionNamed("Evaluated threshold");
+/** Rank's Evaluated count, which stays mounted behind Settings (ADR 0015). */
+const evaluatedHeadline = () => screen.getByText(/Evaluated$/).textContent;
+const evaluatedLine = () =>
+  document.querySelector(
+    '[data-slot="evaluated-threshold-status"]',
+  ) as HTMLElement | null;
+/** Whichever confidence is chosen. There is always exactly one. */
+const chosenConfidence = () => chosenIn(evaluatedSection());
+
+test("the section offers three confidences, with Balanced chosen to begin with", async () => {
+  await openSettingsFromLibrary();
+
+  const section = evaluatedSection();
+  expect(section.querySelector("h2")?.textContent).toBe("Evaluated threshold");
+  // A radio group and not a number field: σ is the app's own uncertainty scale
+  // and a curator typing 6.5 into it is guessing at a unit nothing on the page
+  // can explain, which is the rule the epic already set for the worklist size.
+  expect(within(section).getByRole("radiogroup")).not.toBeNull();
+  expect(
+    within(section)
+      .getAllByRole("radio")
+      .map((choice) => choice.textContent),
+  ).toEqual(["Lenient", "Balanced", "Strict"]);
+
+  // The default, reached with nothing written: a curator who ignores this page
+  // has the count and the badges the app always had.
+  expect(chosenConfidence()).toEqual(["Balanced"]);
+  expect(evaluatedLine()?.textContent).toBe(
+    "Evaluated at roughly half the uncertainty a new wallpaper starts with. Balanced is the default.",
+  );
+  expect(settingWrites).toEqual([]);
+});
+
+test("choosing Strict writes the threshold and the line follows it", async () => {
+  await openSettingsFromLibrary();
+
+  await click(screen.getByRole("radio", { name: "Strict" }));
+
+  // The σ as `client.ts` sends it, which is the string the column holds and the
+  // one `settings.rs` parses back. A threshold written as `Strict` would be a
+  // name the backend refuses and the card could not compare against.
+  expect(settingWrites).toEqual([{ key: "evaluated_threshold", value: "3" }]);
+  expect(chosenConfidence()).toEqual(["Strict"]);
+  expect(evaluatedLine()?.textContent).toBe(
+    "Evaluated later, on more Comparisons. Balanced is the default.",
+  );
+});
+
+test("choosing Lenient and then Balanced again writes both, which is the reset", async () => {
+  await openSettingsFromLibrary();
+
+  await click(screen.getByRole("radio", { name: "Lenient" }));
+  expect(chosenConfidence()).toEqual(["Lenient"]);
+  expect(evaluatedLine()?.textContent).toBe(
+    "Evaluated sooner, on fewer Comparisons. Balanced is the default.",
+  );
+
+  // Pressing Balanced is the whole of how it goes back, there being no Reset
+  // control: `set_setting` deletes the row when the value equals the default,
+  // so what this page sends and what a reset sends are one write (ADR 0010).
+  await click(screen.getByRole("radio", { name: "Balanced" }));
+
+  expect(settingWrites).toEqual([
+    { key: "evaluated_threshold", value: "5" },
+    { key: "evaluated_threshold", value: "4" },
+  ]);
+  expect(chosenConfidence()).toEqual(["Balanced"]);
+});
+
+test("changing the threshold moves the Evaluated count on Rank, not only the badges", async () => {
+  // The whole of what the setting is for, and the half a write on its own does
+  // not buy: the badges read the threshold out of `AppContext` and move with the
+  // write, and the count is the backend's. A curator who changes this and walks
+  // back to Rank must not find the old number waiting (#260, ADR 0046).
+  //
+  // The mock counts the way `voting.rs` does — a fixed eligible pool, against
+  // whatever row the settings table holds — so what is asserted here is that the
+  // page asks again, not what the answer is.
+  const POOL = [5.5, 4.5, 3.5, 2.5];
+  mockCommand("get_stats", () => {
+    statsCalls++;
+    return stats({
+      eligible_count: POOL.length,
+      // Coherent with the pool rather than the fixture's default, so the Round
+      // fraction beside the count is a fraction and not 150%.
+      round_participated_count: POOL.length,
+      evaluated_count: POOL.filter(
+        (sigma) => sigma < storedSettings.evaluated_threshold,
+      ).length,
+    });
+  });
+
+  await openApp();
+  expect(evaluatedHeadline()).toBe("2 / 4 Evaluated");
+
+  await click(gear());
+  await click(screen.getByRole("radio", { name: "Lenient" }));
+  await click(screen.getByRole("button", { name: /^Back to/ }));
+
+  // Rank never unmounted, so this is a patch onto the headline rather than a
+  // page rebuilding: `stats-changed` is how every other number up there moves
+  // (ADR 0015).
+  expect(evaluatedHeadline()).toBe("3 / 4 Evaluated");
+
+  await click(gear());
+  await click(screen.getByRole("radio", { name: "Strict" }));
+  await click(screen.getByRole("button", { name: /^Back to/ }));
+
+  expect(evaluatedHeadline()).toBe("1 / 4 Evaluated");
 });
 
 // The Thumbnails section, which is the only maintenance on the page: one line,

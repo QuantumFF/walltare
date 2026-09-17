@@ -1,6 +1,11 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { wallpaperImageUrl, type Status, type Wallpaper } from "@/lib/client";
+import {
+  DEFAULT_EVALUATED_THRESHOLD,
+  wallpaperImageUrl,
+  type Status,
+  type Wallpaper,
+} from "@/lib/client";
 import type { PlannedBox } from "@/lib/layout-plan";
 import {
   counted,
@@ -290,6 +295,22 @@ export interface WallpaperCardProps {
    * the control that set it (ADR 0019).
    */
   rank?: number;
+  /**
+   * The σ below which this wallpaper's Score badge reads as Evaluated, which is
+   * the curator's setting (#260).
+   *
+   * The number rather than the verdict, which is the opposite of `undersized`
+   * above and for the reason given there: a prop has to be a value or a stable
+   * identity for the memo to mean anything, and a threshold *is* a value, so
+   * there is nothing to resolve for the card. The comparison it feeds is the one
+   * `voting.rs` counts `evaluated_count` with, so the badge and the Rank
+   * headline move together (ADR 0046).
+   *
+   * Defaults to what Evaluated meant before it was a setting, which is what a
+   * card mounted outside the app's settings gets — the right answer for every
+   * curator who has not moved it, and the only one available without them.
+   */
+  evaluatedThreshold?: number;
 }
 
 /**
@@ -332,12 +353,13 @@ export const WallpaperCard = memo(function WallpaperCard({
   box,
   undersized = false,
   rank,
+  evaluatedThreshold = DEFAULT_EVALUATED_THRESHOLD,
 }: WallpaperCardProps) {
   // Whether this card is a cell in a grid at all, which is the one thing the
   // absent object used to say and the index says now.
   const inGrid = cellIndex !== undefined;
   const rejected = wallpaper.status === "rejected";
-  const evaluated = isEvaluated(wallpaper);
+  const evaluated = isEvaluated(wallpaper, evaluatedThreshold);
   // Known before the press, because ADR 0009 put `origin_path` on the DTO for
   // exactly this: the frontend can refuse without asking the backend.
   const restorable = wallpaper.origin_path !== null;
@@ -534,11 +556,13 @@ export const WallpaperCard = memo(function WallpaperCard({
         μ to one decimal, or `Unrated`, and nothing else: no unit, no second
         number and not the word Score, which ADR 0013 keeps to the surfaces with
         room for it. Solid says Evaluated and dimmed says not yet, off the one σ
-        threshold the app defines, so confidence is one fact with one definition
-        rather than a band scale invented here. Every badge on the live library
-        is dimmed today and that is correct: σ crosses 4.0 at about seven
-        comparisons. The tooltip is what says which state the dimming is, since
-        the badge itself may not say `Score`.
+        threshold the curator set, so confidence is one fact with one definition
+        rather than a band scale invented here — and the same number the Rank
+        headline counts against, so a badge that says Evaluated is a badge the
+        headline counted (ADR 0046). Most badges on a young library are dimmed
+        and that is correct: σ is a late signal at every threshold offered. The
+        tooltip is what says which state the dimming is, since the badge itself
+        may not say `Score`.
 
         `Score moved` is the one other thing the badge can read, and it is not a
         way of writing a Score down at all — it is the app saying it no longer

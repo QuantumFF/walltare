@@ -13,6 +13,7 @@ import {
   openApp,
   press,
   servingRows,
+  settings,
   wallpaper,
 } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
@@ -83,6 +84,9 @@ const row = () =>
 
 const readOut = () =>
   document.querySelector('[data-slot="lightbox-readout"]') as HTMLElement;
+
+/** The Score badge on the row, which is where the lightbox says Evaluated. */
+const scoreBadge = () => row().querySelector('[title$="Evaluated"]');
 
 /**
  * The title of the one toast that is up, or `null` for none. Read off
@@ -273,6 +277,32 @@ test("the row carries the identity, the read-out and the position", async () => 
   expect(row().textContent).toContain("/library/first.jpg");
   expect(row().textContent).toContain("3 comparisons");
   expect(row().textContent).toContain("1 / 2");
+});
+
+test("the Score badge reads against the curator's Evaluated threshold (#260)", async () => {
+  // The lightbox is a second rendering of the selection rather than a child of
+  // the grid, so it reads the threshold off the store itself — and it has to be
+  // the same σ the card behind it used and the same one `voting.rs` counted the
+  // Rank headline with (ADR 0022, ADR 0046).
+  mockCommand("get_settings", () => settings({ evaluated_threshold: 5 }));
+  await enterReview([
+    wallpaper(7, { filename: "first.jpg", rating_sigma: 4.5 }),
+    wallpaper(8, { filename: "second.jpg", rating_sigma: 5.5 }),
+  ]);
+
+  await press("Enter");
+  expect(scoreBadge()?.getAttribute("title")).toBe("Evaluated");
+
+  // The card underneath says the same thing about the same row, which is the
+  // half a surface reading the store for itself could get wrong.
+  await press("Escape");
+  expect(
+    cell("first.jpg, Active").querySelector('[title$="Evaluated"]')
+      ?.getAttribute("title"),
+  ).toBe("Evaluated");
+
+  await click(cell("second.jpg, Active"));
+  expect(scoreBadge()?.getAttribute("title")).toBe("Not yet Evaluated");
 });
 
 test("a non-Rejected wallpaper's read-out is its path", async () => {

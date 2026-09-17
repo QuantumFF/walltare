@@ -703,6 +703,7 @@ export function LibraryView() {
             onOpen={lightbox.openOn}
             scoresMoved={scoresMoved}
             minimumResolution={minimumResolution}
+            evaluatedThreshold={settings.evaluated_threshold}
             scroller={scroller}
             density="library"
             /* The one thing the layout choice changes down here. The grid is

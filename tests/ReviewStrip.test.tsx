@@ -93,6 +93,12 @@ function expectHeroBox(ratio: number): void {
 }
 
 /** The picture the hero is showing, by the filename it is named with. */
+/** The Score badge on the hero row, which is where the strip says Evaluated. */
+const heroScoreBadge = () =>
+  reviewView().querySelector(
+    '[data-slot="review-hero-row"] [title$="Evaluated"]',
+  );
+
 const heroPicture = () =>
   reviewView().querySelector(
     '[data-slot="review-hero-picture"]',
@@ -222,6 +228,30 @@ test("an undersized wallpaper is badged on the hero and still in the worklist (#
   expect(
     reviewView().querySelector('[data-slot="review-hero-undersized"]'),
   ).toBeNull();
+});
+
+test("the hero's Score badge reads against the curator's Evaluated threshold (#260)", async () => {
+  // The same comparison the grid's cards make, on the one wallpaper being
+  // judged — and the same σ `voting.rs` counts the Rank headline with, so the
+  // hero cannot say Evaluated about a wallpaper the headline did not count
+  // (ADR 0046).
+  stored = settings({ review_layout: "strip", evaluated_threshold: 5 });
+  await openStrip([
+    wallpaper(1, { filename: "sure.jpg", rating_sigma: 4.5 }),
+    wallpaper(2, { filename: "unsure.jpg", rating_sigma: 5.5 }),
+  ]);
+
+  expect(heroScoreBadge()?.getAttribute("title")).toBe("Evaluated");
+
+  await click(inReview().getByRole("option", { name: "unsure.jpg" }));
+  expect(heroScoreBadge()?.getAttribute("title")).toBe("Not yet Evaluated");
+
+  // And the same row at Balanced, which is what an untouched table reads as: the
+  // wallpaper has not changed, the threshold has.
+  cleanup();
+  stored = settings({ review_layout: "strip" });
+  await openStrip([wallpaper(1, { filename: "sure.jpg", rating_sigma: 4.5 })]);
+  expect(heroScoreBadge()?.getAttribute("title")).toBe("Not yet Evaluated");
 });
 
 test("clicking a filmstrip entry moves the hero to it", async () => {

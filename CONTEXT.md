@@ -159,11 +159,26 @@ Round. See [ADR 0008](docs/adr/0008-round-is-derived.md).
 
 Two distinct progress notions. **Participated**: has been in at least one
 comparison. **Evaluated**: its rating is confident enough to trust, meaning σ
-below 4.0, roughly half the starting uncertainty. Evaluated is a late signal: it
-takes around seven comparisons to reach, so a young library has none.
+below the Evaluated threshold. Evaluated is a late signal at every threshold on
+offer, so a young library has none.
 
 Both are counted over the eligible pool. Participated is Round progress at
 Round 1, and is pinned to the size of the pool from Round 2 onwards, so the
 headline reports it per-Round rather than as a total. Evaluated headlines
 alongside it as the confidence signal: the two answer different questions and
 the app shows both.
+
+## Evaluated threshold
+
+How sure the app has to be about a Score before it counts as Evaluated: the σ a
+wallpaper's rating falls below to qualify.
+
+The Evaluated threshold is a stated preference, not a fact about the library.
+How many Comparisons make a Score trustworthy is the user's call, so the app
+offers three confidences and keeps whichever was chosen. It defaults to σ below
+4.0, roughly half the uncertainty a wallpaper starts with, which is what
+Evaluated meant before the user could say otherwise.
+
+One threshold, because everything that asks whether a wallpaper is Evaluated —
+the count in the headline, the Score badge on every card — has to get the same
+answer. See [ADR 0046](docs/adr/0046-the-evaluated-threshold-is-the-curators.md).

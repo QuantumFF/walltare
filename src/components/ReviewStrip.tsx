@@ -11,7 +11,12 @@ import {
 } from "@/components/selection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { wallpaperImageUrl, type Resolution, type Wallpaper } from "@/lib/client";
+import {
+  DEFAULT_EVALUATED_THRESHOLD,
+  wallpaperImageUrl,
+  type Resolution,
+  type Wallpaper,
+} from "@/lib/client";
 import {
   FILE_IS_GONE,
   grouped,
@@ -97,6 +102,16 @@ export interface ReviewStripProps {
    */
   minimumResolution?: Resolution;
   /**
+   * The curator's Evaluated threshold, which is the σ the hero's Score badge
+   * reads as solid below (#260).
+   *
+   * The number rather than the verdict, unlike `minimumResolution` above: a
+   * threshold is one value, so there is nothing to resolve before handing it to
+   * the comparison. Absent falls back to what Evaluated meant before it was a
+   * setting (ADR 0046).
+   */
+  evaluatedThreshold?: number;
+  /**
    * The handle: the way focus is handed back, and the way the published
    * selection is read.
    *
@@ -145,6 +160,7 @@ export function ReviewStrip({
   onAction,
   onOpen,
   minimumResolution,
+  evaluatedThreshold = DEFAULT_EVALUATED_THRESHOLD,
   ref,
   startOn,
 }: ReviewStripProps) {
@@ -412,10 +428,14 @@ export function ReviewStrip({
           className="flex shrink-0 items-center gap-3 px-1"
         >
           <Badge
-            title={isEvaluated(selected) ? "Evaluated" : "Not yet Evaluated"}
+            title={
+              isEvaluated(selected, evaluatedThreshold)
+                ? "Evaluated"
+                : "Not yet Evaluated"
+            }
             className={cn(
               "shrink-0 tabular-nums",
-              isEvaluated(selected)
+              isEvaluated(selected, evaluatedThreshold)
                 ? undefined
                 : "border-muted-foreground/30 bg-transparent text-muted-foreground",
             )}
