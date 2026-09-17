@@ -15,12 +15,12 @@ import { useEffect, useRef, useState } from "react";
 // can disagree about it.
 //
 // No Reset control on either, which is ADR 0020's rule and is why each section
-// prints what it falls back to instead: the line names the Detected 3840 × 2160,
-// and typing that back is what deletes the row. A button would have been one
-// click rather than four digits, and the ADR's own reason for refusing one — it
-// needs a command for the `DELETE` — does not apply, since writing the default
-// through `set_setting` already deletes the row. Reopening that is an ADR, not a
-// section.
+// prints what it falls back to instead: the line names the detected size,
+// whatever this machine's monitor turns out to be, and typing that back is what
+// deletes the row. A button would have been one click rather than four digits,
+// and the ADR's own reason for refusing one — it needs a command for the
+// `DELETE` — does not apply, since writing the default through `set_setting`
+// already deletes the row. Reopening that is an ADR, not a section.
 
 /** The two settings this module is about, which is the two that hold a size. */
 type SizeSetting = Extract<SettingKey, "screen" | "minimum_resolution">;
@@ -118,7 +118,8 @@ function SizeField({
   /** Names the pair in a label, as in "Screen width" and "Screen height". */
   label: string;
   stored: Resolution;
-  onCommit: (next: Resolution) => void;
+  /** Store the size. Rejects if the write did not take, so the record can go back. */
+  onCommit: (next: Resolution) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(() => asDraft(stored));
   const [refused, setRefused] = useState(false);
@@ -135,6 +136,12 @@ function SizeField({
     setRefused(false);
   }, [stored.width, stored.height]);
 
+  // Recorded before the write lands rather than after, because the blur on the
+  // way out of the width and the one out of the height are two commits of the
+  // same pair. A write that fails puts the record back, so the next blur tries
+  // again rather than assuming it took — the second half of the guard
+  // `usePathField` keeps, without which a refused size is a field the curator
+  // has to edit before it will be sent a second time.
   const commit = () => {
     const width = pixels(draft.width);
     const height = pixels(draft.height);
@@ -145,8 +152,11 @@ function SizeField({
     setRefused(false);
     const next = { width, height };
     if (sameSize(next, committed.current)) return;
+    const previous = committed.current;
     committed.current = next;
-    onCommit(next);
+    void onCommit(next).catch(() => {
+      committed.current = previous;
+    });
   };
 
   const edit = (axis: keyof Draft, next: string) => {
@@ -219,14 +229,17 @@ function SizeSection({
       <SizeField
         label={fieldLabel}
         stored={stored}
-        onCommit={(next) => {
-          void saveSetting(setting, next).catch((error: unknown) => {
+        // Logged here, where the heading names which setting failed, and thrown
+        // on so the field can put its record back and let the next blur retry.
+        onCommit={(next) =>
+          saveSetting(setting, next).catch((error: unknown) => {
             console.error(
               `Failed to store the ${heading.toLowerCase()}:`,
               error,
             );
-          });
-        }}
+            throw error;
+          })
+        }
       />
 
       {/* The one default on this page a curator could not otherwise recover, so

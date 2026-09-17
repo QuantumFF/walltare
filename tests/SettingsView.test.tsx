@@ -1504,6 +1504,32 @@ test("a blur that changed nothing writes nothing", async () => {
   expect(settingWrites).toEqual([]);
 });
 
+test("a size the store refused is written again on the next blur", async () => {
+  // The other half of the guard above. The record of what the store was told
+  // moves before the write lands, so a write that never landed has to put it
+  // back — otherwise the size on screen is one the store does not hold and the
+  // only way to send it again is to edit it first, which a curator looking at
+  // the number they typed has no reason to do (ADR 0026).
+  expectConsoleError(/Failed to store the screen/);
+  expectConsoleError(/Failed to store the screen/);
+  mockCommand("set_setting", (args) => {
+    settingWrites.push({ key: args.key, value: args.value });
+    return Promise.reject({ kind: "db", message: "database is locked" });
+  });
+  await openSettingsFromLibrary();
+
+  await typeSize("Screen", "2560", "1440");
+  expect(settingWrites).toEqual([{ key: "screen", value: "2560x1440" }]);
+
+  // No edit in between: the curator blurs the same field a second time.
+  await blurAxis("Screen width");
+
+  expect(settingWrites).toEqual([
+    { key: "screen", value: "2560x1440" },
+    { key: "screen", value: "2560x1440" },
+  ]);
+});
+
 test("an overridden screen still names the monitor it can be changed back to", async () => {
   storedSettings = settings({ screen: { width: 2560, height: 1440 } });
   await openSettingsFromLibrary();

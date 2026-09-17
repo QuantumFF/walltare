@@ -274,7 +274,7 @@ test("the stored settings are readable from useApp", async () => {
 test("a navigation carries where it came from and the field to focus", async () => {
   // The shape ADR 0020 needs: a control anywhere in the app can send the
   // curator to one Settings field and have the page close back to where they
-  // were. The field key is `keyof Settings`, so a caller cannot name one that
+  // were. The field key is `SettingKey`, so a caller cannot name one that
   // is not there.
   mockCommand("get_stats", () => emptyStats());
 

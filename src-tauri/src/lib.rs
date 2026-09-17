@@ -538,7 +538,7 @@ fn get_settings(
 /// a write.
 ///
 /// The value crosses as a `String` because that is what the column holds;
-/// `client.ts` keys the call on `keyof Settings` so callers stay typed.
+/// `client.ts` keys the call on `SettingKey` so callers stay typed.
 #[tauri::command]
 fn set_setting(
     key: String,
