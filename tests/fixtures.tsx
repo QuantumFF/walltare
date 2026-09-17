@@ -3,13 +3,15 @@ import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
-import type {
-  BackendCommands,
-  CacheSize,
-  Resolution,
-  Settings,
-  Stats,
-  Wallpaper,
+import {
+  WORKLIST_SIZES,
+  type BackendCommands,
+  type CacheSize,
+  type Resolution,
+  type Settings,
+  type Stats,
+  type Wallpaper,
+  type WorklistSize,
 } from "@/lib/client";
 import {
   act,
@@ -217,6 +219,21 @@ export function mockListings(answer: {
 }
 
 /**
+ * A worklist length as it comes back off the wire, or the failure a test earns
+ * for asking the mocked backend for one it would refuse.
+ *
+ * `set_setting` takes only the presets (`settings.rs`), so a mock that folded
+ * `37` into the table would be standing in for a backend that does not exist.
+ * Here rather than in each file for the first of the two reasons above: it holds
+ * a rule the backend states, and a rule stated in each of N places drifts.
+ */
+export function worklistSize(value: string): WorklistSize {
+  const preset = WORKLIST_SIZES.find((size) => String(size) === value);
+  if (!preset) throw new Error(`${value} is not a worklist size`);
+  return preset;
+}
+
+/**
  * A mid-life library the backend could actually report: 12 rows of which 10 are
  * eligible, every eligible one past two comparisons so the Round is 3, six of
  * them already through their third, and the two ahead of the pool confident
@@ -255,6 +272,9 @@ export function settings(over: Partial<Settings> = {}): Settings {
     library_root: "",
     reject_destination: "./rejected",
     library_layout: "grid",
+    review_worklist_size: 50,
+    startup_view: "rank",
+    review_ordering: "score_asc",
     screen,
     minimum_resolution: screen,
     // The layout Review draws with no row in the table, which is the grid it has

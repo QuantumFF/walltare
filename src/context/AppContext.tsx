@@ -4,6 +4,7 @@ import {
   isAppError,
   type SettingKey,
   type Settings,
+  type StartupView,
   type Stats,
 } from "@/lib/client";
 import React, {
@@ -22,8 +23,12 @@ import React, {
  * back button, one level of nesting and a bundle too small to split — and a
  * router unmounts a route by default, which is the one thing the shell exists
  * to prevent (ADR 0015).
+ *
+ * Written as the three a curator can open the app on plus Settings, rather than
+ * as four names, because that is the relationship between the two types: the
+ * startup view is every destination except the one boot reaches on its own.
  */
-export type View = "rank" | "review" | "library" | "settings";
+export type View = StartupView | "settings";
 
 /**
  * What `get_pair` needs before Rank can draw anything (`voting.rs:74`), and so
@@ -60,7 +65,8 @@ interface BootLanding {
 }
 
 /**
- * ADR 0015's boot rule: one `get_stats`, four outcomes.
+ * ADR 0015's boot rule: one `get_stats`, four outcomes, with the curator's
+ * chosen `startupView` standing where that table wrote Rank.
  *
  * It reads what the library holds and not `library_root`, because a configured
  * root proves the curator typed something rather than that a scan ever
@@ -70,10 +76,20 @@ interface BootLanding {
  * them: a wholly Rejected library cannot draw a pair, so sending it to Rank
  * lands the curator on an error string instead of on the page that can fix it.
  *
- * Nothing here is persisted. Where the curator happened to be last is less use
- * than what their library can currently do (ADR 0015).
+ * **This narrows ADR 0015's "boot reads the library, not the preference", and
+ * says so.** What that ADR refused was persisting where the curator happened to
+ * be last, which is less use than what their library can currently do. A stated
+ * startup view is not that: it is fixed, so the app opens in the same place
+ * every launch. What the library can do still wins where the two disagree —
+ * nothing scanned and a library that would not read both still open Settings,
+ * and Rank with fewer than two Eligible wallpapers still falls to Library,
+ * because `get_pair` has nothing to draw (#259).
  */
-function bootLanding(stats: Stats | null, error: unknown): BootLanding {
+function bootLanding(
+  stats: Stats | null,
+  error: unknown,
+  startupView: StartupView,
+): BootLanding {
   if (!stats) {
     return {
       view: "settings",
@@ -93,10 +109,15 @@ function bootLanding(stats: Stats | null, error: unknown): BootLanding {
       focus: "library_root",
     };
   }
-  if (stats.eligible_count >= ELIGIBLE_MINIMUM) {
-    return { view: "rank", notice: null, focus: null };
+  // Rank is the only destination the library can refuse, so it is the only one
+  // this line has to check: Review and Library both own an empty state that
+  // names the reason and offers the route out, which is ADR 0015's rule for
+  // every tab. Rank with one Eligible wallpaper has nothing to compare it
+  // against, and lands on Library for exactly the reason it always did.
+  if (startupView === "rank" && stats.eligible_count < ELIGIBLE_MINIMUM) {
+    return { view: "library", notice: null, focus: null };
   }
-  return { view: "library", notice: null, focus: null };
+  return { view: startupView, notice: null, focus: null };
 }
 
 /** Where a navigation came from, and what it wants looked at on arrival. */
@@ -214,6 +235,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // is registered once for the life of the shell.
   const libraryEmpty = useRef(false);
 
+  // Read by the boot rule's one rerun below, which is the only navigation left
+  // on a finished scan.
+  const startupView = settings.startup_view;
+
   // A navigation replaces the whole record rather than merging into it. A
   // `returnTo` left standing from an earlier hop would close Settings to a view
   // the curator never came from, and a `focus` left standing would pull the
@@ -263,7 +288,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       libraryEmpty.current = stats?.total_wallpapers === 0;
       setLibraryTotal(stats?.total_wallpapers ?? null);
 
-      const landing = bootLanding(stats, statsError);
+      // The startup view off the read that just landed rather than off the
+      // state it is about to set, which has not re-rendered yet. A settings
+      // read that failed lands on the default, Rank, which is where boot has
+      // always gone: a preference that could not be read must not move the app
+      // somewhere the curator cannot account for (ADR 0010).
+      const landing = bootLanding(
+        stats,
+        statsError,
+        (stored ?? DEFAULT_SETTINGS).startup_view,
+      );
       setNavigation({
         view: landing.view,
         returnTo: null,
@@ -324,8 +358,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       libraryEmpty.current = false;
       // The rule, not a hardcoded "rank": a first scan that turned up a single
       // wallpaper has nothing for Rank to compare it against, and lands on
-      // Library for the same reason boot would have.
-      const landing = bootLanding(stats, null);
+      // Library for the same reason boot would have. The startup view is the
+      // one the curator holds now, not the one boot read — this rerun happens
+      // on a page they have been sitting on, and the section is on it.
+      const landing = bootLanding(stats, null, startupView);
       setNavigation({
         view: landing.view,
         returnTo: null,
@@ -333,7 +369,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         notice: landing.notice,
       });
     })();
-  }, [readLibrary]);
+  }, [readLibrary, startupView]);
 
   // The palette is a class on the document element, because index.css keys both
   // the tokens and the `dark:` variant off one there. Nothing is written before

@@ -17,8 +17,10 @@ import type {
   MissingFiles,
   Resolution,
   ReviewLayout,
+  ReviewOrdering,
   SettingKey,
   Settings,
+  StartupView,
   Theme,
 } from "@/lib/client";
 import {
@@ -34,6 +36,7 @@ import {
   showingView,
   stats,
   wallpaper,
+  worklistSize,
 } from "./fixtures";
 import { emitEvent, mockCommand, mockFolderPicker } from "./ipc-mocks";
 
@@ -80,6 +83,15 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
     // stops being exhaustive over `SettingKey`.
     case "library_layout":
       return { library_layout: value as LibraryLayout };
+    // A worklist size crosses as its own digits and comes back a number, which
+    // is what the listing's `limit` takes — and only ever one of the presets,
+    // because that is all the store would have accepted.
+    case "review_worklist_size":
+      return { review_worklist_size: worklistSize(value) };
+    case "startup_view":
+      return { startup_view: value as StartupView };
+    case "review_ordering":
+      return { review_ordering: value as ReviewOrdering };
   }
 }
 
@@ -224,10 +236,22 @@ const destinationLine = () =>
   document.querySelector(
     '[data-slot="reject-destination-status"]',
   ) as HTMLElement;
-const sectionAt = (index: number) =>
-  document.querySelectorAll('[data-slot="settings-section"]')[
-    index
-  ] as HTMLElement;
+/**
+ * One section, by the heading the curator reads on it.
+ *
+ * By name rather than by position, because four of the ten sections hold a
+ * radio group and several hold a button: an index moves whenever a section is
+ * added above, and an unscoped `getByRole` matches every copy. What order they
+ * come in is one test's assertion over `sectionHeadings()` and not something
+ * every other test should be restating by counting.
+ */
+function sectionNamed(heading: string): HTMLElement {
+  const found = Array.from(
+    document.querySelectorAll<HTMLElement>('[data-slot="settings-section"]'),
+  ).find((section) => section.querySelector("h2")?.textContent === heading);
+  if (!found) throw new Error(`no settings section headed ${heading}`);
+  return found;
+}
 /** Both path fields have one, so a Browse click has to say which field it is for. */
 const browseIn = (section: HTMLElement) =>
   within(section).getByRole("button", { name: "Browse" });
@@ -290,26 +314,31 @@ async function openSettingsFromLibrary() {
   expect(showingView()).toBe("settings");
 }
 
-test("the page is one column of seven sections, in first-run order", async () => {
+test("the page is one column of ten sections, in first-run order", async () => {
   await openSettingsFromLibrary();
 
   // Missing files is last for the rule that put Thumbnails next to last:
   // first-run need first, maintenance last, and a filesystem walk of somebody's
   // library is the most maintenance-shaped thing on the page (ADR 0020,
   // ADR 0032). The two sizes sit with Appearance, because what the app looks
-  // like and what it is being curated for are the same kind of choice.
+  // like and what it is being curated for are the same kind of choice, and the
+  // three preferences about how the app runs follow them — the whole app's
+  // startup before the two that are about one page (#259).
   expect(sectionHeadings()).toEqual([
     "Library root",
     "Reject destination",
     "Appearance",
     "Screen",
     "Minimum resolution",
+    "Startup view",
+    "Review worklist",
+    "Review ordering",
     "Thumbnails",
     "Missing files",
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: seven groups of one or two controls
+  // assert — and the width is the decision: ten groups of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document.querySelector('[data-slot="settings-section"]')
     ?.parentElement as HTMLElement;
@@ -438,7 +467,7 @@ test("a first run leads with the prompt and nothing that is meaningless yet", as
   // not found yet (ADR 0033).
   expect(sectionHeadings()).toEqual(["Library root"]);
 
-  const column = sectionAt(0).parentElement as HTMLElement;
+  const column = sectionNamed("Library root").parentElement as HTMLElement;
   expect(column.firstElementChild).toBe(screen.getByRole("status"));
 
   // And the one section that reads something on mount is not here to read it:
@@ -469,6 +498,26 @@ test("a first run scans from the invitation, and the app moves on", async () => 
   });
   await emit("scan-complete", { added_count: 12, scanned_count: 12 });
   expect(showingView()).toBe("rank");
+});
+
+test("the rerun after a first scan lands on the chosen startup view", async () => {
+  // The rerun is the boot rule run a second time, so it reads the same
+  // preference boot did — otherwise a curator who chose Library gets Rank once,
+  // on the one launch where they are least sure what the app does (#259).
+  storedSettings = settings({ startup_view: "library" });
+  mockCommand("get_stats", () => emptyStats());
+  await openApp();
+  expect(showingView()).toBe("settings");
+
+  await type("~/pics");
+  await click(scanButton());
+  mockCommand("get_stats", () => {
+    statsCalls++;
+    return stats();
+  });
+  await emit("scan-complete", { added_count: 12, scanned_count: 12 });
+
+  expect(showingView()).toBe("library");
 });
 
 test("a library that would not read reads as a fault, in the backend's own words", async () => {
@@ -535,6 +584,9 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
     "Appearance",
     "Screen",
     "Minimum resolution",
+    "Startup view",
+    "Review worklist",
+    "Review ordering",
     "Thumbnails",
     "Missing files",
   ]);
@@ -545,7 +597,7 @@ test("neither block is up when boot found a library it could read", async () => 
 
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(sectionHeadings().length).toBe(7);
+  expect(sectionHeadings().length).toBe(10);
 });
 
 // The Library root section. Most of what follows came from `tests/ScanView.test.tsx`
@@ -555,7 +607,7 @@ test("neither block is up when boot found a library it could read", async () => 
 test("the section holds a field, a Browse button and the button that scans", async () => {
   await openSettingsFromLibrary();
 
-  const section = sectionAt(0);
+  const section = sectionNamed("Library root");
   expect(section.querySelector("h2")?.textContent).toBe("Library root");
   expect(section.contains(scanInput())).toBe(true);
   expect(section.contains(browseIn(section))).toBe(true);
@@ -650,7 +702,7 @@ test("Browse fills the field with the folder the curator pointed at", async () =
   await openSettingsFromLibrary();
   await type("~/pics");
 
-  await click(browseIn(sectionAt(0)));
+  await click(browseIn(sectionNamed("Library root")));
 
   expect(picker.opened).toBe(1);
   // The cost ADR 0020 accepted for having a picker at all: it answers with an
@@ -670,7 +722,7 @@ test("a picker the curator dismissed leaves the field alone", async () => {
   await openSettingsFromLibrary();
   await type("~/pics");
 
-  await click(browseIn(sectionAt(0)));
+  await click(browseIn(sectionNamed("Library root")));
 
   // A dismissal is an answer rather than a failure, and the answer is that the
   // field keeps what it had.
@@ -941,7 +993,7 @@ async function openSettingsOnTheDestination() {
 test("the section holds a field, a Browse button and one status line", async () => {
   await openSettingsFromLibrary();
 
-  const section = sectionAt(1);
+  const section = sectionNamed("Reject destination");
   expect(section.querySelector("h2")?.textContent).toBe("Reject destination");
   expect(section.contains(destinationInput())).toBe(true);
   expect(section.contains(browseIn(section))).toBe(true);
@@ -1149,7 +1201,7 @@ test("Browse fills the destination with the folder the curator pointed at", asyn
   const picker = mockFolderPicker("/mnt/photos/rejects");
   await openSettingsFromLibrary();
 
-  await click(browseIn(sectionAt(1)));
+  await click(browseIn(sectionNamed("Reject destination")));
 
   expect(picker.opened).toBe(1);
   expect(destinationInput().value).toBe("/mnt/photos/rejects");
@@ -1166,7 +1218,7 @@ test("a picker the curator dismissed leaves the destination alone", async () => 
   const picker = mockFolderPicker(null);
   await openSettingsFromLibrary();
 
-  await click(browseIn(sectionAt(1)));
+  await click(browseIn(sectionNamed("Reject destination")));
 
   expect(picker.opened).toBe(1);
   expect(destinationInput().value).toBe("./rejected");
@@ -1203,15 +1255,27 @@ function palette(): { light: boolean; dark: boolean } {
   };
 }
 
-const paletteChoice = (name: string) => screen.getByRole("radio", { name });
-
-/** Whichever of the three is chosen, by name. There is always exactly one. */
-function chosenPalette(): string[] {
-  return screen
+/**
+ * Whichever of a section's choices is taken, by name. There is always exactly
+ * one, which is the property a radio group has and a row of toggles does not.
+ *
+ * Scoped to the section, because four of them are radio groups and "Lowest
+ * Score" would otherwise be one of the answers to which palette is chosen.
+ */
+function chosenIn(section: HTMLElement): string[] {
+  return within(section)
     .getAllByRole("radio")
     .filter((choice) => choice.getAttribute("aria-checked") === "true")
     .map((choice) => choice.textContent ?? "");
 }
+
+const choiceIn = (section: HTMLElement, name: string) =>
+  within(section).getByRole("radio", { name });
+
+const paletteChoice = (name: string) =>
+  choiceIn(sectionNamed("Appearance"), name);
+
+const chosenPalette = () => chosenIn(sectionNamed("Appearance"));
 
 /**
  * Flip the desktop underneath the window, and let the media query notice.
@@ -1233,7 +1297,7 @@ async function flipDesktop(scheme: "light" | "dark") {
 test("the section offers three palettes, with one of them always chosen", async () => {
   await openSettingsFromLibrary();
 
-  const section = sectionAt(2);
+  const section = sectionNamed("Appearance");
   expect(section.querySelector("h2")?.textContent).toBe("Appearance");
   // A radio group and not a row of toggles: `theme` has no "none" to hold, so
   // the primitive that cannot express one is the correct one (ADR 0020).
@@ -1344,8 +1408,8 @@ test("the window keeps following the desktop after Settings is closed", async ()
 // deletes the row is `settings.rs`'s, and these tests only ever see the struct
 // it answers with.
 
-const screenSection = () => sectionAt(3);
-const minimumSection = () => sectionAt(4);
+const screenSection = () => sectionNamed("Screen");
+const minimumSection = () => sectionNamed("Minimum resolution");
 const screenLine = () =>
   document.querySelector('[data-slot="screen-status"]') as HTMLElement | null;
 const minimumLine = () =>
@@ -1615,6 +1679,154 @@ test("the two sizes are separate settings and neither write moves the other", as
   expect(sizeIn("Minimum")).toEqual(["1280", "720"]);
 });
 
+// The three preference sections: the worklist size, the startup view and the
+// Review ordering. None of them interacts with either of the others, so what
+// each test asserts is the choices the section offers, which one is taken, and
+// the write — pinned by key and value, because a preference stored under the
+// wrong key is invisible until the next launch.
+//
+// What the settings then *do* is not here. Review's worklist following the size
+// and the bar naming the ordering are `ReviewView.test.tsx`'s, and where the app
+// opens is `AppContext.test.tsx`'s, because those are the pages that read them.
+
+const worklistSection = () => sectionNamed("Review worklist");
+const startupSection = () => sectionNamed("Startup view");
+const orderingSection = () => sectionNamed("Review ordering");
+
+/** The choices a section offers, in the order they are painted. */
+const choicesIn = (section: HTMLElement) =>
+  within(section)
+    .getAllByRole("radio")
+    .map((choice) => choice.textContent);
+
+test("the worklist section offers the four presets, with fifty taken", async () => {
+  await openSettingsFromLibrary();
+
+  // Presets rather than a box to type a number into, because the question is
+  // how long a session to sit down to (#259).
+  expect(choicesIn(worklistSection())).toEqual(["10", "25", "50", "100"]);
+  // The length Review has always shown, so a curator who never opens this
+  // section has the app they had.
+  expect(chosenIn(worklistSection())).toEqual(["50"]);
+});
+
+test("picking a worklist length writes it, and picking fifty back writes that", async () => {
+  await openSettingsFromLibrary();
+
+  await click(choiceIn(worklistSection(), "10"));
+
+  // Written on change rather than on blur: a preset is one of four named things
+  // and not a number being typed a digit at a time (ADR 0010).
+  expect(settingWrites).toEqual([{ key: "review_worklist_size", value: "10" }]);
+  expect(chosenIn(worklistSection())).toEqual(["10"]);
+
+  // And back. The default is one of the choices on offer, so picking it is the
+  // whole of the reset and no control is needed for one (ADR 0020) — what the
+  // store does with a write equal to the default is `settings.rs`'s.
+  await click(choiceIn(worklistSection(), "50"));
+
+  expect(settingWrites).toEqual([
+    { key: "review_worklist_size", value: "10" },
+    { key: "review_worklist_size", value: "50" },
+  ]);
+  expect(chosenIn(worklistSection())).toEqual(["50"]);
+});
+
+test("the startup view offers the three views a curator works in, with Rank taken", async () => {
+  await openSettingsFromLibrary();
+
+  // Settings is not among them: boot opens it on its own when there is nothing
+  // else to show, and it is not somewhere a curator works (ADR 0015).
+  expect(choicesIn(startupSection())).toEqual(["Rank", "Review", "Library"]);
+  expect(chosenIn(startupSection())).toEqual(["Rank"]);
+});
+
+test("picking a startup view writes it, and picking Rank back writes that", async () => {
+  await openSettingsFromLibrary();
+
+  await click(choiceIn(startupSection(), "Library"));
+
+  expect(settingWrites).toEqual([{ key: "startup_view", value: "library" }]);
+  expect(chosenIn(startupSection())).toEqual(["Library"]);
+
+  await click(choiceIn(startupSection(), "Rank"));
+
+  expect(settingWrites).toEqual([
+    { key: "startup_view", value: "library" },
+    { key: "startup_view", value: "rank" },
+  ]);
+  expect(chosenIn(startupSection())).toEqual(["Rank"]);
+});
+
+test("the review ordering offers the two ends of the ranking, with lowest taken", async () => {
+  await openSettingsFromLibrary();
+
+  // Two and not the library page's four. Review is a decision queue, so
+  // filename order in it means nothing (#259).
+  expect(choicesIn(orderingSection())).toEqual([
+    "Lowest Score",
+    "Highest Score",
+  ]);
+  expect(chosenIn(orderingSection())).toEqual(["Lowest Score"]);
+});
+
+test("picking an ordering writes the listing's own name for it", async () => {
+  await openSettingsFromLibrary();
+
+  await click(choiceIn(orderingSection(), "Highest Score"));
+
+  // `score_desc` and not a second vocabulary for the same fact: the value
+  // Review reads is the value it hands to `list_wallpapers` (ADR 0028).
+  expect(settingWrites).toEqual([
+    { key: "review_ordering", value: "score_desc" },
+  ]);
+  expect(chosenIn(orderingSection())).toEqual(["Highest Score"]);
+
+  await click(choiceIn(orderingSection(), "Lowest Score"));
+
+  expect(settingWrites).toEqual([
+    { key: "review_ordering", value: "score_desc" },
+    { key: "review_ordering", value: "score_asc" },
+  ]);
+  expect(chosenIn(orderingSection())).toEqual(["Lowest Score"]);
+});
+
+test("the three preferences leave each other and every other setting alone", async () => {
+  await openSettingsFromLibrary();
+
+  await click(choiceIn(worklistSection(), "100"));
+  await click(choiceIn(startupSection(), "Review"));
+  await click(choiceIn(orderingSection(), "Highest Score"));
+
+  expect(settingWrites).toEqual([
+    { key: "review_worklist_size", value: "100" },
+    { key: "startup_view", value: "review" },
+    { key: "review_ordering", value: "score_desc" },
+  ]);
+  // Three writes, three keys moved, and the page still reads the same on every
+  // other section: none of the three interacts with either of the others.
+  expect(chosenIn(worklistSection())).toEqual(["100"]);
+  expect(chosenIn(startupSection())).toEqual(["Review"]);
+  expect(chosenIn(orderingSection())).toEqual(["Highest Score"]);
+  expect(chosenPalette()).toEqual(["System"]);
+  expect(sizeIn("Screen")).toEqual(["3840", "2160"]);
+});
+
+test("a preference the store refused stays on screen as the one it holds", async () => {
+  await openSettingsFromLibrary();
+  mockCommand("set_setting", () =>
+    Promise.reject({ kind: "bad_request", message: "no" }),
+  );
+
+  expectConsoleError(/Failed to store the review worklist/);
+  await click(choiceIn(worklistSection(), "10"));
+
+  // The control draws the store's answer rather than the click, so a write that
+  // never landed leaves the section saying what the store actually holds
+  // (ADR 0015).
+  expect(chosenIn(worklistSection())).toEqual(["50"]);
+});
+
 // The Thumbnails section, which is the only maintenance on the page: one line,
 // a button that changes verb, and a confirm with a number in it. What the
 // curator reads is the line and the verb, so that is what the tests below
@@ -1622,7 +1834,7 @@ test("the two sizes are separate settings and neither write moves the other", as
 // clear — are pinned by call, because none of them shows on screen and a Clear
 // that fired on dismissal would be silent and expensive (ADR 0020).
 
-const thumbnails = () => sectionAt(5);
+const thumbnails = () => sectionNamed("Thumbnails");
 const cacheLine = () =>
   document.querySelector(
     '[data-slot="thumbnail-cache-status"]',
@@ -1891,7 +2103,7 @@ test("leaving the page drops its pass subscriptions", async () => {
 // count read on mount would `stat` every Active and Kept row on a visit to
 // change the theme (#200, ADR 0032).
 
-const missingSection = () => sectionAt(6);
+const missingSection = () => sectionNamed("Missing files");
 const missingLine = () =>
   document.querySelector(
     '[data-slot="missing-files-status"]',
