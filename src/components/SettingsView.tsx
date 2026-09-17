@@ -8,6 +8,12 @@ import {
   usePathField,
   type PathLineTone,
 } from "@/components/PathField";
+import {
+  AppearanceSection,
+  ReviewOrderingSection,
+  ReviewWorklistSection,
+  StartupViewSection,
+} from "@/components/ChoiceSections";
 import { MissingFilesSection } from "@/components/MissingFilesSection";
 import {
   FirstRunBlock,
@@ -20,14 +26,8 @@ import {
 import { ThumbnailsSection } from "@/components/ThumbnailsSection";
 import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useApp, type View } from "@/context/AppContext";
-import {
-  client,
-  isAppError,
-  type ScanProgress,
-  type Theme,
-} from "@/lib/client";
+import { client, isAppError, type ScanProgress } from "@/lib/client";
 // The counts in the Library root's line are the counts the shell's report
 // prints, written once so that one fact keeps one phrasing (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
@@ -357,72 +357,9 @@ function RejectDestinationSection() {
 }
 
 /**
- * The three palettes, in the order they are painted across the control.
- *
- * System first because it is the default and the one that needs no decision;
- * Light and Dark after it in the order the two branches of `index.css` are
- * written. The values are `Theme`, so a label can only be attached to a palette
- * `set_setting` will take back.
- */
-const THEMES: Array<{ value: Theme; label: string }> = [
-  { value: "system", label: "System" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-];
-
-/**
- * The Appearance section: three choices, exactly one of them taken.
- *
- * A radio group and not a toggle group, which is the distinction ADR 0020 drew:
- * `theme` cannot hold "none", and `ToggleGroup type="single"` deselects on a
- * second click unless that is fought and announces as a row of pressed buttons
- * rather than as "System, radio button 1 of 3". Both primitives ship in
- * `radix-ui`, so the correct one is free.
- *
- * There is nothing here to commit and no line under the control. The choice
- * writes on change rather than on blur, because a palette is one of three named
- * things and not a string being typed a character at a time (ADR 0010) — and
- * the repaint is the whole of the feedback, since choosing Dark that leaves the
- * window light is the only failure the curator could care about and they are
- * looking straight at it.
- *
- * No Reset beside it either. Writing `system` back is what deletes the row,
- * which `set_setting` already does for every key on this page, so a control for
- * it would only be explaining a rule the write path enforces (ADR 0010,
- * ADR 0020).
- */
-function AppearanceSection() {
-  const { settings, saveSetting } = useApp();
-
-  return (
-    <Section heading="Appearance">
-      <RadioGroup
-        aria-label="Appearance"
-        // The stored choice, read from the app's copy of the store rather than
-        // from a copy of its own. Settings is unmounted between visits, and a
-        // repaint the curator can see the instant they click is exactly the
-        // `set_setting` answer travelling back through `AppContext` (ADR 0015).
-        value={settings.theme}
-        onValueChange={(next) => {
-          void saveSetting("theme", next as Theme).catch((error: unknown) => {
-            console.error("Failed to store the theme:", error);
-          });
-        }}
-      >
-        {THEMES.map((theme) => (
-          <RadioGroupItem key={theme.value} value={theme.value}>
-            {theme.label}
-          </RadioGroupItem>
-        ))}
-      </RadioGroup>
-    </Section>
-  );
-}
-
-/**
  * The Settings page.
  *
- * One column at `max-w-2xl` holding seven sections in first-run order, a slot
+ * One column at `max-w-2xl` holding ten sections in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
  * the way out (ADR 0020, ADR 0032).
  *
@@ -566,6 +503,15 @@ export function SettingsView() {
                 default is the first (ADR 0020, ADR 0032). */}
             <ScreenSection />
             <MinimumResolutionSection />
+            {/* The three preferences about how the app runs rather than how it
+                looks, after the pair about the display and before the
+                maintenance pair. Startup view first because it is about the
+                whole app and the two under it are about one page; the worklist
+                before the ordering because how long a session is comes before
+                which end of the ranking it comes off (#259). */}
+            <StartupViewSection />
+            <ReviewWorklistSection />
+            <ReviewOrderingSection />
             <ThumbnailsSection />
             <MissingFilesSection />
           </>

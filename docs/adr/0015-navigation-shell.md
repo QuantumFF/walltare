@@ -209,6 +209,28 @@ contains. That is the answer to what ADR 0010 handed over.
 Nothing is persisted, and the rule reruns exactly once after boot: on
 scan-complete where the library was empty before the scan and is not after.
 
+> **Narrowed by [#259](https://github.com/QuantumFF/walltare/issues/259),
+> 2026-09-17.** One preference now plays a part, and this heading is no longer
+> true as written. A stored **startup view** — Rank, Review or Library, default
+> Rank — stands where the table above writes Rank.
+>
+> What this section refused is untouched: `library_root` still plays no part,
+> and where the curator happened to be last is still not persisted. A startup
+> view is neither. It is fixed, so the app opens in the same place every launch,
+> which is the property "wherever I was last" fails and the reason that one was
+> refused rather than this one.
+>
+> What the library can do still wins where the two disagree. The last two rows
+> are unchanged, because an empty library and one that will not read are an
+> invitation and a fault rather than destinations. And Rank with fewer than two
+> Eligible wallpapers still falls to Library, since `get_pair` has nothing to
+> draw; that check is the only one the chosen view has to pass, because Review
+> and Library each own an empty state naming the reason, which is this ADR's own
+> rule for every tab.
+>
+> Settings is not offerable as a startup view. Boot reaches it on its own on
+> exactly the two rows above, and it is not somewhere a curator works.
+
 ### No tab is ever disabled
 
 Every destination is always reachable, and each owns an empty state that names

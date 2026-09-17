@@ -141,6 +141,17 @@ measurement first.
 "Lowest Scores first" stays. After the tail it describes all fifty cards
 correctly for the first time, because the ten it currently mislabels are gone.
 
+> **Amended by [#259](https://github.com/QuantumFF/walltare/issues/259),
+> 2026-09-17.** The sentence is now one of two, because Review's ordering is a
+> setting: "Highest Scores first" is the other, and the bar says which. The
+> stored value is `score_asc` or `score_desc` — this ADR's own vocabulary, not a
+> second one — so Review hands what it read straight to `list_wallpapers`.
+> Review's two are still only two: filename order in a decision queue means
+> nothing, so the fifth ordering this ADR refused is still refused and the four
+> named ones are still the library page's alone. The `LIMIT` is a setting too,
+> one of 10, 25, 50 and 100, which makes the "one caller passing one constant"
+> above one caller passing one of four.
+
 ## Alternatives rejected
 
 **No backend limit; Review slices fifty in the frontend.** Tempting, since the

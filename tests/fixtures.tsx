@@ -255,6 +255,9 @@ export function settings(over: Partial<Settings> = {}): Settings {
     library_root: "",
     reject_destination: "./rejected",
     library_layout: "grid",
+    review_worklist_size: 50,
+    startup_view: "rank",
+    review_ordering: "score_asc",
     screen,
     minimum_resolution: screen,
     // The layout Review draws with no row in the table, which is the grid it has

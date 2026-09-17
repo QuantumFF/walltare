@@ -133,9 +133,10 @@ judgement of the image.
 A Rejected wallpaper sits out of voting, so its Score stops moving and stays
 the last thing the app knew about it.
 
-Score answers how good. Evaluated answers how sure. Review lists the lowest
-Scores, so the wallpaper the app is least confident about is not thereby the
-wallpaper it likes least. See [ADR 0013](docs/adr/0013-review-orders-by-mu.md).
+Score answers how good. Evaluated answers how sure. Review orders by Score —
+from the lowest, to cull the worst, or from the highest, to confirm favourites —
+so the wallpaper the app is least confident about is not thereby the wallpaper
+it likes least. See [ADR 0013](docs/adr/0013-review-orders-by-mu.md).
 
 ## Eligible
 

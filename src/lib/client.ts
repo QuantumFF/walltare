@@ -122,6 +122,35 @@ export type ReviewLayout = "strip" | "grid";
 export type LibraryLayout = "grid" | "masonry";
 
 /**
+ * Mirrors settings::ReviewOrdering: which end of the ranking Review works from.
+ *
+ * A subset of `ListOrdering` rather than a vocabulary of its own, because the
+ * value is handed straight to `listWallpapers` — Review is a decision queue, so
+ * it takes the two Score orderings and not the library page's four: filename
+ * order in a queue of judgements means nothing (ADR 0028, #259).
+ */
+export type ReviewOrdering = Extract<ListOrdering, "score_asc" | "score_desc">;
+
+/**
+ * Mirrors settings::StartupView: which view the app opens on.
+ *
+ * `View` in `AppContext` is this plus `settings`, which is the one destination
+ * boot reaches on its own — with nothing scanned, or with a library that would
+ * not read — and not somewhere a curator would choose to be dropped every
+ * launch (ADR 0015).
+ */
+export type StartupView = "rank" | "review" | "library";
+
+/**
+ * Mirrors settings::WORKLIST_SIZES: the worklist lengths Review offers.
+ *
+ * Presets rather than a number the curator types, because the question is how
+ * long a session to sit down to. The backend refuses anything else, so this list
+ * is what a control offers and not what makes the value valid.
+ */
+export const WORKLIST_SIZES = [10, 25, 50, 100] as const;
+
+/**
  * Mirrors settings::Resolution: a size in pixels, width by height.
  *
  * What the Screen and the Minimum resolution settings hold. Not a wallpaper's
@@ -158,6 +187,29 @@ export interface Settings {
    * two places to look.
    */
   library_layout: LibraryLayout;
+  /**
+   * How many wallpapers Review puts in front of the curator at once, which is
+   * the `limit` its listing asks for.
+   *
+   * One of `WORKLIST_SIZES`, which the backend enforces: a number crosses as a
+   * number rather than as a preset index, because the `limit` is what the value
+   * is for.
+   */
+  review_worklist_size: number;
+  /**
+   * Which view the app opens on, as a fixed choice rather than wherever the
+   * curator was last (ADR 0015).
+   *
+   * It picks between the landings the boot rule would otherwise call Rank. A
+   * library boot cannot draw a pair from, or cannot read at all, still decides
+   * for itself.
+   */
+  startup_view: StartupView;
+  /**
+   * Which end of the ranking Review works from: lowest Scores to cull the
+   * worst, highest to confirm favourites.
+   */
+  review_ordering: ReviewOrdering;
   /**
    * The screen the curator is curating for, defaulting to the monitor the
    * backend detected. One screen and not two: the crop preview reads its ratio
@@ -221,6 +273,9 @@ export const DEFAULT_SETTINGS: Settings = {
   library_root: "",
   reject_destination: "./rejected",
   library_layout: "grid",
+  review_worklist_size: 50,
+  startup_view: "rank",
+  review_ordering: "score_asc",
   screen: FALLBACK_SCREEN,
   minimum_resolution: FALLBACK_SCREEN,
   review_layout: "grid",
@@ -234,9 +289,9 @@ export const DEFAULT_SETTINGS: Settings = {
  * Keyed on the setting rather than on the shape of the value, so a later key
  * that happens to hold an object cannot fall through to the size encoding by
  * accident. Everything else is what the column already holds: a theme is one of
- * three strings, a Written path is the string the curator typed, and turning
- * either into anything but itself would make the empty Library root — the write
- * that deletes the row — unreachable.
+ * three strings, a Written path is the string the curator typed, a worklist size
+ * is its own digits, and turning any of them into anything but itself would make
+ * the empty Library root — the write that deletes the row — unreachable.
  *
  * `setSetting` is the only caller, which is what stops any other part of the app
  * building a settings payload for itself (ADR 0031).
