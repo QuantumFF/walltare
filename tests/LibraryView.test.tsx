@@ -1293,3 +1293,250 @@ test("the badge is on the card in masonry too, not only in the grid", async () =
   expect(within(cardFor(1) as HTMLElement).getByText("Undersized")).toBeTruthy();
   expect(cardName(2)).toBe("wall-2.jpg, Active");
 });
+
+test("the badge is on the card in justified rows too", async () => {
+  // The third layout, on the same reasoning: a wallpaper too small for the
+  // screen is too small however the rows were packed, and the rank drawn across
+  // the card paints under the badge rather than over it (ADR 0045, #263).
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: 1280, height: 720 }),
+      wallpaper(2, { width: 3840, height: 2160 }),
+    ],
+    { ...MINIMUM, library_layout: "justified" },
+  );
+
+  expect(pressedLayout()).toBe("Justified");
+  expect(positionedCards().length).toBe(mountedCards().length);
+
+  expect(cardName(1)).toBe("wall-1.jpg, Active, Undersized");
+  expect(within(cardFor(1) as HTMLElement).getByText("Undersized")).toBeTruthy();
+  expect(cardName(2)).toBe("wall-2.jpg, Active");
+  // And the badged card still carries its rank, which is the pair this layout
+  // puts on one card for the first time.
+  expect(
+    cardFor(1)?.querySelector("[data-slot='wallpaper-rank']")?.textContent,
+  ).toBe("1");
+});
+
+// Justified rows, the third layout on the same control (#263). The same grid,
+// the same cards, the same cursor and the same keys — what these ask is that the
+// rank the layout exists for is on every card and follows the ordering, and that
+// nothing a curator can do stopped working underneath it.
+//
+// Where the rows actually fall is `layout-plan.test.ts`': happy-dom does no
+// layout, so the box measures zero here and every row falls back to the column
+// count. What is observable is that a card is positioned by the layout rather
+// than flowed by a CSS grid, and what number it is carrying.
+
+/** The rank drawn across a card, or `null` for a layout that draws none. */
+const rankOf = (id: number) =>
+  card(id)?.querySelector("[data-slot='wallpaper-rank']")?.textContent ?? null;
+
+test("the bar offers justified rows as a third layout, and the choice is written where a restart reads it", async () => {
+  const written: unknown[] = [];
+  await openLibraryOf([wallpaper(1), wallpaper(2)]);
+  mockCommand("set_setting", (args) => {
+    written.push(args);
+    return settings({ library_layout: "justified" });
+  });
+
+  await click(layoutButton("Justified"));
+
+  // The same key the other two write, because it is the same choice: one Library
+  // layout, remembered across restarts (ADR 0010).
+  expect(written).toEqual([{ key: "library_layout", value: "justified" }]);
+  expect(pressedLayout()).toBe("Justified");
+  // And the cards are drawn where the plan put them: a justified card's width
+  // comes from its own shape, which no CSS grid can be told.
+  expect(positionedCards().length).toBe(mountedCards().length);
+  // The layout is not a question about the library, so nothing is re-fetched.
+  expect(listCalls).toBe(1);
+});
+
+test("a stored justified layout is what the first grid draws", async () => {
+  await openLibraryOf([wallpaper(1), wallpaper(2)], {
+    library_layout: "justified",
+  });
+
+  expect(pressedLayout()).toBe("Justified");
+  expect(positionedCards().length).toBe(mountedCards().length);
+});
+
+test("every wallpaper in justified rows carries its rank", async () => {
+  // The whole argument for the layout: the app's output is an ordering, and the
+  // other two layouts say where a wallpaper stands in a badge the size of a
+  // word.
+  await openLibraryOf(
+    [wallpaper(1), wallpaper(2), wallpaper(3)],
+    { library_layout: "justified" },
+  );
+
+  expect([rankOf(1), rankOf(2), rankOf(3)]).toEqual(["1", "2", "3"]);
+});
+
+test("the grid draws no rank, so the layout is what puts one on a card", async () => {
+  // The other two layouts say where a wallpaper stands in the Score badge and
+  // nowhere else, which is unchanged: this number is justified rows' alone.
+  await openLibraryOf([wallpaper(1), wallpaper(2)]);
+
+  expect(rankOf(1)).toBeNull();
+});
+
+test("the rank follows the ordering when the ordering changes", async () => {
+  // A rank is a position in the list the curator asked for, so re-ordering the
+  // list is the whole of what re-ranks the cards — nothing stores a number
+  // (ADR 0014).
+  await openLibraryOf(
+    [wallpaper(1), wallpaper(2), wallpaper(3)],
+    { library_layout: "justified" },
+  );
+  expect([rankOf(1), rankOf(3)]).toEqual(["1", "3"]);
+
+  // The backend owns every part of the clause behind an ordering's name, so the
+  // page asks for a name and is answered with rows in a different order.
+  mockCommand("list_wallpapers", () => [...library].reverse());
+  await orderBy("Filename, A to Z");
+
+  expect([rankOf(1), rankOf(3)]).toEqual(["3", "1"]);
+});
+
+test("the arrows reach every card in justified rows, as they do in the grid", async () => {
+  await openLibraryOf(
+    Array.from({ length: 9 }, (_, at) => wallpaper(at + 1)),
+    { library_layout: "justified" },
+  );
+  await enterGrid();
+
+  // One rule over one list, in every layout: Left and Right walk it and Up and
+  // Down move by the column count, whatever shape the rows came out (ADR 0019).
+  for (let at = 2; at <= 9; at++) {
+    await press("ArrowRight");
+    expect(document.activeElement).toBe(card(at));
+  }
+  await press("Home");
+  expect(document.activeElement).toBe(card(1));
+  await press("ArrowDown");
+  expect(document.activeElement).toBe(card(5));
+  await press("End");
+  expect(document.activeElement).toBe(card(9));
+});
+
+test("the lightbox opens from a justified card", async () => {
+  await openLibraryOf([wallpaper(1), wallpaper(2)], {
+    library_layout: "justified",
+  });
+
+  await click(screen.getByRole("gridcell", { name: "wall-1.jpg, Active" }));
+
+  expect(screen.getByRole("dialog", { name: "wall-1.jpg" })).toBeTruthy();
+});
+
+test("keep, reject and restore all work from justified rows", async () => {
+  await openLibraryOf(
+    [
+      wallpaper(1),
+      wallpaper(2),
+      wallpaper(3, {
+        status: "rejected",
+        path: "/library/rejected/wall-3.jpg",
+        origin_path: "/library/wall-3.jpg",
+      }),
+    ],
+    { library_layout: "justified" },
+  );
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, `/library/rejected/${wrote(args).filename}`),
+  );
+  mockCommand("restore_wallpaper", (args) =>
+    restoredTo(args, "/library/wall-3.jpg"),
+  );
+
+  await click(button(/keep wall-1\.jpg/i));
+  expect(cardName(1)).toBe("wall-1.jpg, Kept");
+
+  await click(button(/reject wall-2\.jpg/i));
+  expect(cardName(2)).toBe("wall-2.jpg, Rejected");
+
+  await click(button(/restore wall-3\.jpg/i));
+  expect(cardName(3)).toBe("wall-3.jpg, Active");
+
+  // The actions are a property of a wallpaper rather than of a view, so a layout
+  // choice costs the curator none of them (ADR 0023).
+  expect(listCalls).toBe(1);
+});
+
+test("a library past the window has only a window of it in justified rows too", async () => {
+  await openLibraryOf(
+    Array.from({ length: 400 }, (_, at) => wallpaper(at + 1)),
+    { library_layout: "justified" },
+  );
+
+  // ADR 0016's promise, kept by a plan computed rather than measured: a
+  // virtualiser given estimates corrects them as rows mount and moves everything
+  // below by the difference, which is the library shifting under the hand
+  // reaching for a card (ADR 0045).
+  const mounted = mountedCards();
+  expect(mounted.length).toBeGreaterThan(0);
+  expect(mounted.length).toBeLessThan(library.length);
+  expect(card(1)).not.toBeNull();
+  expect(card(400)).toBeNull();
+
+  const names = mounted.map((el) => el.getAttribute("aria-label"));
+  expect(new Set(names).size).toBe(names.length);
+});
+
+test("a justified selection off the end of the window is scrolled in and focused", async () => {
+  await openLibraryOf(
+    Array.from({ length: 400 }, (_, at) => wallpaper(at + 1)),
+    { library_layout: "justified" },
+  );
+  browserLaysOutTheScroller();
+  await enterGrid();
+
+  // The card an arrow key selects may have no node at all, so the row is brought
+  // in before the focus moves (ADR 0019).
+  await press("End");
+  await browserReportsScroll();
+
+  expect(document.activeElement).toBe(card(400));
+  expect(card(1)).toBeNull();
+  // And the card that was reached still says where it stands in the whole list
+  // rather than where it sits in the window.
+  expect(rankOf(400)).toBe("400");
+});
+
+test("a wallpaper whose Dimensions are unknown keeps a card in justified rows", async () => {
+  // The ordinary state of a library still being backfilled, which nothing waits
+  // for: with no shape to scale by, the row it is in would be divided by nothing
+  // (ADR 0044).
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: null, height: null }),
+      wallpaper(2, { width: 3840, height: 1600 }),
+    ],
+    { library_layout: "justified" },
+  );
+
+  expect(cardName(1)).toBe("wall-1.jpg, Active");
+  expect(positionedCards().length).toBe(2);
+  expect(card(1)?.style.height).not.toBe("0px");
+});
+
+test("switching between the uncropped layouts keeps the selection", async () => {
+  // Three layouts on one control, and the selection is none of their business:
+  // the cursor is the grid's and a layout is a plan the grid reads (ADR 0045).
+  await openLibraryOf([wallpaper(1), wallpaper(2), wallpaper(3)], {
+    library_layout: "masonry",
+  });
+  mockCommand("set_setting", () => settings({ library_layout: "justified" }));
+  await enterGrid();
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(card(2));
+
+  await click(layoutButton("Justified"));
+
+  expect(pressedLayout()).toBe("Justified");
+  expect(card(2)?.getAttribute("tabindex")).toBe("0");
+  expect(rankOf(2)).toBe("2");
+});

@@ -115,11 +115,13 @@ export type ReviewLayout = "strip" | "grid";
  * Mirrors settings::LibraryLayout: how the Library draws its wallpapers.
  *
  * `grid` crops every wallpaper to one shape; `masonry` packs columns
- * shortest-first and draws each at its own aspect ratio. The choice belongs to
- * the Library tab, which is why the key names it: Review's layout is its own
- * key, so masonry in Library and something else in Review is a valid pair.
+ * shortest-first and draws each at its own aspect ratio; `justified` scales
+ * uncropped wallpapers to a shared height per row, with the rank set large
+ * behind each image. The choice belongs to the Library tab, which is why the key
+ * names it: Review's layout is its own key, so masonry in Library and something
+ * else in Review is a valid pair.
  */
-export type LibraryLayout = "grid" | "masonry";
+export type LibraryLayout = "grid" | "masonry" | "justified";
 
 /**
  * Mirrors settings::Resolution: a size in pixels, width by height.

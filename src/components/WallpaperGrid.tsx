@@ -17,11 +17,13 @@ import {
   NOTHING_MOUNTED,
   densityColumns,
   densityZoom,
+  planJustified,
   planMasonry,
   planUniformGrid,
   uniformRowHeight,
   windowOf,
   type DensityRange,
+  type JustifiedPlan,
   type LayoutPlan,
   type MasonryPlan,
   type PlannedBox,
@@ -456,39 +458,57 @@ function useGridWindow(
   // its whole window on the way back (ADR 0015).
   const measured = useRef({ width: 0, height: 0 });
   const [boxWidth, setBoxWidth] = useState(0);
-  // Where every card goes, before any of them has a node. Memoised on the three
-  // facts it is computed from, because it is what the virtualiser's options and
-  // the cells are both read out of and a fresh one per render would rebuild both
-  // on every scroll notch.
+  // Where every card goes, before any of them has a node. Memoised on the facts
+  // it is computed from, because it is what the virtualiser's options and the
+  // cells are both read out of and a fresh one per render would rebuild both on
+  // every scroll notch.
   const masonry = layout === "masonry";
-  // A plan, and for masonry the boxes on it. The union rather than `LayoutPlan`
-  // with an optional field, because a box per card is what separates a layout
-  // that positions its own cards from one a CSS grid places: a plan that carries
-  // the field and never fills it is a field nothing checks (ADR 0045).
-  const plan: LayoutPlan | MasonryPlan = useMemo<LayoutPlan | MasonryPlan>(
-    () =>
-      masonry
-        ? planMasonry({
-            ...SPACING,
-            ratios,
-            columns,
-            width: boxWidth,
-            // The shape a wallpaper with no Dimensions is drawn at, and it is
-            // the grid's own `aspect-video` rather than a number this layout
-            // invented: the fallback is "draw it the way the app has always
-            // drawn it", so a library mid-backfill reads as the layout the
-            // curator switched away from rather than as a collapsed row.
-            unknownRatio: CARD_ASPECT.ratio,
-            unmeasuredHeight: UNMEASURED_ROW,
-          })
-        : planUniformGrid({
-            ...SPACING,
-            count,
-            columns,
-            rowHeight: rowHeight(boxWidth, columns),
-          }),
-    [masonry, ratios, count, columns, boxWidth],
-  );
+  // A plan, and for the two layouts that position their own cards the boxes on
+  // it. The union rather than `LayoutPlan` with an optional field, because a box
+  // per card is what separates a layout that positions its own cards from one a
+  // CSS grid places: a plan that carries the field and never fills it is a field
+  // nothing checks (ADR 0045).
+  const plan: LayoutPlan | MasonryPlan | JustifiedPlan = useMemo<
+    LayoutPlan | MasonryPlan | JustifiedPlan
+  >(() => {
+    // The shape a wallpaper with no Dimensions is drawn at, and it is the grid's
+    // own `aspect-video` rather than a number either layout invented: the
+    // fallback is "draw it the way the app has always drawn it", so a library
+    // mid-backfill reads as the layout the curator switched away from rather
+    // than as a collapsed row.
+    const unknownRatio = CARD_ASPECT.ratio;
+    if (masonry) {
+      return planMasonry({
+        ...SPACING,
+        ratios,
+        columns,
+        width: boxWidth,
+        unknownRatio,
+        unmeasuredHeight: UNMEASURED_ROW,
+      });
+    }
+    if (layout === "justified") {
+      return planJustified({
+        ...SPACING,
+        ratios,
+        columns,
+        width: boxWidth,
+        // The uniform grid's own row height, as the height a justified row aims
+        // for. That is what makes the density gesture mean one thing across the
+        // layouts: the same zoom that puts four cards in a grid row puts about
+        // four wallpapers in a justified one, because it is the same number of
+        // the same width being asked for (#264).
+        targetHeight: rowHeight(boxWidth, columns),
+        unknownRatio,
+      });
+    }
+    return planUniformGrid({
+      ...SPACING,
+      count,
+      columns,
+      rowHeight: rowHeight(boxWidth, columns),
+    });
+  }, [masonry, layout, ratios, count, columns, boxWidth]);
 
   const virtualiser = useVirtualizer({
     count: plan.rows.length,
@@ -774,6 +794,16 @@ interface GridProps
    */
   placed?: PlacedCards;
   /**
+   * Whether each card draws its own rank: where it sits in the ordering the
+   * curator asked for, counted from one.
+   *
+   * The position in the list and nothing stored, which is the whole of why the
+   * rank follows the ordering. A wallpaper's place among the others is what the
+   * ordering *is*, so a list re-fetched under a different one hands every card a
+   * different number without anything here being told the ordering changed.
+   */
+  ranked?: boolean;
+  /**
    * Which of the cards to mount, and the empty space that holds the rest of the
    * scroll height open around them. See `PlannedWindow`. Absent mounts every
    * row.
@@ -827,14 +857,13 @@ function WindowedGrid({
   scroller: RefObject<HTMLDivElement | null>;
   layout: LibraryLayout;
 }) {
-  // The shapes the plan packs, and only for the layout that reads them: the
+  // The shapes the plan packs, and only for the layouts that read them: the
   // uniform grid crops every wallpaper to one shape, so a ratio per card reaches
   // nothing there and would be a list of five thousand numbers rebuilt on every
   // patch to be ignored. `NO_RATIOS` is stable, so that grid's plan still
   // depends on a length and not on a list.
   const ratios = useMemo(
-    () =>
-      layout === "masonry" ? props.wallpapers.map(shapeOf) : NO_RATIOS,
+    () => (layout === "grid" ? NO_RATIOS : props.wallpapers.map(shapeOf)),
     [layout, props.wallpapers],
   );
   const { mounted, reveal, placed } = useGridWindow(
@@ -844,7 +873,21 @@ function WindowedGrid({
     layout,
     ratios,
   );
-  return <Grid {...props} mounted={mounted} reveal={reveal} placed={placed} />;
+  return (
+    <Grid
+      {...props}
+      mounted={mounted}
+      reveal={reveal}
+      placed={placed}
+      // The rank is justified rows' whole argument for existing: the app
+      // produces a ranking and the other two layouts say so in a badge the size
+      // of a word (#263). A boolean rather than the layout's name, because what
+      // the cells below need to know is whether a card carries its position and
+      // not which plan put it where — and a value is what keeps the card's memo
+      // holding through a scroll (#229).
+      ranked={layout === "justified"}
+    />
+  );
 }
 
 /**
@@ -881,6 +924,7 @@ function Grid({
   columns,
   onDensityStep,
   placed,
+  ranked = false,
   onOpen,
   className,
   ref,
@@ -1172,6 +1216,10 @@ function Grid({
                 ? isUndersized(wallpaper, minimumResolution)
                 : false
             }
+            // Counted from one, because a rank is what the curator would say out
+            // loud about a wallpaper and nobody says their favourite is number
+            // zero.
+            rank={ranked ? cardIndex + 1 : undefined}
           />
         );
       })}

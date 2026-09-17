@@ -163,7 +163,7 @@ impl Default for Detected {
 }
 
 /// How the Library draws its wallpapers: cropped to one shape, or each at its
-/// own.
+/// own — packed into columns, or lined up in rows.
 ///
 /// A choice per tab rather than one for the app, so a browse surface and a
 /// decision queue are not obliged to look alike. This key is the Library tab's;
@@ -177,6 +177,9 @@ pub enum LibraryLayout {
     Grid,
     /// Columns packed shortest-first, every wallpaper at its own aspect ratio.
     Masonry,
+    /// Rows scaled to a shared height, uncropped, with the rank drawn large
+    /// behind each image.
+    Justified,
 }
 
 impl LibraryLayout {
@@ -184,6 +187,7 @@ impl LibraryLayout {
         match value {
             "grid" => Some(Self::Grid),
             "masonry" => Some(Self::Masonry),
+            "justified" => Some(Self::Justified),
             _ => None,
         }
     }
@@ -376,7 +380,7 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         LIBRARY_LAYOUT => {
             let layout = LibraryLayout::parse(value).ok_or_else(|| {
                 AppError::BadRequest(format!(
-                    "{value:?} is not a layout; expected grid or masonry"
+                    "{value:?} is not a layout; expected grid, masonry or justified"
                 ))
             })?;
             Ok(layout == without.library_layout)
@@ -923,16 +927,35 @@ mod tests {
         let conn = store();
         set(&conn, "library_layout", "masonry", detected()).unwrap();
 
-        let err = set(&conn, "library_layout", "justified", detected()).unwrap_err();
+        let err = set(&conn, "library_layout", "mosaic", detected()).unwrap_err();
 
         assert!(
-            matches!(err, AppError::BadRequest(ref m) if m.contains("justified")),
+            matches!(err, AppError::BadRequest(ref m) if m.contains("mosaic")),
             "got {err:?}"
         );
         assert_eq!(
             get(&conn, detected()).unwrap().library_layout,
             LibraryLayout::Masonry
         );
+    }
+
+    #[test]
+    fn justified_rows_are_a_layout_the_store_takes_and_gives_back() {
+        // The third layout (#263), which the key has to carry as readily as the
+        // two before it: one column of storage, three names in it.
+        let conn = store();
+
+        let returned = set(&conn, "library_layout", "justified", detected()).unwrap();
+
+        assert_eq!(returned.library_layout, LibraryLayout::Justified);
+        assert_eq!(
+            get(&conn, detected()).unwrap().library_layout,
+            LibraryLayout::Justified
+        );
+        // And back to the grid leaves no row behind, the way every other default
+        // does.
+        set(&conn, "library_layout", "grid", detected()).unwrap();
+        assert_eq!(stored_rows(&conn), 0);
     }
 
     #[test]
