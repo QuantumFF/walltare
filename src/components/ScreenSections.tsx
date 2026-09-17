@@ -2,6 +2,10 @@ import { Section } from "@/components/SettingsView";
 import { Input } from "@/components/ui/input";
 import { useApp } from "@/context/AppContext";
 import { type Resolution, type SettingKey } from "@/lib/client";
+// A size as the curator reads it, from the file that holds the app's phrasings:
+// the undersized badge prints a wallpaper's Dimensions the same way these two
+// sections print the settings they are compared against.
+import { readableSize } from "@/lib/copy";
 import { useEffect, useRef, useState } from "react";
 
 // The two sections about the curator's Screen, in one module because the second
@@ -30,11 +34,6 @@ const STATUS_SLOT: Record<SizeSetting, string> = {
   screen: "screen-status",
   minimum_resolution: "minimum-resolution-status",
 };
-
-/** A size as the curator reads it, which is not the `1920x1080` the column holds. */
-function readableSize({ width, height }: Resolution): string {
-  return `${width} × ${height}`;
-}
 
 function sameSize(a: Resolution, b: Resolution): boolean {
   return a.width === b.width && a.height === b.height;

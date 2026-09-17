@@ -845,3 +845,36 @@ test("a click on a card opens the lightbox and is not a keep or a reject", async
   expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
   expect(toast()).toBeNull();
 });
+
+test("an undersized wallpaper is badged here and still in the worklist (#258)", async () => {
+  // Two axes and one of them is not Review's. The badge is a display fact about
+  // a file, so it reaches every card the app draws; what Review *lists* is
+  // untouched, because excluding undersized wallpapers from review would
+  // silently change what the ranking is over (CONTEXT.md, #255).
+  const listed: Array<[string, string, number | undefined]> = [];
+  reviewed = [
+    wallpaper(1, { width: 1280, height: 720 }),
+    wallpaper(2, { width: 3840, height: 2160 }),
+  ];
+  mockCommand("list_wallpapers", (args) => {
+    listed.push([args.filter, args.ordering, args.limit]);
+    return reviewed;
+  });
+  mockCommand("get_settings", () =>
+    settings({ minimum_resolution: { width: 1920, height: 1080 } }),
+  );
+  await openOnReview();
+
+  // Both wallpapers are in front of the curator, and the one too small for
+  // their screen says so — in the cell's accessible name, since a cell's own
+  // name hides the word inside it (ADR 0019).
+  const cells = inReview().getAllByRole("gridcell");
+  expect(cells.map((cell) => cell.getAttribute("aria-label"))).toEqual([
+    "wall-1.jpg, Active, Undersized",
+    "wall-2.jpg, Active",
+  ]);
+
+  // And the worklist was asked for in the same words it always was: fifty
+  // Active rows, lowest Score first (ADR 0028).
+  expect(listed).toEqual([["active", "score_asc", 50]]);
+});

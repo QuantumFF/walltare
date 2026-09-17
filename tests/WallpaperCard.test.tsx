@@ -63,11 +63,12 @@ function rejected(over: Partial<Wallpaper> = {}): Wallpaper {
  * Mount one card inside the real providers, with a host that answers the way a
  * page does: it records what was asked for and makes the call behind it.
  */
-async function mount(w: Wallpaper, animated = false) {
+async function mount(w: Wallpaper, animated = false, undersized = false) {
   await renderInApp(
     <WallpaperCard
       wallpaper={w}
       animated={animated}
+      undersized={undersized}
       onAction={(action, subject) => {
         asked.push({ action, id: subject.id });
         if (action === "restore") void client.restoreWallpaper(subject.id);
@@ -389,5 +390,31 @@ test("a picture that arrives after a failure takes the message back off", async 
   });
 
   expect(screen.queryByText("File is gone")).toBeNull();
+  expect(cardElement("wall-1.jpg, Active")).toBeTruthy();
+});
+
+test("an undersized card wears the badge and names its Dimensions (#258)", async () => {
+  await mount(card({ width: 1280, height: 720 }), false, true);
+
+  // The word, and the size behind the verdict. The badge says a file is too
+  // small; the `title` is the only thing that says by how much, and it needs no
+  // Minimum resolution to print, since the badge's presence is already that
+  // comparison.
+  const mark = screen.getByText("Undersized");
+  expect(mark.getAttribute("title")).toBe("1280 × 720");
+
+  // And in the name, beside the Status. A card's own `aria-label` hides its
+  // contents, so a mark that is only a word inside it is a mark nobody reading
+  // with a screen reader is told about (ADR 0019).
+  expect(cardElement("wall-1.jpg, Active, Undersized")).toBeTruthy();
+});
+
+test("a card says nothing about its size unless it was told to", async () => {
+  // The flag is the whole of what the card knows: whoever holds the Minimum
+  // resolution makes the comparison, and a wallpaper whose Dimensions nothing
+  // has read arrives here as `false` rather than as a guess (ADR 0044).
+  await mount(card({ width: null, height: null }));
+
+  expect(screen.queryByText("Undersized")).toBeNull();
   expect(cardElement("wall-1.jpg, Active")).toBeTruthy();
 });

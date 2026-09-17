@@ -530,6 +530,27 @@ test("an ordering change puts the list back at the top", async () => {
   expect(scroller().scrollTop).toBe(0);
 });
 
+test("narrowing to the undersized wallpapers puts the list back at the top", async () => {
+  // The same rule as the two above, applied to the one narrowing that makes no
+  // fetch at all: row 40 of the whole library is not row 40 of the handful of
+  // it that is too small for the screen (#258).
+  library.push(
+    wallpaper(4, { filename: "small.jpg", width: 1280, height: 720 }),
+  );
+  await openApp();
+  await click(tab("Library"));
+  await scrollLibraryTo(240);
+
+  await click(libraryBar().getByRole("button", { name: "Undersized" }));
+
+  expect(scroller().scrollTop).toBe(0);
+  expect(card(4)).not.toBeNull();
+  expect(card(1)).toBeNull();
+  // And the backend was not asked again. The comparison is against a preference
+  // over rows already in hand, so nothing about it crosses the seam (ADR 0016).
+  expect(listCalls).toBe(1);
+});
+
 test("a deferred refetch that changes the row set puts the list back at the top", async () => {
   await openApp();
   await click(tab("Library"));

@@ -27,7 +27,12 @@ export const REVIEW_LIMIT = 50;
 
 export function ReviewView() {
   const [loading, setLoading] = useState(true);
-  const { setView } = useApp();
+  // `settings` is here for the Minimum resolution alone, which is what the cards
+  // below wear the undersized badge off. It is a display fact and nothing more:
+  // what this worklist holds is `list_wallpapers("active", "score_asc", 50)`
+  // before and after, because excluding undersized wallpapers from review would
+  // silently change what the ranking is over (CONTEXT.md, #258).
+  const { setView, settings } = useApp();
   // Where a reject goes, read once for the line on the bar, for the string
   // `move_wallpaper` is handed and for what the toast has left to say. The
   // `movePath` state that used to stand here is gone with the field that edited
@@ -242,6 +247,7 @@ export function ReviewView() {
               label="Wallpapers to review"
               onAction={perform}
               onOpen={lightbox.openOn}
+              minimumResolution={settings.minimum_resolution}
               animated
               className="pb-8"
               density="review"
