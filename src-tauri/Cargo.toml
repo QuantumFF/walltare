@@ -1,6 +1,6 @@
 [package]
 name = "walltare"
-version = "1.0.0"
+version = "1.1.0"
 description = "Wallpaper curation via pairwise voting"
 authors = ["QuantumFF"]
 license = "MIT"
