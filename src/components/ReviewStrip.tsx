@@ -1,9 +1,10 @@
 import {
   ACTION_CONTROLS,
+  actionFor,
+  printedKey,
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
-import { actionFor, printedKey } from "@/components/WallpaperGrid";
 import {
   usePublishedSelection,
   type SelectionHandle,
@@ -16,9 +17,8 @@ import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { ImageOff } from "lucide-react";
 import {
-  useEffect,
+  memo,
   useLayoutEffect,
-  useReducer,
   useRef,
   useState,
   type KeyboardEvent,
@@ -26,9 +26,15 @@ import {
 } from "react";
 
 /**
- * What the hero's area is taken to be while nothing has measured it: about the
- * space a 1280x800 window leaves once the chrome, the page bar and the filmstrip
- * are out of it.
+ * What the hero's area is taken to be while nothing has measured it.
+ *
+ * The default 1280x800 window, less what is above and below the hero: 1280 wide
+ * less the page's own `p-4` at both ends is 1248, and 800 tall less the chrome's
+ * 48, the page bar's 44, that same 32 of padding, the filmstrip's 96, the row
+ * under the picture at about 44, and the two 12px gaps between the three is
+ * about 512. Rounded to 1216x520, because the number it feeds is a fallback and
+ * not a measurement — the moment a browser lays the box out, the observer below
+ * replaces it.
  *
  * Not an edge case. happy-dom reports every rect as zero, and ADR 0015 keeps
  * this view mounted under `display: none` while another one is showing, which
@@ -80,6 +86,12 @@ export interface ReviewStripProps {
    * (ADR 0022).
    */
   ref?: Ref<SelectionHandle>;
+  /**
+   * A wallpaper to open on, read once at mount: the one Review's other layout
+   * was showing when the curator swapped, so a swap does not cost them their
+   * place in a fifty-row sweep.
+   */
+  startOn?: number | null;
 }
 
 /**
@@ -103,8 +115,9 @@ export interface ReviewStripProps {
  * **Acting advances the queue, and nothing here says so.** The page removes the
  * row it acted on, the id the cursor was tracking is gone, and the selection
  * rule falls back to the same position — which is now the wallpaper that was
- * next. There is no confirm step: ADR 0017 replaced it with act-then-undo, and
- * the toast's Undo and the shell's `Ctrl+Z` are the safety.
+ * next. There is no confirm step: ADR 0009 deleted it and put act-then-undo in
+ * its place, so the safety is ADR 0017's toast and the `Ctrl+Z` that presses its
+ * Undo.
  */
 export function ReviewStrip({
   wallpapers,
@@ -112,29 +125,35 @@ export function ReviewStrip({
   onAction,
   onOpen,
   ref,
+  startOn,
 }: ReviewStripProps) {
   const stripRef = useRef<HTMLDivElement>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
-  // What the last commit put focus on, so a re-render that changes nothing does
-  // not re-focus and re-scroll.
-  const focusedRef = useRef<number | null>(null);
-  const holdsFocusRef = useRef(false);
-  // Whether the page has asked for the selected entry back, which is the one
-  // route in from outside: closing the lightbox is the caller (ADR 0022).
-  const wantsFocusRef = useRef(false);
-  // The commit the flag is answered on. Setting a ref renders nothing, and the
-  // effect that reads it runs on a render — so the ask schedules one. Its value
-  // is never read, which is what keeps it a nudge rather than a counter.
-  const [, askForFocus] = useReducer((asks: number) => asks + 1, 0);
+  // How this layout finds an entry and brings one on screen, which is the whole
+  // of what the shared roving focus does not already know (`selection.ts`).
+  //
+  // The container is the strip rather than the filmstrip, because focus does not
+  // stay on the filmstrip: pressing Keep with the pointer lands it on that
+  // button, and everything in here has to count as still being inside. There is
+  // no `reveal` — every entry is mounted, so scrolling the node into view is the
+  // whole of it.
+  const focus = {
+    container: stripRef,
+    nodeAt: (at: number) =>
+      filmstripRef.current?.querySelector<HTMLElement>(
+        `[data-entry="${at}"]`,
+      ) ?? null,
+  };
 
-  const selection = usePublishedSelection(
-    wallpapers,
-    () => {
-      wantsFocusRef.current = true;
-      askForFocus();
-    },
-    ref,
-  );
+  // The cursor, the publication, the handle and the roving focus, all of which
+  // are the shared selection module's — the same four the grid takes, off the
+  // same call. That is what makes the lightbox a second rendering of whichever
+  // surface is up, and Review's optimistic re-insert land on either (ADR 0022).
+  const {
+    selection,
+    onFocus: handleFocus,
+    onBlur: handleBlur,
+  } = usePublishedSelection(wallpapers, focus, ref, startOn);
   const { wallpaper: selected, index, length, moveTo } = selection;
 
   // The hero's area as last measured, and the box the picture is drawn in. The
@@ -190,60 +209,12 @@ export function ReviewStrip({
   // painting the outgoing picture while the next one decodes.
   const [gone, setGone] = useState(false);
 
-  useEffect(() => {
+  // In a layout effect and not a passive one: the `<img>`'s `src` changes in the
+  // same commit, and a reset that lands a frame later paints "File is gone" over
+  // the outgoing picture on the way to a wallpaper that is perfectly fine.
+  useLayoutEffect(() => {
     setGone(false);
   }, [selected?.id]);
-
-  const entryAt = (at: number) =>
-    filmstripRef.current?.querySelector<HTMLElement>(`[data-entry="${at}"]`) ??
-    null;
-
-  // Focus moves here, in a layout effect after the row commits, and never inside
-  // the key handler — the same ordering the grid keeps, and for the same reason:
-  // the entry an arrow key selected has to be in the DOM before it is focused.
-  //
-  // No dependency array, and `focusedRef` is what makes that cheap: every commit
-  // that moves nothing returns on the first comparison.
-  useLayoutEffect(() => {
-    const target = selected ? selected.id : null;
-    const requested = wantsFocusRef.current;
-
-    // Moving the selection must not steal focus. A refetch that lands while the
-    // curator is somewhere else in the app updates the selection and the tab
-    // stop that goes with it, and leaves focus where they put it.
-    if (!holdsFocusRef.current && !requested) {
-      focusedRef.current = target;
-      return;
-    }
-
-    // Nothing to do when the same wallpaper is selected and focus is still
-    // inside. The second half is not redundant: React reorders a list by moving
-    // DOM nodes, and moving a focused node is a removal and an insertion as far
-    // as the engine is concerned.
-    const active = document.activeElement;
-    const holds = active instanceof Node && stripRef.current?.contains(active);
-    if (target === focusedRef.current && holds) {
-      wantsFocusRef.current = false;
-      return;
-    }
-
-    // The list emptied under a selection that had focus, so the strip takes it:
-    // the alternative is focus on `body`, where the next Tab starts from the top
-    // of the document rather than from the page the curator is on (ADR 0029).
-    if (target === null || index === -1) {
-      stripRef.current?.focus();
-      focusedRef.current = null;
-      wantsFocusRef.current = false;
-      return;
-    }
-
-    const entry = entryAt(index);
-    if (!entry) return;
-    entry.scrollIntoView({ block: "nearest", inline: "nearest" });
-    focusedRef.current = target;
-    wantsFocusRef.current = false;
-    entry.focus({ preventScroll: true });
-  });
 
   // One handler for the whole strip rather than one on the filmstrip, because
   // focus does not stay on the filmstrip: pressing Keep with the pointer lands
@@ -325,20 +296,8 @@ export function ReviewStrip({
       // hold it.
       tabIndex={-1}
       onKeyDown={handleKeyDown}
-      onFocus={() => {
-        holdsFocusRef.current = true;
-      }}
-      onBlur={(event) => {
-        const next = event.relatedTarget;
-        if (next instanceof Node && stripRef.current?.contains(next)) return;
-        // Focus that goes nowhere is the focused entry being unmounted, not the
-        // curator leaving — a keep removes it under their hands, and the effect
-        // above is what re-homes them.
-        if (next === null && event.target instanceof HTMLElement) {
-          if (!event.target.isConnected) return;
-        }
-        holdsFocusRef.current = false;
-      }}
+      onFocus={handleFocus}
+      onBlur={handleBlur}
       className="flex min-h-0 flex-1 flex-col gap-3 outline-none"
     >
       {/* The area the hero is fitted into, and the element that is measured.
@@ -506,41 +465,105 @@ export function ReviewStrip({
           FILMSTRIP_HEIGHT,
         )}
       >
-        {wallpapers.map((entry, at) => {
-          const current = at === index;
-          return (
-            <div
-              key={entry.id}
-              role="option"
-              aria-selected={current}
-              aria-label={entry.filename}
-              data-entry={at}
-              tabIndex={current ? 0 : -1}
-              onClick={() => moveTo(at)}
-              className={cn(
-                "relative h-full shrink-0 cursor-pointer overflow-hidden rounded border-2 outline-none",
-                // The aspect ratio is the entry's own, so a 21:9 in the strip is
-                // a wider entry rather than a cropped one — which is the whole
-                // reason the curator can see what is coming.
-                current
-                  ? "border-primary"
-                  : "border-transparent opacity-60 hover:opacity-100",
-              )}
-              style={{
-                aspectRatio: ratioOf(entry.width, entry.height),
-              }}
-            >
-              <img
-                src={wallpaperImageUrl(entry.id, "small")}
-                alt=""
-                loading="lazy"
-                decoding="async"
-                className="h-full w-full object-cover"
-              />
-            </div>
-          );
-        })}
+        {wallpapers.map((entry, at) => (
+          <FilmstripEntry
+            key={entry.id}
+            wallpaper={entry}
+            at={at}
+            current={at === index}
+            onSelect={moveTo}
+          />
+        ))}
       </div>
     </div>
   );
 }
+
+interface FilmstripEntryProps {
+  wallpaper: Wallpaper;
+  /** Where it sits in the worklist, which is how the roving focus finds it. */
+  at: number;
+  /** Whether this is the one the hero is showing. */
+  current: boolean;
+  /** Select it, by the position above. */
+  onSelect: (at: number) => void;
+}
+
+/**
+ * One wallpaper in the filmstrip: a thumbnail at its own shape, marked when it
+ * is the one the hero is showing.
+ *
+ * **Memoised, and every prop is a value or a stable identity so that the memo
+ * holds.** `onSelect` is the cursor's `moveTo`, which follows the list rather
+ * than the selection, so an arrow key re-renders this component for the entry
+ * that lost the mark and the one that gained it and compares four props on the
+ * other forty-eight. That is the same mechanism ADR 0041 and #230 put behind the
+ * card, and it matters here for the same reason: a held arrow key is a run of
+ * commits, and fifty thumbnails re-rendering on each of them is the cost that
+ * ADR 0041 measured in card mount.
+ *
+ * It is a component rather than markup in the loop above because of `gone`.
+ * ADR 0032 has a surface learn its file is missing from the `wallpaper://`
+ * request it was making anyway, which is state per entry — and without it a
+ * wallpaper whose file has gone would be a blank entry under a hero that says
+ * **File is gone**, which is two surfaces disagreeing about one wallpaper.
+ */
+const FilmstripEntry = memo(function FilmstripEntry({
+  wallpaper,
+  at,
+  current,
+  onSelect,
+}: FilmstripEntryProps) {
+  const [gone, setGone] = useState(false);
+
+  return (
+    <div
+      role="option"
+      aria-selected={current}
+      // The name carries the gone state for the reason the card's does: what is
+      // otherwise an icon inside an element whose own `aria-label` hides its
+      // contents reaches nobody reading with a screen reader unless the name
+      // says it (ADR 0019, ADR 0032).
+      aria-label={
+        gone ? `${wallpaper.filename}, ${FILE_IS_GONE}` : wallpaper.filename
+      }
+      data-entry={at}
+      tabIndex={current ? 0 : -1}
+      onClick={() => onSelect(at)}
+      className={cn(
+        "relative h-full shrink-0 cursor-pointer overflow-hidden rounded border-2 bg-muted outline-none",
+        current
+          ? "border-primary"
+          : "border-transparent opacity-60 hover:opacity-100",
+      )}
+      // The entry's own shape, so a 21:9 in the strip is a wider entry rather
+      // than a cropped one — which is the whole reason the curator can see what
+      // is coming. An `aspect-ratio` resolves here and not on the hero because
+      // this box has a definite height to derive its width from; the hero has a
+      // definite size in neither axis, which is what `fittedBox` is for.
+      style={{ aspectRatio: ratioOf(wallpaper.width, wallpaper.height) }}
+    >
+      <img
+        src={wallpaperImageUrl(wallpaper.id, "small")}
+        alt=""
+        loading="lazy"
+        decoding="async"
+        // The same answer off the same request the card, the hero and the
+        // lightbox read, so no two surfaces can disagree about one wallpaper.
+        // `load` clears it as well as `error` setting it, so an entry is never
+        // stuck on an answer the browser has since revised (ADR 0032).
+        onLoad={() => setGone(false)}
+        onError={() => setGone(true)}
+        className="h-full w-full object-cover"
+      />
+      {gone && (
+        <div
+          data-slot="filmstrip-gone"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center bg-muted text-muted-foreground"
+        >
+          <ImageOff className="h-4 w-4" aria-hidden />
+        </div>
+      )}
+    </div>
+  );
+});

@@ -1,5 +1,12 @@
 import type { ReviewLayout, Settings, Wallpaper } from "@/lib/client";
-import { act, cleanup, screen, within } from "@testing-library/react";
+import { fittedBox, ratioOf } from "@/lib/layout-plan";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
@@ -48,6 +55,42 @@ const strip = () =>
   reviewView().querySelector(
     '[data-slot="review-strip"]',
   ) as HTMLElement | null;
+
+/**
+ * The box the hero's picture is drawn in, as the component sized it.
+ *
+ * happy-dom lays nothing out, so the area the strip measures never stops being
+ * its unmeasured fallback — which is what makes the box a constant here and so
+ * assertable. What it cannot say is whether that fallback is a sensible size;
+ * the arithmetic over a real area is `layout-plan.test.ts`'s.
+ */
+const heroBox = () => {
+  const node = reviewView().querySelector(
+    '[data-slot="review-hero"]',
+  ) as HTMLElement | null;
+  if (!node) return null;
+  return {
+    width: Number.parseFloat(node.style.width),
+    height: Number.parseFloat(node.style.height),
+  };
+};
+
+/** The area the strip falls back to while nothing has measured one. */
+const UNMEASURED_AREA = { width: 1216, height: 520 };
+
+/**
+ * Assert the hero's box is the one `fittedBox` works out for this shape.
+ *
+ * Per axis and not by equality, because a `style` attribute round-trips through
+ * the browser's own serialisation: `924.4444444444443` comes back
+ * `924.444444`.
+ */
+function expectHeroBox(ratio: number): void {
+  const drawn = heroBox();
+  const want = fittedBox(UNMEASURED_AREA, ratio);
+  expect(drawn?.width).toBeCloseTo(want.width);
+  expect(drawn?.height).toBeCloseTo(want.height);
+}
 
 /** The picture the hero is showing, by the filename it is named with. */
 const heroPicture = () =>
@@ -401,4 +444,114 @@ test("Review opens on the grid it has always drawn when nothing has been chosen"
     inReview().getByRole("grid", { name: "Wallpapers to review" }),
   ).toBeTruthy();
   expect(settingWrites).toEqual([]);
+});
+
+// The hero's box, through the component rather than through the arithmetic.
+// `layout-plan.test.ts` pins `fittedBox` itself; what these say is that the
+// strip hands it this wallpaper's own Dimensions, the right way round.
+
+test("the hero is drawn at the wallpaper's own shape, not the grid's", async () => {
+  // A portrait wallpaper, which is the case the uniform grid could never show:
+  // its card crops every wallpaper to 16:9, so a 9:16 phone wallpaper loses its
+  // top and bottom. Here the box is tall and narrow.
+  await openStrip([
+    wallpaper(3, { filename: "portrait.jpg", width: 1080, height: 1920 }),
+    wallpaper(1, { filename: "ultrawide.jpg", width: 2560, height: 1080 }),
+  ]);
+
+  expectHeroBox(1080 / 1920);
+  const portrait = heroBox()!;
+  // Taller than it is wide, which is the whole claim and is what a swapped pair
+  // of arguments would break.
+  expect(portrait.height).toBeGreaterThan(portrait.width);
+  // And it fits: the largest size the ratio allows *in the area*.
+  expect(portrait.height).toBeLessThanOrEqual(UNMEASURED_AREA.height);
+  expect(portrait.width).toBeLessThanOrEqual(UNMEASURED_AREA.width);
+
+  await click(inReview().getByRole("option", { name: "ultrawide.jpg" }));
+
+  expectHeroBox(2560 / 1080);
+  const ultrawide = heroBox()!;
+  expect(ultrawide.width).toBeGreaterThan(ultrawide.height);
+});
+
+test("a wallpaper whose Dimensions nothing has read is drawn at 16:9", async () => {
+  // The ordinary state of a library still being backfilled, and the app keeps
+  // working rather than waiting for it (CONTEXT.md, ADR 0044).
+  await openStrip([
+    wallpaper(3, { filename: "unread.jpg", width: null, height: null }),
+  ]);
+
+  expectHeroBox(ratioOf(null, null));
+  expectHeroBox(16 / 9);
+});
+
+test("a filmstrip entry whose file is gone says so, and the hero agrees", async () => {
+  // One answer off one request, so no two surfaces can disagree about one
+  // wallpaper (ADR 0032). The entry learns it the same way the card does.
+  await openStrip([
+    wallpaper(3, { filename: "vanished.jpg" }),
+    wallpaper(1, { filename: "fine.jpg" }),
+  ]);
+
+  const entry = inReview().getByRole("option", { name: "vanished.jpg" });
+  await act(async () => {
+    fireEvent.error(entry.querySelector("img")!);
+    fireEvent.error(heroPicture()!);
+  });
+
+  expect(
+    inReview().getByRole("option", { name: "vanished.jpg, File is gone" }),
+  ).toBeTruthy();
+  expect(
+    reviewView().querySelector('[data-slot="review-hero-gone"]'),
+  ).not.toBeNull();
+});
+
+test("closing the lightbox puts focus back on the strip", async () => {
+  // ADR 0029's one route in from outside: the lightbox asks the surface for the
+  // selection back, and the surface is what knows which entry that is. The
+  // request goes through the same handle the grid publishes, so this is the
+  // strip answering a call written against a grid (ADR 0022).
+  await openStrip([
+    wallpaper(4, { filename: "keeper.jpg" }),
+    wallpaper(5, { filename: "next.jpg" }),
+  ]);
+
+  await enterStrip();
+  await press("ArrowRight");
+  await press("Enter");
+  expect(screen.getByRole("dialog", { name: "next.jpg" })).toBeTruthy();
+
+  await press("Escape");
+
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(focusedEntry()).toBe("next.jpg");
+});
+
+test("switching layout keeps the curator where they were in the queue", async () => {
+  // A fifty-row sweep that lands back at the top is losing your place, which is
+  // what the epic means by wanting the selection preserved across a layout
+  // change. The cursor is the surface's own and the surface is replaced, so
+  // Review hands the wallpaper across (#230, #265).
+  await openStrip([
+    wallpaper(3, { filename: "first.jpg" }),
+    wallpaper(1, { filename: "second.png" }),
+    wallpaper(7, { filename: "third.webp" }),
+  ]);
+
+  await enterStrip();
+  await press("ArrowRight");
+  await press("ArrowRight");
+  expect(heroPicture()?.alt).toBe("third.webp");
+
+  await click(layoutButton("Grid"));
+
+  expect(
+    inReview().getByRole("gridcell", { name: "third.webp, Active" }),
+  ).toHaveProperty("tabIndex", 0);
+
+  await click(layoutButton("Strip"));
+
+  expect(heroPicture()?.alt).toBe("third.webp");
 });

@@ -71,8 +71,8 @@ export interface WallpaperRowsOptions {
    * wallpaper N. Bundling them means there is no way to ask for an optimistic
    * removal without saying how the selection comes back.
    *
-   * `selectId` alone and not the whole `WallpaperSelection`, whose seven-member shape
-   * is its own open question (#162).
+   * `selectId` alone and not the whole `WallpaperSelection`, whose shape is its
+   * own open question (#162).
    */
   optimistic?: { selectId: (id: number) => void };
 }

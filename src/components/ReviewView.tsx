@@ -23,7 +23,7 @@ import {
   RefreshCw,
   Rows3,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * How many cards the worklist holds. The only `limit` the listing is given —
@@ -112,6 +112,25 @@ export function ReviewView() {
   // handle arriving and going. `setGrid`'s identity is stable.
   const [grid, setGrid] = useState<SelectionHandle | null>(null);
   const lightbox = useLightbox(grid);
+
+  /**
+   * The wallpaper the outgoing surface was on, for the incoming one to open on.
+   *
+   * Swapping layout unmounts one surface and mounts the other, and the cursor is
+   * the surface's since #230 — so without this the curator lands back at the top
+   * of the worklist, which on a fifty-row sweep is losing their place. A ref and
+   * not state: it is written in a click handler and read by the next mount, and
+   * nothing renders from it.
+   *
+   * Spent on arrival, so it only ever answers for the swap that wrote it. A
+   * refetch or an emptied list that remounts the surface later must not put the
+   * selection back on a wallpaper the curator has since moved off.
+   */
+  const handOver = useRef<number | null>(null);
+  const resumeOn = handOver.current;
+  useEffect(() => {
+    handOver.current = null;
+  });
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
@@ -203,6 +222,12 @@ export function ReviewView() {
                 // where it was and the button un-pressed, which is the whole of
                 // what there is to report.
                 onClick={() => {
+                  // Where the curator was, so the surface that replaces this one
+                  // opens there rather than back at the top of a fifty-row
+                  // worklist. Read once, here, rather than subscribed to: a
+                  // subscription would put every arrow key through this page,
+                  // which is what #230 took the cursor out of it to prevent.
+                  handOver.current = grid?.selection().wallpaper?.id ?? null;
                   void saveSetting("review_layout", value).catch(
                     (error: unknown) => {
                       console.error(
@@ -322,11 +347,10 @@ export function ReviewView() {
                opens from the strip" a property of the seam rather than a second
                wiring (ADR 0022, #265).
 
-               Swapping layout remounts the surface, so the selection starts over
-               at the first wallpaper rather than following the curator across.
-               It is a one-line fix and the wrong one: the cursor would have to
-               live above both surfaces again, which is the shape #230 took it
-               out of, and a worklist is judged from the top. */
+               Swapping layout unmounts one surface and mounts the other, so the
+               incoming one is handed the wallpaper the outgoing one was on —
+               see `handOver`. The alternative is a cursor living above both,
+               which is the shape #230 took it out of. */
           layout === "strip" ? (
             <ReviewStrip
               ref={setGrid}
@@ -334,6 +358,7 @@ export function ReviewView() {
               label="Wallpapers to review"
               onAction={perform}
               onOpen={lightbox.openOn}
+              startOn={resumeOn}
             />
           ) : (
             <WallpaperGrid
@@ -344,6 +369,7 @@ export function ReviewView() {
               onOpen={lightbox.openOn}
               animated
               className="pb-8"
+              startOn={resumeOn}
             />
           )}
         </div>

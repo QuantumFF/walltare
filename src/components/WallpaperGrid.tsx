@@ -1,5 +1,5 @@
 import {
-  STATUS_ACTIONS,
+  actionFor,
   WallpaperCard,
   type CardAction,
 } from "@/components/WallpaperCard";
@@ -7,7 +7,7 @@ import {
   usePublishedSelection,
   type SelectionHandle,
 } from "@/components/selection";
-import type { Status, Wallpaper } from "@/lib/client";
+import type { Wallpaper } from "@/lib/client";
 import {
   NOTHING_MOUNTED,
   planUniformGrid,
@@ -22,11 +22,9 @@ import {
   useCallback,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
-  type FocusEvent,
   type KeyboardEvent,
   type Ref,
   type RefObject,
@@ -238,80 +236,6 @@ export function rowHeight(boxWidth: number, columns: number): number {
 }
 
 /**
- * The direct keys, as the actions each one names.
- *
- * `K` names two, because the keep slot has two ends: keeping an Active
- * wallpaper and making a Kept one Active again. One finger, one meaning — "the
- * keep decision" — and the card's Status picks which end of it applies, so `K`
- * is never a keep on one card and something unrelated on the card beside it.
- *
- * `Delete` rather than a letter for reject is what keeps `R` unambiguous. A
- * Rejected card offers only Restore and a non-Rejected card only Reject, so one
- * `R` for both is technically unambiguous and would still be the same finger
- * producing opposite outcomes on cards sitting next to each other in a mixed
- * grid. `Delete` also carries the right shape for the one action here that moves
- * a file (ADR 0019).
- */
-const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
-  k: ["keep", "make-active"],
-  delete: ["reject"],
-  r: ["restore"],
-};
-
-/**
- * How each key is written on the control that fires it: `Keep K`, `Reject Del`,
- * `Restore R`, and `Make Active K` for the other end of the keep slot (#140).
- *
- * `Del` is the one abbreviation, because the key's own name is wider than the
- * verb in front of it on a row that has a floor to fit inside, and because it
- * is what the key is printed as on the keyboard the curator is looking at.
- */
-const KEY_NAMES: Record<string, string> = { k: "K", delete: "Del", r: "R" };
-
-/**
- * The key that fires an action, spelled as the control firing it prints it.
- *
- * Read out of the table above rather than written a second time beside the
- * labels, so a rebinding takes the print with it: a button carrying a key that
- * no longer works is worse than a button carrying no key at all, and #140 puts
- * the key on the button precisely because that is the copy that survives the
- * row narrowing. Every action is bound, so the empty string is what a future
- * unbound one would print rather than a case the app reaches.
- */
-export function printedKey(action: CardAction): string {
-  const bound = Object.entries(KEY_ACTIONS).find(([, actions]) =>
-    actions.includes(action),
-  );
-  return bound ? KEY_NAMES[bound[0]] : "";
-}
-
-/**
- * What a key means on a wallpaper of this Status, or `null` for nothing at all.
- *
- * The answer is an intersection rather than a second table: the key names
- * candidates, and `STATUS_ACTIONS` — the same table the card's buttons render
- * from — says which of them this row actually offers. So a key the Status has no
- * action for does nothing, which is what makes a wrong key a wrong key rather
- * than a wrong action, and what keeps the keyboard from ever asking for a
- * transition CONTEXT.md calls an error.
- *
- * The key is lowercased so that a curator with Caps Lock on still keeps and
- * still restores.
- *
- * Exported because #140's lightbox answers the same three keys on the wallpaper
- * it is showing. It resolves them here rather than carrying its own copy, which
- * is the same reason its buttons render from `STATUS_ACTIONS` and its presses
- * reach the host's own `perform`: one action vocabulary in the app, and no
- * surface that can offer a curator one set with the mouse and another with the
- * keyboard (ADR 0022).
- */
-export function actionFor(key: string, status: Status): CardAction | null {
-  const offered = STATUS_ACTIONS[status];
-  const candidates = KEY_ACTIONS[key.toLowerCase()] ?? [];
-  return candidates.find((action) => offered.includes(action)) ?? null;
-}
-
-/**
  * The window over a list too long to mount (ADR 0016), and the way in to a card
  * that has no node yet.
  *
@@ -517,6 +441,16 @@ export interface WallpaperGridProps {
    * does not apply to this one.
    */
   ref?: Ref<SelectionHandle>;
+  /**
+   * A wallpaper to open on, read once at mount.
+   *
+   * Review's layout control is the one caller: swapping the strip for this grid
+   * unmounts one surface and mounts the other, and the cursor is the surface's
+   * own since #230, so without this the curator lands back at the top of a
+   * fifty-row worklist. The library page passes nothing and starts where it
+   * always did.
+   */
+  startOn?: number | null;
 }
 
 /**
@@ -640,6 +574,7 @@ function Grid({
   onOpen,
   className,
   ref,
+  startOn,
 }: GridProps) {
   const columns = useGridColumns();
   const gridRef = useRef<HTMLDivElement>(null);
@@ -648,38 +583,28 @@ function Grid({
   // in the page since #230, which is what makes a move a re-render of this
   // component and of the two cards whose `selected` changed, instead of the page
   // and every card on it (ADR 0041).
-  // What the last commit put focus on, so a re-render that changes nothing does
-  // not re-focus and re-scroll.
-  const focusedRef = useRef<number | null>(null);
-  const holdsFocusRef = useRef(false);
-  // Whether the page has asked for the selected card back. It stays set until a
-  // card has actually taken the focus — a reveal that has not mounted the row
-  // yet leaves it outstanding for the commit that follows.
-  //
-  // A flag and not the counter this was while the page held it: two requests in
-  // a row want the same card focused, and once the asking and the answering are
-  // in one component a flag that is already set is already asking for it
-  // (ADR 0029).
-  const wantsFocusRef = useRef(false);
-  // The commit the flag is answered on. Setting a ref renders nothing, and the
-  // effect that reads it runs on a render — so the ask schedules one. Its value
-  // is never read, which is what keeps it a nudge rather than a second counter.
-  const [, askedForFocus] = useReducer((asks: number) => asks + 1, 0);
+  // How this layout finds a cell and brings one on screen, which is the whole of
+  // what the shared roving focus does not already know (`selection.ts`).
+  // Rebuilt per render and latched in there, so nothing here has to be stable.
+  const focus = {
+    container: gridRef,
+    nodeAt: (at: number) =>
+      gridRef.current?.querySelector<HTMLElement>(`[data-cell="${at}"]`) ??
+      null,
+    reveal,
+  };
 
-  // The cursor, the publication and the handle, all of which are the shared
-  // selection module's (`selection.ts`). It is here rather than in the page
-  // since #230, which is what makes a move a re-render of this component and of
-  // the two cards whose `selected` changed, instead of the page and every card
-  // on it (ADR 0041); what the grid adds is the answer to a focus request, which
-  // is the one part of a selection that is a fact about how the list is drawn.
-  const selection = usePublishedSelection(
-    wallpapers,
-    () => {
-      wantsFocusRef.current = true;
-      askedForFocus();
-    },
-    ref,
-  );
+  // The cursor, the publication, the handle and the focus, all of which are the
+  // shared selection module's. They are here rather than in the page since #230,
+  // which is what makes a move a re-render of this component and of the two
+  // cards whose `selected` changed, instead of the page and every card on it
+  // (ADR 0041). #265 took the same four out of this file and into one both
+  // listing surfaces read, because Review's strip owes every one of them too.
+  const {
+    selection,
+    onFocus: handleFocus,
+    onBlur: handleBlur,
+  } = usePublishedSelection(wallpapers, focus, ref, startOn);
   const { wallpaper: selected, index, moveTo } = selection;
 
   // What this commit puts in the DOM, as positions in the whole list — which is
@@ -704,91 +629,9 @@ function Grid({
   );
   const cards = mounted ? mounted.cards : everyCard;
 
-  const cellAt = (at: number) =>
-    gridRef.current?.querySelector<HTMLElement>(`[data-cell="${at}"]`) ?? null;
-
-  // Focus moves here, in a layout effect after the row commits, and never inside
-  // the key handler. See `reveal` above for why.
-  //
-  // No dependency array: the retry after `reveal` mounts a row is the commit
-  // that follows, and nothing in this component's props changes to announce it.
-  // `focusedRef` is what makes that cheap — every commit that moves nothing
-  // returns on the first comparison.
-  useLayoutEffect(() => {
-    const target = selected ? selected.id : null;
-    // Whether the page has asked for the selected card back, which is the one
-    // route in from outside the grid. Closing the lightbox is the caller, and it
-    // needs the override below because the card it has to land on is the one for
-    // the current selection, which after two hundred steps is neither where
-    // focus is nor a card that has a node (ADR 0022).
-    const requested = wantsFocusRef.current;
-
-    // Moving the selection must not steal focus. When the curator is somewhere
-    // else in the app, a list that changes underneath updates the selection and
-    // the tab stop that goes with it, and leaves focus where they put it.
-    if (!holdsFocusRef.current && !requested) {
-      focusedRef.current = target;
-      return;
-    }
-
-    // Nothing to do when the same wallpaper is selected and its cell still has
-    // the focus. The second half of that is not redundant: React reorders a
-    // list by moving DOM nodes, and moving a focused node is a removal and an
-    // insertion as far as the engine is concerned, so a reorder that keeps the
-    // selected wallpaper can still drop focus to `body`. Re-homing it is what
-    // makes "the selection follows the wallpaper" survive a vote landing under
-    // the curator's hands. A request that arrives while that card already holds
-    // the focus is answered by that fact and nothing moves.
-    const active = document.activeElement;
-    const holds = active instanceof Node && gridRef.current?.contains(active);
-    if (target === focusedRef.current && holds) {
-      wantsFocusRef.current = false;
-      return;
-    }
-
-    // The window moved and the selection did not. A wheel gesture scrolled the
-    // selected card out of the mounted range, the node went with the window and
-    // the focus went with the node.
-    //
-    // Re-homing it is what would make the library unscrollable. The reveal below
-    // would put the window back on the selected row, so every notch of the wheel
-    // is undone before it paints and the curator never gets past the card they
-    // are standing on. A reveal is for a selection that moved, and nothing moved
-    // this one: they scrolled.
-    //
-    // The container takes the focus, for the reason the emptied list below takes
-    // it. Focus on `body` starts the next Tab at the top of the document rather
-    // than on the page the curator is looking at, and the keys stay answered on
-    // the way back, since the handler that answers them is this element's own
-    // (ADR 0019). `preventScroll`, because a focus move that scrolled would eat
-    // the same gesture by another route.
-    if (target === focusedRef.current && !requested && !cellAt(index)) {
-      gridRef.current?.focus({ preventScroll: true });
-      return;
-    }
-
-    // The list emptied under a selection that had focus, so the container takes
-    // it: the alternative is focus on `body`, where the next Tab starts from the
-    // top of the document rather than from the page the curator is on.
-    if (target === null || index === -1) {
-      gridRef.current?.focus();
-      focusedRef.current = null;
-      wantsFocusRef.current = false;
-      return;
-    }
-
-    if (reveal) reveal(index);
-    else cellAt(index)?.scrollIntoView({ block: "nearest" });
-
-    const cell = cellAt(index);
-    if (!cell) return;
-    focusedRef.current = target;
-    wantsFocusRef.current = false;
-    cell.focus();
-  });
-
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)
+      return;
     const last = wallpapers.length - 1;
     if (index === -1 || !selected) return;
 
@@ -830,7 +673,7 @@ function Grid({
     // default action this handler would otherwise cancel, and a cell has no
     // default action of its own to suppress.
     if (event.key === "Enter") {
-      if (event.target === cellAt(index)) onOpen?.(selected);
+      if (event.target === focus.nodeAt(index)) onOpen?.(selected);
       return;
     }
 
@@ -874,25 +717,6 @@ function Grid({
     // amended, ADR 0019).
     event.preventDefault();
     moveTo(next);
-  };
-
-  const handleFocus = () => {
-    holdsFocusRef.current = true;
-  };
-
-  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
-    const next = event.relatedTarget;
-    if (next instanceof Node && gridRef.current?.contains(next)) return;
-    // Focus that goes nowhere is the focused card being unmounted, not the
-    // curator leaving — a keep removes the row under their hands, and the effect
-    // above is what re-homes them. Engines disagree about whether removing the
-    // focused node fires this at all, so the state it leaves has to be the same
-    // either way: the node is still in the document when they left of their own
-    // accord, and gone when the list took it.
-    if (next === null && event.target instanceof HTMLElement) {
-      if (!event.target.isConnected) return;
-    }
-    holdsFocusRef.current = false;
   };
 
   return (

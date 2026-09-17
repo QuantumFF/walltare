@@ -73,6 +73,85 @@ export const ACTION_CONTROLS: Record<
   restore: { label: "Restore", Icon: RotateCcw },
 };
 
+/**
+ * The direct keys, as the actions each one names.
+ *
+ * `K` names two, because the keep slot has two ends: keeping an Active
+ * wallpaper and making a Kept one Active again. One finger, one meaning — "the
+ * keep decision" — and the card's Status picks which end of it applies, so `K`
+ * is never a keep on one card and something unrelated on the card beside it.
+ *
+ * `Delete` rather than a letter for reject is what keeps `R` unambiguous. A
+ * Rejected card offers only Restore and a non-Rejected card only Reject, so one
+ * `R` for both is technically unambiguous and would still be the same finger
+ * producing opposite outcomes on cards sitting next to each other in a mixed
+ * grid. `Delete` also carries the right shape for the one action here that moves
+ * a file (ADR 0019).
+ */
+const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
+  k: ["keep", "make-active"],
+  delete: ["reject"],
+  r: ["restore"],
+};
+
+/**
+ * How each key is written on the control that fires it: `Keep K`, `Reject Del`,
+ * `Restore R`, and `Make Active K` for the other end of the keep slot (#140).
+ *
+ * `Del` is the one abbreviation, because the key's own name is wider than the
+ * verb in front of it on a row that has a floor to fit inside, and because it
+ * is what the key is printed as on the keyboard the curator is looking at.
+ */
+const KEY_NAMES: Record<string, string> = { k: "K", delete: "Del", r: "R" };
+
+/**
+ * The key that fires an action, spelled as the control firing it prints it.
+ *
+ * Read out of the table above rather than written a second time beside the
+ * labels, so a rebinding takes the print with it: a button carrying a key that
+ * no longer works is worse than a button carrying no key at all, and #140 puts
+ * the key on the button precisely because that is the copy that survives the
+ * row narrowing. Every action is bound, so the empty string is what a future
+ * unbound one would print rather than a case the app reaches.
+ */
+export function printedKey(action: CardAction): string {
+  const bound = Object.entries(KEY_ACTIONS).find(([, actions]) =>
+    actions.includes(action),
+  );
+  return bound ? KEY_NAMES[bound[0]] : "";
+}
+
+/**
+ * What a key means on a wallpaper of this Status, or `null` for nothing at all.
+ *
+ * The answer is an intersection rather than a second table: the key names
+ * candidates, and `STATUS_ACTIONS` — the same table the card's buttons render
+ * from — says which of them this row actually offers. So a key the Status has no
+ * action for does nothing, which is what makes a wrong key a wrong key rather
+ * than a wrong action, and what keeps the keyboard from ever asking for a
+ * transition CONTEXT.md calls an error.
+ *
+ * The key is lowercased so that a curator with Caps Lock on still keeps and
+ * still restores.
+ *
+ * Exported because every surface that answers a key answers these three: the
+ * grid, #140's lightbox, and Review's strip. Each resolves them here rather than
+ * carrying its own copy, which is the same reason their buttons all render from
+ * `STATUS_ACTIONS` and their presses all reach the host's own `perform`: one
+ * action vocabulary in the app, and no surface that can offer a curator one set
+ * with the mouse and another with the keyboard (ADR 0022).
+ *
+ * It lives beside the two tables it reads rather than in `WallpaperGrid.tsx`,
+ * where it was written. Nothing about a key is a fact about a grid — #265 gave
+ * Review a second surface answering the same three, and a strip importing a grid
+ * in order to learn what `K` means was the shape that said so.
+ */
+export function actionFor(key: string, status: Status): CardAction | null {
+  const offered = STATUS_ACTIONS[status];
+  const candidates = KEY_ACTIONS[key.toLowerCase()] ?? [];
+  return candidates.find((action) => offered.includes(action)) ?? null;
+}
+
 export interface WallpaperCardProps {
   wallpaper: Wallpaper;
   /**

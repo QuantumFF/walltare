@@ -10,9 +10,23 @@
  *
  * It sits here rather than inside `WallpaperGrid.tsx`, where it was written,
  * because the strip is not a grid and must not import one to hold a cursor. What
- * moved is the cursor rule, the publication and the handle; every reason for
- * each of them is unchanged, and `WallpaperGrid.test.tsx` and
- * `prop-identities.test.tsx` are what say the move changed nothing.
+ * moved is the cursor rule, the publication, the handle and the roving focus;
+ * every reason for each of them is unchanged, and `WallpaperGrid.test.tsx`,
+ * `LibraryView.test.tsx`, `lightbox.test.tsx`, `render-scope.test.tsx` and
+ * `prop-identities.test.tsx` passing untouched are what say the move changed
+ * nothing a curator can see.
+ *
+ * **This contradicts one statement of
+ * [ADR 0042](../../docs/adr/0042-the-grid-owns-the-cursor.md), deliberately.**
+ * Its "the exports do not grow" section lists `GridSelection`,
+ * `WallpaperGridHandle` and `useGridSelection` by name, and defends the last of
+ * those keeping its name on the grounds that it is "the same fact under the same
+ * label: the grid's selection". Under #265 it is not the grid's selection any
+ * more — Review's strip publishes the same object from the same rule — so the
+ * label is what stopped being true, and the three are `WallpaperSelection`,
+ * `SelectionHandle` and `useSelection` here. What that ADR was actually
+ * refusing, a new name added *beside* an old one, still holds: `WallpaperGrid`'s
+ * export list is four names shorter and nothing was left behind as an alias.
  */
 import type { Wallpaper } from "@/lib/client";
 import {
@@ -20,10 +34,13 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
+  type FocusEvent,
   type Ref,
+  type RefObject,
 } from "react";
 
 /**
@@ -211,11 +228,18 @@ export function useSelection<T>(
  * The id is kept even when it resolves to nothing, which is what brings the
  * selection back when a failed action re-inserts the card it removed
  * optimistically (ADR 0022).
+ *
+ * `startOn` is a wallpaper to open on, read once at mount and never again. Its
+ * caller is a page handing the selection from one surface to the surface
+ * replacing it: Review swaps its strip for its grid and the curator keeps their
+ * place. Nothing and the first wallpaper are the same answer here, because the
+ * fall back to position starts at 0.
  */
 export function useSelectionCursor(
   wallpapers: Wallpaper[],
+  startOn: number | null = null,
 ): WallpaperSelection {
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedId, setSelectedId] = useState<number | null>(startOn);
   // Where the selection was, for the fall back below. Also the initial stop:
   // with nothing selected yet the first entry holds the tab stop, because a list
   // where every cell is `tabindex="-1"` cannot be entered by keyboard at all.
@@ -255,35 +279,100 @@ export function useSelectionCursor(
 }
 
 /**
- * The cursor over a list, plus the handle that is the whole of the way to it.
+ * The cursor a surface drew from, and the two handlers that tell the roving
+ * focus whether the curator is inside it.
  *
- * Every surface that draws a list owes the same three things — resolve the
- * cursor, build a handle once, say out loud what this commit drew — and the only
- * part that differs is what "put the selection back in focus" means, which is
- * the caller's own focus machinery. So that arrives as an argument and
- * everything else is here.
+ * The handlers go on the element that owns the focus, which is the same element
+ * `SelectionFocus.container` names. They are stable for the life of the caller,
+ * so putting them on a container costs nothing per render.
+ */
+export interface PublishedSelection {
+  selection: WallpaperSelection;
+  onFocus: () => void;
+  onBlur: (event: FocusEvent<HTMLElement>) => void;
+}
+
+/**
+ * How a surface finds and reveals the entry a selection is on, which is the only
+ * part of the roving focus below that a layout decides for itself.
+ */
+export interface SelectionFocus {
+  /**
+   * The element that owns the focus, and the one that takes it when there is no
+   * entry left to hold it: focus on `body` starts the next Tab from the top of
+   * the document rather than from the page the curator is on (ADR 0029).
+   */
+  container: RefObject<HTMLElement | null>;
+  /**
+   * The entry at a position in the whole list, or `null` when it has no node —
+   * which under a window is most of the list (ADR 0016).
+   */
+  nodeAt: (at: number) => HTMLElement | null;
+  /**
+   * Put the entry at `at` on screen, which under a window means mounting its row
+   * first.
+   *
+   * Absent scrolls whatever node the entry already has into view, which is the
+   * whole of what a surface that mounts everything needs.
+   */
+  reveal?: (at: number) => void;
+}
+
+/**
+ * The cursor over a list, the handle that is the whole of the way to it, and the
+ * roving focus that answers a request to come back.
  *
- * `focusSelection` is latched rather than captured, so a caller may hand over a
- * closure rebuilt per render without the handle's identity moving. The handle's
- * identity is what a subscriber resubscribes on, so a fresh one per render would
- * be a resubscription per render and, on a page holding it in state, a render
- * that schedules the next one.
+ * Every surface that draws a list owes the same four things — resolve the
+ * cursor, build a handle once, say out loud what this commit drew, and put focus
+ * where the selection went — and none of them is about what the list looks like.
+ * The grid and Review's strip differ in how an entry is found and how it is
+ * brought on screen, which is what `SelectionFocus` is; everything else below is
+ * one copy for both. Two copies of this effect is what the first cut of #265
+ * had, and the two had already drifted before the branch was reviewed.
+ *
+ * The handle's identity never moves, because that is what a subscriber
+ * resubscribes on: a fresh one per render would be a resubscription per render
+ * and, on a page holding it in state, a render that schedules the next one. The
+ * `focus` argument is latched rather than captured for the same reason, so a
+ * caller may rebuild it per render.
  */
 export function usePublishedSelection(
   wallpapers: Wallpaper[],
-  focusSelection: () => void,
+  focus: SelectionFocus,
   ref: Ref<SelectionHandle> | undefined,
-): WallpaperSelection {
-  const selection = useSelectionCursor(wallpapers);
+  startOn: number | null = null,
+): PublishedSelection {
+  const selection = useSelectionCursor(wallpapers, startOn);
+  const { wallpaper: selected, index } = selection;
 
-  const latestFocus = useRef(focusSelection);
+  const latest = useRef(focus);
   useLayoutEffect(() => {
-    latestFocus.current = focusSelection;
+    latest.current = focus;
   });
+
+  // What the last commit put focus on, so a re-render that changes nothing does
+  // not re-focus and re-scroll.
+  const focusedRef = useRef<number | null>(null);
+  const holdsFocusRef = useRef(false);
+  // Whether a page has asked for the selected entry back. It stays set until an
+  // entry has actually taken the focus — a reveal that has not mounted the row
+  // yet leaves it outstanding for the commit that follows.
+  //
+  // A flag and not a counter: two requests in a row want the same entry focused,
+  // and once the asking and the answering are in one place a flag that is
+  // already set is already asking for it (ADR 0029).
+  const wantsFocusRef = useRef(false);
+  // The commit the flag is answered on. Setting a ref renders nothing, and the
+  // effect that reads it runs on a render — so the ask schedules one. Its value
+  // is never read, which is what keeps it a nudge rather than a second counter.
+  const [, askedForFocus] = useReducer((asks: number) => asks + 1, 0);
 
   const [published] = useState(createPublication);
   const [handle] = useState<SelectionHandle>(() => ({
-    focusSelection: () => latestFocus.current(),
+    focusSelection: () => {
+      wantsFocusRef.current = true;
+      askedForFocus();
+    },
     subscribe: published.subscribe,
     selection: published.get,
   }));
@@ -299,5 +388,114 @@ export function usePublishedSelection(
     published.publish(selection);
   }, [published, selection]);
 
-  return selection;
+  // Focus moves here, in a layout effect after the row commits, and never inside
+  // a key handler. The entry an arrow key selected may have no node yet, and
+  // asking for it to be revealed is what creates one — so the reveal comes
+  // first, the effect finds nothing to focus and returns, and the commit that
+  // follows finds the node. Focusing a node that is not there yet is the one way
+  // this pattern breaks (ADR 0019).
+  //
+  // No dependency array: that retry is a commit nothing in the props announces.
+  // `focusedRef` is what makes it cheap — every commit that moves nothing
+  // returns on the first comparison.
+  useLayoutEffect(() => {
+    const { container, nodeAt, reveal } = latest.current;
+    const target = selected ? selected.id : null;
+    // Whether a page has asked for the selected entry back, which is the one
+    // route in from outside. Closing the lightbox is the caller, and it needs
+    // the override below because the entry it has to land on is the one for the
+    // current selection, which after two hundred steps is neither where focus is
+    // nor an entry that has a node (ADR 0022).
+    const requested = wantsFocusRef.current;
+
+    // Moving the selection must not steal focus. When the curator is somewhere
+    // else in the app, a list that changes underneath updates the selection and
+    // the tab stop that goes with it, and leaves focus where they put it.
+    if (!holdsFocusRef.current && !requested) {
+      focusedRef.current = target;
+      return;
+    }
+
+    // Nothing to do when the same wallpaper is selected and its entry still has
+    // the focus. The second half of that is not redundant: React reorders a list
+    // by moving DOM nodes, and moving a focused node is a removal and an
+    // insertion as far as the engine is concerned, so a reorder that keeps the
+    // selected wallpaper can still drop focus to `body`. Re-homing it is what
+    // makes "the selection follows the wallpaper" survive a vote landing under
+    // the curator's hands. A request that arrives while that entry already holds
+    // the focus is answered by that fact and nothing moves.
+    const active = document.activeElement;
+    const holds = active instanceof Node && container.current?.contains(active);
+    if (target === focusedRef.current && holds) {
+      wantsFocusRef.current = false;
+      return;
+    }
+
+    // The window moved and the selection did not. A wheel gesture scrolled the
+    // selected entry out of the mounted range, the node went with the window and
+    // the focus went with the node.
+    //
+    // Re-homing it is what would make the library unscrollable. The reveal below
+    // would put the window back on the selected row, so every notch of the wheel
+    // is undone before it paints and the curator never gets past the entry they
+    // are standing on. A reveal is for a selection that moved, and nothing moved
+    // this one: they scrolled.
+    //
+    // Unreachable on a surface that mounts every entry, where `nodeAt` always
+    // answers — which is Review in both of its layouts. It costs that surface
+    // one query and is the same rule for both, rather than a flag saying which
+    // kind of surface this is. `preventScroll`, because a focus move that
+    // scrolled would eat the same gesture by another route.
+    if (target === focusedRef.current && !requested && !nodeAt(index)) {
+      container.current?.focus({ preventScroll: true });
+      return;
+    }
+
+    // The list emptied under a selection that had focus, so the container takes
+    // it: the alternative is focus on `body`, where the next Tab starts from the
+    // top of the document rather than from the page the curator is on.
+    //
+    // Both listing pages swap their surface for their own empty state in the
+    // same commit, so today focus lands on `body` anyway and not because of
+    // anything here — the same thing `useLightbox`'s own emptied-list handler
+    // records about its ask. The rule holds whichever surface a page decides to
+    // show next, which is why it is stated rather than left out (ADR 0029).
+    if (target === null || index === -1) {
+      container.current?.focus();
+      focusedRef.current = null;
+      wantsFocusRef.current = false;
+      return;
+    }
+
+    if (reveal) reveal(index);
+    else nodeAt(index)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+
+    const node = nodeAt(index);
+    if (!node) return;
+    focusedRef.current = target;
+    wantsFocusRef.current = false;
+    node.focus();
+  });
+
+  const onFocus = useCallback(() => {
+    holdsFocusRef.current = true;
+  }, []);
+
+  const onBlur = useCallback((event: FocusEvent<HTMLElement>) => {
+    const next = event.relatedTarget;
+    const container = latest.current.container.current;
+    if (next instanceof Node && container?.contains(next)) return;
+    // Focus that goes nowhere is the focused entry being unmounted, not the
+    // curator leaving — a keep removes it under their hands, and the effect
+    // above is what re-homes them. Engines disagree about whether removing the
+    // focused node fires this at all, so the state it leaves has to be the same
+    // either way: the node is still in the document when they left of their own
+    // accord, and gone when the list took it.
+    if (next === null && event.target instanceof HTMLElement) {
+      if (!event.target.isConnected) return;
+    }
+    holdsFocusRef.current = false;
+  }, []);
+
+  return { selection, onFocus, onBlur };
 }

@@ -1,5 +1,7 @@
 import {
   ACTION_CONTROLS,
+  actionFor,
+  printedKey,
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
@@ -8,7 +10,7 @@ import {
   type SelectionHandle,
   type WallpaperSelection,
 } from "@/components/selection";
-import { actionFor, printedKey } from "@/components/WallpaperGrid";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
@@ -77,7 +79,8 @@ const ROW_FLOOR = 500;
  * wallpaper for a frame and never painting it at all.
  */
 const WHOLE = (selection: WallpaperSelection) => selection;
-const HAS_WALLPAPER = (selection: WallpaperSelection) => selection.wallpaper !== null;
+const HAS_WALLPAPER = (selection: WallpaperSelection) =>
+  selection.wallpaper !== null;
 const NOTHING: WallpaperSelection = {
   wallpaper: null,
   index: -1,
@@ -148,9 +151,7 @@ export interface LightboxControls {
  * is a no-op in a browser and a lie under happy-dom. Only the caller can tell
  * the three apart (ADR 0029).
  */
-export function useLightbox(
-  grid: SelectionHandle | null,
-): LightboxControls {
+export function useLightbox(grid: SelectionHandle | null): LightboxControls {
   const { view } = useApp();
   const { setOpen: reportToShell } = useLightboxHost();
   const [open, setOpen] = useState(false);
@@ -741,7 +742,8 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                         className="truncate font-mono text-[11px] text-white/50"
                         title={wallpaper.path}
                       >
-                        {wallpaper.status === "rejected" && wallpaper.origin_path
+                        {wallpaper.status === "rejected" &&
+                        wallpaper.origin_path
                           ? wallpaper.origin_path
                           : wallpaper.path}
                       </p>

@@ -1,4 +1,5 @@
 import { LibraryView } from "@/components/LibraryView";
+import { ReviewView } from "@/components/ReviewView";
 import type { Wallpaper } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -233,4 +234,41 @@ test("an arrow key re-renders the two cards the cursor moved between, and nothin
   // are all outside what a keypress rebuilds.
   expect(untouched(scroller(), pageBefore)).toBe(true);
   expect(commits).toBe(1);
+});
+
+/** Review in its strip layout, with the worklist already served. */
+async function openReviewStrip(count: number) {
+  const list = cards(count);
+  mockCommand("list_wallpapers", () => list);
+  mockCommand("get_settings", () => settings({ review_layout: "strip" }));
+  await renderInApp(<ReviewView />);
+  await flush();
+}
+
+test("an arrow key in the strip re-renders the two entries the cursor moved between", async () => {
+  // The same property one surface over, and it has to be stated separately
+  // because it is held by a different memo: the strip draws fifty filmstrip
+  // entries and the cursor is its own, so a held arrow key is a run of commits
+  // over all fifty unless each entry compares its four props and stops.
+  //
+  // ADR 0041 priced the grid's version of this at 110 dropped frames per ten
+  // seconds of key repeat on Review's fifty cards. A filmstrip entry is cheaper
+  // than a card — one image, no badge, no buttons — but it is fifty of them on
+  // the surface built for a run of decisions, which is where a key repeat
+  // actually happens.
+  await openReviewStrip(50);
+  const entries = screen.queryAllByRole("option") as HTMLElement[];
+  expect(entries).toHaveLength(50);
+
+  await act(async () => {
+    entries[0].focus();
+  });
+  const before = entries.map(renderedProps);
+
+  await press("ArrowRight");
+
+  const moved = entries.flatMap((entry, at) =>
+    untouched(entry, before[at]) ? [] : [at],
+  );
+  expect(moved).toEqual([0, 1]);
 });
