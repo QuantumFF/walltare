@@ -6,6 +6,7 @@ import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import type {
   BackendCommands,
   CacheSize,
+  Resolution,
   Settings,
   Stats,
   Wallpaper,
@@ -235,13 +236,31 @@ export function stats(over: Partial<Stats> = {}): Stats {
  * defaults do.
  */
 export function settings(over: Partial<Settings> = {}): Settings {
+  // The backend's rule rather than a fourth spelled-out value: with no row, the
+  // minimum resolution reads as whatever the screen reads as, so a test that
+  // overrides only the screen gets the pair the backend would have answered
+  // with.
+  const screen = over.screen ?? DETECTED_SCREEN;
   return {
     theme: "system",
     library_root: "",
     reject_destination: "./rejected",
+    screen,
+    minimum_resolution: screen,
+    // What the monitor said, which no override moves: a test that overrides the
+    // screen is arranging exactly the case where the two differ.
+    detected_screen: DETECTED_SCREEN,
     ...over,
   };
 }
+
+/**
+ * The monitor the mocked backend detected, and so the default behind both sizes.
+ *
+ * A 4K rather than the app's own `FALLBACK_SCREEN`, so a value that arrived
+ * because detection was never mocked is a failure rather than a coincidence.
+ */
+export const DETECTED_SCREEN: Resolution = { width: 3840, height: 2160 };
 
 /**
  * The thumbnail cache as ADR 0020 measured it on the live machine: 48MB across

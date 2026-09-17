@@ -330,7 +330,7 @@ test("the report's action opens Settings from where the curator was, and stays u
 
   // Named for a reader who cannot tab to it: Radix announces `altText` in place
   // of the label. There is no focus key beside the `returnTo`, and there cannot
-  // be one — the field is typed `keyof Settings` and Thumbnails is a section
+  // be one — the field is typed `SettingKey` and Thumbnails is a section
   // rather than a setting (ADR 0020, ADR 0021).
   expect(actionButton()?.textContent).toBe("Settings");
 

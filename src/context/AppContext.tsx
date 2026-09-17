@@ -2,6 +2,7 @@ import {
   client,
   DEFAULT_SETTINGS,
   isAppError,
+  type SettingKey,
   type Settings,
   type Stats,
 } from "@/lib/client";
@@ -55,7 +56,7 @@ interface BootLanding {
    * the same focus key a control elsewhere would have sent (ADR 0020). The
    * other three landings ask for nothing.
    */
-  focus: keyof Settings | null;
+  focus: SettingKey | null;
 }
 
 /**
@@ -109,17 +110,17 @@ export interface NavigationOptions {
   returnTo?: View;
   /**
    * A Settings field to focus on arrival, so a control elsewhere can send the
-   * curator to the exact input it was talking about. Keyed on `keyof Settings`
-   * for the same reason `setSetting` is: a caller cannot name a field that is
-   * not there (ADR 0020).
+   * curator to the exact input it was talking about. Keyed on `SettingKey` for
+   * the same reason `setSetting` is: a caller cannot name a field that is not
+   * there (ADR 0020).
    */
-  focus?: keyof Settings;
+  focus?: SettingKey;
 }
 
 interface Navigation {
   view: View;
   returnTo: View | null;
-  focus: keyof Settings | null;
+  focus: SettingKey | null;
   /**
    * Rides on the navigation record rather than beside it, so it lives exactly as
    * long as the landing that produced it. A curator who leaves Settings and
@@ -134,7 +135,7 @@ interface AppContextType {
   /** Where the current view closes back to; `null` when boot landed here. */
   returnTo: View | null;
   /** The field this navigation asked Settings to focus; `null` when none did. */
-  focus: keyof Settings | null;
+  focus: SettingKey | null;
   /** Why boot opened Settings, for the page to say so; `null` in every other case. */
   bootNotice: BootNotice | null;
   setView: (view: View, options?: NavigationOptions) => void;
@@ -154,7 +155,7 @@ interface AppContextType {
    * Rejects with whatever the write rejected with. What to say about a failed
    * write belongs to the field that asked for it.
    */
-  saveSetting: <K extends keyof Settings>(
+  saveSetting: <K extends SettingKey>(
     key: K,
     value: Settings[K],
   ) => Promise<void>;
@@ -277,7 +278,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const saveSetting = useCallback(
-    async <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    async <K extends SettingKey>(key: K, value: Settings[K]) => {
       setSettings(await client.setSetting(key, value));
     },
     [],
@@ -290,7 +291,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // notice is why boot opened Settings, and the page shows a boot landing —
     // the block, and the Library root section on its own — for as long as one
     // stands: a Retry that fixed nothing but the block would leave the curator
-    // on a page still missing four of its five sections (ADR 0033).
+    // on a page still missing every section but the first (ADR 0033).
     //
     // Only the fault. A first-run notice is about what the library holds rather
     // than about whether it could be read, and this same read is what follows

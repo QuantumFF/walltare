@@ -40,6 +40,33 @@ has none rather than a guess, and everything that would draw on them says nothin
 instead of saying something wrong. See
 [ADR 0044](docs/adr/0044-pixel-dimensions-live-on-the-wallpaper-row.md).
 
+## Screen
+
+How many pixels wide and tall the display the user is curating for is. One
+screen, whatever the machine has plugged into it, because everything that asks
+about it — how a wallpaper would be cropped, whether it is large enough — has to
+get the same answer.
+
+The Screen is a stated preference, not a fact about the machine. It defaults to
+the monitor the app detected and the user may say otherwise; saying the detected
+value is what puts it back. A monitor the platform will not describe leaves a
+usable Screen standing rather than an error.
+
+## Minimum resolution
+
+The smallest Dimensions a wallpaper may have before it counts as **undersized**
+for the Screen. It defaults to the Screen's own pixels, so a user who wants
+exactly what their display is has nothing to say, and one who wants to be
+stricter or looser says it here.
+
+Because the default is the Screen rather than a fixed number, a Minimum
+resolution the user has not moved off follows the Screen when the Screen moves.
+
+Undersized is a fact about a file next to a preference, not a Status: an
+undersized wallpaper is still Eligible, still votes and still appears in review.
+A wallpaper whose Dimensions are unknown is not undersized either, because
+nothing has read them.
+
 ## Status
 
 Every wallpaper is exactly one of:

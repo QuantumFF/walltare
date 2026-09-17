@@ -526,22 +526,28 @@ fn check_reject_destination(written: String) -> Result<reject_destination::Check
 }
 
 #[tauri::command]
-fn get_settings(state: tauri::State<Db>) -> Result<settings::Settings, error::AppError> {
-    state.read(settings::get)
+fn get_settings(
+    state: tauri::State<Db>,
+    detected: tauri::State<settings::Detected>,
+) -> Result<settings::Settings, error::AppError> {
+    let detected = *detected;
+    state.read(|conn| settings::get(conn, detected))
 }
 
 /// Writes one setting and returns every setting, so a stale read cannot survive
 /// a write.
 ///
 /// The value crosses as a `String` because that is what the column holds;
-/// `client.ts` keys the call on `keyof Settings` so callers stay typed.
+/// `client.ts` keys the call on `SettingKey` so callers stay typed.
 #[tauri::command]
 fn set_setting(
     key: String,
     value: String,
     state: tauri::State<Db>,
+    detected: tauri::State<settings::Detected>,
 ) -> Result<settings::Settings, error::AppError> {
-    state.write(|conn| settings::set(conn, &key, &value))
+    let detected = *detected;
+    state.write(|conn| settings::set(conn, &key, &value, detected))
 }
 
 /// Every wallpaper matching a named filter, in a named ordering, at most `limit`
@@ -707,6 +713,55 @@ fn refuse_the_database(app: &AppHandle, database: i64, supported: i64) {
         .show(|_| std::process::exit(1));
 }
 
+/// What the primary monitor says it is, which is the default behind the screen
+/// setting.
+///
+/// The one place in the app that can ask, which is why the answer is threaded
+/// into `settings` rather than read there. Detection failing is not an error
+/// state and never fails the launch: the curator gets
+/// [`settings::FALLBACK_SCREEN`] and a field in Settings to correct it, which is
+/// the same field a curator with a working monitor and a different opinion uses.
+///
+/// The primary monitor rather than the one the window happens to be on. Which
+/// monitor a multi-monitor curator meant is a question the screen setting exists
+/// to answer, and guessing it from a window position would change the default
+/// every time they dragged the app across.
+fn detect_screen(app: &AppHandle) -> settings::Detected {
+    // Physical pixels, which is what a wallpaper's own Dimensions are measured
+    // in. A scale factor belongs to how big things look, not to how big the
+    // Screen is.
+    //
+    // What each answer means is `Detected::from_monitor`'s, which is where it
+    // can be tested: this reaches for the monitor and says out loud what it
+    // found, and nothing here decides anything.
+    let measured = match app.primary_monitor() {
+        Ok(Some(monitor)) => {
+            let size = monitor.size();
+            // The same rule `from_monitor` applies, asked rather than restated,
+            // so the log cannot come to disagree with the decision.
+            if settings::Resolution::new(size.width, size.height).is_none() {
+                eprintln!(
+                    "settings: the primary monitor reports {}x{}; using the fallback screen",
+                    size.width, size.height
+                );
+            }
+            Some((size.width, size.height))
+        }
+        Ok(None) => {
+            eprintln!("settings: no primary monitor; using the fallback screen");
+            None
+        }
+        Err(error) => {
+            eprintln!(
+                "settings: could not read the primary monitor ({error}); using the fallback screen"
+            );
+            None
+        }
+    };
+
+    settings::Detected::from_monitor(measured)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -741,6 +796,10 @@ pub fn run() {
             std::fs::create_dir_all(&cache_dir)?;
             app.manage(CacheDir(cache_dir));
             app.manage(Db::new(conn));
+            // Read once, here, rather than on every settings call: it is the
+            // default behind a stored preference, and a monitor swap is a
+            // restart away from being noticed either way.
+            app.manage(detect_screen(app.handle()));
             app.manage(ScanRunning::default());
             app.manage(Pregen::default());
             serving::start(app.handle());

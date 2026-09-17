@@ -799,7 +799,7 @@ export function ToastSurface({
               {/* Cancel lives on Settings, on the button that becomes it while a
                   pass runs (ADR 0020), so the report's one action is the route
                   there. It carries no focus key: that field is typed
-                  `keyof Settings` and Thumbnails is a section rather than a
+                  `SettingKey` and Thumbnails is a section rather than a
                   setting. `preventDefault` keeps the report up — a `ToastAction`
                   is a `ToastClose` underneath, and "let me do something about
                   it" is not "stop telling me". */}

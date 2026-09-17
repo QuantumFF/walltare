@@ -11,7 +11,14 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
-import type { CacheSize, MissingFiles } from "@/lib/client";
+import type {
+  CacheSize,
+  MissingFiles,
+  Resolution,
+  SettingKey,
+  Settings,
+  Theme,
+} from "@/lib/client";
 import {
   cacheSize,
   click,
@@ -42,9 +49,41 @@ import { emitEvent, mockCommand, mockFolderPicker } from "./ipc-mocks";
 /** Where `~` goes on the machine the mocked backend is standing in for. */
 const HOME = "/home/curator";
 
+/**
+ * One written value back in the shape a read answers with, which is what the
+ * mocked `set_setting` folds into the table.
+ *
+ * The inverse of `encodeSetting`: a value crosses as the string the column
+ * holds, and the two sizes come back out as two numbers. Writing it here rather
+ * than answering with the string is what makes the mock a backend rather than an
+ * echo — a section that re-read its own write would otherwise get `2560x1440`
+ * where it expects a width and a height.
+ */
+function storedAs(key: SettingKey, value: string): Partial<Settings> {
+  switch (key) {
+    case "screen":
+      return { screen: asSize(value) };
+    case "minimum_resolution":
+      return { minimum_resolution: asSize(value) };
+    case "theme":
+      return { theme: value as Theme };
+    case "library_root":
+      return { library_root: value };
+    case "reject_destination":
+      return { reject_destination: value };
+  }
+}
+
+function asSize(value: string): Resolution {
+  const [width, height] = value.split("x").map(Number);
+  return { width, height };
+}
+
 let statsCalls = 0;
 let scannedPaths: string[];
 let settingWrites: Array<{ key: string; value: string }>;
+/** The settings table as the mocked backend holds it, which every write folds into. */
+let storedSettings: Settings;
 /** Just the two commands a scan makes, in the order the backend heard them. */
 let scanSequence: string[];
 /** What the next walk of the cache directory finds, so a clear can change it. */
@@ -82,6 +121,12 @@ beforeEach(() => {
   missingChecks = 0;
 
   mockBootedApp();
+  // The settings table, which every write below folds into rather than
+  // replacing. A test that wants something in it assigns to this instead of
+  // re-registering `get_settings`, so the write path starts from what the read
+  // answered with.
+  storedSettings = settings();
+  mockCommand("get_settings", () => storedSettings);
   // A library with wallpapers in it, so boot lands on Rank and the curator
   // reaches Settings through the gear — which is what puts a `returnTo` on the
   // navigation. The tests about a first run and a failed boot override it, and
@@ -139,7 +184,11 @@ beforeEach(() => {
       value: args.value,
     });
     scanSequence.push("set_setting");
-    return settings({ [args.key]: args.value });
+    // The whole struct with the write folded into it, which is what the backend
+    // answers with — not the fixture rebuilt around one key, which would put
+    // every other setting back to its default on every write.
+    storedSettings = { ...storedSettings, ...storedAs(args.key, args.value) };
+    return storedSettings;
   });
   mockCommand("start_scan", (args) => {
     scannedPaths.push(args.path);
@@ -232,22 +281,26 @@ async function openSettingsFromLibrary() {
   expect(showingView()).toBe("settings");
 }
 
-test("the page is one column of five sections, in first-run order", async () => {
+test("the page is one column of seven sections, in first-run order", async () => {
   await openSettingsFromLibrary();
 
-  // Missing files is fifth for the rule that put Thumbnails fourth: first-run
-  // need first, maintenance last, and a filesystem walk of somebody's library
-  // is the most maintenance-shaped thing on the page (ADR 0020, ADR 0032).
+  // Missing files is last for the rule that put Thumbnails next to last:
+  // first-run need first, maintenance last, and a filesystem walk of somebody's
+  // library is the most maintenance-shaped thing on the page (ADR 0020,
+  // ADR 0032). The two sizes sit with Appearance, because what the app looks
+  // like and what it is being curated for are the same kind of choice.
   expect(sectionHeadings()).toEqual([
     "Library root",
     "Reject destination",
     "Appearance",
+    "Screen",
+    "Minimum resolution",
     "Thumbnails",
     "Missing files",
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: five groups of one or two controls
+  // assert — and the width is the decision: seven groups of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document.querySelector('[data-slot="settings-section"]')
     ?.parentElement as HTMLElement;
@@ -463,14 +516,16 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
   expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 
-  // And the page is Settings again rather than a landing with four sections
-  // missing: the notice was boot's account of a read that failed, so the read
+  // And the page is Settings again rather than a landing with every other
+  // section missing: the notice was boot's account of a read that failed, so the read
   // that worked retires it (ADR 0033).
   expect(showingView()).toBe("settings");
   expect(sectionHeadings()).toEqual([
     "Library root",
     "Reject destination",
     "Appearance",
+    "Screen",
+    "Minimum resolution",
     "Thumbnails",
     "Missing files",
   ]);
@@ -481,7 +536,7 @@ test("neither block is up when boot found a library it could read", async () => 
 
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(sectionHeadings().length).toBe(5);
+  expect(sectionHeadings().length).toBe(7);
 });
 
 // The Library root section. Most of what follows came from `tests/ScanView.test.tsx`
@@ -805,7 +860,7 @@ test("the count line reports the library's size, and follows a scan", async () =
 
 test("a first run puts the caret in the field without selecting what is in it", async () => {
   mockCommand("get_stats", () => emptyStats());
-  mockCommand("get_settings", () => settings({ library_root: "~/pics" }));
+  storedSettings = settings({ library_root: "~/pics" });
   await openApp();
 
   const field = scanInput();
@@ -891,7 +946,7 @@ test("the section holds a field, a Browse button and one status line", async () 
 });
 
 test("an absolute destination shows the folder it resolves to", async () => {
-  mockCommand("get_settings", () => settings({ reject_destination: "~/bin" }));
+  storedSettings = settings({ reject_destination: "~/bin" });
   await openSettingsFromLibrary();
 
   // A place, so the line names it, in the same mono the Library root's resolved
@@ -1110,9 +1165,7 @@ test("a picker the curator dismissed leaves the destination alone", async () => 
 });
 
 test("arriving from a read-out puts the caret in the field without selecting what is in it", async () => {
-  mockCommand("get_settings", () =>
-    settings({ reject_destination: "~/bin/rejects" }),
-  );
+  storedSettings = settings({ reject_destination: "~/bin/rejects" });
   await openSettingsOnTheDestination();
 
   const field = destinationInput();
@@ -1219,7 +1272,7 @@ test("on System the window follows the desktop when it flips", async () => {
 });
 
 test("on Light the desktop flipping changes nothing", async () => {
-  mockCommand("get_settings", () => settings({ theme: "light" }));
+  storedSettings = settings({ theme: "light" });
   await openSettingsFromLibrary();
   expect(chosenPalette()).toEqual(["Light"]);
 
@@ -1271,6 +1324,288 @@ test("the window keeps following the desktop after Settings is closed", async ()
   expect(palette()).toEqual({ light: false, dark: true });
 });
 
+// The Screen and Minimum resolution sections. What the curator can observe is
+// the numbers in the two pairs of inputs, the sentence naming what each falls
+// back to, and whether the control that goes back to it is there — so that is
+// what the tests below assert. The writes are pinned by argument and by key, for
+// the reason the theme's is: a size stored under the wrong key or in the wrong
+// form is invisible until the next launch.
+//
+// The backend's rules are not restated here. That a write equal to the default
+// deletes the row is `settings.rs`'s, and these tests only ever see the struct
+// it answers with.
+
+const screenSection = () => sectionAt(3);
+const minimumSection = () => sectionAt(4);
+const screenLine = () =>
+  document.querySelector('[data-slot="screen-status"]') as HTMLElement | null;
+const minimumLine = () =>
+  document.querySelector(
+    '[data-slot="minimum-resolution-status"]',
+  ) as HTMLElement | null;
+const axis = (label: string) =>
+  screen.getByLabelText(label) as HTMLInputElement;
+/** The two numbers in a pair of inputs, as the curator sees them. */
+const sizeIn = (label: string) => [
+  axis(`${label} width`).value,
+  axis(`${label} height`).value,
+];
+
+/** Type into one axis, one `change` the way a field reports one. */
+async function typeAxis(label: string, value: string) {
+  await act(async () => {
+    fireEvent.change(axis(label), { target: { value } });
+  });
+  await flush();
+}
+
+async function blurAxis(label: string) {
+  await act(async () => {
+    fireEvent.blur(axis(label));
+  });
+  await flush();
+}
+
+/** Type both axes and blur the second, which is how a size gets written. */
+async function typeSize(label: string, width: string, height: string) {
+  await typeAxis(`${label} width`, width);
+  await typeAxis(`${label} height`, height);
+  await blurAxis(`${label} height`);
+}
+
+test("the screen starts on the detected monitor, and the line says so", async () => {
+  await openSettingsFromLibrary();
+
+  expect(screenSection().querySelector("h2")?.textContent).toBe("Screen");
+  expect(sizeIn("Screen")).toEqual(["3840", "2160"]);
+  // The one default on this page a curator could not otherwise recover, which
+  // is why it is printed rather than left to the empty settings table to imply
+  // — and why the sentence says what to do with it, there being no Reset
+  // control to do it in one click (ADR 0010, ADR 0020).
+  expect(screenLine()?.textContent).toBe(
+    "Detected 3840 × 2160. Type it back to use it again.",
+  );
+  expect(settingWrites).toEqual([]);
+});
+
+test("no section on this page offers a Reset control", async () => {
+  // ADR 0020: no Reset button anywhere, because writing the default back is
+  // what deletes the row and a control for it would only explain a rule the
+  // write path already enforces. The two sizes are the first settings whose
+  // default is a number rather than something the curator is looking at, so
+  // this is where that rule was most tempting to break.
+  storedSettings = settings({
+    screen: { width: 2560, height: 1440 },
+    minimum_resolution: { width: 1280, height: 720 },
+  });
+  await openSettingsFromLibrary();
+
+  for (const label of [/reset/i, /use detected/i, /use screen/i]) {
+    expect(screen.queryByRole("button", { name: label })).toBeNull();
+  }
+});
+
+test("a screen the curator types is stored as width by height", async () => {
+  await openSettingsFromLibrary();
+
+  await typeSize("Screen", "2560", "1440");
+
+  // The two numbers cross as the `2560x1440` the column holds, which is the one
+  // place in the app a setting becomes a string.
+  expect(settingWrites).toEqual([{ key: "screen", value: "2560x1440" }]);
+  expect(sizeIn("Screen")).toEqual(["2560", "1440"]);
+});
+
+test("the screen writes on blur rather than on every keystroke", async () => {
+  await openSettingsFromLibrary();
+
+  await typeAxis("Screen width", "2");
+  await typeAxis("Screen width", "25");
+  await typeAxis("Screen width", "2560");
+
+  // `2` and `25` are screens, and a field that wrote per keystroke would have
+  // stored both of them on the way to this one (ADR 0010).
+  expect(settingWrites).toEqual([]);
+
+  await blurAxis("Screen width");
+  expect(settingWrites).toEqual([{ key: "screen", value: "2560x2160" }]);
+});
+
+test("Enter stores the screen, because there is nothing else to run here", async () => {
+  await openSettingsFromLibrary();
+  await typeAxis("Screen height", "1440");
+
+  await act(async () => {
+    fireEvent.keyDown(axis("Screen height"), { key: "Enter" });
+  });
+  await flush();
+
+  expect(settingWrites).toEqual([{ key: "screen", value: "3840x1440" }]);
+});
+
+test("a size that is not one is refused before it is written", async () => {
+  await openSettingsFromLibrary();
+
+  await typeSize("Screen", "wide", "1440");
+
+  // Said here rather than fetched from a backend refusal, so the curator reads
+  // it before the write instead of after — the rule the Library root's failed
+  // Scan already follows (ADR 0020).
+  expect(
+    within(screenSection()).getByText(
+      "Width and height are whole numbers of pixels above zero.",
+    ),
+  ).not.toBeNull();
+  expect(settingWrites).toEqual([]);
+  // And what they typed is still there to fix.
+  expect(sizeIn("Screen")).toEqual(["wide", "1440"]);
+
+  await typeSize("Screen", "2560", "0");
+  expect(settingWrites).toEqual([]);
+
+  // And a number no `u32` will hold. `settings.rs` parses a size into two of
+  // them, so this is the far end of the same rule: a field that took it would
+  // send a write the backend answers `BadRequest` to, and the only thing this
+  // page does with a failed write is `console.error` — leaving the curator with
+  // an oversized draft on screen and no sentence saying why it did not take.
+  for (const oversized of ["4294967296", "9999999999"]) {
+    await typeSize("Screen", oversized, "1440");
+    expect(settingWrites).toEqual([]);
+    // The same sentence a word in the box gets, and for the same reason: the
+    // curator reads it before the write rather than never.
+    expect(
+      within(screenSection()).getByText(
+        "Width and height are whole numbers of pixels above zero.",
+      ),
+    ).not.toBeNull();
+  }
+
+  // The boundary itself is a size, so the rule stops exactly where `u32` does.
+  await typeSize("Screen", "4294967295", "1440");
+  expect(settingWrites).toEqual([
+    { key: "screen", value: "4294967295x1440" },
+  ]);
+});
+
+test("a blur that changed nothing writes nothing", async () => {
+  await openSettingsFromLibrary();
+
+  // Tabbing through the section, which is two blurs and no edit. A field that
+  // wrote on every blur would spend a `set_setting` on each of them — the guard
+  // `usePathField` keeps for the same reason (ADR 0026).
+  await blurAxis("Screen width");
+  await blurAxis("Screen height");
+  await blurAxis("Minimum width");
+
+  expect(settingWrites).toEqual([]);
+
+  // And a size typed back to what it already was is still nothing to write.
+  await typeSize("Screen", "3840", "2160");
+  expect(settingWrites).toEqual([]);
+});
+
+test("a size the store refused is written again on the next blur", async () => {
+  // The other half of the guard above. The record of what the store was told
+  // moves before the write lands, so a write that never landed has to put it
+  // back — otherwise the size on screen is one the store does not hold and the
+  // only way to send it again is to edit it first, which a curator looking at
+  // the number they typed has no reason to do (ADR 0026).
+  expectConsoleError(/Failed to store the screen/);
+  expectConsoleError(/Failed to store the screen/);
+  mockCommand("set_setting", (args) => {
+    settingWrites.push({ key: args.key, value: args.value });
+    return Promise.reject({ kind: "db", message: "database is locked" });
+  });
+  await openSettingsFromLibrary();
+
+  await typeSize("Screen", "2560", "1440");
+  expect(settingWrites).toEqual([{ key: "screen", value: "2560x1440" }]);
+
+  // No edit in between: the curator blurs the same field a second time.
+  await blurAxis("Screen width");
+
+  expect(settingWrites).toEqual([
+    { key: "screen", value: "2560x1440" },
+    { key: "screen", value: "2560x1440" },
+  ]);
+});
+
+test("an overridden screen still names the monitor it can be changed back to", async () => {
+  storedSettings = settings({ screen: { width: 2560, height: 1440 } });
+  await openSettingsFromLibrary();
+
+  expect(sizeIn("Screen")).toEqual(["2560", "1440"]);
+  // Without this line the detected size is unrecoverable: nothing else on the
+  // page shows it once the curator has typed over it.
+  expect(screenLine()?.textContent).toBe(
+    "Detected 3840 × 2160. Type it back to use it again.",
+  );
+
+  await typeSize("Screen", "3840", "2160");
+
+  // Changing it back is a write of the detected size, which is what the backend
+  // reads as the default and answers by deleting the row.
+  expect(settingWrites).toEqual([{ key: "screen", value: "3840x2160" }]);
+});
+
+test("the minimum resolution starts on the screen, and the line names it", async () => {
+  await openSettingsFromLibrary();
+
+  expect(minimumSection().querySelector("h2")?.textContent).toBe(
+    "Minimum resolution",
+  );
+  expect(sizeIn("Minimum")).toEqual(["3840", "2160"]);
+  expect(minimumLine()?.textContent).toBe(
+    "Defaults to your screen, 3840 × 2160. Type it back to use it again.",
+  );
+});
+
+test("a minimum resolution the curator types is stored under its own key", async () => {
+  await openSettingsFromLibrary();
+
+  await typeSize("Minimum", "1920", "1080");
+
+  expect(settingWrites).toEqual([
+    { key: "minimum_resolution", value: "1920x1080" },
+  ]);
+});
+
+test("a minimum that was set names the screen it can be changed back to", async () => {
+  storedSettings = settings({
+    screen: { width: 2560, height: 1440 },
+    minimum_resolution: { width: 1280, height: 720 },
+  });
+  await openSettingsFromLibrary();
+
+  expect(sizeIn("Minimum")).toEqual(["1280", "720"]);
+  // The screen as the curator overrode it, not the monitor: the minimum follows
+  // the screen setting, which is the whole reason there is one screen and not
+  // two.
+  expect(minimumLine()?.textContent).toBe(
+    "Defaults to your screen, 2560 × 1440. Type it back to use it again.",
+  );
+
+  await typeSize("Minimum", "2560", "1440");
+
+  expect(settingWrites).toEqual([
+    { key: "minimum_resolution", value: "2560x1440" },
+  ]);
+});
+
+test("the two sizes are separate settings and neither write moves the other", async () => {
+  await openSettingsFromLibrary();
+
+  await typeSize("Screen", "2560", "1440");
+  await typeSize("Minimum", "1280", "720");
+
+  expect(settingWrites).toEqual([
+    { key: "screen", value: "2560x1440" },
+    { key: "minimum_resolution", value: "1280x720" },
+  ]);
+  expect(sizeIn("Screen")).toEqual(["2560", "1440"]);
+  expect(sizeIn("Minimum")).toEqual(["1280", "720"]);
+});
+
 // The Thumbnails section, which is the only maintenance on the page: one line,
 // a button that changes verb, and a confirm with a number in it. What the
 // curator reads is the line and the verb, so that is what the tests below
@@ -1278,7 +1613,7 @@ test("the window keeps following the desktop after Settings is closed", async ()
 // clear — are pinned by call, because none of them shows on screen and a Clear
 // that fired on dismissal would be silent and expensive (ADR 0020).
 
-const thumbnails = () => sectionAt(3);
+const thumbnails = () => sectionAt(5);
 const cacheLine = () =>
   document.querySelector(
     '[data-slot="thumbnail-cache-status"]',
@@ -1547,7 +1882,7 @@ test("leaving the page drops its pass subscriptions", async () => {
 // count read on mount would `stat` every Active and Kept row on a visit to
 // change the theme (#200, ADR 0032).
 
-const missingSection = () => sectionAt(4);
+const missingSection = () => sectionAt(6);
 const missingLine = () =>
   document.querySelector(
     '[data-slot="missing-files-status"]',
