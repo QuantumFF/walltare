@@ -23,7 +23,27 @@ const MINIMUM_RESOLUTION: &str = "minimum_resolution";
 const REVIEW_LAYOUT: &str = "review_layout";
 const LIBRARY_LAYOUT: &str = "library_layout";
 const CROP_PREVIEW: &str = "crop_preview";
+const REVIEW_WORKLIST_SIZE: &str = "review_worklist_size";
+const STARTUP_VIEW: &str = "startup_view";
+const REVIEW_ORDERING: &str = "review_ordering";
+const EVALUATED_THRESHOLD: &str = "evaluated_threshold";
 
+/// The σ a wallpaper's rating has to fall below to count as Evaluated, unless
+/// the curator says otherwise.
+///
+/// The number Evaluated meant when it was a constant, so a curator who never
+/// opens the control sees the same count and the same badges they always did
+/// (`CONTEXT.md`, [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
+pub const DEFAULT_EVALUATED_THRESHOLD: f64 = 4.0;
+
+/// The three thresholds Settings offers, loosest first.
+///
+/// A preset list and not a free number, which is the rule the epic already set
+/// for the Review worklist size: σ is the app's own uncertainty scale, and a
+/// curator typing `6.5` into it is guessing at a unit nothing on the page can
+/// explain. Three named confidences bracket the starting σ of 8.333 — half of
+/// it, and a step either side.
+pub const EVALUATED_THRESHOLDS: [f64; 3] = [5.0, DEFAULT_EVALUATED_THRESHOLD, 3.0];
 /// The screen to assume when the platform will not name one.
 ///
 /// Detection failing is not an error state: the curator gets a working app with
@@ -164,7 +184,7 @@ impl Default for Detected {
 }
 
 /// How the Library draws its wallpapers: cropped to one shape, or each at its
-/// own.
+/// own — packed into columns, or lined up in rows.
 ///
 /// A choice per tab rather than one for the app, so a browse surface and a
 /// decision queue are not obliged to look alike. This key is the Library tab's;
@@ -178,6 +198,9 @@ pub enum LibraryLayout {
     Grid,
     /// Columns packed shortest-first, every wallpaper at its own aspect ratio.
     Masonry,
+    /// Rows scaled to a shared height, uncropped, with the rank drawn large
+    /// behind each image.
+    Justified,
 }
 
 impl LibraryLayout {
@@ -185,12 +208,129 @@ impl LibraryLayout {
         match value {
             "grid" => Some(Self::Grid),
             "masonry" => Some(Self::Masonry),
+            "justified" => Some(Self::Justified),
             _ => None,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+/// The worklist lengths Review offers, shortest first.
+///
+/// Four presets rather than a number the curator types, because the question is
+/// how long a session to sit down to and not how many rows a query returns —
+/// and the four answers to that are a short sweep, a normal one, the fifty the
+/// app has always shown, and a long one.
+pub const WORKLIST_SIZES: [u32; 4] = [10, 25, 50, 100];
+
+/// How many wallpapers Review puts in front of the curator at once.
+///
+/// A count that is one of [`WORKLIST_SIZES`] and cannot be anything else, the
+/// way a [`Resolution`] cannot have a zero axis: the presets are the setting
+/// rather than a list the UI happens to offer, so a size off the list is
+/// refused here and not only in the control that writes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct WorklistSize(u32);
+
+impl WorklistSize {
+    /// A worklist size, or nothing when `count` is not one of the presets.
+    pub fn new(count: u32) -> Option<Self> {
+        WORKLIST_SIZES.contains(&count).then_some(Self(count))
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::new(value.parse().ok()?)
+    }
+}
+
+impl fmt::Display for WorklistSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// The fifty Review has shown since it was a hardcoded `LIMIT`, so a curator who
+/// never opens the section sees the worklist they already had (ADR 0028).
+pub const DEFAULT_WORKLIST_SIZE: WorklistSize = WorklistSize(50);
+
+/// Which view the app opens on.
+///
+/// A fixed choice and not wherever the curator was last, because an app that
+/// opens somewhere different every launch is disorienting — which is also
+/// [ADR 0015](../../docs/adr/0015-navigation-shell.md)'s reason for persisting
+/// nothing about navigation, and this is the stated preference that decision
+/// left room for rather than the session memory it refused.
+///
+/// Settings is not one of them. The other three are where a curator works; the
+/// Settings page is where they go to stop working, and boot still opens it on
+/// its own when there is nothing else to show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartupView {
+    Rank,
+    Review,
+    Library,
+}
+
+impl StartupView {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "rank" => Some(Self::Rank),
+            "review" => Some(Self::Review),
+            "library" => Some(Self::Library),
+            _ => None,
+        }
+    }
+}
+
+/// Which end of the ranking Review works from.
+///
+/// Two orderings and not the library page's four: Review is a decision queue,
+/// and filename order in one means nothing. They are spelled as the two
+/// [`crate::db::ListOrdering`] variants they stand for rather than as a second
+/// vocabulary for the same fact, so the value the frontend reads is the value it
+/// hands back to `list_wallpapers` (ADR 0028).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewOrdering {
+    /// Lowest Scores first: culling the worst, which is what Review has always
+    /// done (ADR 0013).
+    ScoreAsc,
+    /// Highest Scores first: confirming favourites.
+    ScoreDesc,
+}
+
+impl ReviewOrdering {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "score_asc" => Some(Self::ScoreAsc),
+            "score_desc" => Some(Self::ScoreDesc),
+            _ => None,
+        }
+    }
+}
+
+/// The stored Evaluated threshold, or nothing when it is not one of the three
+/// the page offers.
+///
+/// Strict for the same reason [`Resolution::parse`] is: a row holding `4.2` is
+/// one someone edited by hand, and honouring it would put the curator on a
+/// confidence no control can show them or change back. Reading it as the default
+/// is the rule the whole module already follows.
+fn parse_threshold(value: &str) -> Option<f64> {
+    let parsed: f64 = value.parse().ok()?;
+    // Exact equality over a parsed float, which is safe because every offered
+    // threshold is a short decimal that binary floating point holds exactly, and
+    // `f64::to_string` writes each of them back as the same short decimal.
+    EVALUATED_THRESHOLDS.contains(&parsed).then_some(parsed)
+}
+
+/// Every setting, with the gaps filled from the defaults.
+///
+/// `Eq` is deliberately absent: [`Settings::evaluated_threshold`] is a float, and
+/// the three values it can hold compare exactly, but the trait would be claiming
+/// more than a float can keep.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Settings {
     pub theme: Theme,
     /// A Written path, stored exactly as the user typed it, `~` and variables
@@ -201,6 +341,12 @@ pub struct Settings {
     pub reject_destination: String,
     /// Which layout the Library tab draws, remembered across restarts.
     pub library_layout: LibraryLayout,
+    /// How many wallpapers Review puts in front of the curator at once.
+    pub review_worklist_size: WorklistSize,
+    /// Which view the app opens on.
+    pub startup_view: StartupView,
+    /// Which end of the ranking Review works from.
+    pub review_ordering: ReviewOrdering,
     /// The screen the curator is curating for, defaulting to the monitor.
     ///
     /// One screen and not two: the crop preview reads its ratio and the
@@ -233,6 +379,14 @@ pub struct Settings {
     /// Off by default, so a curator who never presses `C` sees the app they
     /// already had.
     pub crop_preview: bool,
+    /// The σ below which a wallpaper's rating counts as Evaluated.
+    ///
+    /// The curator's answer to how many Comparisons make a Score trustworthy,
+    /// rather than a fact about the wallpaper: it moves the count in the Rank
+    /// headline and the badge on every card together, because both read this one
+    /// number (`CONTEXT.md`,
+    /// [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
+    pub evaluated_threshold: f64,
     /// What the monitor said, which is what [`Settings::screen`] reads as until
     /// the curator overrides it.
     ///
@@ -259,13 +413,36 @@ impl Settings {
             // The layout the app has always had, so a curator who ignores the
             // control sees exactly what they saw before it existed.
             library_layout: LibraryLayout::Grid,
+            // The fifty Review has always shown, the view the boot rule has
+            // always preferred, and the lowest-Scores-first it has always
+            // listed: three defaults that leave the app behaving exactly as it
+            // did before any of them could be stated.
+            review_worklist_size: DEFAULT_WORKLIST_SIZE,
+            startup_view: StartupView::Rank,
+            review_ordering: ReviewOrdering::ScoreAsc,
             screen: detected.screen,
             minimum_resolution: detected.screen,
             review_layout: ReviewLayout::default(),
             crop_preview: false,
+            // What Evaluated meant while it was a constant, so nothing moves for
+            // a curator who ignores the control.
+            evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
             detected_screen: detected.screen,
         }
     }
+}
+
+/// The Evaluated threshold alone, for the one caller that wants it without the
+/// rest of the struct.
+///
+/// `voting::get_stats` counts the Evaluated wallpapers against it and has no
+/// [`Detected`] to hand, which every other reader of this module arrives with.
+/// It goes through the same [`stored`], the same [`read`] and the same default as
+/// [`resolve`], so the count and the struct the card reads cannot disagree about
+/// what the row says.
+pub fn evaluated_threshold(conn: &Connection) -> Result<f64, AppError> {
+    Ok(read(&stored(conn)?, EVALUATED_THRESHOLD, parse_threshold)
+        .unwrap_or(DEFAULT_EVALUATED_THRESHOLD))
 }
 
 /// Every setting, with the gaps filled from the defaults, so a caller always
@@ -343,6 +520,12 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         reject_destination: text(REJECT_DESTINATION).unwrap_or(defaults.reject_destination),
         library_layout: read(stored, LIBRARY_LAYOUT, LibraryLayout::parse)
             .unwrap_or(defaults.library_layout),
+        review_worklist_size: read(stored, REVIEW_WORKLIST_SIZE, WorklistSize::parse)
+            .unwrap_or(defaults.review_worklist_size),
+        startup_view: read(stored, STARTUP_VIEW, StartupView::parse)
+            .unwrap_or(defaults.startup_view),
+        review_ordering: read(stored, REVIEW_ORDERING, ReviewOrdering::parse)
+            .unwrap_or(defaults.review_ordering),
         screen,
         // The one default that is another setting rather than a constant, which
         // is why it is resolved after the screen rather than beside it.
@@ -350,6 +533,8 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         review_layout: read(stored, REVIEW_LAYOUT, ReviewLayout::parse)
             .unwrap_or(defaults.review_layout),
         crop_preview: read(stored, CROP_PREVIEW, parse_flag).unwrap_or(defaults.crop_preview),
+        evaluated_threshold: read(stored, EVALUATED_THRESHOLD, parse_threshold)
+            .unwrap_or(defaults.evaluated_threshold),
         // Never read off the table: it is what the monitor said, and the table
         // holds what the curator said.
         detected_screen: detected.screen,
@@ -395,10 +580,34 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         LIBRARY_LAYOUT => {
             let layout = LibraryLayout::parse(value).ok_or_else(|| {
                 AppError::BadRequest(format!(
-                    "{value:?} is not a layout; expected grid or masonry"
+                    "{value:?} is not a layout; expected grid, masonry or justified"
                 ))
             })?;
             Ok(layout == without.library_layout)
+        }
+        REVIEW_WORKLIST_SIZE => {
+            let size = WorklistSize::parse(value).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{value:?} is not a worklist size; expected one of {WORKLIST_SIZES:?}"
+                ))
+            })?;
+            Ok(size == without.review_worklist_size)
+        }
+        STARTUP_VIEW => {
+            let view = StartupView::parse(value).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{value:?} is not a startup view; expected rank, review or library"
+                ))
+            })?;
+            Ok(view == without.startup_view)
+        }
+        REVIEW_ORDERING => {
+            let ordering = ReviewOrdering::parse(value).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{value:?} is not a review ordering; expected score_asc or score_desc"
+                ))
+            })?;
+            Ok(ordering == without.review_ordering)
         }
         SCREEN => Ok(resolution(value)? == without.screen),
         MINIMUM_RESOLUTION => Ok(resolution(value)? == without.minimum_resolution),
@@ -415,6 +624,14 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
                 AppError::BadRequest(format!("{value:?} is not a flag; expected true or false"))
             })?;
             Ok(on == without.crop_preview)
+        }
+        EVALUATED_THRESHOLD => {
+            let threshold = parse_threshold(value).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{value:?} is not an Evaluated threshold; expected one of {EVALUATED_THRESHOLDS:?}"
+                ))
+            })?;
+            Ok(threshold == without.evaluated_threshold)
         }
         _ => Err(AppError::BadRequest(format!("unknown setting {key:?}"))),
     }
@@ -468,6 +685,10 @@ mod tests {
         Resolution::new(width, height).expect("test sizes are sizes")
     }
 
+    fn worklist(count: u32) -> WorklistSize {
+        WorklistSize::new(count).expect("test worklist sizes are presets")
+    }
+
     /// Arranges a row that the commands themselves would never write: one a
     /// newer version left behind, or one edited by hand with `sqlite3`.
     fn write_raw_row(conn: &Connection, key: &str, value: &str) {
@@ -498,10 +719,14 @@ mod tests {
                 library_root: String::new(),
                 reject_destination: "./rejected".to_string(),
                 library_layout: LibraryLayout::Grid,
+                review_worklist_size: worklist(50),
+                startup_view: StartupView::Rank,
+                review_ordering: ReviewOrdering::ScoreAsc,
                 screen: size(3840, 2160),
                 minimum_resolution: size(3840, 2160),
                 review_layout: ReviewLayout::Grid,
                 crop_preview: false,
+                evaluated_threshold: 4.0,
                 detected_screen: size(3840, 2160),
             }
         );
@@ -990,14 +1215,20 @@ mod tests {
         set(&conn, "review_layout", "strip", detected()).unwrap();
         set(&conn, "library_layout", "masonry", detected()).unwrap();
         set(&conn, "crop_preview", "true", detected()).unwrap();
-
+        set(&conn, "review_worklist_size", "10", detected()).unwrap();
+        set(&conn, "startup_view", "library", detected()).unwrap();
+        set(&conn, "review_ordering", "score_desc", detected()).unwrap();
+        set(&conn, "evaluated_threshold", "3", detected()).unwrap();
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
         set(&conn, "reject_destination", "./rejected", detected()).unwrap();
         set(&conn, "review_layout", "grid", detected()).unwrap();
         set(&conn, "library_layout", "grid", detected()).unwrap();
         set(&conn, "crop_preview", "false", detected()).unwrap();
-        // The minimum resolution goes back first, against the overridden screen
+        set(&conn, "review_worklist_size", "50", detected()).unwrap();
+        set(&conn, "startup_view", "rank", detected()).unwrap();
+        set(&conn, "review_ordering", "score_asc", detected()).unwrap();
+        set(&conn, "evaluated_threshold", "4", detected()).unwrap();        // The minimum resolution goes back first, against the overridden screen
         // it currently defaults to. Doing it the other way round would mean
         // writing 3840x2160 into a key whose default had already moved there,
         // which is the same reset arriving by a different route.
@@ -1041,16 +1272,35 @@ mod tests {
         let conn = store();
         set(&conn, "library_layout", "masonry", detected()).unwrap();
 
-        let err = set(&conn, "library_layout", "justified", detected()).unwrap_err();
+        let err = set(&conn, "library_layout", "mosaic", detected()).unwrap_err();
 
         assert!(
-            matches!(err, AppError::BadRequest(ref m) if m.contains("justified")),
+            matches!(err, AppError::BadRequest(ref m) if m.contains("mosaic")),
             "got {err:?}"
         );
         assert_eq!(
             get(&conn, detected()).unwrap().library_layout,
             LibraryLayout::Masonry
         );
+    }
+
+    #[test]
+    fn justified_rows_are_a_layout_the_store_takes_and_gives_back() {
+        // The third layout (#263), which the key has to carry as readily as the
+        // two before it: one column of storage, three names in it.
+        let conn = store();
+
+        let returned = set(&conn, "library_layout", "justified", detected()).unwrap();
+
+        assert_eq!(returned.library_layout, LibraryLayout::Justified);
+        assert_eq!(
+            get(&conn, detected()).unwrap().library_layout,
+            LibraryLayout::Justified
+        );
+        // And back to the grid leaves no row behind, the way every other default
+        // does.
+        set(&conn, "library_layout", "grid", detected()).unwrap();
+        assert_eq!(stored_rows(&conn), 0);
     }
 
     #[test]
@@ -1067,11 +1317,156 @@ mod tests {
     }
 
     #[test]
+    fn the_three_preferences_round_trip_and_survive_the_connection_that_wrote_them() {
+        // The whole of what the three sections promise: a choice made once and
+        // still there on the next launch, each one alone.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            crate::db::init_schema(&conn).unwrap();
+            set(&conn, "review_worklist_size", "25", detected()).unwrap();
+            set(&conn, "startup_view", "review", detected()).unwrap();
+            let returned = set(&conn, "review_ordering", "score_desc", detected()).unwrap();
+            assert_eq!(returned.review_worklist_size, worklist(25));
+            assert_eq!(returned.startup_view, StartupView::Review);
+            assert_eq!(returned.review_ordering, ReviewOrdering::ScoreDesc);
+        }
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+        let settings = get(&conn, detected()).unwrap();
+
+        assert_eq!(settings.review_worklist_size, worklist(25));
+        assert_eq!(settings.startup_view, StartupView::Review);
+        assert_eq!(settings.review_ordering, ReviewOrdering::ScoreDesc);
+        // None of the three interacts with anything else, which is the other
+        // half of what a round trip has to say.
+        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.reject_destination, "./rejected");
+        assert_eq!(settings.library_layout, LibraryLayout::Grid);
+        assert_eq!(settings.screen, size(3840, 2160));
+    }
+
+    #[test]
+    fn every_worklist_preset_stores_and_nothing_else_does() {
+        let conn = store();
+
+        for preset in WORKLIST_SIZES {
+            assert_eq!(
+                set(
+                    &conn,
+                    "review_worklist_size",
+                    &preset.to_string(),
+                    detected()
+                )
+                .unwrap()
+                .review_worklist_size,
+                worklist(preset),
+                "{preset}"
+            );
+        }
+        // The last preset written is the one standing, so the refusals below
+        // have something to fail to change.
+        let before = get(&conn, detected()).unwrap();
+
+        // A count off the list, a count that is not one, and the empty string a
+        // control with nothing selected would send. The presets are the setting
+        // (#259), so 37 is refused here rather than only by the control.
+        for refused in ["37", "0", "-10", "fifty", "", "50 "] {
+            let err = set(&conn, "review_worklist_size", refused, detected()).unwrap_err();
+            assert!(
+                matches!(err, AppError::BadRequest(_)),
+                "{refused:?}: {err:?}"
+            );
+        }
+
+        assert_eq!(get(&conn, detected()).unwrap(), before);
+    }
+
+    #[test]
+    fn a_worklist_row_that_will_not_read_is_the_fifty_review_has_always_shown() {
+        // Boot never fails over a preference, and a worklist length nothing can
+        // fetch is the length the app has always had rather than an empty page.
+        let conn = store();
+        write_raw_row(&conn, "review_worklist_size", "37");
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().review_worklist_size,
+            worklist(50)
+        );
+    }
+
+    #[test]
+    fn the_startup_view_is_one_of_the_three_a_curator_works_in() {
+        let conn = store();
+
+        for (written, expected) in [
+            ("review", StartupView::Review),
+            ("library", StartupView::Library),
+            ("rank", StartupView::Rank),
+        ] {
+            assert_eq!(
+                set(&conn, "startup_view", written, detected())
+                    .unwrap()
+                    .startup_view,
+                expected
+            );
+        }
+        // Rank is the default, so the loop above ended by deleting the row.
+        assert_eq!(stored_rows(&conn), 0);
+
+        // Settings is not a startup view: boot opens it on its own when there is
+        // nothing else to show, and it is not somewhere a curator works.
+        let err = set(&conn, "startup_view", "settings", detected()).unwrap_err();
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m.contains("settings")),
+            "got {err:?}"
+        );
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn review_is_ordered_by_score_and_by_nothing_else() {
+        let conn = store();
+
+        let highest = set(&conn, "review_ordering", "score_desc", detected()).unwrap();
+        assert_eq!(highest.review_ordering, ReviewOrdering::ScoreDesc);
+
+        // The library page's other two orderings are not Review's: filename
+        // order in a decision queue means nothing (#259).
+        for refused in ["filename_asc", "recently_added", "lowest"] {
+            let err = set(&conn, "review_ordering", refused, detected()).unwrap_err();
+            assert!(
+                matches!(err, AppError::BadRequest(_)),
+                "{refused:?}: {err:?}"
+            );
+        }
+
+        assert_eq!(get(&conn, detected()).unwrap(), highest);
+    }
+
+    #[test]
+    fn a_startup_view_or_ordering_row_that_will_not_read_is_the_default() {
+        let conn = store();
+        write_raw_row(&conn, "startup_view", "settings");
+        write_raw_row(&conn, "review_ordering", "filename_asc");
+
+        let settings = get(&conn, detected()).unwrap();
+
+        assert_eq!(settings.startup_view, StartupView::Rank);
+        assert_eq!(settings.review_ordering, ReviewOrdering::ScoreAsc);
+    }
+
+    #[test]
     fn settings_cross_the_ipc_with_the_fields_client_ts_expects() {
         let conn = store();
         set(&conn, "theme", "dark", detected()).unwrap();
         set(&conn, "library_root", "~/pics", detected()).unwrap();
         set(&conn, "library_layout", "masonry", detected()).unwrap();
+        set(&conn, "review_worklist_size", "100", detected()).unwrap();
+        set(&conn, "startup_view", "library", detected()).unwrap();
+        set(&conn, "review_ordering", "score_desc", detected()).unwrap();
         set(&conn, "screen", "2560x1440", detected()).unwrap();
         set(&conn, "review_layout", "strip", detected()).unwrap();
         set(&conn, "crop_preview", "true", detected()).unwrap();
@@ -1086,6 +1481,15 @@ mod tests {
         // A layout crosses as the same string a write accepts, the way the theme
         // does, so the frontend can hand a read value straight back.
         assert_eq!(json["library_layout"], "masonry");
+        // A worklist size crosses as the number, because `list_wallpapers` takes
+        // one: the presets are a rule about which numbers, not a shape of their
+        // own. A startup view and a review ordering cross as the strings a write
+        // accepts back, the way the theme and the layout do — and the ordering's
+        // two are the `ListOrdering` spellings, so Review hands the value it read
+        // straight to the listing (ADR 0028).
+        assert_eq!(json["review_worklist_size"], 100);
+        assert_eq!(json["startup_view"], "library");
+        assert_eq!(json["review_ordering"], "score_desc");
         // A size crosses as the two numbers rather than as the `2560x1440` the
         // column holds, because its readers want different halves of it.
         // `encodeSetting` in `client.ts` writes the stored form back.
@@ -1101,5 +1505,128 @@ mod tests {
         // holds, because the frontend reads it as a boolean and `String(value)`
         // in `encodeSetting` is what writes the stored spelling back.
         assert_eq!(json["crop_preview"], true);
+        // The threshold crosses as the number itself, because the card compares a
+        // wallpaper's σ against it directly: a name here would need the same
+        // three numbers on both sides of the IPC, which is the duplication this
+        // epic already refused over the Screen (ADR 0046).
+        assert_eq!(json["evaluated_threshold"], 4.0);
     }
+
+    #[test]
+    fn the_evaluated_threshold_defaults_to_what_it_meant_as_a_constant() {
+        let conn = store();
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().evaluated_threshold,
+            DEFAULT_EVALUATED_THRESHOLD
+        );
+        assert_eq!(DEFAULT_EVALUATED_THRESHOLD, 4.0);
+        // Nothing was written to reach it, so a curator who never opens the
+        // control has the count and the badges they always had.
+        assert_eq!(stored_rows(&conn), 0);
+        assert_eq!(evaluated_threshold(&conn).unwrap(), 4.0);
+    }
+
+    #[test]
+    fn the_evaluated_threshold_round_trips_and_survives_the_connection_that_wrote_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            crate::db::init_schema(&conn).unwrap();
+            let written = set(&conn, "evaluated_threshold", "3", detected()).unwrap();
+            assert_eq!(written.evaluated_threshold, 3.0);
+        }
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+
+        assert_eq!(get(&conn, detected()).unwrap().evaluated_threshold, 3.0);
+        // The count reads the same row through the same default, which is what
+        // keeps the headline and the badges saying one thing (ADR 0046).
+        assert_eq!(evaluated_threshold(&conn).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn an_evaluated_threshold_write_leaves_the_other_keys_alone() {
+        let conn = store();
+        set(&conn, "theme", "dark", detected()).unwrap();
+        set(&conn, "screen", "2560x1440", detected()).unwrap();
+        set(&conn, "review_layout", "strip", detected()).unwrap();
+
+        let settings = set(&conn, "evaluated_threshold", "5", detected()).unwrap();
+
+        assert_eq!(settings.evaluated_threshold, 5.0);
+        assert_eq!(settings.theme, Theme::Dark);
+        assert_eq!(settings.screen, size(2560, 1440));
+        assert_eq!(settings.minimum_resolution, size(2560, 1440));
+        assert_eq!(settings.review_layout, ReviewLayout::Strip);
+        assert_eq!(settings.reject_destination, "./rejected");
+    }
+
+    #[test]
+    fn the_evaluated_threshold_goes_back_to_its_default_by_being_written_it() {
+        let conn = store();
+        set(&conn, "evaluated_threshold", "3", detected()).unwrap();
+        assert_eq!(stored_rows(&conn), 1);
+
+        let returned = set(&conn, "evaluated_threshold", "4", detected()).unwrap();
+
+        assert_eq!(returned.evaluated_threshold, DEFAULT_EVALUATED_THRESHOLD);
+        assert_eq!(get(&conn, detected()).unwrap(), returned);
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn an_evaluated_threshold_the_page_does_not_offer_is_a_bad_request_and_changes_nothing() {
+        // Strict on the way in, for the reason a size is: a confidence no control
+        // can show the curator is one they cannot change back.
+        let conn = store();
+        set(&conn, "evaluated_threshold", "3", detected()).unwrap();
+        let before = get(&conn, detected()).unwrap();
+
+        for refused in ["4.2", "0", "-4", "", "balanced", "8.333", "NaN"] {
+            let err = set(&conn, "evaluated_threshold", refused, detected()).unwrap_err();
+            assert!(
+                matches!(err, AppError::BadRequest(_)),
+                "{refused:?}: {err:?}"
+            );
+        }
+
+        assert_eq!(get(&conn, detected()).unwrap(), before);
+    }
+
+    #[test]
+    fn the_three_offered_thresholds_are_all_writable_and_read_back_exactly() {
+        // Written the way `client.ts` writes a number, which is `String(value)`.
+        let conn = store();
+
+        for offered in EVALUATED_THRESHOLDS {
+            let written = set(
+                &conn,
+                "evaluated_threshold",
+                &offered.to_string(),
+                detected(),
+            )
+            .unwrap();
+            assert_eq!(written.evaluated_threshold, offered);
+            assert_eq!(evaluated_threshold(&conn).unwrap(), offered);
+        }
+    }
+
+    #[test]
+    fn an_evaluated_threshold_row_that_will_not_read_falls_back_to_the_default() {
+        // Boot never fails over a preference, and a threshold is one more row
+        // someone can edit by hand.
+        let conn = store();
+        write_raw_row(&conn, "evaluated_threshold", "very sure");
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().evaluated_threshold,
+            DEFAULT_EVALUATED_THRESHOLD
+        );
+        assert_eq!(
+            evaluated_threshold(&conn).unwrap(),
+            DEFAULT_EVALUATED_THRESHOLD
+        );    }
 }

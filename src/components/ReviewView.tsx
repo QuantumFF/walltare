@@ -13,7 +13,11 @@ import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
-import { client, type ReviewLayout } from "@/lib/client";
+import {
+  client,
+  type ReviewLayout,
+  type ReviewOrdering,
+} from "@/lib/client";
 import { cn } from "@/lib/utils";
 import {
   Check,
@@ -26,10 +30,17 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * How many cards the worklist holds. The only `limit` the listing is given —
- * the library page asks for everything (ADR 0028).
+ * What the bar says this worklist is, which is the whole of how the curator
+ * reads an ordering they set on another page.
+ *
+ * Both sentences name Score, because Score is what orders the list either way
+ * (ADR 0013): the choice is which end of the ranking the curator is working
+ * from, not which statistic (#259).
  */
-export const REVIEW_LIMIT = 50;
+const ORDERING_SENTENCE: Record<ReviewOrdering, string> = {
+  score_asc: "Lowest Scores first",
+  score_desc: "Highest Scores first",
+};
 
 /**
  * The two layouts Review offers, in the order the control lays them out and the
@@ -60,11 +71,17 @@ export function ReviewView() {
    * move each other.
    */
   const layout = settings.review_layout;
+  // How long this worklist is and which end of the ranking it comes off, both
+  // stated in Settings. The `limit` is still the only one the listing is given —
+  // the library page asks for everything (ADR 0028) — and the ordering is a
+  // member of that same listing vocabulary, so it is handed over as read (#259).
+  const { review_worklist_size: worklistSize, review_ordering: ordering } =
+    settings;
   // `settings.minimum_resolution` is here for the undersized badge alone, which
   // is what the cards below wear it off. It is a display fact and nothing more:
-  // what this worklist holds is `list_wallpapers("active", "score_asc", 50)`
-  // before and after, because excluding undersized wallpapers from review would
-  // silently change what the ranking is over (CONTEXT.md, #258).
+  // what this worklist holds is the listing above, before and after, because
+  // excluding undersized wallpapers from review would silently change what the
+  // ranking is over (CONTEXT.md, #258).
   // Where a reject goes, read once for the line on the bar, for the string
   // `move_wallpaper` is handed and for what the toast has left to say. The
   // `movePath` state that used to stand here is gone with the field that edited
@@ -123,9 +140,9 @@ export function ReviewView() {
    *
    * Swapping layout unmounts one surface and mounts the other, and the cursor is
    * the surface's since #230 — so without this the curator lands back at the top
-   * of the worklist, which on a fifty-row sweep is losing their place. A ref and
-   * not state: it is written in a click handler and read by the next mount, and
-   * nothing renders from it.
+   * of the worklist, which part-way through a sweep is losing their place. A ref
+   * and not state: it is written in a click handler and read by the next mount,
+   * and nothing renders from it.
    *
    * Spent on arrival, so it only ever answers for the swap that wrote it. A
    * refetch or an emptied list that remounts the surface later must not put the
@@ -143,11 +160,7 @@ export function ReviewView() {
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await client.listWallpapers(
-        "active",
-        "score_asc",
-        REVIEW_LIMIT,
-      );
+      const list = await client.listWallpapers("active", ordering, worklistSize);
       setRows(list);
     } catch (err) {
       console.error("Failed to fetch review list:", err);
@@ -155,17 +168,37 @@ export function ReviewView() {
     } finally {
       setLoading(false);
     }
-  }, [setRows, show]);
-
-  useEffect(() => {
-    void fetchReviewList();
-  }, [fetchReviewList]);
+  }, [ordering, worklistSize, setRows, show]);
 
   // The one event this list answers with a fetch rather than with a patch, and
-  // the fetch waits until Review is the view being shown: fifty thumbnail
-  // requests from a hidden page are exactly what ADR 0012's dedicated
-  // pre-generation thread exists to keep off the rank view's next pair.
+  // the fetch waits until Review is the view being shown: a worklist's worth of
+  // thumbnail requests from a hidden page — and the curator may have asked for a
+  // hundred — is exactly what ADR 0012's dedicated pre-generation thread exists
+  // to keep off the rank view's next pair.
   const owe = useRefetchWhenShown("review", fetchReviewList);
+
+  // Whether this page has asked for its list yet, which is what separates the
+  // two things the effect below has to do. A ref because nothing renders from
+  // it and it must not reset when the settings it is guarding move.
+  const fetched = useRef(false);
+
+  // The first fetch, and every later one a changed worklist size or ordering
+  // asks for.
+  //
+  // The first is the page's own and runs where it stands: a page that has
+  // mounted has a list to fill, whatever the shell happens to be showing. The
+  // rest go through `owe`, because both settings are written on a page this one
+  // is hidden behind — a worklist lengthened from Settings would otherwise put a
+  // hundred thumbnail requests in front of whatever the curator does next, which
+  // is the deferral ADR 0015 wrote for a scan (#259).
+  useEffect(() => {
+    if (!fetched.current) {
+      fetched.current = true;
+      void fetchReviewList();
+      return;
+    }
+    owe();
+  }, [owe, fetchReviewList]);
 
   // The two forward references the module above takes, as declarations so they
   // can be handed over before the hooks that answer them have run. Both fire
@@ -192,8 +225,12 @@ export function ReviewView() {
     <>
       <h1 className="sr-only">Review</h1>
       <PageBar>
+        {/* Which end of the ranking this worklist came off, because the control
+            that decides it is on another page and the cards below cannot say so
+            for themselves — the worst wallpapers and the best both read as a
+            worklist of whatever length was asked for, at a glance (#259). */}
         <span className="font-medium whitespace-nowrap">
-          Lowest Scores first
+          {ORDERING_SENTENCE[ordering]}
         </span>
         <RejectDestinationLine destination={destination} />
 
@@ -231,8 +268,8 @@ export function ReviewView() {
                 // what there is to report.
                 onClick={() => {
                   // Where the curator was, so the surface that replaces this one
-                  // opens there rather than back at the top of a fifty-row
-                  // worklist. Read once, here, rather than subscribed to: a
+                  // opens there rather than back at the top of the worklist.
+                  // Read once, here, rather than subscribed to: a
                   // subscription would put every arrow key through this page,
                   // which is what #230 took the cursor out of it to prevent.
                   handOver.current = grid?.selection().wallpaper?.id ?? null;
@@ -296,8 +333,8 @@ export function ReviewView() {
            of what this line is now: full width, and the `p-4` the virtualiser
            over there was measured against (ADR 0027). It used to be
            `mx-auto max-w-[1920px] p-6`, so one page capped and centred its
-           cards and the other let them fill the window — the same fifty-card
-           grid at two card sizes with two gutters, decided by which tab was up.
+           cards and the other let them fill the window — one grid at two card
+           sizes with two gutters, decided by which tab was up.
            The cap is what went: a library of 5,000 cannot have one, because the
            grid derives its row height from the scroller's width and a narrower
            box inside that scroller would put the window against a row height
@@ -306,9 +343,10 @@ export function ReviewView() {
 
            `w-full` stays, and it is load-bearing rather than tidiness. The grid
            inside is `minmax(0, 1fr)` columns, whose intrinsic contribution is
-           nothing, so a box that is ever sized `fit-content` collapses to fifty
-           cards twelve pixels wide — which is what the `mx-auto` above used to
-           risk, since auto cross-axis margins suppress a flex item's `stretch`.
+           nothing, so a box that is ever sized `fit-content` collapses the whole
+           worklist to cards twelve pixels wide — which is what the `mx-auto`
+           above used to risk, since auto cross-axis margins suppress a flex
+           item's `stretch`.
            WebKitGTK's first layout stretched it anyway and its relayout did
            not, so the collapse appeared only on the second visit: ADR 0015
            hides this view with `display: none` rather than unmounting it, and
@@ -345,7 +383,10 @@ export function ReviewView() {
 
                `animated` is Review's alone. ADR 0016 gives the library's instance
                of this card no animated property and no `will-change`, and ADR
-               0007's licence stays scoped to the fifty rows it was measured on.
+               0007's licence stays scoped to the fifty rows it was measured on —
+               which is now the middle of the worklist sizes rather than all of
+               them, since a curator may ask for a hundred (#259). Nothing has
+               re-measured it at that length.
 
                The strip beside it is the other layout the bar offers, and the
                two are handed the same three things: the worklist, `perform`, and
@@ -367,12 +408,13 @@ export function ReviewView() {
               onAction={perform}
               onOpen={lightbox.openOn}
               minimumResolution={settings.minimum_resolution}
+              evaluatedThreshold={settings.evaluated_threshold}
               startOn={resumeOn}
             />
           ) : (
             /* The grid's `density` is the same gesture Library answers, bounded
                shorter: six cards to a row rather than eight, because this
-               page's fifty are wallpapers the curator is deciding about and a
+               page's cards are wallpapers the curator is deciding about and a
                card too small to judge has stopped doing that job. Two is the
                same at the other end, so both tabs go equally large (#264). */
             <WallpaperGrid
@@ -382,6 +424,7 @@ export function ReviewView() {
               onAction={perform}
               onOpen={lightbox.openOn}
               minimumResolution={settings.minimum_resolution}
+              evaluatedThreshold={settings.evaluated_threshold}
               animated
               className="pb-8"
               startOn={resumeOn}

@@ -10,10 +10,14 @@ const stored: Settings = {
   library_root: "~/pics",
   reject_destination: "/bin/walls",
   library_layout: "masonry",
+  review_worklist_size: 25,
+  startup_view: "library",
+  review_ordering: "score_desc",
   screen: { width: 2560, height: 1440 },
   minimum_resolution: { width: 1920, height: 1080 },
   review_layout: "strip",
   crop_preview: true,
+  evaluated_threshold: 3.0,
   detected_screen: { width: 3840, height: 2160 },
 };
 

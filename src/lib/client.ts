@@ -115,11 +115,54 @@ export type ReviewLayout = "strip" | "grid";
  * Mirrors settings::LibraryLayout: how the Library draws its wallpapers.
  *
  * `grid` crops every wallpaper to one shape; `masonry` packs columns
- * shortest-first and draws each at its own aspect ratio. The choice belongs to
- * the Library tab, which is why the key names it: Review's layout is its own
- * key, so masonry in Library and something else in Review is a valid pair.
+ * shortest-first and draws each at its own aspect ratio; `justified` scales
+ * uncropped wallpapers to a shared height per row, with the rank set large
+ * behind each image. The choice belongs to the Library tab, which is why the key
+ * names it: Review's layout is its own key, so masonry in Library and something
+ * else in Review is a valid pair.
  */
-export type LibraryLayout = "grid" | "masonry";
+export type LibraryLayout = "grid" | "masonry" | "justified";
+
+/**
+ * Mirrors settings::ReviewOrdering: which end of the ranking Review works from.
+ *
+ * A subset of `ListOrdering` rather than a vocabulary of its own, because the
+ * value is handed straight to `listWallpapers` — Review is a decision queue, so
+ * it takes the two Score orderings and not the library page's four: filename
+ * order in a queue of judgements means nothing (ADR 0028, #259).
+ */
+export type ReviewOrdering = Extract<ListOrdering, "score_asc" | "score_desc">;
+
+/**
+ * Mirrors settings::StartupView: which view the app opens on.
+ *
+ * `View` in `AppContext` is this plus `settings`, which is the one destination
+ * boot reaches on its own — with nothing scanned, or with a library that would
+ * not read — and not somewhere a curator would choose to be dropped every
+ * launch (ADR 0015).
+ */
+export type StartupView = "rank" | "review" | "library";
+
+/**
+ * Mirrors settings::WORKLIST_SIZES: the worklist lengths Review offers.
+ *
+ * Presets rather than a number the curator types, because the question is how
+ * long a session to sit down to. The backend refuses anything else, so this list
+ * is what a control offers and not what makes the value valid.
+ */
+export const WORKLIST_SIZES = [10, 25, 50, 100] as const;
+
+/**
+ * Mirrors settings::WorklistSize: a worklist length, which is one of the presets
+ * and cannot be anything else.
+ *
+ * Derived from the list above rather than written out, so the presets and the
+ * type cannot drift apart. The restriction is the Rust newtype's, and stating it
+ * here too is what keeps this setting as typed as the three unions beside it —
+ * `review_worklist_size: number` would have let a caller name a length the
+ * backend refuses and learn about it from a runtime rejection.
+ */
+export type WorklistSize = (typeof WORKLIST_SIZES)[number];
 
 /**
  * Mirrors settings::Resolution: a size in pixels, width by height.
@@ -159,6 +202,29 @@ export interface Settings {
    */
   library_layout: LibraryLayout;
   /**
+   * How many wallpapers Review puts in front of the curator at once, which is
+   * the `limit` its listing asks for.
+   *
+   * One of `WORKLIST_SIZES`, which the backend enforces and the type says: a
+   * length crosses as the number rather than as a preset index, because the
+   * `limit` is what the value is for.
+   */
+  review_worklist_size: WorklistSize;
+  /**
+   * Which view the app opens on, as a fixed choice rather than wherever the
+   * curator was last (ADR 0015).
+   *
+   * It picks between the landings the boot rule would otherwise call Rank. A
+   * library boot cannot draw a pair from, or cannot read at all, still decides
+   * for itself.
+   */
+  startup_view: StartupView;
+  /**
+   * Which end of the ranking Review works from: lowest Scores to cull the
+   * worst, highest to confirm favourites.
+   */
+  review_ordering: ReviewOrdering;
+  /**
    * The screen the curator is curating for, defaulting to the monitor the
    * backend detected. One screen and not two: the crop preview reads its ratio
    * and the undersized check reads its pixels, and two settings holding the same
@@ -194,6 +260,20 @@ export interface Settings {
    */
   crop_preview: boolean;
   /**
+   * The σ below which a wallpaper's rating counts as Evaluated.
+   *
+   * The curator's answer to how many Comparisons make a Score trustworthy
+   * (CONTEXT.md, ADR 0046). The number itself rather than a name for it, because
+   * the card compares a wallpaper's σ against it directly and the backend counts
+   * `evaluated_count` against the same row — a name would need the same three
+   * numbers written out on both sides of the IPC, which is exactly how the
+   * headline and the badges would come to disagree.
+   *
+   * Only the values `EVALUATED_THRESHOLDS` offers are writable; the backend
+   * refuses the rest.
+   */
+  evaluated_threshold: number;
+  /**
    * What the monitor said, which is what `screen` reads as until the curator
    * overrides it.
    *
@@ -223,6 +303,31 @@ export type SettingKey = Exclude<keyof Settings, "detected_screen">;
 const FALLBACK_SCREEN: Resolution = { width: 1920, height: 1080 };
 
 /**
+ * The Evaluated threshold with no row in the table, mirroring
+ * `settings::DEFAULT_EVALUATED_THRESHOLD`.
+ *
+ * What Evaluated meant while it was a constant — σ below 4.0, roughly half the
+ * starting uncertainty — so a curator who never opens the control sees the count
+ * and the badges they always did (CONTEXT.md, ADR 0046).
+ *
+ * The one place the frontend may fall back to it is a card mounted outside the
+ * app's settings. Every surface inside them reads `settings.evaluated_threshold`,
+ * because that is the row the backend counted against.
+ */
+export const DEFAULT_EVALUATED_THRESHOLD = 4.0;
+
+/**
+ * The three thresholds Settings offers, loosest first, mirroring
+ * `settings::EVALUATED_THRESHOLDS`.
+ *
+ * A preset list and not a free number: σ is the app's own uncertainty scale, and
+ * a curator typing `6.5` into it is guessing at a unit nothing on the page can
+ * explain. The backend refuses anything else, so this list and its refusal are
+ * the same rule (ADR 0046).
+ */
+export const EVALUATED_THRESHOLDS = [5.0, DEFAULT_EVALUATED_THRESHOLD, 3.0];
+
+/**
  * What every key means with no row in the table, mirroring `Settings::defaults`.
  *
  * settings.rs owns the answer; this copy exists only for the boot path, which
@@ -235,10 +340,14 @@ export const DEFAULT_SETTINGS: Settings = {
   library_root: "",
   reject_destination: "./rejected",
   library_layout: "grid",
+  review_worklist_size: 50,
+  startup_view: "rank",
+  review_ordering: "score_asc",
   screen: FALLBACK_SCREEN,
   minimum_resolution: FALLBACK_SCREEN,
   review_layout: "grid",
   crop_preview: false,
+  evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
   detected_screen: FALLBACK_SCREEN,
 };
 
@@ -249,8 +358,9 @@ export const DEFAULT_SETTINGS: Settings = {
  * Keyed on the setting rather than on the shape of the value, so a later key
  * that happens to hold an object cannot fall through to the size encoding by
  * accident. Everything else is what the column already holds: a theme is one of
- * three strings, a Written path is the string the curator typed, a flag is
- * `true` or `false`, and turning any of them into anything but itself would make
+ * three strings, a Written path is the string the curator typed, a worklist size
+ * is its own digits, a flag is `true` or `false`, and turning any of them into
+ * anything but itself would make
  * the empty Library root — the write that deletes the row — unreachable.
  *
  * `setSetting` is the only caller, which is what stops any other part of the app

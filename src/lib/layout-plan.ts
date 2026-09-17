@@ -470,6 +470,24 @@ export interface MasonryGrid extends PlanSpacing {
 }
 
 /**
+ * A wallpaper's shape as a layout has to have it: its own, or the one the
+ * layout draws a wallpaper it has no Dimensions for.
+ *
+ * Both uncropped layouts ask the same question and have to answer it the same
+ * way, because the answer is a rule rather than an arithmetic detail: a row
+ * mid-backfill carries no Dimensions and nothing waits for it, and a shape of
+ * nothing is a card of no size that takes its row or its column down with it
+ * (CONTEXT.md, ADR 0044).
+ *
+ * A ratio at or below zero is refused alongside `null` for the same reason it
+ * would be in either caller: it is a row that cannot be drawn, whatever wrote
+ * it, and a layout is not the place to find that out.
+ */
+function shapeOr(ratio: number | null, unknownRatio: number): number {
+  return ratio === null || ratio <= 0 ? unknownRatio : ratio;
+}
+
+/**
  * Masonry: every wallpaper at its own aspect ratio, packed into columns
  * shortest-first.
  *
@@ -517,7 +535,7 @@ export function planMasonry({
     for (let column = 1; column < columns; column++) {
       if (columnTop[column] < columnTop[shortest]) shortest = column;
     }
-    const shape = ratio === null || ratio <= 0 ? unknownRatio : ratio;
+    const shape = shapeOr(ratio, unknownRatio);
     const height = cardWidth > 0 ? cardWidth * shape : unmeasuredHeight;
     const top = columnTop[shortest];
     boxes.push({
@@ -530,6 +548,171 @@ export function planMasonry({
   }
 
   return { ...layoutPlan(bandsOf(boxes, padding), { gap: 0, padding }), boxes };
+}
+
+/**
+ * A justified plan: rows a window reads, and the box each card fills in them.
+ *
+ * The same pair masonry returns, and for the same reason — a card whose width
+ * comes from its own shape is a card the plan has to place, because no CSS grid
+ * can be told "as wide as this wallpaper is". What differs is that these rows
+ * are rows: every card in one shares its top and its height, and every card is
+ * in exactly one.
+ */
+export interface JustifiedPlan extends LayoutPlan {
+  /** Where each card goes, by its position in the whole list. */
+  boxes: PlannedBox[];
+}
+
+/** What justified rows are laid out from. */
+export interface JustifiedGrid extends PlanSpacing {
+  /**
+   * Each wallpaper's shape, as height over width, in list order — or `null` for
+   * one whose Dimensions the app has not read yet (CONTEXT.md, ADR 0044).
+   */
+  ratios: ReadonlyArray<number | null>;
+  /**
+   * How tall a row wants to be, which is the whole of what decides how many
+   * wallpapers share one.
+   *
+   * Arrives worked out rather than as a width and a ratio, the way
+   * `planUniformGrid` takes its row height: the number comes from the grid's own
+   * CSS and the grid is what holds it (ADR 0027, ADR 0045). Handing it the
+   * uniform grid's row height is what makes the density gesture mean the same
+   * thing in both layouts — a step in is a taller row, and a taller row holds
+   * fewer wallpapers.
+   *
+   * A target and not an outcome: a full row is drawn at whatever height makes
+   * its wallpapers fill the width exactly, which is always this or less.
+   */
+  targetHeight: number;
+  /**
+   * How many cards share a row while the box has no width to divide.
+   *
+   * The degenerate branch only, and it is the uniform grid's own answer to the
+   * same nothing: with no width there are no ratios to pack against, so the rows
+   * are cut at the column count and every card is `targetHeight` tall — which is
+   * `UNMEASURED_ROW` by then. happy-dom reports every box as zero and ADR 0015
+   * keeps a hidden view's box at zero in a real browser too, so this is the
+   * branch under test rather than an edge case.
+   */
+  columns: number;
+  /** The scroll box's width, the `padding` included at both ends. */
+  width: number;
+  /**
+   * The shape a wallpaper with no Dimensions is drawn at.
+   *
+   * The same fallback masonry takes, for the same reason: a row mid-backfill is
+   * ordinary and nothing waits for it, and a card of no height at all would take
+   * its whole row down with it.
+   */
+  unknownRatio: number;
+}
+
+/**
+ * Justified rows: uncropped wallpapers scaled to a height they share, lining up
+ * in rows that fill the width.
+ *
+ * The row height falls out of the ratios rather than being chosen. Fill a row
+ * with whole wallpapers until the widths they would have at `targetHeight` reach
+ * the width available, then divide that width by the shapes used — so the row is
+ * as tall as it has to be for its own wallpapers to fill it, and nothing is
+ * cropped and nothing is measured (ADR 0045).
+ *
+ * **The last row does not stretch.** A row that ran out of wallpapers rather
+ * than out of width is drawn at `targetHeight`, which leaves it short of the
+ * right-hand edge. Stretching it is the arithmetic's own answer and it is wrong
+ * to look at: three wallpapers left over would be drawn half a page tall, which
+ * says "these three are important" about a list the curator scrolled to the
+ * bottom of.
+ *
+ * Whole wallpapers only, in list order. Splitting a wallpaper across rows or
+ * reordering to pack better would both be answering a different question than
+ * the one the ordering asked.
+ */
+export function planJustified({
+  ratios,
+  targetHeight,
+  columns: asked,
+  width,
+  gap,
+  padding,
+  unknownRatio,
+}: JustifiedGrid): JustifiedPlan {
+  // At least one, because the degenerate branch below cuts its rows at this.
+  const columns = Math.max(1, asked);
+  // What the cards themselves have, once both paddings are off. The gaps come
+  // off per row, because how many there are is what a row is still deciding.
+  const inner = width - 2 * padding;
+
+  const rows: RowOfCards[] = [];
+  // Each row's card widths, in the row's own order, kept until the offsets are
+  // known. The boxes are filled in from the plan below rather than as the rows
+  // are built, so the tops a card is drawn at are the tops the window scrolls to
+  // by construction rather than by two pieces of arithmetic agreeing.
+  const widths: number[][] = [];
+
+  if (inner <= 0) {
+    for (let from = 0; from < ratios.length; from += columns) {
+      const cards: number[] = [];
+      for (let at = from; at < Math.min(from + columns, ratios.length); at++) {
+        cards.push(at);
+      }
+      rows.push({ cards, height: targetHeight });
+      widths.push(cards.map(() => 0));
+    }
+  } else {
+    let at = 0;
+    while (at < ratios.length) {
+      const cards: number[] = [];
+      // Each wallpaper's width over its height, which is what a shared row
+      // height multiplies to get a width.
+      const aspects: number[] = [];
+      // How wide the row is per unit of height, as those added up. Multiplying
+      // by a height is the width the row would take at it, and dividing the
+      // width available by it is the height at which the row fills exactly.
+      let widthPerHeight = 0;
+      // Whether the row closed because it was full, or because the list ran out
+      // under it — which is the whole of what decides if it stretches.
+      let filled = false;
+      while (at < ratios.length) {
+        const aspect = 1 / shapeOr(ratios[at], unknownRatio);
+        cards.push(at);
+        aspects.push(aspect);
+        widthPerHeight += aspect;
+        at++;
+        const available = inner - gap * (cards.length - 1);
+        // Full once the wallpapers drawn at the target would reach the edge.
+        // `available <= 0` is the row having more gaps in it than the box is
+        // wide, which no density this app offers reaches and which closes the
+        // row rather than looping over a width there is none of.
+        if (available <= 0 || widthPerHeight * targetHeight >= available) {
+          filled = true;
+          break;
+        }
+      }
+      const available = inner - gap * (cards.length - 1);
+      // The height at which these wallpapers fill the row exactly, which a full
+      // row is drawn at. A row the list ran out under keeps the target instead,
+      // and so stops short of the right-hand edge.
+      const exact = available > 0 ? available / widthPerHeight : targetHeight;
+      const height = filled ? exact : Math.min(targetHeight, exact);
+      rows.push({ cards, height });
+      widths.push(aspects.map((aspect) => aspect * height));
+    }
+  }
+
+  const plan = layoutPlan(rows, { gap, padding });
+  const boxes: PlannedBox[] = [];
+  for (const [at, row] of plan.rows.entries()) {
+    let left = padding;
+    for (const [slot, card] of row.cards.entries()) {
+      const cardWidth = widths[at][slot];
+      boxes[card] = { left, top: row.top, width: cardWidth, height: row.height };
+      left += cardWidth + gap;
+    }
+  }
+  return { ...plan, boxes };
 }
 
 /**

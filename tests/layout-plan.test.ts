@@ -4,6 +4,7 @@ import {
   densityColumns,
   densityZoom,
   layoutPlan,
+  planJustified,
   planMasonry,
   planUniformGrid,
   ratioOf,
@@ -42,6 +43,35 @@ function masonry(
   width: number,
 ) {
   return planMasonry({ ...MASONRY, ratios, columns, width });
+}
+
+/**
+ * Justified rows at a width, the way `WallpaperGrid` composes them: the target
+ * height is the uniform grid's own row height at the same column count, which is
+ * what makes one density gesture mean the same thing in both layouts.
+ */
+function justified(
+  ratios: ReadonlyArray<number | null>,
+  columns: number,
+  width: number,
+) {
+  return planJustified({
+    ...SPACING,
+    ratios,
+    columns,
+    width,
+    targetHeight: uniformRowHeight({ ...UNIFORM, columns, width }),
+    unknownRatio: 9 / 16,
+  });
+}
+
+/** How wide a row's cards and the gaps between them come to. */
+function rowWidth(
+  plan: { boxes: Array<{ left: number; width: number }> },
+  cards: number[],
+): number {
+  const last = plan.boxes[cards[cards.length - 1]];
+  return last.left + last.width - plan.boxes[cards[0]].left;
 }
 
 /** The uniform grid at a width, the way `WallpaperGrid` composes the two halves. */
@@ -603,4 +633,190 @@ test("what the caption says is lost is exactly what the bars cover", () => {
     // outline is drawn around.
     expect((1 - 2 * side) * (1 - 2 * band)).toBeCloseTo(1 - lost);
   }
+});
+
+// Justified rows (#263): uncropped wallpapers scaled to a height they share,
+// lining up in rows that fill the width. The same part of the work happy-dom
+// cannot reach — how tall a row came out, how much of the width it took, and
+// which cards a scroll offset puts on screen.
+
+test("a justified row is as tall as its own wallpapers make it, and every one of them keeps its shape", () => {
+  // Four shapes, cycled until the rows are full of them. What they are drawn at
+  // is a height they all share and a width each, which is the whole of what
+  // uncropped means here: the box has the wallpaper's own ratio, so nothing has
+  // to be cut to fill it.
+  const cycle = [9 / 16, 3 / 4, 10 / 21, 1];
+  const shapes = Array.from({ length: 16 }, (_, at) => cycle[at % 4]);
+  const plan = justified(shapes, 4, 1200);
+
+  expect(plan.rows.length).toBeGreaterThan(1);
+  const row = plan.rows[0];
+  for (const card of row.cards) {
+    const box = plan.boxes[card];
+    expect(box.height).toBeCloseTo(row.height);
+    expect(box.height / box.width).toBeCloseTo(shapes[card]);
+  }
+  // And the row's height is the width it had to fill divided by the shapes that
+  // filled it, rather than a number chosen in advance.
+  const spanned = row.cards.reduce((sum, card) => sum + 1 / shapes[card], 0);
+  expect(row.height).toBeCloseTo(
+    (1200 - 32 - 24 * (row.cards.length - 1)) / spanned,
+  );
+});
+
+test("every full row fills the container width, and the last one does not stretch", () => {
+  // Nine 16:9 wallpapers at a density of four, so the rows before the last are
+  // full and the last is whatever was left over.
+  const plan = justified(Array.from({ length: 9 }, () => 9 / 16), 4, 1200);
+
+  const last = plan.rows[plan.rows.length - 1];
+  for (const row of plan.rows.slice(0, -1)) {
+    // Edge to edge between the paddings: the first card starts at the left
+    // padding and the last ends at the right one.
+    expect(plan.boxes[row.cards[0]].left).toBe(16);
+    expect(rowWidth(plan, row.cards)).toBeCloseTo(1200 - 32);
+  }
+
+  // The last row keeps the height the rows were aiming for and stops where its
+  // wallpapers stop. Stretching it is the arithmetic's own answer and it is the
+  // wrong one to look at: the leftovers would be drawn larger than everything
+  // above them.
+  expect(last.cards.length).toBeLessThan(plan.rows[0].cards.length);
+  expect(last.height).toBeCloseTo(uniformRowHeight({ ...UNIFORM, columns: 4, width: 1200 }));
+  expect(rowWidth(plan, last.cards)).toBeLessThan(1200 - 32);
+});
+
+test("a row that ran out of wallpapers on the exact width still fills it", () => {
+  // The boundary between the two rules above. Four wallpapers at a density of
+  // four is a row that closed because it was full and happened to be the last
+  // one, which is a full row and stretches like any other.
+  const plan = justified(Array.from({ length: 4 }, () => 9 / 16), 4, 1200);
+
+  expect(plan.rows.length).toBe(1);
+  expect(rowWidth(plan, plan.rows[0].cards)).toBeCloseTo(1200 - 32);
+});
+
+test("a row holds as many wallpapers as their shapes leave room for", () => {
+  // What the layout is for, and what a column count cannot say. Panoramas drawn
+  // at the same height as portraits are three times as wide, so a row of them
+  // reaches the edge sooner and holds fewer — the rows are a fixed height and
+  // not a fixed count of anything.
+  const panoramas = justified(Array.from({ length: 30 }, () => 9 / 21), 4, 1200);
+  const portraits = justified(Array.from({ length: 30 }, () => 4 / 3), 4, 1200);
+
+  expect(panoramas.rows[0].cards.length).toBeLessThan(
+    portraits.rows[0].cards.length,
+  );
+  // And both still fill the width, which is what makes the rows tidy rather than
+  // ragged.
+  expect(rowWidth(panoramas, panoramas.rows[0].cards)).toBeCloseTo(1200 - 32);
+  expect(rowWidth(portraits, portraits.rows[0].cards)).toBeCloseTo(1200 - 32);
+});
+
+test("a denser library is shorter rows with more wallpapers in them", () => {
+  // The density gesture, in the layout that has no columns to count. It moves
+  // the height a row aims for, and a shorter row holds more — which is the same
+  // thing the gesture does to the grid, said in the only terms this layout has
+  // (#264).
+  const large = justified(Array.from({ length: 40 }, () => 9 / 16), 2, 1200);
+  const small = justified(Array.from({ length: 40 }, () => 9 / 16), 6, 1200);
+
+  expect(small.rows[0].height).toBeLessThan(large.rows[0].height);
+  expect(small.rows[0].cards.length).toBeGreaterThan(
+    large.rows[0].cards.length,
+  );
+});
+
+test("a wallpaper whose Dimensions are unknown is drawn 16:9 rather than flat", () => {
+  // The ordinary state of a library still being backfilled. Drawn at a ratio of
+  // nothing the card would have no width at all, and the row it is in would be
+  // divided by an infinity (ADR 0044).
+  const plan = justified([9 / 16, null, 9 / 16], 4, 1200);
+
+  expect(plan.boxes[1].width).toBeCloseTo(plan.boxes[0].width);
+  expect(plan.boxes[1].height).toBeCloseTo(plan.boxes[0].height);
+  expect(plan.boxes[1].width).toBeGreaterThan(0);
+});
+
+test("a justified plan holds every card once, in one row, in list order", () => {
+  // What separates these rows from masonry's bands: a card is in exactly one of
+  // them, so the way back is the row it is in and a window over a run of rows
+  // mounts a run of the list.
+  const shapes = [9 / 16, 4 / 3, 10 / 21, 1, 9 / 16, 3 / 4, 16 / 9];
+  const plan = justified(
+    Array.from({ length: 21 }, (_, at) => shapes[at % shapes.length]),
+    4,
+    1200,
+  );
+
+  const drawn = plan.rows.flatMap((row) => row.cards);
+  expect(drawn).toEqual(Array.from({ length: 21 }, (_, at) => at));
+  for (const [at, row] of plan.rows.entries()) {
+    for (const card of row.cards) expect(plan.rowOfCard[card]).toBe(at);
+  }
+  // And a window over a run of them is the cards in those rows and nothing else.
+  expect(windowOf(plan, 1, 2).cards).toEqual([
+    ...plan.rows[1].cards,
+    ...plan.rows[2].cards,
+  ]);
+});
+
+test("the rows are stacked with the grid's own gap, and account for the whole scroll height", () => {
+  const plan = justified(Array.from({ length: 12 }, () => 9 / 16), 4, 1200);
+
+  for (const [at, row] of plan.rows.entries()) {
+    if (at === 0) expect(row.top).toBe(16);
+    else {
+      const above = plan.rows[at - 1];
+      expect(row.top).toBeCloseTo(above.top + above.height + 24);
+    }
+  }
+  const last = plan.rows[plan.rows.length - 1];
+  expect(last.top + last.height).toBeCloseTo(plan.total - 16);
+  const whole = windowOf(plan, 0, plan.rows.length - 1);
+  expect(whole.before).toBe(16);
+  expect(whole.after).toBeCloseTo(16);
+});
+
+test("a box that measures nothing gives justified rows the grid's own answer", () => {
+  // The branch every happy-dom run takes, and the one a real browser takes for a
+  // view the shell is hiding under `display: none` (ADR 0015). With no width
+  // there are no shapes to pack against, so the rows are cut at the column count
+  // and every card is about a card tall — the uniform grid's answer to the same
+  // nothing.
+  const plan = justified([9 / 16, 1, 4 / 3, null, 9 / 16], 2, 0);
+
+  expect(plan.rows.map((row) => row.cards)).toEqual([[0, 1], [2, 3], [4]]);
+  expect(plan.rows.map((row) => row.height)).toEqual([130, 130, 130]);
+  expect(plan.boxes.map((box) => box.top)).toEqual([16, 16, 170, 170, 324]);
+});
+
+test("a justified plan of a whole library windows onto a few dozen cards", () => {
+  // ADR 0016's ceiling, at the ratios a real library has. The window mounts a
+  // few rows out of a thousand and the space around them is the rest of the
+  // scroll height, which is what stops the list shifting under a scroll.
+  const shapes = [9 / 16, 1, 4 / 3, 10 / 21, null];
+  const plan = justified(
+    Array.from({ length: 5000 }, (_, at) => shapes[at % shapes.length]),
+    4,
+    1200,
+  );
+
+  expect(plan.boxes.length).toBe(5000);
+  const mounted = windowOf(plan, 40, 45);
+  expect(mounted.cards.length).toBeLessThan(40);
+  expect(new Set(mounted.cards).size).toBe(mounted.cards.length);
+  const first = plan.rows[40];
+  const last = plan.rows[45];
+  expect(mounted.before).toBe(first.top);
+  expect(mounted.before + (last.top + last.height - first.top)).toBeCloseTo(
+    plan.total - mounted.after,
+  );
+});
+
+test("justified rows plan nothing for an empty library and occupy their own padding", () => {
+  const plan = justified([], 4, 1200);
+  expect(plan.rows).toEqual([]);
+  expect(plan.boxes).toEqual([]);
+  expect(plan.total).toBe(32);
 });

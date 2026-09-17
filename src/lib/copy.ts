@@ -136,23 +136,26 @@ export function score(wallpaper: Wallpaper): string {
 }
 
 /**
- * CONTEXT.md's Evaluated, per wallpaper: σ below 4.0, roughly half the starting
- * uncertainty and about seven comparisons away from it.
+ * CONTEXT.md's Evaluated, per wallpaper: σ below the threshold the curator set.
  *
- * The number is the one `voting.rs` counts `evaluated_count` with
- * (`WHERE status IN ('active', 'kept') AND rating_sigma < 4.0`), and this is the
- * frontend's only copy of it. A Score badge dims until a wallpaper reaches it,
- * and that is the whole of what the app says about confidence: no second number
- * and no bands, so there is one definition to disagree with rather than two
- * (ADR 0013, ADR 0019).
+ * The threshold is a setting and not a constant, because how many Comparisons
+ * make a Score trustworthy is the curator's call (ADR 0046). It is passed in
+ * rather than read here so this stays a pure function of a row and a number —
+ * and so the caller is obliged to have the same row the backend counted
+ * `evaluated_count` against (`WHERE status IN ('active', 'kept') AND
+ * rating_sigma < ?`). The two comparisons are the same comparison, which is why
+ * the headline and the badges cannot drift apart.
  *
- * A wallpaper in no Comparison is never Evaluated — it still holds the starting
- * σ — so the dimmed badge and `Unrated` agree without either checking the other.
+ * A Score badge dims until a wallpaper reaches the threshold, and that is the
+ * whole of what the app says about confidence: no second number and no bands, so
+ * there is one definition to disagree with rather than two (ADR 0013, ADR 0019).
+ *
+ * A wallpaper in no Comparison is never Evaluated at any offered threshold — it
+ * still holds the starting σ of 8.333 — so the dimmed badge and `Unrated` agree
+ * without either checking the other.
  */
-export const EVALUATED_SIGMA = 4.0;
-
-export function isEvaluated(wallpaper: Wallpaper): boolean {
-  return wallpaper.rating_sigma < EVALUATED_SIGMA;
+export function isEvaluated(wallpaper: Wallpaper, threshold: number): boolean {
+  return wallpaper.rating_sigma < threshold;
 }
 
 /**

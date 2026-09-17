@@ -75,6 +75,17 @@ later is a match arm rather than a data migration.
 `review_limit` is deliberately not a key. Nobody has asked to change 50, and
 the library page may retire the review list's limit entirely.
 
+> **Reversed by [#259](https://github.com/QuantumFF/walltare/issues/259),
+> 2026-09-17.** Somebody asked, and the limit did not get retired:
+> [ADR 0028](0028-review-joins-the-listing-vocabulary.md) kept it as the one
+> thing `get_review` contributed that `list_wallpapers` could not express. So
+> `review_worklist_size` is a key, holding one of 10, 25, 50 and 100 — presets
+> rather than a free number, because the question is how long a session to sit
+> down to. Its default is 50, the value this paragraph declined to make
+> configurable, so nothing moves for a curator who ignores it. Two keys arrived
+> beside it, `startup_view` and `review_ordering`, and each is the match arm
+> this ADR promised rather than a data migration.
+
 ### The IPC
 
 ```rust

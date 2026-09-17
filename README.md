@@ -76,6 +76,8 @@ they tell you the most. The two are then shuffled before display, because a
 consistent left-hand slot would become part of the ratings. Progress reads as a
 **Round** — one pass over the Eligible pool — alongside how many Wallpapers are
 **Evaluated**, meaning the app is confident enough in their Score to trust it.
+How sure that has to be is the **Evaluated threshold**, which Settings offers as
+three confidences and defaults to the middle one.
 
 Review lists the lowest Scores still in play, and each one gets one of two
 answers. Keep it and its **Status** becomes **Kept**: it stays in the library

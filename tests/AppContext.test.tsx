@@ -156,6 +156,81 @@ test("a library with fewer than two Eligible opens on Library", async () => {
   }
 });
 
+// The startup view, which stands where that table wrote Rank (#259). It is a
+// stated preference and not where the curator was last, so what these tests
+// assert is that the app opens where the setting says and that the two landings
+// the library itself decides are untouched.
+
+test("the app opens on the view the curator chose", async () => {
+  mockCommand("get_stats", () => withEligible(10));
+
+  for (const startup of ["review", "library", "rank"] as const) {
+    mockCommand("get_settings", () => settings({ startup_view: startup }));
+    // Review lists on its first visit, which for this rule is boot itself.
+    mockCommand("list_wallpapers", () => [wallpaper(1)]);
+
+    render(<App />);
+    await flush();
+
+    expect(showingView()).toBe(startup);
+
+    cleanup();
+  }
+});
+
+test("a library that cannot draw a pair opens on Library even when Rank was chosen", async () => {
+  // The one thing the library still overrides: `get_pair` needs two Eligible
+  // wallpapers, so Rank would have nothing but an error string and Library is
+  // where a Restore is. Review and Library both own an empty state instead, so
+  // neither needs a rule of its own (ADR 0015).
+  mockCommand("get_stats", () => withEligible(1));
+  mockCommand("get_settings", () => settings({ startup_view: "rank" }));
+
+  render(<App />);
+  await flush();
+
+  expect(showingView()).toBe("library");
+});
+
+test("a chosen startup view does not open a library there is nothing to show from", async () => {
+  // Both Settings landings stay Settings: an empty library is an invitation and
+  // a library that would not read is a fault, and a preference cannot send the
+  // curator to a page with nothing on it instead (ADR 0015, ADR 0033).
+  mockCommand("get_settings", () => settings({ startup_view: "review" }));
+  mockCommand("get_stats", () => emptyStats());
+
+  render(<App />);
+  await flush();
+  expect(showingView()).toBe("settings");
+  expect(settingsView()?.textContent).toContain("Choose a Library root");
+
+  cleanup();
+  mockCommand("get_stats", () =>
+    Promise.reject({ kind: "db", message: "locked database" }),
+  );
+  expectConsoleError(/Failed to load library stats/);
+
+  render(<App />);
+  await flush();
+  expect(showingView()).toBe("settings");
+  expect(settingsView()?.textContent).toContain("locked database");
+});
+
+test("a settings read that failed opens where boot has always opened", async () => {
+  // A preference that could not be read must not move the app somewhere the
+  // curator cannot account for, so the default stands: Rank (ADR 0010).
+  mockCommand("get_stats", () => withEligible(10));
+  mockCommand("get_settings", () =>
+    Promise.reject({ kind: "db", message: "locked database" }),
+  );
+  expectConsoleError(/Failed to load settings/);
+
+  render(<App />);
+  await flush();
+
+  expect(showingView()).toBe("rank");
+});
+
 test("an empty library opens on Settings, dressed as a first run", async () => {
   mockCommand("get_stats", () => emptyStats());
 

@@ -1,4 +1,4 @@
-import type { Settings, Wallpaper } from "@/lib/client";
+import { WORKLIST_SIZES, type Settings, type Wallpaper } from "@/lib/client";
 import { act, cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
@@ -17,6 +17,7 @@ import {
   settings,
   showingView,
   wallpaper,
+  worklistSize,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
@@ -316,6 +317,98 @@ test("asks the listing for the 50 Active wallpapers with the lowest Scores", asy
   expect(calls).toEqual([
     { filter: "active", ordering: "score_asc", limit: 50 },
   ]);
+});
+
+// The two settings Review reads (#259). Both are written on the Settings page
+// and both are only observable here, so what these tests assert is the number
+// of cards the curator gets, the sentence on the bar, and what the listing was
+// asked for — the last one because a `limit` and an `ordering` are invisible on
+// screen and wrong under the wrong key.
+
+/**
+ * The sentence on Review's bar naming which end of the ranking this list is.
+ *
+ * Found by what it says rather than by walking out of the heading into the bar:
+ * where the sentence sits is arrangement, and the two ends read the same to the
+ * curator wherever it is drawn.
+ */
+const orderingSentence = () =>
+  inReview().getByText(/Scores first$/).textContent;
+
+for (const size of WORKLIST_SIZES) {
+  test(`a worklist of ${size} asks for ${size} and puts ${size} cards on the page`, async () => {
+    const limits: unknown[] = [];
+    const worklist = Array.from({ length: size }, (_, index) =>
+      wallpaper(index + 1),
+    );
+    reviewed = worklist;
+    mockCommand("list_wallpapers", (args) => {
+      limits.push(args.limit);
+      return worklist;
+    });
+    mockCommand("get_settings", () => settings({ review_worklist_size: size }));
+
+    await openOnReview();
+
+    expect(limits).toEqual([size]);
+    expect(inReview().getAllByRole("gridcell")).toHaveLength(size);
+  });
+}
+
+test("ordering by the highest Scores asks for that, and the bar says so", async () => {
+  const orderings: unknown[] = [];
+  mockCommand("list_wallpapers", (args) => {
+    orderings.push(args.ordering);
+    return [];
+  });
+  mockCommand("get_settings", () => settings({ review_ordering: "score_desc" }));
+
+  await openOnReview();
+
+  // The listing's own name for it, handed over as read: Review's two orderings
+  // are two of the four the library page picks from, not a vocabulary of their
+  // own (ADR 0028).
+  expect(orderings).toEqual(["score_desc"]);
+  // And the bar says which, because the control that decided it is on another
+  // page and a worklist of the best and one of the worst look alike.
+  expect(orderingSentence()).toBe("Highest Scores first");
+});
+
+test("the default ordering is the lowest Scores, and the bar says that", async () => {
+  await openReview([wallpaper(1)]);
+
+  expect(orderingSentence()).toBe("Lowest Scores first");
+});
+
+test("a worklist lengthened from Settings is fetched when Review is next shown", async () => {
+  const limits: unknown[] = [];
+  let stored = settings();
+  mockCommand("get_settings", () => stored);
+  mockCommand("set_setting", (args) => {
+    stored = { ...stored, review_worklist_size: worklistSize(args.value) };
+    return stored;
+  });
+  mockCommand("list_wallpapers", (args) => {
+    limits.push(args.limit);
+    return [];
+  });
+  // Settings walks the cache directory on mount, which this test passes
+  // through on its way to the control (ADR 0020).
+  mockCommand("get_cache_size", () => cacheSize());
+
+  await openOnReview();
+  expect(limits).toEqual([50]);
+
+  await click(screen.getByRole("button", { name: "Settings" }));
+  await click(screen.getByRole("radio", { name: "100" }));
+
+  // Nothing yet: Review is hidden behind Settings, and a hundred thumbnail
+  // requests from a hidden page are what ADR 0015 defers a refetch to avoid.
+  expect(limits).toEqual([50]);
+
+  await click(screen.getByRole("tab", { name: "Review" }));
+
+  expect(limits).toEqual([50, 100]);
 });
 
 test("keep records the decision and removes the card without waiting for a refetch", async () => {
