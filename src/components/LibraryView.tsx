@@ -115,7 +115,10 @@ function matchesFilter(status: Status, filter: StatusFilter): boolean {
  * which is also the case this sentence is never used for, since a library with
  * nothing in it under no narrowing is the other empty state entirely.
  */
-function nothingMatches(filter: StatusFilter, undersizedOnly: boolean): string {
+function emptyNarrowingSentence(
+  filter: StatusFilter,
+  undersizedOnly: boolean,
+): string {
   const size = undersizedOnly ? "undersized " : "";
   const status = filter === "all" ? "" : `${STATUS_LABEL[filter]} `;
   return `No ${size}${status}wallpapers in the library.`;
@@ -340,9 +343,6 @@ export function LibraryView() {
     if (!undersizedOnly) return fetched;
     return fetched.filter((w) => isUndersized(w, minimumResolution));
   }, [rows, undersizedOnly, minimumResolution]);
-  // Whether either control is narrowing the library, which is what tells the
-  // two empty states apart: with neither on, an empty list is an empty library.
-  const narrowed = filter !== "all" || undersizedOnly;
 
   /**
    * The grid, once it has mounted, and the whole of what this page knows about
@@ -595,14 +595,20 @@ export function LibraryView() {
             is empty because a call has not come back is the state this
             distinction exists to prevent.
 
-            Which of the two is showing is read off the controls, because they
-            are the only thing that can tell them apart. With nothing narrowing,
-            the fetch asked about the whole library and none of it was dropped
-            on the way here, so no rows means no library. Narrowed, no rows means
-            a library with nothing matching in it — the library is fine and this
-            view of it is not. */}
+            Which of the two is showing is what the two controls are read for,
+            and they are read differently because they narrow at different
+            points. With the Status filter on All the fetch asked about the whole
+            library, so a fetch that came back with nothing is a library with
+            nothing in it — whatever the size control is doing, since a narrowing
+            of no rows is still no rows. Any other case is a library with nothing
+            matching in it: the library is fine and this view of it is not.
+
+            So the empty library is the *fetch* coming back empty under All, and
+            not the list on screen being empty, which is the distinction the size
+            control introduces: it drops rows after the fetch, and a curator who
+            pressed it must not be told their library was never scanned. */}
         {rows !== null && list.length === 0 ? (
-          !narrowed ? (
+          filter === "all" && rows.length === 0 ? (
             /* The route carries `focus`, so the curator lands on the field they
                have to fill in rather than on a page of four sections with the
                answer somewhere in it (ADR 0020). `returnTo` is this page by
@@ -644,7 +650,7 @@ export function LibraryView() {
                 setUndersizedOnly(false);
               }}
             >
-              {nothingMatches(filter, undersizedOnly)}
+              {emptyNarrowingSentence(filter, undersizedOnly)}
             </EmptyState>
           )
         ) : (

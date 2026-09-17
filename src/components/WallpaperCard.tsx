@@ -4,6 +4,7 @@ import { wallpaperImageUrl, type Status, type Wallpaper } from "@/lib/client";
 import type { PlannedBox } from "@/lib/layout-plan";
 import {
   counted,
+  dimensionsOf,
   FILE_IS_GONE,
   isEvaluated,
   readableSize,
@@ -244,6 +245,11 @@ export const WallpaperCard = memo(function WallpaperCard({
   // Known before the press, because ADR 0009 put `origin_path` on the DTO for
   // exactly this: the frontend can refuse without asking the backend.
   const restorable = wallpaper.origin_path !== null;
+  // The Dimensions as one size, for the undersized badge's tooltip, and `null`
+  // for a row nothing has measured. Read through `copy.ts` rather than off the
+  // two columns here, because "unknown means both are unknown" is ADR 0044's
+  // rule and the badge is not the place it gets restated.
+  const size = dimensionsOf(wallpaper);
   const folder = rejected ? containingFolder(wallpaper.path) : "";
   /**
    * Whether the picture failed to arrive, which is how this card learns its
@@ -440,13 +446,18 @@ export const WallpaperCard = memo(function WallpaperCard({
         fifty Active wallpapers, from carrying fifty pills that all say the same
         word.
 
-        The undersized badge is the other axis and is coloured to say so: the
-        Status pill is the neutral black the rest of the card's furniture wears,
-        and this one is amber, because it is not a decision the curator made
-        about the wallpaper but a fact about the file that will make it look bad
-        on their desktop (CONTEXT.md). It shows on every card, Review's included:
-        learning a file is too small is the whole point of the badge, and what
-        Review lists is untouched by it (#258).
+        The undersized badge is the other axis and is weighted to say so. Solid
+        white where the Status pill is translucent black, which is the strongest
+        mark this card's vocabulary has and the same one an Evaluated Score
+        wears in the opposite corner — a fact about the file, stated plainly,
+        rather than a decision the curator made about the wallpaper (CONTEXT.md).
+        No colour, deliberately: the palette in `index.css` is greyscale but for
+        `--destructive`, which means Reject, and an undersized wallpaper is not
+        a rejected one.
+
+        It shows on every card, Review's included: learning a file is too small
+        is the whole point of the badge, and what Review lists is untouched by
+        it (#258).
 
         `title` carries the Dimensions, which is the number the badge is a
         verdict on and the one thing that tells a curator how far off the file
@@ -468,15 +479,8 @@ export const WallpaperCard = memo(function WallpaperCard({
           {undersized && (
             <div
               data-slot="wallpaper-undersized"
-              title={
-                wallpaper.width !== null && wallpaper.height !== null
-                  ? readableSize({
-                      width: wallpaper.width,
-                      height: wallpaper.height,
-                    })
-                  : undefined
-              }
-              className="rounded-md bg-amber-400/90 px-1.5 py-0.5 text-[11px] font-medium text-neutral-900 backdrop-blur-md"
+              title={size ? readableSize(size) : undefined}
+              className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-neutral-900 backdrop-blur-md"
             >
               {UNDERSIZED}
             </div>

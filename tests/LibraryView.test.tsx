@@ -1254,10 +1254,20 @@ test("an empty library still reads as one under the size control", async () => {
 
   await narrowToUndersized();
 
-  // Nothing was narrowed away, because there was nothing there: the page that
-  // has never been scanned into keeps the route to the field that fixes it
-  // rather than blaming a control the curator just pressed (ADR 0015).
+  // Nothing was narrowed away, because the fetch came back with nothing to
+  // narrow. A library that has never been scanned into keeps the route to the
+  // field that fixes it rather than blaming a control the curator just pressed,
+  // which is why the empty library is read off the fetch and not off the list
+  // on screen (ADR 0015, ADR 0020).
   expect(
-    screen.getByText("No undersized wallpapers in the library."),
+    screen.getByText("Nothing has been scanned into the library yet."),
   ).toBeTruthy();
+  expect(
+    screen.queryByText("No undersized wallpapers in the library."),
+  ).toBeNull();
+
+  await click(screen.getByRole("button", { name: "Choose a library root" }));
+
+  expect(currentView()).toBe("settings");
+  expect(focusedField()).toBe("library_root");
 });

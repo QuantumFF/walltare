@@ -182,6 +182,21 @@ export function readableSize({ width, height }: Resolution): string {
 export const UNDERSIZED = "Undersized";
 
 /**
+ * A wallpaper's Dimensions as one size, or `null` while nothing has read them.
+ *
+ * The two columns are NULL together and set together — they are written in one
+ * statement and read off one file — so the pair is one fact and this is the one
+ * place that says so (ADR 0044). Both readers want the pair rather than either
+ * half: the comparison below needs two numbers and the badge's tooltip prints
+ * two numbers, and each of them re-deriving "unknown means both" is a second
+ * copy of a rule that can only ever be wrong in the same way.
+ */
+export function dimensionsOf(wallpaper: Wallpaper): Resolution | null {
+  const { width, height } = wallpaper;
+  return width === null || height === null ? null : { width, height };
+}
+
+/**
  * CONTEXT.md's undersized: a wallpaper whose Dimensions fall below the Minimum
  * resolution.
  *
@@ -192,9 +207,8 @@ export const UNDERSIZED = "Undersized";
  *
  * **A wallpaper whose Dimensions nothing has read is not undersized.** That is
  * ADR 0044's rule, and it is one rule for both readers: no badge on the card,
- * and out of the filter rather than counted either way. The two columns are NULL
- * together, so one of them answers for both — the second check is a guard
- * against a row the app does not produce.
+ * and out of the filter rather than counted either way. `dimensionsOf` above is
+ * where the unread row is recognised, so this reads as the comparison it is.
  *
  * The minimum arrives as an argument rather than being read from the settings
  * store here, because this file reaches nothing: the card is handed a boolean
@@ -205,7 +219,7 @@ export function isUndersized(
   wallpaper: Wallpaper,
   minimum: Resolution,
 ): boolean {
-  const { width, height } = wallpaper;
-  if (width === null || height === null) return false;
-  return width < minimum.width || height < minimum.height;
+  const size = dimensionsOf(wallpaper);
+  if (size === null) return false;
+  return size.width < minimum.width || size.height < minimum.height;
 }
