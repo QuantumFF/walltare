@@ -17,6 +17,13 @@
  * The grid keeps its own geometry (ADR 0027). This module is arithmetic over
  * numbers it is handed — a gap, a padding, a width, a ratio — and it imports
  * nothing about a card, a Wallpaper or a class name.
+ *
+ * Two of the functions here are about one picture rather than a grid of them:
+ * `fittedBox`, which is the Review strip's hero, and `cropToFill`, which is the
+ * crop preview's bars. They sit here for the reason the rest does — happy-dom
+ * lays nothing out, so geometry a view test cannot see belongs in a seam that
+ * needs no DOM — and because the two are the same arithmetic read twice: the
+ * hero's box is what the bars are percentages of.
  */
 
 /**
@@ -82,6 +89,79 @@ export function fittedBox(area: Box, ratio: number): Box {
   return area.width / area.height > ratio
     ? { width: area.height * ratio, height: area.height }
     : { width: area.width, height: area.width / ratio };
+}
+
+/**
+ * What a Screen keeps of a wallpaper and what it throws away, as shares of the
+ * picture rather than pixels of it.
+ *
+ * Shares, because the bars are drawn over a box whose size is whatever the
+ * window left for it: a percentage lands on the same part of the image at every
+ * size, and a pixel count would have to be recomputed on every resize.
+ */
+export interface CropPlan {
+  /**
+   * The share of the width discarded at each of the left and right edges — so
+   * two bars of `side`, not one.
+   */
+  side: number;
+  /** The share of the height discarded at each of the top and bottom edges. */
+  band: number;
+  /**
+   * The share of the whole picture the Screen discards, 0 through 1.
+   *
+   * The number the caption prints. It is the same as the share of one axis that
+   * goes, because cropping to fill overflows on one axis only.
+   */
+  lost: number;
+}
+
+/** A wallpaper the Screen shows whole: no bars, and nothing lost. */
+const NOTHING_CROPPED: CropPlan = { side: 0, band: 0, lost: 0 };
+
+/**
+ * How close two ratios have to be to count as the same ratio.
+ *
+ * `1920x1080` and `3840x2160` are one shape arrived at by two divisions, and
+ * floating point does not promise they come out bit-identical. A hairline bar
+ * over a wallpaper that matches the Screen exactly would be the app answering
+ * "yes, a bit" to a question whose honest answer is no, so anything under this
+ * reads as a match. It is far below a pixel on any box a picture is drawn in —
+ * at this share, a 4,000px wide picture loses four thousandths of a pixel.
+ */
+const SAME_SHAPE = 1e-6;
+
+/**
+ * Cropping to fill: what the desktop keeps of a wallpaper when it makes it cover
+ * the Screen.
+ *
+ * The overflow falls on one axis only, which is the whole mechanic. A wallpaper
+ * wider in ratio than the Screen has to be scaled until its height covers, so
+ * its sides run off the edges; a narrower one is scaled until its width covers,
+ * so its top and bottom do; and one of the Screen's own ratio covers in both
+ * axes at once and loses nothing. So exactly one of `side` and `band` is ever
+ * more than zero.
+ *
+ * The kept region is centred, which is what the desktops this app is for do, so
+ * the loss is halved between the two opposite edges rather than taken off one.
+ *
+ * A ratio that is not a ratio — nothing has read the wallpaper's Dimensions, or
+ * a Screen that measures zero — reads as nothing cropped. Callers are expected
+ * to say nothing at all in the first case rather than draw this answer
+ * (CONTEXT.md, ADR 0044); it is here so that no arithmetic below divides by
+ * zero.
+ */
+export function cropToFill(image: number, screen: number): CropPlan {
+  if (!(image > 0) || !(screen > 0)) return NOTHING_CROPPED;
+  // The share of the overflowing axis that survives, which is the smaller ratio
+  // over the larger one whichever way round they are.
+  const kept = image > screen ? screen / image : image / screen;
+  const lost = 1 - kept;
+  if (lost <= SAME_SHAPE) return NOTHING_CROPPED;
+  const half = lost / 2;
+  return image > screen
+    ? { side: half, band: 0, lost }
+    : { side: 0, band: half, lost };
 }
 
 /** One row of a plan, and the whole of what a window needs about it. */

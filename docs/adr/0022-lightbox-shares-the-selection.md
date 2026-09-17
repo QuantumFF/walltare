@@ -337,6 +337,12 @@ since showing what a typed path resolves to before you commit is what the word
 means. ADR 0018's image-sense uses are corrected in place; ADR 0011 and ADR 0020
 keep theirs.
 
+> **Amended by [#266](https://github.com/QuantumFF/walltare/issues/266),
+> 2026-09-17.** The qualified term **crop preview** names the overlay showing
+> what the Screen would discard. It is allowed alongside the resolved-path
+> preview. The image surface is still the **lightbox**, not a preview; the crop
+> preview can be drawn in either the lightbox or the Review strip.
+
 This is ADR 0020's rule from Library root, third application on this map after
 that one and ADR 0019's kill of "Return to voting".
 

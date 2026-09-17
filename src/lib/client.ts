@@ -246,6 +246,20 @@ export interface Settings {
    */
   review_layout: ReviewLayout;
   /**
+   * Whether the crop preview is up: the bars showing what the Screen would
+   * discard, in the Review strip and the Lightbox.
+   *
+   * A toggle rather than a hold, and so a thing to remember — the bars stay up
+   * while the curator arrows through a run, and a key held down is a key that
+   * cannot arrow (#266). Stored for the reason the two layouts are, the store
+   * being what survives a restart, and offered nowhere in the Settings view for
+   * the same reason either: the control is `C` on the surface it draws on.
+   *
+   * `false` by default, so a curator who never presses it sees the app they
+   * already had.
+   */
+  crop_preview: boolean;
+  /**
    * The σ below which a wallpaper's rating counts as Evaluated.
    *
    * The curator's answer to how many Comparisons make a Score trustworthy
@@ -332,6 +346,7 @@ export const DEFAULT_SETTINGS: Settings = {
   screen: FALLBACK_SCREEN,
   minimum_resolution: FALLBACK_SCREEN,
   review_layout: "grid",
+  crop_preview: false,
   evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
   detected_screen: FALLBACK_SCREEN,
 };
@@ -344,7 +359,8 @@ export const DEFAULT_SETTINGS: Settings = {
  * that happens to hold an object cannot fall through to the size encoding by
  * accident. Everything else is what the column already holds: a theme is one of
  * three strings, a Written path is the string the curator typed, a worklist size
- * is its own digits, and turning any of them into anything but itself would make
+ * is its own digits, a flag is `true` or `false`, and turning any of them into
+ * anything but itself would make
  * the empty Library root — the write that deletes the row — unreachable.
  *
  * `setSetting` is the only caller, which is what stops any other part of the app

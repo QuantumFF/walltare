@@ -1,4 +1,5 @@
 import {
+  cropToFill,
   fittedBox,
   densityColumns,
   densityZoom,
@@ -519,6 +520,119 @@ test("masonry plans nothing for an empty library and occupies its own padding", 
   expect(plan.rows).toEqual([]);
   expect(plan.boxes).toEqual([]);
   expect(plan.total).toBe(32);
+});
+
+// The crop preview (#266): what the Screen keeps of a wallpaper when the desktop
+// makes it cover, and what it throws away.
+//
+// Here for the same reason the hero's box is. The bars are shares of a picture
+// and happy-dom has no picture to take a share of, so what a curator sees — an
+// ultrawide losing its sides, a 4:3 losing its top and bottom, a 16:9 on a 16:9
+// screen losing nothing — is only assertable as arithmetic.
+
+/** The two ratios the way the preview reads them: the wallpaper's, then the Screen's. */
+function crop(image: [number, number], screen: [number, number]) {
+  return cropToFill(ratioOf(...image), ratioOf(...screen));
+}
+
+test("a wallpaper wider in ratio than the screen loses its sides and nothing else", () => {
+  // A 21:9 ultrawide on a 16:9 screen. Scaled until its height covers, its
+  // sides run off the edges, and the kept slice is the screen's ratio over the
+  // wallpaper's.
+  const plan = crop([2560, 1080], [1920, 1080]);
+
+  expect(plan.band).toBe(0);
+  expect(plan.lost).toBeCloseTo(1 - (16 / 9) / (2560 / 1080));
+  // Centred, so the loss is halved between the two opposite edges rather than
+  // taken off one of them.
+  expect(plan.side).toBeCloseTo(plan.lost / 2);
+  // About a quarter of the picture, which is the number the caption prints.
+  expect(Math.round(plan.lost * 100)).toBe(25);
+});
+
+test("a wallpaper narrower in ratio than the screen loses its top and bottom", () => {
+  // A 4:3 on a 16:9 screen, which is the other direction and the only other
+  // one: cropping to fill overflows on one axis, never on both.
+  const plan = crop([1600, 1200], [1920, 1080]);
+
+  expect(plan.side).toBe(0);
+  expect(plan.lost).toBeCloseTo(1 - (4 / 3) / (16 / 9));
+  expect(plan.band).toBeCloseTo(plan.lost / 2);
+  expect(Math.round(plan.lost * 100)).toBe(25);
+});
+
+test("a wallpaper of the screen's own shape shows no bars at all", () => {
+  // The same shape reached by three different pairs of numbers, because that is
+  // how a library actually holds it: the app must not draw a hairline bar over
+  // a wallpaper that fits exactly because two divisions disagreed in their last
+  // bit.
+  for (const size of [
+    [1920, 1080],
+    [3840, 2160],
+    [1280, 720],
+  ] as Array<[number, number]>) {
+    expect(crop(size, [2560, 1440])).toEqual({ side: 0, band: 0, lost: 0 });
+  }
+
+  // And a portrait screen with a portrait wallpaper of the same shape, so the
+  // rule is about the ratio rather than about landscape.
+  expect(crop([1080, 1920], [2160, 3840])).toEqual({
+    side: 0,
+    band: 0,
+    lost: 0,
+  });
+});
+
+test("the crop follows the screen it is given, including an overridden one", () => {
+  // One wallpaper against three screens. This is the whole of "it follows the
+  // screen setting": nothing here knows where the size came from, so a detected
+  // monitor and a curator's override are the same argument.
+  const ultrawide: [number, number] = [3440, 1440];
+
+  expect(crop(ultrawide, [3440, 1440]).lost).toBe(0);
+  expect(crop(ultrawide, [1920, 1080]).side).toBeGreaterThan(0);
+  // A portrait screen keeps a sliver of an ultrawide, and the sliver is what
+  // the outline would be drawn around.
+  const portrait = crop(ultrawide, [1080, 1920]);
+  expect(portrait.band).toBe(0);
+  expect(portrait.side).toBeCloseTo(portrait.lost / 2);
+  expect(Math.round(portrait.lost * 100)).toBe(76);
+});
+
+test("a screen that is not a size crops nothing rather than dividing by it", () => {
+  // The preview draws nothing for a wallpaper whose Dimensions nothing has read
+  // — that is ADR 0044's rule and the component's branch — so what is left here
+  // is a Screen the app could not make sense of, and the answer is the same as
+  // a picture that fits.
+  expect(cropToFill(16 / 9, 0)).toEqual({ side: 0, band: 0, lost: 0 });
+  expect(cropToFill(0, 16 / 9)).toEqual({ side: 0, band: 0, lost: 0 });
+  expect(cropToFill(-1, 16 / 9)).toEqual({ side: 0, band: 0, lost: 0 });
+  expect(cropToFill(Number.NaN, 16 / 9)).toEqual({
+    side: 0,
+    band: 0,
+    lost: 0,
+  });
+});
+
+test("what the caption says is lost is exactly what the bars cover", () => {
+  // The property the drawing rests on. The outline is inset by `side` and
+  // `band`, so a `lost` that did not equal the bars would be a percentage
+  // describing a region the curator is not being shown.
+  for (const [image, screen] of [
+    [[3440, 1440], [1920, 1080]],
+    [[1600, 1200], [1920, 1080]],
+    [[1080, 1920], [1920, 1080]],
+    [[1920, 1080], [1920, 1080]],
+  ] as Array<[[number, number], [number, number]]>) {
+    const { side, band, lost } = crop(image, screen);
+    // One axis only: the picture is never cropped in both directions, which is
+    // what makes a share of one axis a share of the whole picture.
+    expect(side === 0 || band === 0).toBe(true);
+    expect(lost).toBeCloseTo(2 * side + 2 * band);
+    // And the region left over is the picture less that, which is the box the
+    // outline is drawn around.
+    expect((1 - 2 * side) * (1 - 2 * band)).toBeCloseTo(1 - lost);
+  }
 });
 
 // Justified rows (#263): uncropped wallpapers scaled to a height they share,

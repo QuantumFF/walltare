@@ -125,6 +125,7 @@ export type ToastRequest =
    * failed to load, because "the review list" is the caller's own subject.
    */
   | { kind: "load-failed"; noun: string; error: unknown }
+  | { kind: "save-failed"; noun: string; error: unknown }
   /**
    * A refusal the frontend made itself, with no call behind it: the cohort
    * rejected before ADR 0009 recorded an Origin. `origin_path` is on the DTO, so
@@ -466,9 +467,10 @@ export function ToastSurface({
         }
 
         case "load-failed":
+        case "save-failed":
           setTransient({
             key,
-            prefix: `Couldn't load ${request.noun}`,
+            prefix: `Couldn't ${request.kind === "load-failed" ? "load" : "save"} ${request.noun}`,
             filename: "",
             suffix: "",
             description: backendMessage(request.error),
