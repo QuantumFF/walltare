@@ -4,7 +4,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
   cacheSize,
+  cardsInARow,
   click,
+  ctrlWheel,
   deferred,
   flush,
   mockBootedApp,
@@ -177,6 +179,54 @@ test("renders the rows the backend returned, in the order it returned them", asy
     "25.0",
     "15.6",
   ]);
+});
+
+/** The density gesture over this page's grid. */
+const zoom = (deltaY: number) =>
+  ctrlWheel(
+    inReview().getByRole("grid", { name: "Wallpapers to review" }),
+    deltaY,
+  );
+
+test("the density gesture reaches this page too, and stops shorter than Library's", async () => {
+  // The same gesture on the other tab, which is the whole of user story 11:
+  // two tabs behaving the same way under the same gesture. What differs is
+  // where it stops — a worklist of fifty has no scale to buy at the far end,
+  // so Review stops at six where Library goes to eight (#264).
+  //
+  // `ArrowDown` is what says how many cards share a row without a layout, since
+  // happy-dom reports every card as the same zero-sized box at any density.
+  await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
+  await enterGrid();
+  expect(await cardsInARow()).toBe(4);
+
+  await zoom(-100);
+  expect(await cardsInARow()).toBe(3);
+
+  for (let at = 0; at < 8; at++) await zoom(100);
+  expect(await cardsInARow()).toBe(6);
+
+  // And the keys are the same gesture against the same wall.
+  await press("+");
+  expect(await cardsInARow()).toBe(5);
+  await press("-");
+  await press("-");
+  expect(await cardsInARow()).toBe(6);
+});
+
+test("neither half of the gesture moves the selection", async () => {
+  await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
+  await enterGrid();
+  await press("ArrowRight");
+  await press("ArrowRight");
+  expect(selectedCard()).toBe("wall-3.jpg, Active");
+
+  // The count the arrows move by changes under the cursor, which is the whole
+  // gesture. Where the cursor is does not (ADR 0042).
+  await zoom(-100);
+  expect(selectedCard()).toBe("wall-3.jpg, Active");
+  await press("-");
+  expect(selectedCard()).toBe("wall-3.jpg, Active");
 });
 
 test("a card changes no shadow on hover, so a wheel scroll stays smooth", async () => {

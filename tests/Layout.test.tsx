@@ -635,9 +635,9 @@ test("? opens a dialog listing every binding the epic defines", async () => {
 
   // Four the shell binds, and the rest it does not: the arrows are Rank's,
   // Escape is the Settings page's own, F8 is the toast viewport's own hotkey,
-  // Ctrl+Z presses the Undo #112 mounts, and the nine in the middle are read by
-  // the grid container while focus is inside it. A shortcut nobody can find is a
-  // shortcut nobody uses, and a listed key nothing reads is worse still — which
+  // Ctrl+Z presses the Undo #112 mounts, and the eleven in the middle are read
+  // by the grid container while focus is inside it. A shortcut nobody can find
+  // is a shortcut nobody uses, and a listed key nothing reads is worse still —
   // is what this assertion is for: the list is copy, and copy that drifts from
   // what the app binds is the failure the dialog exists to prevent.
   const keys = Array.from(dialog.querySelectorAll("kbd")).map(
@@ -664,6 +664,8 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     "K",
     "Delete",
     "R",
+    "+",
+    "-",
     "Esc",
     "Esc",
     "Ctrl",

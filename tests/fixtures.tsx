@@ -11,7 +11,13 @@ import type {
   Stats,
   Wallpaper,
 } from "@/lib/client";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { jest } from "bun:test";
 import type { ReactNode } from "react";
 import { mockCommand } from "./ipc-mocks";
@@ -458,6 +464,52 @@ export async function press(
     fireEvent.keyDown(target, { key, ...modifiers });
   });
   await flush();
+}
+
+/**
+ * Ctrl and the wheel over a grid, which is the density gesture (#264).
+ *
+ * `ctrlKey` is arranged on the event rather than passed to `fireEvent`, because
+ * happy-dom's `WheelEvent` takes the init and leaves the modifier flags
+ * undefined. That is a fact about the environment and not about any one page, so
+ * it is stated here rather than three times — the same rule `browserLaysOutTheScroller`
+ * follows for a box happy-dom does not lay out, and the same condition that
+ * earned it a place: the three copies were mechanically identical.
+ *
+ * It answers with whether the event survived, which is the half of the gesture
+ * that is not the density: ctrl and the wheel is the webview's own zoom, and a
+ * grid that did not take the event would scale the whole app on top of the
+ * change it made.
+ */
+export async function ctrlWheel(
+  target: Element,
+  deltaY: number,
+): Promise<boolean> {
+  const event = createEvent.wheel(target, { deltaY });
+  Object.defineProperty(event, "ctrlKey", { value: true });
+  let survived = true;
+  await act(async () => {
+    survived = fireEvent(target, event);
+  });
+  await flush();
+  return survived;
+}
+
+/**
+ * How many cards share a row, as the only thing that says so without a layout:
+ * `ArrowDown` moves by exactly that count, so where it lands from the first card
+ * is the width of a row.
+ *
+ * happy-dom does no layout and reports every card as the same zero-sized box at
+ * any density, so a width read off a rect answers nothing (ADR 0027). This is
+ * the curator's own question — how much is on screen — asked through the
+ * keyboard, and it takes the focus wherever the grid's tab stop already is.
+ */
+export async function cardsInARow(): Promise<number> {
+  await press("Home");
+  await press("ArrowDown");
+  const name = document.activeElement?.getAttribute("aria-label") ?? "";
+  return Number(/^wall-(\d+)\.jpg/.exec(name)?.[1]) - 1;
 }
 
 /** happy-dom never fetches an `<img>`; Rank refuses a pick until both arrive. */
