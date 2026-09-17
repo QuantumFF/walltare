@@ -22,6 +22,7 @@ const SCREEN: &str = "screen";
 const MINIMUM_RESOLUTION: &str = "minimum_resolution";
 const REVIEW_LAYOUT: &str = "review_layout";
 const LIBRARY_LAYOUT: &str = "library_layout";
+const CROP_PREVIEW: &str = "crop_preview";
 
 /// The screen to assume when the platform will not name one.
 ///
@@ -216,6 +217,22 @@ pub struct Settings {
     /// Which layout Review draws its worklist in, remembered across launches
     /// and held apart from whatever Library is drawing.
     pub review_layout: ReviewLayout,
+    /// Whether the crop preview is up: the bars showing what the Screen would
+    /// discard, in the Review strip and the Lightbox.
+    ///
+    /// A toggle rather than a hold, and so a thing to remember: the bars stay up
+    /// while the curator works through a run, and a curator who always wants
+    /// them should not turn them on every session
+    /// ([#266](https://github.com/QuantumFF/walltare/issues/266)).
+    ///
+    /// Stored here for the reason the two layouts are — the store is what
+    /// survives a restart — and offered nowhere in the Settings view for the
+    /// same reason either: the control is the `C` key on the surface it draws
+    /// on, and a control in two places is two places to look.
+    ///
+    /// Off by default, so a curator who never presses `C` sees the app they
+    /// already had.
+    pub crop_preview: bool,
     /// What the monitor said, which is what [`Settings::screen`] reads as until
     /// the curator overrides it.
     ///
@@ -245,6 +262,7 @@ impl Settings {
             screen: detected.screen,
             minimum_resolution: detected.screen,
             review_layout: ReviewLayout::default(),
+            crop_preview: false,
             detected_screen: detected.screen,
         }
     }
@@ -331,6 +349,7 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         minimum_resolution: read(stored, MINIMUM_RESOLUTION, Resolution::parse).unwrap_or(screen),
         review_layout: read(stored, REVIEW_LAYOUT, ReviewLayout::parse)
             .unwrap_or(defaults.review_layout),
+        crop_preview: read(stored, CROP_PREVIEW, parse_flag).unwrap_or(defaults.crop_preview),
         // Never read off the table: it is what the monitor said, and the table
         // holds what the curator said.
         detected_screen: detected.screen,
@@ -391,7 +410,27 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
             })?;
             Ok(layout == without.review_layout)
         }
+        CROP_PREVIEW => {
+            let on = parse_flag(value).ok_or_else(|| {
+                AppError::BadRequest(format!("{value:?} is not a flag; expected true or false"))
+            })?;
+            Ok(on == without.crop_preview)
+        }
         _ => Err(AppError::BadRequest(format!("unknown setting {key:?}"))),
+    }
+}
+
+/// A stored flag, as strictly as `client.ts` writes one.
+///
+/// Exactly the two spellings `String(boolean)` produces, so a value read out of
+/// the table can be handed straight back to a write. Anything else is a row
+/// someone edited by hand, and a forgiving parse would have to decide what `0`,
+/// `yes` and `TRUE` were each meant to be.
+fn parse_flag(value: &str) -> Option<bool> {
+    match value {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
     }
 }
 
@@ -462,6 +501,7 @@ mod tests {
                 screen: size(3840, 2160),
                 minimum_resolution: size(3840, 2160),
                 review_layout: ReviewLayout::Grid,
+                crop_preview: false,
                 detected_screen: size(3840, 2160),
             }
         );
@@ -740,6 +780,82 @@ mod tests {
     }
 
     #[test]
+    fn the_crop_preview_is_off_until_the_curator_presses_c() {
+        let conn = store();
+
+        assert!(!get(&conn, detected()).unwrap().crop_preview);
+        // Nothing was written to reach that answer, so a curator who never
+        // presses the key sees the app they already had.
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn the_crop_preview_survives_the_connection_that_turned_it_on() {
+        // The whole point of storing it: a curator who always wants the bars
+        // should not turn them on every session (#266).
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            crate::db::init_schema(&conn).unwrap();
+            let written = set(&conn, "crop_preview", "true", detected()).unwrap();
+            assert!(written.crop_preview);
+        }
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+
+        assert!(get(&conn, detected()).unwrap().crop_preview);
+
+        // And turning it off again is the write that clears the row, which is
+        // the same reset every other key has (ADR 0010).
+        let off = set(&conn, "crop_preview", "false", detected()).unwrap();
+        assert!(!off.crop_preview);
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn a_crop_preview_write_leaves_the_other_keys_alone() {
+        let conn = store();
+        set(&conn, "theme", "dark", detected()).unwrap();
+        set(&conn, "screen", "2560x1440", detected()).unwrap();
+
+        let settings = set(&conn, "crop_preview", "true", detected()).unwrap();
+
+        assert!(settings.crop_preview);
+        assert_eq!(settings.theme, Theme::Dark);
+        assert_eq!(settings.screen, size(2560, 1440));
+        assert_eq!(settings.review_layout, ReviewLayout::Grid);
+    }
+
+    #[test]
+    fn a_crop_preview_value_that_is_not_a_flag_is_a_bad_request_and_changes_nothing() {
+        let conn = store();
+        set(&conn, "crop_preview", "true", detected()).unwrap();
+        let before = get(&conn, detected()).unwrap();
+
+        for refused in ["1", "0", "yes", "TRUE", "on", ""] {
+            let err = set(&conn, "crop_preview", refused, detected()).unwrap_err();
+            assert!(
+                matches!(err, AppError::BadRequest(_)),
+                "{refused:?}: {err:?}"
+            );
+        }
+
+        assert_eq!(get(&conn, detected()).unwrap(), before);
+    }
+
+    #[test]
+    fn a_crop_preview_row_that_will_not_read_falls_back_to_off() {
+        // Boot never fails over a preference, and a flag is one more row someone
+        // can edit by hand.
+        let conn = store();
+        write_raw_row(&conn, "crop_preview", "maybe");
+
+        assert!(!get(&conn, detected()).unwrap().crop_preview);
+    }
+
+    #[test]
     fn a_written_path_is_stored_exactly_as_written() {
         // ADR 0011: expanding at write time would freeze whatever a variable
         // meant during one session, and would show the user a path they never
@@ -873,12 +989,14 @@ mod tests {
         set(&conn, "minimum_resolution", "1280x720", detected()).unwrap();
         set(&conn, "review_layout", "strip", detected()).unwrap();
         set(&conn, "library_layout", "masonry", detected()).unwrap();
+        set(&conn, "crop_preview", "true", detected()).unwrap();
 
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
         set(&conn, "reject_destination", "./rejected", detected()).unwrap();
         set(&conn, "review_layout", "grid", detected()).unwrap();
         set(&conn, "library_layout", "grid", detected()).unwrap();
+        set(&conn, "crop_preview", "false", detected()).unwrap();
         // The minimum resolution goes back first, against the overridden screen
         // it currently defaults to. Doing it the other way round would mean
         // writing 3840x2160 into a key whose default had already moved there,
@@ -956,6 +1074,7 @@ mod tests {
         set(&conn, "library_layout", "masonry", detected()).unwrap();
         set(&conn, "screen", "2560x1440", detected()).unwrap();
         set(&conn, "review_layout", "strip", detected()).unwrap();
+        set(&conn, "crop_preview", "true", detected()).unwrap();
 
         let json = serde_json::to_value(get(&conn, detected()).unwrap()).unwrap();
 
@@ -978,5 +1097,9 @@ mod tests {
         // A layout crosses as the same string a write accepts, so the frontend
         // can hand a read value straight back to `set_setting`.
         assert_eq!(json["review_layout"], "strip");
+        // A flag crosses as JSON's own `true` and not as the `"true"` the column
+        // holds, because the frontend reads it as a boolean and `String(value)`
+        // in `encodeSetting` is what writes the stored spelling back.
+        assert_eq!(json["crop_preview"], true);
     }
 }

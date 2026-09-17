@@ -260,6 +260,9 @@ export function settings(over: Partial<Settings> = {}): Settings {
     // The layout Review draws with no row in the table, which is the grid it has
     // always drawn: a test that wants the strip arranges it (#265).
     review_layout: "grid",
+    // The crop preview with no row in the table, which is down: a test that
+    // wants the bars presses `C` or arranges it (#266).
+    crop_preview: false,
     // What the monitor said, which no override moves: a test that overrides the
     // screen is arranging exactly the case where the two differ.
     detected_screen: DETECTED_SCREEN,

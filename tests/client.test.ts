@@ -13,6 +13,7 @@ const stored: Settings = {
   screen: { width: 2560, height: 1440 },
   minimum_resolution: { width: 1920, height: 1080 },
   review_layout: "strip",
+  crop_preview: true,
   detected_screen: { width: 3840, height: 2160 },
 };
 
@@ -157,6 +158,18 @@ describe("client seam", () => {
     const received = captureSetSetting();
     await client.setSetting("library_root", "");
     expect(received.args).toEqual({ key: "library_root", value: "" });
+  });
+
+  test("setSetting sends a flag as the two words the column holds", async () => {
+    // The crop preview crosses back as a boolean and has to go out as the
+    // string `settings.rs` parses, which is `String(value)` and not `1` or
+    // `on`: a flag the backend refuses would leave the bars stuck (#266).
+    const received = captureSetSetting();
+    await client.setSetting("crop_preview", true);
+    expect(received.args).toEqual({ key: "crop_preview", value: "true" });
+
+    await client.setSetting("crop_preview", false);
+    expect(received.args).toEqual({ key: "crop_preview", value: "false" });
   });
 
   test("setSetting resolves with every setting, not just the one written", async () => {

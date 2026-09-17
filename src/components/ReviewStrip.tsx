@@ -5,6 +5,7 @@ import {
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
+import { CropPreview, useCropPreview } from "@/components/CropPreview";
 import {
   usePublishedSelection,
   type SelectionHandle,
@@ -240,6 +241,12 @@ export function ReviewStrip({
   // painting the outgoing picture while the next one decodes.
   const [gone, setGone] = useState(false);
 
+  // The bars, and the press that raises them. Held in the settings store rather
+  // than here, so they are still up on the next launch and so the lightbox
+  // opening over this hero shows the same preview rather than a second one
+  // (#266).
+  const crop = useCropPreview();
+
   // In a layout effect and not a passive one: the `<img>`'s `src` changes in the
   // same commit, and a reset that lands a frame later paints "File is gone" over
   // the outgoing picture on the way to a wallpaper that is perfectly fine.
@@ -267,6 +274,17 @@ export function ReviewStrip({
     if (action) {
       event.preventDefault();
       onAction(action, selected);
+      return;
+    }
+
+    // `C` raises the crop preview over the hero and lowers it again. Before the
+    // movement keys and after the transitions, because it is neither: it is a
+    // question about the wallpaper on screen rather than a decision about it or
+    // a step away from it. A toggle rather than a hold, so it stays up while the
+    // curator arrows through the worklist (#266).
+    if (event.key === "c" || event.key === "C") {
+      event.preventDefault();
+      crop.toggle();
       return;
     }
 
@@ -388,6 +406,15 @@ export function ReviewStrip({
               // letterboxing for #266's bars to measure.
               className="absolute inset-0 h-full w-full object-cover"
             />
+            {/* What the Screen would cut off, over the picture it would cut it
+                off. The hero's box is exactly the wallpaper's own ratio, which
+                is what makes the bars percentages of the picture rather than of
+                letterboxing around it — see `fittedBox`.
+
+                Not drawn over a wallpaper whose file is gone: the panel below
+                says there is no picture, and bars over it would be a claim about
+                one. */}
+            {crop.on && !gone && <CropPreview wallpaper={selected} />}
             {gone && (
               <div
                 data-slot="review-hero-gone"

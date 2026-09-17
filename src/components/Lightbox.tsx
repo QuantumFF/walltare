@@ -5,6 +5,7 @@ import {
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
+import { CropPreview, useCropPreview } from "@/components/CropPreview";
 import {
   useSelection,
   type SelectionHandle,
@@ -25,6 +26,7 @@ import {
   score,
   STATUS_LABEL,
 } from "@/lib/copy";
+import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
 import { Dialog } from "radix-ui";
@@ -57,6 +59,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * arithmetic to itself rather than to a laid-out row.
  */
 const ROW_FLOOR = 500;
+
+/**
+ * What the picture's cell is taken to be while nothing has measured the painted
+ * image, in pixels.
+ *
+ * The default 1280x800 window less what this surface puts around the picture:
+ * 1280 wide less the content's `p-8` at both ends is 1216, and 800 tall less
+ * that same 64 and less the `pb-14` the row is given is about 680. The pair the
+ * `ROW_FLOOR` arithmetic above is already written against.
+ *
+ * It exists for the crop preview and for nothing else. The row has its own
+ * fallback — the full width — because the row is laid out in the flow; the bars
+ * need a box of the wallpaper's own ratio, and a box of nothing is no box at
+ * all. The moment a browser lays the picture out, the measurement replaces this
+ * (ADR 0022, #266).
+ */
+const UNMEASURED_PICTURE: Box = { width: 1216, height: 680 };
 
 /**
  * The three readings of the grid's publication this file takes, as module-level
@@ -343,6 +362,11 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   const atFirst = index <= 0;
   const atLast = index >= length - 1;
 
+  // The bars, and the press that raises them. The same stored toggle the Review
+  // strip reads, so a curator who turned them on there opens this surface with
+  // them still up (#266).
+  const { on: cropOn, toggle: toggleCrop } = useCropPreview();
+
   // The five keys, bound on `window` rather than on the content below.
   //
   // The content's own `onKeyDown` is where ADR 0019 puts a view-local key — the
@@ -386,6 +410,16 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
         return;
       }
 
+      // `C` raises the crop preview over the picture and lowers it again, the
+      // same key off the same stored toggle the Review strip answers — so this
+      // surface answers the curator's question about their screen rather than
+      // sending them back to the strip to ask it (#266).
+      if (event.key === "c" || event.key === "C") {
+        event.preventDefault();
+        toggleCrop();
+        return;
+      }
+
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       // Answered at the ends too, where the clamp makes it a no-op: the key
       // belongs to this surface whether or not the selection moves.
@@ -395,7 +429,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, wallpaper, step, onAction]);
+  }, [open, wallpaper, step, onAction, toggleCrop]);
 
   // Whether a `medium` has painted since this was opened, which is the whole
   // question the placeholder below answers: a step has the outgoing picture to
@@ -433,7 +467,8 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
     setGone(false);
   }, [wallpaper?.id]);
 
-  // The painted picture's width, which is what the row shrink-wraps to.
+  // The painted picture's box: what the row shrink-wraps to, and what the crop
+  // preview's bars are percentages of.
   //
   // Measured rather than expressed in CSS, and that is not a shortcut: during
   // intrinsic sizing a letterboxed image contributes its *natural* width, so a
@@ -443,15 +478,32 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   // every render under a test runner that lays nothing out — the row falls back
   // to the full width there, and the fall back is what keeps the identity and
   // the position assertable without a layout engine.
+  //
+  // Both axes rather than the width alone, because the crop preview needs a box
+  // of exactly the wallpaper's ratio to draw its bars against, and half a box is
+  // not one. The row still reads only the width.
   const image = useRef<HTMLImageElement | null>(null);
-  const [painted, setPainted] = useState<number | null>(null);
+  const [painted, setPainted] = useState<Box | null>(null);
 
   useEffect(() => {
     const node = image.current;
     if (!node) return;
     const measure = () => {
-      const { width } = node.getBoundingClientRect();
-      setPainted(width > 0 ? width : null);
+      const { width, height } = node.getBoundingClientRect();
+      // The width is what decides whether there is a measurement at all, which
+      // is the rule the row was written against and is left alone. A height of
+      // nothing beside a width is not a box, and the crop preview below falls
+      // back rather than drawing its bars against one.
+      //
+      // Compared before it is held, unlike the bare number this used to be:
+      // React bails out of a state write that is the same primitive, and a fresh
+      // object per `ResizeObserver` callback is a re-render per callback.
+      setPainted((held) => {
+        if (width <= 0) return null;
+        return held?.width === width && held.height === height
+          ? held
+          : { width, height };
+      });
     };
     measure();
     // The observer covers the two things that change the box after the first
@@ -466,7 +518,27 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   // Whether the picture is narrower than the row's floor, which is the one
   // thing that drops the read-out. An unmeasured box is not floored: the row
   // falls back to the full width there, and the full width holds everything.
-  const floored = painted !== null && painted < ROW_FLOOR;
+  const floored = painted !== null && painted.width < ROW_FLOOR;
+
+  /**
+   * The box the crop bars are drawn in: the painted picture, or where it will
+   * be painted while nothing has measured it.
+   *
+   * The measurement is the answer whenever there is one, because it is the
+   * picture itself. The fallback is the same box `object-contain` will land on
+   * — the wallpaper's own ratio fitted into the cell — so the two agree by
+   * construction rather than by luck, and a first frame does not put the bars
+   * somewhere the picture is not. Under a test runner that lays nothing out it
+   * is the only answer there is, which is what makes the preview assertable
+   * without a layout engine (ADR 0015, ADR 0022).
+   */
+  const cropBox =
+    painted && painted.height > 0
+      ? painted
+      : fittedBox(
+          UNMEASURED_PICTURE,
+          ratioOf(wallpaper?.width ?? null, wallpaper?.height ?? null),
+        );
 
   // Where the open lands, which is this surface and not a control on it.
   //
@@ -642,6 +714,32 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                   `pointer-events-none` so the arrows and the Close behind the
                   edges of the box keep taking their own clicks.
                 */}
+                {/*
+                  What the Screen would cut off, over the picture it would cut
+                  it off.
+
+                  Its own box in the same grid cell rather than an overlay
+                  positioned over the `<img>`: the cell centres what is in it, so
+                  a box the size of the painted picture lands exactly on the
+                  painted picture with no offsets to keep in step. The bars are
+                  percentages, so that box has to be the picture and not the cell
+                  around it — a box with letterboxing in it would measure the
+                  letterboxing (`fittedBox`, #266).
+
+                  Before the gone panel in the DOM and not drawn at all when it
+                  is up: the panel says there is no picture, and bars over it
+                  would be a claim about one.
+                */}
+                {cropOn && !gone && (
+                  <div
+                    data-slot="lightbox-crop"
+                    style={{ width: cropBox.width, height: cropBox.height }}
+                    className="pointer-events-none relative col-start-1 row-start-1"
+                  >
+                    <CropPreview wallpaper={wallpaper} />
+                  </div>
+                )}
+
                 {gone && (
                   <div
                     data-slot="lightbox-gone"
@@ -669,7 +767,10 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                 <div
                   data-slot="lightbox-row"
                   className="absolute bottom-0 left-1/2 flex h-11 -translate-x-1/2 items-center gap-4 overflow-hidden"
-                  style={{ width: painted ?? "100%", minWidth: ROW_FLOOR }}
+                  style={{
+                    width: painted?.width ?? "100%",
+                    minWidth: ROW_FLOOR,
+                  }}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">

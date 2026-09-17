@@ -25,13 +25,18 @@ import { Dialog } from "radix-ui";
  * (#265). The two vertical arrows are the only line where the two surfaces
  * differ, because a strip has no second row to move into.
  *
- * The lightbox contributes two entries and no more, and that is ADR 0022
- * showing through rather than a gap: it walks with the grid's own `←` and `→`
- * and acts with the grid's `K`, `Delete` and `R`, so the only keys that are
- * its alone are the `Enter` that opens it and the Escape that closes it. `←`
- * and `→` are already listed twice, for Rank and for the grid; a third copy
+ * The lightbox contributes little of its own, and that is ADR 0022 showing
+ * through rather than a gap: it walks with the grid's own `←` and `→` and acts
+ * with the grid's `K`, `Delete` and `R`, so what is its alone is the Escape that
+ * closes it, the `Enter` that opens it, and the `C` it shares with the strip.
+ * `←` and `→` are already listed twice, for Rank and for the grid; a third copy
  * saying the same thing about a third surface would make the list longer
  * without making it truer.
+ *
+ * `C` is the one binding listed twice with the *same* action written two ways,
+ * because the difference is which surface answers it. The strip's line says so
+ * out loud: the heading above it names the grid as well, and the crop preview is
+ * not offered over a grid of thirty thumbnails (#266).
  */
 const GROUPS = [
   {
@@ -72,11 +77,18 @@ const GROUPS = [
       // stop at the bounds of the tab they are on (#264).
       { keys: ["+"], action: "Fewer, larger wallpapers" },
       { keys: ["-"], action: "More, smaller wallpapers" },
+      // The strip's alone, and said so: the bars are not offered over a grid of
+      // thirty thumbnails, where they would be noise rather than an answer
+      // (#266).
+      { keys: ["C"], action: "Show what your screen would crop, in the strip" },
     ],
   },
   {
     heading: "Lightbox",
-    bindings: [{ keys: ["Esc"], action: "Close, back to the grid" }],
+    bindings: [
+      { keys: ["C"], action: "Show what your screen would crop" },
+      { keys: ["Esc"], action: "Close, back to the grid" },
+    ],
   },
   {
     heading: "Settings",

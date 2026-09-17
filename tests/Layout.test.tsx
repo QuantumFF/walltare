@@ -678,6 +678,11 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     "R",
     "+",
     "-",
+    // The crop preview, listed on both surfaces that answer it and on neither
+    // of the grids, which is the distinction the two lines are written to make
+    // (#266).
+    "C",
+    "C",
     "Esc",
     "Esc",
     "Ctrl",
@@ -698,6 +703,11 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   expect(dialog.textContent).toContain("Restore the selected wallpaper");
   expect(dialog.textContent).toContain("Open the selected wallpaper");
   expect(dialog.textContent).toContain("Close, back to the grid");
+  // And `C` says where it works, because the heading above one of the two lines
+  // names the grid as well and the bars are not offered there (#266).
+  expect(dialog.textContent).toContain(
+    "Show what your screen would crop, in the strip",
+  );
 
   // It is a dialog rather than a page, so it closes and leaves the curator
   // exactly where they were.

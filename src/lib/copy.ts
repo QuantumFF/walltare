@@ -197,6 +197,37 @@ export function dimensionsOf(wallpaper: Wallpaper): Resolution | null {
 }
 
 /**
+ * What the crop preview says it is answering about, and how much it costs:
+ * `3840 × 2160 · 24% cropped`.
+ *
+ * The Screen is named rather than assumed, because the whole claim the bars make
+ * is about one particular display and the curator may have overridden what the
+ * app detected (CONTEXT.md). The share follows it, because a percentage with no
+ * subject is a number nobody can check.
+ *
+ * `null` is a wallpaper whose Dimensions nothing has read. There is no share to
+ * print then and no bars beside this line either: ADR 0044's rule is that a
+ * wallpaper with no Dimensions says nothing rather than something wrong, and a
+ * caption that named a percentage off the 16:9 the layouts fall back to would be
+ * the app inventing one. It still names the Screen, so pressing `C` on a row
+ * mid-backfill answers with why there is nothing to see.
+ *
+ * `nothing cropped` rather than `0% cropped` for a wallpaper of the Screen's own
+ * shape, and `under 1%` for a loss that would round to zero: both are cases
+ * where the rounded number would read as "none of it goes" when only one of them
+ * means it.
+ */
+export function cropCaption(screen: Resolution, lost: number | null): string {
+  const size = readableSize(screen);
+  if (lost === null) return `${size} · dimensions not read yet`;
+  if (lost <= 0) return `${size} · nothing cropped`;
+  const percent = Math.round(lost * 100);
+  return percent === 0
+    ? `${size} · under 1% cropped`
+    : `${size} · ${percent}% cropped`;
+}
+
+/**
  * CONTEXT.md's undersized: a wallpaper whose Dimensions fall below the Minimum
  * resolution.
  *

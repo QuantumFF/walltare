@@ -80,6 +80,11 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
     // stops being exhaustive over `SettingKey`.
     case "library_layout":
       return { library_layout: value as LibraryLayout };
+    // Not a section on this page either — the control is `C` on the two
+    // surfaces that draw the bars (#266) — and it is a writable key, so the
+    // switch answers for it the same way.
+    case "crop_preview":
+      return { crop_preview: value === "true" };
   }
 }
 
