@@ -1851,12 +1851,8 @@ const evaluatedLine = () =>
   document.querySelector(
     '[data-slot="evaluated-threshold-status"]',
   ) as HTMLElement | null;
-/** Whichever confidence is chosen, by name. There is always exactly one. */
-const chosenConfidence = () =>
-  within(evaluatedSection())
-    .getAllByRole("radio")
-    .filter((choice) => choice.getAttribute("aria-checked") === "true")
-    .map((choice) => choice.textContent ?? "");
+/** Whichever confidence is chosen. There is always exactly one. */
+const chosenConfidence = () => chosenIn(evaluatedSection());
 
 test("the section offers three confidences, with Balanced chosen to begin with", async () => {
   await openSettingsFromLibrary();

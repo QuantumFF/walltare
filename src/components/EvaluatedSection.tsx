@@ -17,44 +17,57 @@ import { DEFAULT_EVALUATED_THRESHOLD, EVALUATED_THRESHOLDS } from "@/lib/client"
 // No Reset control, which is ADR 0020's rule: pressing Balanced is what deletes
 // the row, and the line under the control says so.
 
+/** One offered confidence: the σ stored, the word on the control, and its cost. */
+interface Confidence {
+  threshold: number;
+  label: string;
+  meaning: string;
+}
+
+// The loosest and the strictest, named off the mirror of `settings.rs`'s list so
+// that the three numbers are stated in one place and nothing here indexes into
+// that list by position. The middle one is skipped because it is the default,
+// and the Balanced entry below reads `DEFAULT_EVALUATED_THRESHOLD` directly:
+// "the middle choice" and "the default" are the same fact, and a reference says
+// so where a position only implies it.
+const [LENIENT, , STRICT] = EVALUATED_THRESHOLDS;
+
 /**
- * One offered threshold: the σ stored, the word on the control, and what
- * choosing it costs or buys.
+ * The choice a curator who has said nothing is on, and what the control falls
+ * back to showing if a row somehow holds a σ this page does not offer.
+ *
+ * Named rather than found in the list below, because the two things that make it
+ * the default — that `settings.rs` reads it with no row, and that writing it back
+ * deletes one — are about this σ and not about where it sits in a row of three.
+ */
+const BALANCED: Confidence = {
+  threshold: DEFAULT_EVALUATED_THRESHOLD,
+  label: "Balanced",
+  meaning:
+    "Evaluated at roughly half the uncertainty a new wallpaper starts with.",
+};
+
+/**
+ * The three, in the order they are painted across the control: loosest first, so
+ * moving right is asking for more evidence.
  *
  * The σ is not printed anywhere. It is the app's own scale, and a curator who
  * knows what 4.0 means already knows what the three words mean — while one who
  * does not would be reading a number with no unit and no range beside it.
  */
-const CONFIDENCES: Array<{ threshold: number; label: string; meaning: string }> =
-  [
-    {
-      threshold: EVALUATED_THRESHOLDS[0],
-      label: "Lenient",
-      meaning: "Evaluated sooner, on fewer Comparisons.",
-    },
-    {
-      threshold: DEFAULT_EVALUATED_THRESHOLD,
-      label: "Balanced",
-      meaning:
-        "Evaluated at roughly half the uncertainty a new wallpaper starts with.",
-    },
-    {
-      threshold: EVALUATED_THRESHOLDS[2],
-      label: "Strict",
-      meaning: "Evaluated later, on more Comparisons.",
-    },
-  ];
-
-/**
- * A stored threshold as the radio group's value, which is how `set_setting`
- * receives it too.
- *
- * `String(4)` is `"4"`, and that is what `client.ts` sends and what
- * `settings.rs` parses back, so the control's value and the column's contents are
- * the same string. Nothing here rounds or formats: a threshold the backend would
- * refuse cannot be in the table to be shown.
- */
-const asValue = (threshold: number): string => String(threshold);
+const CONFIDENCES: Confidence[] = [
+  {
+    threshold: LENIENT,
+    label: "Lenient",
+    meaning: "Evaluated sooner, on fewer Comparisons.",
+  },
+  BALANCED,
+  {
+    threshold: STRICT,
+    label: "Strict",
+    meaning: "Evaluated later, on more Comparisons.",
+  },
+];
 
 /**
  * The Evaluated threshold section: how sure the app has to be before it says a
@@ -74,7 +87,7 @@ export function EvaluatedSection() {
   const chosen =
     CONFIDENCES.find(
       ({ threshold }) => threshold === settings.evaluated_threshold,
-    ) ?? CONFIDENCES[1];
+    ) ?? BALANCED;
 
   return (
     <Section heading="Evaluated threshold">
@@ -88,7 +101,12 @@ export function EvaluatedSection() {
         // The stored choice, read from the app's copy of the store rather than
         // from a copy of its own: Settings is unmounted between visits, and what
         // renders is what `set_setting` answered (ADR 0015).
-        value={asValue(settings.evaluated_threshold)}
+        //
+        // `String(4)` is `"4"`, which is what `client.ts` sends and what
+        // `settings.rs` parses back, so this value and the column's contents are
+        // the same string. Nothing rounds or formats: a σ the backend would
+        // refuse cannot be in the table to be shown.
+        value={String(settings.evaluated_threshold)}
         onValueChange={(next) => {
           void saveSetting("evaluated_threshold", Number(next)).catch(
             (error: unknown) => {
@@ -98,7 +116,7 @@ export function EvaluatedSection() {
         }}
       >
         {CONFIDENCES.map(({ threshold, label }) => (
-          <RadioGroupItem key={threshold} value={asValue(threshold)}>
+          <RadioGroupItem key={threshold} value={String(threshold)}>
             {label}
           </RadioGroupItem>
         ))}
