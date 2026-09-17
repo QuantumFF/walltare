@@ -1271,3 +1271,25 @@ test("an empty library still reads as one under the size control", async () => {
   expect(currentView()).toBe("settings");
   expect(focusedField()).toBe("library_root");
 });
+
+test("the badge is on the card in masonry too, not only in the grid", async () => {
+  // The badge is a fact about the file rather than about how the cards were laid
+  // out, and both layouts draw the same card: what masonry changes is the box
+  // the card is given, not what is printed on it (ADR 0045, #262).
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: 1280, height: 720 }),
+      wallpaper(2, { width: 3840, height: 2160 }),
+    ],
+    { ...MINIMUM, library_layout: "masonry" },
+  );
+
+  // Masonry is drawing, which is the half that would otherwise go unstated: each
+  // card carries the position the plan gave it rather than being flowed.
+  expect(pressedLayout()).toBe("Masonry");
+  expect(positionedCards().length).toBe(mountedCards().length);
+
+  expect(cardName(1)).toBe("wall-1.jpg, Active, Undersized");
+  expect(within(cardFor(1) as HTMLElement).getByText("Undersized")).toBeTruthy();
+  expect(cardName(2)).toBe("wall-2.jpg, Active");
+});
