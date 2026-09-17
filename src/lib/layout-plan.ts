@@ -390,6 +390,24 @@ export interface MasonryGrid extends PlanSpacing {
 }
 
 /**
+ * A wallpaper's shape as a layout has to have it: its own, or the one the
+ * layout draws a wallpaper it has no Dimensions for.
+ *
+ * Both uncropped layouts ask the same question and have to answer it the same
+ * way, because the answer is a rule rather than an arithmetic detail: a row
+ * mid-backfill carries no Dimensions and nothing waits for it, and a shape of
+ * nothing is a card of no size that takes its row or its column down with it
+ * (CONTEXT.md, ADR 0044).
+ *
+ * A ratio at or below zero is refused alongside `null` for the same reason it
+ * would be in either caller: it is a row that cannot be drawn, whatever wrote
+ * it, and a layout is not the place to find that out.
+ */
+function shapeOr(ratio: number | null, unknownRatio: number): number {
+  return ratio === null || ratio <= 0 ? unknownRatio : ratio;
+}
+
+/**
  * Masonry: every wallpaper at its own aspect ratio, packed into columns
  * shortest-first.
  *
@@ -437,7 +455,7 @@ export function planMasonry({
     for (let column = 1; column < columns; column++) {
       if (columnTop[column] < columnTop[shortest]) shortest = column;
     }
-    const shape = ratio === null || ratio <= 0 ? unknownRatio : ratio;
+    const shape = shapeOr(ratio, unknownRatio);
     const height = cardWidth > 0 ? cardWidth * shape : unmeasuredHeight;
     const top = columnTop[shortest];
     boxes.push({
@@ -546,10 +564,6 @@ export function planJustified({
   // What the cards themselves have, once both paddings are off. The gaps come
   // off per row, because how many there are is what a row is still deciding.
   const inner = width - 2 * padding;
-  const shapeAt = (at: number): number => {
-    const ratio = ratios[at];
-    return ratio === null || ratio <= 0 ? unknownRatio : ratio;
-  };
 
   const rows: RowOfCards[] = [];
   // Each row's card widths, in the row's own order, kept until the offsets are
@@ -571,26 +585,28 @@ export function planJustified({
     let at = 0;
     while (at < ratios.length) {
       const cards: number[] = [];
-      // How wide the row is per unit of height: each wallpaper's width over its
-      // height, added up. Dividing the width available by it is the height at
-      // which those wallpapers fill the row exactly.
+      // Each wallpaper's width over its height, which is what a shared row
+      // height multiplies to get a width.
       const aspects: number[] = [];
-      let spanned = 0;
+      // How wide the row is per unit of height, as those added up. Multiplying
+      // by a height is the width the row would take at it, and dividing the
+      // width available by it is the height at which the row fills exactly.
+      let widthPerHeight = 0;
       // Whether the row closed because it was full, or because the list ran out
       // under it — which is the whole of what decides if it stretches.
       let filled = false;
       while (at < ratios.length) {
-        const aspect = 1 / shapeAt(at);
+        const aspect = 1 / shapeOr(ratios[at], unknownRatio);
         cards.push(at);
         aspects.push(aspect);
-        spanned += aspect;
+        widthPerHeight += aspect;
         at++;
         const available = inner - gap * (cards.length - 1);
         // Full once the wallpapers drawn at the target would reach the edge.
         // `available <= 0` is the row having more gaps in it than the box is
         // wide, which no density this app offers reaches and which closes the
         // row rather than looping over a width there is none of.
-        if (available <= 0 || spanned * targetHeight >= available) {
+        if (available <= 0 || widthPerHeight * targetHeight >= available) {
           filled = true;
           break;
         }
@@ -599,7 +615,7 @@ export function planJustified({
       // The height at which these wallpapers fill the row exactly, which a full
       // row is drawn at. A row the list ran out under keeps the target instead,
       // and so stops short of the right-hand edge.
-      const exact = available > 0 ? available / spanned : targetHeight;
+      const exact = available > 0 ? available / widthPerHeight : targetHeight;
       const height = filled ? exact : Math.min(targetHeight, exact);
       rows.push({ cards, height });
       widths.push(aspects.map((aspect) => aspect * height));
