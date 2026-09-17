@@ -14,7 +14,7 @@ import { Dialog } from "radix-ui";
  * can find is a shortcut nobody uses, and this dialog is the one place the whole
  * set is written down (ADR 0015).
  *
- * The grid's nine are read by the grid container's own `keydown` and by nothing
+ * The grid's eleven are read by the grid container's own `keydown` and by nothing
  * above it, so they fire only while focus is inside a grid. That is the dividing
  * line ADR 0019 draws — global shortcuts live in the shell's handler, view-local
  * keys live on the element that owns the focus — and it is why `←` and `→` are
@@ -66,6 +66,12 @@ const GROUPS = [
       },
       { keys: ["Delete"], action: "Reject the selected wallpaper" },
       { keys: ["R"], action: "Restore the selected wallpaper" },
+      // The density, which Ctrl and the wheel do as well. Only the keys are
+      // listed, because this is a list of keyboard shortcuts and a mouse
+      // gesture in it would be the one entry the curator cannot press. Both
+      // stop at the bounds of the tab they are on (#264).
+      { keys: ["+"], action: "Fewer, larger wallpapers" },
+      { keys: ["-"], action: "More, smaller wallpapers" },
     ],
   },
   {

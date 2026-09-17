@@ -4,7 +4,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
   cacheSize,
+  cardsInARow,
   click,
+  ctrlWheel,
   deferred,
   flush,
   mockBootedApp,
@@ -177,6 +179,54 @@ test("renders the rows the backend returned, in the order it returned them", asy
     "25.0",
     "15.6",
   ]);
+});
+
+/** The density gesture over this page's grid. */
+const zoom = (deltaY: number) =>
+  ctrlWheel(
+    inReview().getByRole("grid", { name: "Wallpapers to review" }),
+    deltaY,
+  );
+
+test("the density gesture reaches this page too, and stops shorter than Library's", async () => {
+  // The same gesture on the other tab, which is the whole of user story 11:
+  // two tabs behaving the same way under the same gesture. What differs is
+  // where it stops — a worklist of fifty has no scale to buy at the far end,
+  // so Review stops at six where Library goes to eight (#264).
+  //
+  // `ArrowDown` is what says how many cards share a row without a layout, since
+  // happy-dom reports every card as the same zero-sized box at any density.
+  await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
+  await enterGrid();
+  expect(await cardsInARow()).toBe(4);
+
+  await zoom(-100);
+  expect(await cardsInARow()).toBe(3);
+
+  for (let at = 0; at < 8; at++) await zoom(100);
+  expect(await cardsInARow()).toBe(6);
+
+  // And the keys are the same gesture against the same wall.
+  await press("+");
+  expect(await cardsInARow()).toBe(5);
+  await press("-");
+  await press("-");
+  expect(await cardsInARow()).toBe(6);
+});
+
+test("neither half of the gesture moves the selection", async () => {
+  await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
+  await enterGrid();
+  await press("ArrowRight");
+  await press("ArrowRight");
+  expect(selectedCard()).toBe("wall-3.jpg, Active");
+
+  // The count the arrows move by changes under the cursor, which is the whole
+  // gesture. Where the cursor is does not (ADR 0042).
+  await zoom(-100);
+  expect(selectedCard()).toBe("wall-3.jpg, Active");
+  await press("-");
+  expect(selectedCard()).toBe("wall-3.jpg, Active");
 });
 
 test("a card changes no shadow on hover, so a wheel scroll stays smooth", async () => {
@@ -794,4 +844,37 @@ test("a click on a card opens the lightbox and is not a keep or a reject", async
   expect(screen.getByRole("dialog", { name: "keeper.jpg" })).toBeTruthy();
   expect(inReview().queryByAltText("keeper.jpg")).not.toBeNull();
   expect(toast()).toBeNull();
+});
+
+test("an undersized wallpaper is badged here and still in the worklist (#258)", async () => {
+  // Two axes and one of them is not Review's. The badge is a display fact about
+  // a file, so it reaches every card the app draws; what Review *lists* is
+  // untouched, because excluding undersized wallpapers from review would
+  // silently change what the ranking is over (CONTEXT.md, #255).
+  const listed: Array<[string, string, number | undefined]> = [];
+  reviewed = [
+    wallpaper(1, { width: 1280, height: 720 }),
+    wallpaper(2, { width: 3840, height: 2160 }),
+  ];
+  mockCommand("list_wallpapers", (args) => {
+    listed.push([args.filter, args.ordering, args.limit]);
+    return reviewed;
+  });
+  mockCommand("get_settings", () =>
+    settings({ minimum_resolution: { width: 1920, height: 1080 } }),
+  );
+  await openOnReview();
+
+  // Both wallpapers are in front of the curator, and the one too small for
+  // their screen says so — in the cell's accessible name, since a cell's own
+  // name hides the word inside it (ADR 0019).
+  const cells = inReview().getAllByRole("gridcell");
+  expect(cells.map((cell) => cell.getAttribute("aria-label"))).toEqual([
+    "wall-1.jpg, Active, Undersized",
+    "wall-2.jpg, Active",
+  ]);
+
+  // And the worklist was asked for in the same words it always was: fifty
+  // Active rows, lowest Score first (ADR 0028).
+  expect(listed).toEqual([["active", "score_asc", 50]]);
 });

@@ -1,6 +1,9 @@
 import {
   fittedBox,
+  densityColumns,
+  densityZoom,
   layoutPlan,
+  planMasonry,
   planUniformGrid,
   ratioOf,
   UNKNOWN_RATIO,
@@ -24,6 +27,22 @@ const SPACING = { gap: 24, padding: 16 };
 /** The uniform grid, as the app wears it: every card cropped to `aspect-video`. */
 const UNIFORM = { ...SPACING, cardRatio: 9 / 16, unmeasuredHeight: 130 };
 
+/**
+ * Masonry as the app wears it: 16:9 for a wallpaper whose Dimensions nothing has
+ * read, and the same fallback height as the grid for a box that measures nothing
+ * (ADR 0044).
+ */
+const MASONRY = { ...SPACING, unknownRatio: 9 / 16, unmeasuredHeight: 130 };
+
+/** Masonry at a width, the way `WallpaperGrid` composes it. */
+function masonry(
+  ratios: ReadonlyArray<number | null>,
+  columns: number,
+  width: number,
+) {
+  return planMasonry({ ...MASONRY, ratios, columns, width });
+}
+
 /** The uniform grid at a width, the way `WallpaperGrid` composes the two halves. */
 function uniformGrid(count: number, columns: number, width: number) {
   return planUniformGrid({
@@ -33,6 +52,80 @@ function uniformGrid(count: number, columns: number, width: number) {
     rowHeight: uniformRowHeight({ ...UNIFORM, columns, width }),
   });
 }
+
+// The density: how far a zoom moves the column count, and where it stops
+// (#264). Arithmetic over four numbers, so it is asserted here rather than
+// through a grid — what a mounted grid can show is that the arrows move by the
+// count, which is `WallpaperGrid.test.tsx`'s question.
+
+/**
+ * Library's bounds and Review's, which differ at the far end only.
+ *
+ * Restated here rather than imported, the way `SPACING` above restates the
+ * grid's `gap-6` and `p-4`: the real pair is private to `WallpaperGrid.tsx`,
+ * and that module builds its media queries off `window` as it loads — so
+ * importing it would give this unit seam a DOM to have, which is the whole
+ * thing it exists without.
+ */
+const LIBRARY = { min: 2, max: 8 };
+const REVIEW = { min: 2, max: 6 };
+
+test("a zoom of nothing is the count the viewport asked for", () => {
+  // The curator who never makes the gesture gets exactly the grid that was
+  // there before, at every breakpoint the app has.
+  for (const base of [2, 3, 4, 5]) {
+    expect(densityColumns(base, 0, LIBRARY)).toBe(base);
+    expect(densityColumns(base, 0, REVIEW)).toBe(base);
+  }
+});
+
+test("a step in is a card fewer, and a step out a card more", () => {
+  // In is larger cards, which is fewer of them — the direction a map and a
+  // browser both move under the same gesture.
+  expect(densityColumns(4, 1, LIBRARY)).toBe(3);
+  expect(densityColumns(4, 2, LIBRARY)).toBe(2);
+  expect(densityColumns(4, -1, LIBRARY)).toBe(5);
+  expect(densityColumns(4, -3, LIBRARY)).toBe(7);
+});
+
+test("the breakpoints keep applying underneath a zoom", () => {
+  // The reason the state is a number of steps and not a column count. A curator
+  // one step in is one step in at every width, rather than pinned to whatever
+  // number the width they were at happened to be showing — so a window dragged
+  // narrow narrows the grid with it.
+  expect(densityColumns(5, 1, LIBRARY)).toBe(4);
+  expect(densityColumns(3, 1, LIBRARY)).toBe(2);
+});
+
+test("the count stops at each tab's own bounds", () => {
+  // Review's far end is six and Library's is eight: a worklist of fifty has no
+  // scale to buy at the far end, and a browse surface over five thousand does.
+  expect(densityColumns(4, -8, REVIEW)).toBe(6);
+  expect(densityColumns(4, -8, LIBRARY)).toBe(8);
+  // And both go equally large, which is the end where the wallpaper is the
+  // point on either page.
+  expect(densityColumns(4, 9, REVIEW)).toBe(2);
+  expect(densityColumns(4, 9, LIBRARY)).toBe(2);
+});
+
+test("a step at the wall banks nothing for the way back to spend", () => {
+  // The zoom is clamped where it is written rather than where it is read. Six
+  // steps out of Review's range leaves the zoom at the wall, so one step back
+  // in moves the grid — where an unclamped zoom of -6 would need five presses
+  // before anything on screen changed, which is a curator making a gesture and
+  // watching it do nothing.
+  let zoom = 0;
+  for (let at = 0; at < 6; at++) zoom = densityZoom(4, zoom, -1, REVIEW);
+  expect(densityColumns(4, zoom, REVIEW)).toBe(6);
+
+  zoom = densityZoom(4, zoom, 1, REVIEW);
+  expect(densityColumns(4, zoom, REVIEW)).toBe(5);
+
+  // The same at the other end.
+  for (let at = 0; at < 9; at++) zoom = densityZoom(4, zoom, 1, REVIEW);
+  expect(densityColumns(4, zoom, REVIEW)).toBe(2);
+  expect(densityColumns(4, densityZoom(4, zoom, -1, REVIEW), REVIEW)).toBe(3);
+});
 
 test("a row is as tall as the cards sharing its width, at every column count", () => {
   // The box less the padding at both ends, less a gap between every pair,
@@ -259,4 +352,141 @@ test("an area with nothing in it is a box with nothing in it", () => {
     width: 0,
     height: 0,
   });
+});
+
+// Masonry (#262): every wallpaper at its own aspect ratio, packed into columns
+// shortest-first. This is the part of that work happy-dom structurally cannot
+// check — which card is in which column, how tall it is drawn, and which cards a
+// scroll offset puts on screen are all facts about a layout, and there is no
+// layout under test.
+
+test("masonry draws every wallpaper at its own shape, and a 16:9 box for one it has not measured", () => {
+  // A 16:9, a square, a 4:3 portrait, and a wallpaper still waiting on the
+  // backfill. The last is the one that must not collapse: drawn at a ratio of
+  // nothing it would be a card of no height, in a column that then swallows
+  // every card after it (ADR 0044).
+  const plan = masonry([9 / 16, 1, 4 / 3, null], 4, 1200);
+
+  for (const [at, shape] of [9 / 16, 1, 4 / 3, 9 / 16].entries()) {
+    const box = plan.boxes[at];
+    expect(box.height / box.width).toBeCloseTo(shape);
+    expect(box.height).toBeGreaterThan(0);
+  }
+});
+
+test("the columns are equal and together they fill the width", () => {
+  // Eight cards over four columns, so every column is used. A column width the
+  // gaps and the padding were not taken out of would run the last column off the
+  // right-hand edge of the scroll box.
+  const plan = masonry(Array.from({ length: 8 }, () => 9 / 16), 4, 1200);
+
+  // (1200 - 32 of padding - 72 of gaps) / 4.
+  expect(plan.boxes.map((box) => box.width)).toEqual(Array(8).fill(274));
+  expect([...new Set(plan.boxes.map((box) => box.left))]).toEqual([
+    16, 314, 612, 910,
+  ]);
+  const last = plan.boxes[3];
+  expect(last.left + last.width).toBe(1200 - 16);
+});
+
+test("each wallpaper goes to whichever column is shortest, and a tall one is not stacked on", () => {
+  // Three columns 200px wide. The second wallpaper is twice as tall as the
+  // others, which is the case the whole layout exists for: the cards after it
+  // fill the two short columns rather than queueing underneath it.
+  const plan = masonry([1, 2, 1, 1, 1], 3, 680);
+
+  expect(plan.boxes.map((box) => box.height)).toEqual([
+    200, 400, 200, 200, 200,
+  ]);
+  // Columns 0, 1, 2, then back to 0 and 2 — the two that the 400px card left
+  // shortest. Ties go leftmost, so the order down the page still reads as the
+  // order the curator asked for.
+  expect(plan.boxes.map((box) => box.left)).toEqual([16, 240, 464, 16, 464]);
+  expect(plan.boxes.map((box) => box.top)).toEqual([16, 16, 16, 240, 240]);
+
+  // And the scroll height is the tallest column's bottom plus the trailing
+  // padding, rather than every card's height added up.
+  expect(plan.total).toBe(456);
+});
+
+test("a masonry window mounts a card that started above it, exactly once", () => {
+  // The property that separates masonry's rows from the grid's. Its rows are
+  // bands between card tops, and a card taller than a band is listed in each
+  // band it crosses — so a window has to mount it while it is on screen without
+  // mounting it twice, which would be two nodes claiming one cell index.
+  const plan = masonry([1, 2, 1, 1, 1], 3, 680);
+
+  expect(plan.rows.map((row) => row.cards)).toEqual([
+    [0, 1, 2],
+    [1, 3, 4],
+  ]);
+  // The tall card is still on screen in the second band and is mounted there.
+  expect(windowOf(plan, 1, 1).cards).toEqual([1, 3, 4]);
+  // Over both bands it is one node, and the cards come in list order.
+  expect(windowOf(plan, 0, 1).cards).toEqual([0, 1, 2, 3, 4]);
+
+  // The way back is the band holding a card's own top, so revealing a card
+  // scrolls to where it starts rather than to where it ends.
+  expect(plan.rowOfCard).toEqual([0, 0, 0, 1, 1]);
+});
+
+test("a masonry plan's bands account for the whole scroll height", () => {
+  // The number a virtualiser holds the scroll range open with. The bands carry
+  // their own spacing — they run from one card top to the next — so they are
+  // stacked with no gap between them, and the total has to come out the same as
+  // the tallest column's bottom.
+  const plan = masonry([1, 2, 1, 1, 1], 3, 680);
+
+  expect(plan.rows.map((row) => row.top)).toEqual([16, 240]);
+  const last = plan.rows[plan.rows.length - 1];
+  expect(last.top + last.height).toBe(plan.total - 16);
+  const whole = windowOf(plan, 0, plan.rows.length - 1);
+  expect(whole.before).toBe(16);
+  expect(whole.after).toBe(16);
+});
+
+test("a box that measures nothing gives masonry cards about a card tall rather than none", () => {
+  // The branch every happy-dom run takes, and the one a real browser takes for a
+  // view the shell is hiding under `display: none` (ADR 0015). With no width to
+  // divide there is no ratio to apply, so every card takes the fallback height
+  // and the columns pack round-robin — which is the uniform grid's own answer to
+  // the same nothing.
+  const plan = masonry([9 / 16, 1, 4 / 3, null, 9 / 16], 2, 0);
+
+  expect(plan.boxes.map((box) => box.height)).toEqual(Array(5).fill(130));
+  expect(plan.boxes.map((box) => box.top)).toEqual([16, 16, 170, 170, 324]);
+  expect(plan.rows.length).toBe(3);
+});
+
+test("a masonry plan of a whole library windows onto a few dozen cards", () => {
+  // ADR 0016's ceiling, at the ratios a real library has. What the window mounts
+  // has to stay a few dozen out of five thousand however uneven the rows get,
+  // and every one of them has to be there once.
+  const shapes = [9 / 16, 1, 4 / 3, 10 / 21, null];
+  const plan = masonry(
+    Array.from({ length: 5000 }, (_, at) => shapes[at % shapes.length]),
+    4,
+    1200,
+  );
+
+  expect(plan.boxes.length).toBe(5000);
+  // Six bands is about a screen of a 1200px-wide library.
+  const mounted = windowOf(plan, 40, 45);
+  expect(mounted.cards.length).toBeLessThan(40);
+  expect(new Set(mounted.cards).size).toBe(mounted.cards.length);
+  // And the space above plus the mounted bands plus the space below is the whole
+  // scroll height, which is what stops the list shifting under a scroll.
+  const first = plan.rows[40];
+  const last = plan.rows[45];
+  expect(mounted.before).toBe(first.top);
+  expect(mounted.before + (last.top + last.height - first.top)).toBeCloseTo(
+    plan.total - mounted.after,
+  );
+});
+
+test("masonry plans nothing for an empty library and occupies its own padding", () => {
+  const plan = masonry([], 4, 1200);
+  expect(plan.rows).toEqual([]);
+  expect(plan.boxes).toEqual([]);
+  expect(plan.total).toBe(32);
 });

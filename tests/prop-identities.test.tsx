@@ -85,10 +85,10 @@ function selection(): WallpaperSelection {
  *
  * A harness rather than `LibraryView` itself, because the question is what one
  * render hands the next and a page cannot be asked that. The scroll box is what
- * makes the grid read the column count twice: the window counts rows in it and
- * the cells move the selection by it, both inside the component since #231
- * (ADR 0027), which is what makes the one-subscription test below a test about
- * two readers.
+ * makes the window run at all: it counts its rows in the column count and the
+ * cells move the selection by it, both inside the component since #231
+ * (ADR 0027), and since #264 both are handed one answer that `useDensity`
+ * resolved — which is what the one-subscription test below now pins.
  */
 function Page({ list }: { list: Wallpaper[] }) {
   const [, forceRender] = useReducer((renders: number) => renders + 1, 0);
@@ -113,6 +113,7 @@ function Page({ list }: { list: Wallpaper[] }) {
         label="Wallpapers"
         onAction={perform}
         scroller={scroller}
+        density="library"
       />
     </div>
   );
@@ -309,8 +310,11 @@ test("the column count is answered from a cache, and no query is built during a 
 test("one resize subscription serves every reader", async () => {
   const watch = watchWindow();
   try {
-    // Two readers, both inside the grid since #231: the window counting its
-    // rows, and the cells moving the selection by the same count.
+    // One reader inside the grid, and one is now the ceiling rather than the
+    // saving: the window counts its rows in the column count and the cells move
+    // the selection by it, and since #264 both take the answer `useDensity`
+    // resolved from the viewport and the curator's zoom together. Two readers of
+    // the viewport would be two chances to offset it differently.
     await mount(cards(6));
     expect(watch.counts.subscribed).toBe(1);
     expect(watch.counts.unsubscribed).toBe(0);

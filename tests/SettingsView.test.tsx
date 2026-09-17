@@ -13,6 +13,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import type {
   CacheSize,
+  LibraryLayout,
   MissingFiles,
   Resolution,
   ReviewLayout,
@@ -74,6 +75,11 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
       return { reject_destination: value };
     case "review_layout":
       return { review_layout: value as ReviewLayout };
+    // Not a section on this page — the control is on the Library bar (#262) —
+    // but it is a writable key, so the switch has to answer for it or the mock
+    // stops being exhaustive over `SettingKey`.
+    case "library_layout":
+      return { library_layout: value as LibraryLayout };
   }
 }
 

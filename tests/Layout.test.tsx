@@ -389,19 +389,31 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
       '[data-view="library"] [data-slot="page-bar"]',
     ) as HTMLElement,
   );
-  const chips = within(
-    bar.getByRole("group", { name: "Filter by Status" }),
-  ).getAllByRole("button");
-  expect(chips.map((el) => el.textContent)).toEqual([
+  const filters = within(bar.getByRole("group", { name: "Filter by Status" }));
+  expect(filters.getAllByRole("button").map((el) => el.textContent)).toEqual([
     "All",
     "Active",
     "Kept",
     "Rejected",
   ]);
   expect(
-    bar.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
+    filters.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
   ).toEqual(["All"]);
   expect(bar.getByLabelText("Order by").textContent).toBe("Score, high to low");
+  // And #262's layout control beside them, opening on the grid — the layout the
+  // app has always drawn, so a curator who never touches it sees what they saw
+  // before it existed.
+  const layouts = within(bar.getByRole("group", { name: "Layout" }));
+  expect(
+    layouts
+      .getAllByRole("button")
+      .map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["Grid", "Masonry"]);
+  expect(
+    layouts
+      .getAllByRole("button", { pressed: true })
+      .map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["Grid"]);
 });
 
 test("an empty library says so on the page that would have listed it", async () => {
@@ -635,9 +647,9 @@ test("? opens a dialog listing every binding the epic defines", async () => {
 
   // Four the shell binds, and the rest it does not: the arrows are Rank's,
   // Escape is the Settings page's own, F8 is the toast viewport's own hotkey,
-  // Ctrl+Z presses the Undo #112 mounts, and the nine in the middle are read by
-  // the grid container while focus is inside it. A shortcut nobody can find is a
-  // shortcut nobody uses, and a listed key nothing reads is worse still — which
+  // Ctrl+Z presses the Undo #112 mounts, and the eleven in the middle are read
+  // by the grid container while focus is inside it. A shortcut nobody can find
+  // is a shortcut nobody uses, and a listed key nothing reads is worse still —
   // is what this assertion is for: the list is copy, and copy that drifts from
   // what the app binds is the failure the dialog exists to prevent.
   const keys = Array.from(dialog.querySelectorAll("kbd")).map(
@@ -664,6 +676,8 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     "K",
     "Delete",
     "R",
+    "+",
+    "-",
     "Esc",
     "Esc",
     "Ctrl",

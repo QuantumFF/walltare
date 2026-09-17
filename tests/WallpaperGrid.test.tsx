@@ -1,14 +1,21 @@
 import type { CardAction } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
-import { rowHeight, WallpaperGrid } from "@/components/WallpaperGrid";
 import type {
   SelectionHandle,
   WallpaperSelection,
 } from "@/components/selection";
+import {
+  rowHeight,
+  shapeOf,
+  WallpaperGrid,
+  type WallpaperGridProps,
+} from "@/components/WallpaperGrid";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useRef, useState } from "react";
 import {
+  cardsInARow,
+  ctrlWheel,
   flush,
   mockBootedApp,
   press,
@@ -152,6 +159,7 @@ function selection(): WallpaperSelection {
 function Harness({
   initial,
   windowed = false,
+  density = "library",
 }: {
   initial: Wallpaper[];
   /**
@@ -160,6 +168,11 @@ function Harness({
    * what a reveal is for.
    */
   windowed?: boolean;
+  /**
+   * Which tab the grid is standing in, which is what bounds the density
+   * gesture: Library goes wider at the far end than Review does (#264).
+   */
+  density?: WallpaperGridProps["density"];
 }) {
   const [list, set] = useState(initial);
   setList = set;
@@ -179,6 +192,7 @@ function Harness({
           onAction={handleAction}
           onOpen={(subject) => opened.push(subject.id)}
           scroller={windowed ? box : undefined}
+          density={density}
         />
       </div>
       <button type="button">after</button>
@@ -186,8 +200,11 @@ function Harness({
   );
 }
 
-async function mount(list: Wallpaper[]) {
-  await renderInApp(<Harness initial={list} />);
+async function mount(
+  list: Wallpaper[],
+  density?: WallpaperGridProps["density"],
+) {
+  await renderInApp(<Harness initial={list} density={density} />);
   await flush();
 }
 
@@ -335,6 +352,28 @@ test("a box that measures nothing falls back to a row about a card tall", () => 
   expect(rowHeight(100, 5)).toBe(130);
 });
 
+test("a wallpaper's shape comes off its own Dimensions, and is nothing at all without them", () => {
+  // What masonry packs, read off the row rather than off the thumbnail: a
+  // thumbnail is capped in width, so it carries the shape and not the size, and
+  // the shape is all this answers (CONTEXT.md, ADR 0044).
+  expect(shapeOf(wallpaper(1, { width: 1920, height: 1080 }))).toBeCloseTo(
+    9 / 16,
+  );
+  expect(shapeOf(wallpaper(2, { width: 1600, height: 1200 }))).toBeCloseTo(
+    3 / 4,
+  );
+  // And the same shape whatever the resolution, which is what makes it a
+  // question about shape: a 5120x2160 and a 1920x810 crop of it are drawn alike.
+  expect(shapeOf(wallpaper(3, { width: 5120, height: 2160 }))).toBe(
+    shapeOf(wallpaper(4, { width: 1920, height: 810 })) as number,
+  );
+
+  // A row mid-backfill has no Dimensions and so no shape — not a guess. What to
+  // draw instead belongs to the layout, which is the only thing that knows
+  // whether it is cropping.
+  expect(shapeOf(wallpaper(5, { width: null, height: null }))).toBeNull();
+});
+
 test("Tab reaches the grid once, and Tab again leaves it", async () => {
   // Nine cards over however many rows: the count is what must not matter. Every
   // card a tab stop is 15,000 of them at ADR 0016's ceiling, and Tab from the
@@ -356,9 +395,10 @@ test("Tab reaches the grid once, and Tab again leaves it", async () => {
 });
 
 test("the arrows move by column and by row, against the column count the window has", async () => {
-  // lg: four cards to a row, which is the same fact the `lg:grid-cols-4` class
-  // states — the grid reads both off one table, so a breakpoint added to the
-  // classes cannot leave the arrows moving by a stale count.
+  // lg: four cards to a row, which is the same fact the grid's own container
+  // class states — since #264 that class is named by this very count, so a
+  // breakpoint added to the table cannot leave the arrows moving by a stale
+  // one.
   viewportWidth(1024);
   await mount(cards(9));
   await enterGrid();
@@ -420,6 +460,155 @@ test("Home and End reach the first and last card", async () => {
 
   await press("Home");
   expect(document.activeElement).toBe(cell(1));
+});
+
+// The density, and the two gestures that move it (#264).
+//
+// What a curator observes about it is how many cards share a row, and the thing
+// that says so without a layout is `ArrowDown`: it moves by exactly the count
+// the grid is drawing at, so a step in that made the cards larger is a Down that
+// lands one card earlier. happy-dom has no layout to measure and would report
+// every card as the same zero-sized box at any density, which is why the
+// assertion is the keyboard's answer rather than a width (ADR 0027).
+
+/** The gesture over this harness's grid: a negative `deltaY` is the wheel up. */
+const zoom = (deltaY: number) => ctrlWheel(grid(), deltaY);
+
+test("Ctrl and the wheel change how many cards share a row", async () => {
+  // lg, so the viewport asks for four on its own.
+  viewportWidth(1024);
+  await mount(cards(40));
+  await enterGrid();
+  expect(await cardsInARow()).toBe(4);
+
+  // Up is in: fewer cards, each of them larger.
+  await zoom(-100);
+  expect(await cardsInARow()).toBe(3);
+  // And the container is drawn at the count the arrows just moved by. The class
+  // is the only observable difference here, because happy-dom does no layout —
+  // the same carve-out `Layout.test.tsx` makes for the active tab — and it is
+  // the one thing in this change that moved from a CSS guarantee to a lookup.
+  expect(grid().className).toContain("grid-cols-3");
+
+  // And down is out, past where it started.
+  await zoom(100);
+  await zoom(100);
+  expect(await cardsInARow()).toBe(5);
+  expect(grid().className).toContain("grid-cols-5");
+});
+
+test("the plus and minus keys move the density the wheel does", async () => {
+  viewportWidth(1024);
+  await mount(cards(40));
+  await enterGrid();
+
+  await press("+");
+  expect(await cardsInARow()).toBe(3);
+  await press("-");
+  await press("-");
+  expect(await cardsInARow()).toBe(5);
+
+  // The unshifted twins of both, because `+` is `Shift` and `=` on most
+  // layouts and a curator reaching for it without the shift gets `=`.
+  await press("=");
+  expect(await cardsInARow()).toBe(4);
+  await press("_");
+  expect(await cardsInARow()).toBe(5);
+});
+
+test("a shifted plus still changes the density", async () => {
+  // The guard at the top of the key handler sends every modified key away, so
+  // the shell's own chords reach it untouched — and `Shift` and `=` is how the
+  // key this gesture is named for actually arrives.
+  viewportWidth(1024);
+  await mount(cards(40));
+  await enterGrid();
+
+  await act(async () => {
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "+",
+      shiftKey: true,
+    });
+  });
+  await flush();
+  expect(await cardsInARow()).toBe(3);
+});
+
+test("the density stops at each tab's own bounds", async () => {
+  viewportWidth(1024);
+  // Review's range, which is the narrower of the two: a worklist of fifty has
+  // no scale for the far end to buy, and a card too small to judge has stopped
+  // doing this page's job.
+  await mount(cards(40), "review");
+  await enterGrid();
+
+  for (let at = 0; at < 6; at++) await zoom(100);
+  expect(await cardsInARow()).toBe(6);
+
+  // And one step back moves, rather than spending five the gesture banked at
+  // the wall. A zoom clamped where it is read instead of where it is written
+  // fails exactly here: the curator makes the gesture and watches it do nothing.
+  await zoom(-100);
+  expect(await cardsInARow()).toBe(5);
+
+  for (let at = 0; at < 8; at++) await zoom(-100);
+  expect(await cardsInARow()).toBe(2);
+});
+
+test("Library goes wider than Review does", async () => {
+  viewportWidth(1024);
+  // The same gesture on the browse surface, where going wide is the point: a
+  // library of up to five thousand is what the far end of this range is for.
+  await mount(cards(40), "library");
+  await enterGrid();
+
+  for (let at = 0; at < 8; at++) await press("-");
+  expect(await cardsInARow()).toBe(8);
+});
+
+test("the gesture refuses the webview's own zoom, and an ordinary wheel is left alone", async () => {
+  viewportWidth(1024);
+  await mount(cards(40));
+  await enterGrid();
+
+  // Ctrl and the wheel is the browser's zoom shortcut, and the grid answering
+  // it has to say so: React attaches its own `wheel` listener passively, so a
+  // handler that did not take the event itself would change the density *and*
+  // scale the whole app.
+  expect(await zoom(-100)).toBe(false);
+  expect(await cardsInARow()).toBe(3);
+
+  // Without Ctrl it is a scroll, and the scroll box keeps it. Fired straight
+  // rather than through the fixture, which is the gesture and always holds it.
+  let survived = true;
+  await act(async () => {
+    survived = fireEvent.wheel(grid(), { deltaY: -100 });
+  });
+  await flush();
+  expect(survived).toBe(true);
+  expect(await cardsInARow()).toBe(3);
+});
+
+test("neither gesture disturbs the selection", async () => {
+  viewportWidth(1024);
+  await mount(cards(40));
+  await enterGrid();
+  await press("ArrowRight");
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(cell(3));
+
+  await zoom(-100);
+  // The same wallpaper, still selected and still holding the focus. The count
+  // the arrows move by changed under it, which is the whole gesture; where the
+  // cursor is did not (ADR 0042).
+  expect(selection().wallpaper?.id).toBe(3);
+  expect(selection().index).toBe(2);
+  expect(document.activeElement).toBe(cell(3));
+
+  await press("+");
+  await press("-");
+  expect(selection().wallpaper?.id).toBe(3);
+  expect(document.activeElement).toBe(cell(3));
 });
 
 test("the selected card shows its overlay", async () => {

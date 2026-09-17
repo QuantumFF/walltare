@@ -1,12 +1,16 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { wallpaperImageUrl, type Status, type Wallpaper } from "@/lib/client";
+import type { PlannedBox } from "@/lib/layout-plan";
 import {
   counted,
+  dimensionsOf,
   FILE_IS_GONE,
   isEvaluated,
+  readableSize,
   score,
   STATUS_LABEL,
+  UNDERSIZED,
 } from "@/lib/copy";
 import { cn } from "@/lib/utils";
 import {
@@ -238,6 +242,38 @@ export interface WallpaperCardProps {
   cellIndex?: number;
   /** Whether this cell is the one holding the grid's selection. */
   selected?: boolean;
+  /**
+   * Where the layout put this card, for a layout that positions its own.
+   *
+   * With it the card takes the shape it was given and sits where it was put;
+   * without it the card is `aspect-video` and a CSS grid decides where it goes.
+   * That is the whole of what separates masonry from the uniform grid on this
+   * component: one crops every wallpaper to the grid's shape, the other hands
+   * each card a box of the wallpaper's own — so the picture is uncropped because
+   * the box already has its ratio, not because anything here stopped cropping.
+   *
+   * The box is the plan's, computed before any card mounted, and its identity is
+   * stable for as long as the plan is — which is what keeps the memo above
+   * holding through a scroll (ADR 0045, #230).
+   */
+  box?: PlannedBox;
+  /**
+   * Whether this wallpaper's Dimensions fall below the curator's Minimum
+   * resolution, in which case the card wears a badge saying so (#258).
+   *
+   * A boolean rather than the Minimum resolution itself, for the reason
+   * `scoreMoved` is one: every prop here is a value or a stable identity, which
+   * is what makes the memo above mean anything, and a size object handed to
+   * every card would be one more identity to keep still. The comparison is
+   * `isUndersized`, made once per card by whoever holds the setting.
+   *
+   * Off by default, so a card mounted with nothing said about it says nothing.
+   * That is also the answer for a wallpaper whose Dimensions have not been read
+   * yet: no badge rather than a wrong one, because a curator cannot tell a
+   * library that has been measured from one that is still being measured
+   * (ADR 0044).
+   */
+  undersized?: boolean;
 }
 
 /**
@@ -277,6 +313,8 @@ export const WallpaperCard = memo(function WallpaperCard({
   onOpen,
   cellIndex,
   selected = false,
+  box,
+  undersized = false,
 }: WallpaperCardProps) {
   // Whether this card is a cell in a grid at all, which is the one thing the
   // absent object used to say and the index says now.
@@ -286,6 +324,11 @@ export const WallpaperCard = memo(function WallpaperCard({
   // Known before the press, because ADR 0009 put `origin_path` on the DTO for
   // exactly this: the frontend can refuse without asking the backend.
   const restorable = wallpaper.origin_path !== null;
+  // The Dimensions as one size, for the undersized badge's tooltip, and `null`
+  // for a row nothing has measured. Read through `copy.ts` rather than off the
+  // two columns here, because "unknown means both are unknown" is ADR 0044's
+  // rule and the badge is not the place it gets restated.
+  const size = dimensionsOf(wallpaper);
   const folder = rejected ? containingFolder(wallpaper.path) : "";
   /**
    * Whether the picture failed to arrive, which is how this card learns its
@@ -333,20 +376,38 @@ export const WallpaperCard = memo(function WallpaperCard({
       // cards are a window: their order in the DOM is not their order in the
       // list, and only the index the grid wrote is.
       data-cell={cellIndex}
-      // The label carries the gone state for the reason it carries the Status:
-      // what is otherwise a pill and a dimming, or here an icon and a label
-      // inside a cell whose own `aria-label` hides its contents, reaches nobody
-      // reading with a screen reader unless the name says it (ADR 0019).
-      aria-label={
-        gone
-          ? `${wallpaper.filename}, ${STATUS_LABEL[wallpaper.status]}, ${FILE_IS_GONE}`
-          : `${wallpaper.filename}, ${STATUS_LABEL[wallpaper.status]}`
-      }
+      // The label carries the gone state, and the undersized one, for the reason
+      // it carries the Status: what is otherwise a pill and a dimming, or here
+      // an icon and a label inside a cell whose own `aria-label` hides its
+      // contents, reaches nobody reading with a screen reader unless the name
+      // says it (ADR 0019).
+      //
+      // Built from the parts that apply rather than by branching on them,
+      // because there are four now and a ternary per fact is a sentence per
+      // combination. An ordinary card is the two it always was.
+      aria-label={[
+        wallpaper.filename,
+        STATUS_LABEL[wallpaper.status],
+        undersized && UNDERSIZED,
+        gone && FILE_IS_GONE,
+      ]
+        .filter(Boolean)
+        .join(", ")}
       // See `onOpen`. Nothing is prevented and nothing is stopped: this is the
       // end of the bubble path, and a card outside a grid with no host asking
       // for the gesture simply does not fire it.
       onClick={() => onOpen?.(wallpaper)}
-      className="group relative aspect-video overflow-hidden rounded-lg border border-border bg-card"
+      // `aspect-video` is the uniform grid's crop, worn by the element that
+      // crops (ADR 0027's `CARD_ASPECT.className`). A card handed a box wears
+      // that box instead: the shape came from the wallpaper's own Dimensions, so
+      // declaring a second one here would be the layout and the card disagreeing
+      // about how tall the card is — and the window is positioned against the
+      // layout's answer.
+      className={cn(
+        "group overflow-hidden rounded-lg border border-border bg-card",
+        box ? "absolute" : "relative aspect-video",
+      )}
+      style={box}
     >
       <img
         src={wallpaperImageUrl(wallpaper.id, "small")}
@@ -450,6 +511,12 @@ export const WallpaperCard = memo(function WallpaperCard({
       </div>
 
       {/*
+        The corner that says what is true of this wallpaper rather than what it
+        is worth: the Status, and whether the file is big enough to use. Both
+        marks stack here rather than taking a corner each, because the Score
+        badge already has the other one and a card is not four corners of
+        labels.
+
         Kept and Rejected wear the pill; Active does not. The pill is what makes
         a mixed grid legible at a glance (ADR 0016's default filter is All), and
         what it has to mark is the wallpapers that are not the default. Every
@@ -457,10 +524,46 @@ export const WallpaperCard = memo(function WallpaperCard({
         where it goes unprinted — which is also what keeps Review, a list of
         fifty Active wallpapers, from carrying fifty pills that all say the same
         word.
+
+        The undersized badge is the other axis and is weighted to say so. Solid
+        white where the Status pill is translucent black, which is the strongest
+        mark this card's vocabulary has and the same one an Evaluated Score
+        wears in the opposite corner — a fact about the file, stated plainly,
+        rather than a decision the curator made about the wallpaper (CONTEXT.md).
+        No colour, deliberately: the palette in `index.css` is greyscale but for
+        `--destructive`, which means Reject, and an undersized wallpaper is not
+        a rejected one.
+
+        It shows on every card, Review's included: learning a file is too small
+        is the whole point of the badge, and what Review lists is untouched by
+        it (#258).
+
+        `title` carries the Dimensions, which is the number the badge is a
+        verdict on and the one thing that tells a curator how far off the file
+        is. It needs no Minimum resolution to print, because that is already the
+        thing the badge's presence states.
+
+        The stack exists only when it has something in it, so an Active card of
+        a usable size carries the node count it always did — which on a grid
+        mounting a window of cards out of five thousand is the number that
+        matters (ADR 0016, ADR 0041).
       */}
-      {wallpaper.status !== "active" && (
-        <div className="pointer-events-none absolute top-1.5 left-1.5 rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] text-white backdrop-blur-md">
-          {STATUS_LABEL[wallpaper.status]}
+      {(wallpaper.status !== "active" || undersized) && (
+        <div className="pointer-events-none absolute top-1.5 left-1.5 flex flex-col items-start gap-1">
+          {wallpaper.status !== "active" && (
+            <div className="rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] text-white backdrop-blur-md">
+              {STATUS_LABEL[wallpaper.status]}
+            </div>
+          )}
+          {undersized && (
+            <div
+              data-slot="wallpaper-undersized"
+              title={size ? readableSize(size) : undefined}
+              className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-neutral-900 backdrop-blur-md"
+            >
+              {UNDERSIZED}
+            </div>
+          )}
         </div>
       )}
 

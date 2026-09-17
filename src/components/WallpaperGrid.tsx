@@ -7,19 +7,31 @@ import {
   usePublishedSelection,
   type SelectionHandle,
 } from "@/components/selection";
-import type { Wallpaper } from "@/lib/client";
+import type {
+  LibraryLayout,
+  Resolution,
+  Wallpaper,
+} from "@/lib/client";
+import { isUndersized } from "@/lib/copy";
 import {
   NOTHING_MOUNTED,
+  densityColumns,
+  densityZoom,
+  planMasonry,
   planUniformGrid,
   uniformRowHeight,
   windowOf,
+  type DensityRange,
   type LayoutPlan,
+  type MasonryPlan,
+  type PlannedBox,
   type PlannedWindow,
 } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -31,28 +43,93 @@ import {
 } from "react";
 
 /**
- * The responsive column count, written once as the fact both halves read.
+ * How many cards a row holds at each width, before the curator has said
+ * anything about it.
  *
- * The class and the number are the same statement — how many cards sit in a row
- * at this width — and two copies of it drift the moment someone adds a
- * breakpoint. Arrow keys that move by a stale count move the selection to a card
- * the curator is not looking at, and nothing on screen says why. So the table is
- * the source of both: the classes are joined into what the container wears, and
- * the widths are the queries the count is read from. The breakpoints are
- * Tailwind's own `md`, `lg` and `xl`, which is what makes the two agree.
+ * The breakpoints are Tailwind's own `md`, `lg` and `xl`, so the widths the
+ * count steps at are the widths the rest of the app steps at.
  *
- * The class strings are spelled out rather than built from `columns`, because
- * Tailwind generates a utility only when it finds the literal in the source.
+ * The classes that used to sit beside these numbers are gone, and #264 is what
+ * took them. The count is no longer a function of the viewport alone — a zoom
+ * offsets it, inside the bounds of whichever tab the grid is on — so a set of
+ * responsive `grid-cols-*` utilities could not state it at all. What the
+ * container wears is read out of `COLUMN_CLASSES` below, off the same number the
+ * arrows move by and the plan cuts its rows at. So the pair ADR 0027 wrote down
+ * survives the change in the stronger form: one number, and one class named by
+ * it, rather than two statements a breakpoint could put out of step.
  */
 const COLUMNS = [
-  { minWidth: 0, columns: 2, className: "grid-cols-2" },
-  { minWidth: 768, columns: 3, className: "md:grid-cols-3" },
-  { minWidth: 1024, columns: 4, className: "lg:grid-cols-4" },
-  { minWidth: 1280, columns: 5, className: "xl:grid-cols-5" },
+  { minWidth: 0, columns: 2 },
+  { minWidth: 768, columns: 3 },
+  { minWidth: 1024, columns: 4 },
+  { minWidth: 1280, columns: 5 },
 ] as const;
 
-/** What the grid container wears, and the other half of the table above. */
-const GRID_COLUMN_CLASSES = COLUMNS.map((step) => step.className).join(" ");
+/**
+ * What the grid container wears for a column count, and the whole of what the
+ * CSS can draw.
+ *
+ * Spelled out rather than built from the number, because Tailwind generates a
+ * utility only when it finds the literal in the source — the same constraint
+ * that used to make `COLUMNS` carry its class strings. A count with no entry
+ * here is a count the CSS cannot draw, so the bounds below stay inside two and
+ * eight, and this table is where a wider tab would have to start.
+ */
+const COLUMN_CLASSES: Record<number, string> = {
+  2: "grid-cols-2",
+  3: "grid-cols-3",
+  4: "grid-cols-4",
+  5: "grid-cols-5",
+  6: "grid-cols-6",
+  7: "grid-cols-7",
+  8: "grid-cols-8",
+};
+
+/** The two tabs that mount this grid, which is what their bounds are named by. */
+type DensityTab = "library" | "review";
+
+/**
+ * How far the density goes on each tab.
+ *
+ * Both go equally large, because the wallpaper is the point on either page. What
+ * differs is the far end. Library is the browse surface, and the epic's story is
+ * going "from a few large wallpapers to many small ones" over a library of up to
+ * five thousand, so eight is where a card is still a picture rather than a
+ * swatch. Review is fifty wallpapers the curator is deciding about, and a card
+ * too small to judge without opening it has stopped doing that page's job — there
+ * is no scale there for a wider end to buy (ADR 0028).
+ *
+ * Library's far end has a cost Review's does not: more columns is shorter rows,
+ * and shorter rows is more cards inside the same window, which is the mount rate
+ * ADR 0041 measured the grid's frame time against.
+ *
+ * The numbers are the grid's, and they stay here. A host names which tab it is
+ * and the grid looks the bounds up, rather than the two pairs being exported for
+ * a page to import and hand straight back — which would widen this module's
+ * interface by two names without deepening anything, the shape ADR 0027 refused
+ * for the geometry constants.
+ */
+const DENSITY: Record<DensityTab, DensityRange> = {
+  library: { min: 2, max: 8 },
+  review: { min: 2, max: 6 },
+};
+
+/**
+ * Which way each key moves the density: in towards fewer, larger cards, or out
+ * towards more, smaller ones.
+ *
+ * Four keys for two directions, because both of the obvious ones need their
+ * unshifted twin. `+` is `Shift` and `=` on most layouts, so a curator reaching
+ * for it without the shift lands on `=`; `_` is the other half of the same pair
+ * for `-`. The numeric keypad reports its own two as `+` and `-`, so it is
+ * already covered.
+ */
+const DENSITY_KEYS: Record<string, number> = {
+  "+": 1,
+  "=": 1,
+  "-": -1,
+  _: -1,
+};
 
 /**
  * The queries behind the table, parsed once for the life of the process.
@@ -155,6 +232,43 @@ function useGridColumns(): number {
 }
 
 /**
+ * The density: how many cards share a row, and the two gestures that move it.
+ *
+ * One reader of the responsive count for the whole grid, and every part that
+ * needs a column count is handed the answer. Both halves used to call
+ * `useGridColumns` for themselves — the window to cut its rows, the cells to
+ * move the selection — and once the curator can offset it, two readers is two
+ * chances to offset it differently.
+ *
+ * The zoom is a number of steps and not a column count, which is what keeps the
+ * breakpoints working underneath it: a curator who went one step in is one step
+ * in at every window width rather than pinned to the number that width happened
+ * to be showing (see `densityColumns`).
+ *
+ * `step` is written functionally, so it depends on the base and the bounds rather
+ * than on the zoom it is reading — a gesture on a grid mid-commit cannot be
+ * applied to a stale one. Its identity moves when the viewport crosses a
+ * breakpoint and not otherwise, and no card is ever handed it (ADR 0042).
+ *
+ * The tab arrives as a name and the bounds are looked up here, so the caller
+ * cannot hand over an object rebuilt per render — which would make the callback
+ * a fresh one per render and the wheel listener a resubscription per render.
+ */
+function useDensity(tab: DensityTab): {
+  columns: number;
+  step: (by: number) => void;
+} {
+  const range = DENSITY[tab];
+  const base = useGridColumns();
+  const [zoom, setZoom] = useState(0);
+  const step = useCallback(
+    (by: number) => setZoom((was) => densityZoom(base, was, by, range)),
+    [base, range],
+  );
+  return { columns: densityColumns(base, zoom, range), step };
+}
+
+/**
  * The grid's own spacing, as numbers beside the classes they restate, because
  * the plan below has to know how tall a row is before the row exists and the
  * CSS is the only place that says.
@@ -236,7 +350,60 @@ export function rowHeight(boxWidth: number, columns: number): number {
 }
 
 /**
- * The window over a list too long to mount (ADR 0016), and the way in to a card
+ * A wallpaper's shape, as height over width, or `null` while the app has not
+ * read its Dimensions.
+ *
+ * Named for the wallpaper's own shape rather than for the card's, because
+ * `UniformRow.cardRatio` next door is the other thing: the one shape every card
+ * is cropped to. A layout reads exactly one of the two, and which one it reads
+ * is the whole of what separates the plans.
+ *
+ * `null` and not a guess, because the guess belongs to the layout rather than to
+ * the row: a plan that draws uncropped answers for an unknown shape with the one
+ * the uniform grid crops to, and a plan that crops never asks. CONTEXT.md is
+ * what makes that the rule — a wallpaper whose Dimensions have not been read has
+ * none rather than a guess (ADR 0044).
+ *
+ * Exported for its test, the way `rowHeight` above is: the arithmetic is
+ * otherwise reachable only through a mounted grid whose every box measures zero.
+ */
+export function shapeOf(wallpaper: Wallpaper): number | null {
+  const { width, height } = wallpaper;
+  if (width === null || height === null || width <= 0) return null;
+  return height / width;
+}
+
+/**
+ * What a grid that is not drawing masonry hands the plan.
+ *
+ * One array for the life of the module, because it is a dependency of the memo
+ * that builds the plan: a fresh `[]` per render would rebuild the whole plan on
+ * every scroll notch.
+ */
+const NO_RATIOS: ReadonlyArray<number | null> = [];
+
+/**
+ * A layout that puts its own cards where they go, said as the two facts that go
+ * with each other and never apart.
+ *
+ * One object rather than two props, because either alone is a layout that cannot
+ * be drawn: cards out of the flow hold no scroll height open, and a scroll height
+ * with no boxes under it is an empty page. Its presence is also what says which
+ * of the two shapes the grid below is drawing, so there is one question to ask
+ * rather than two that could disagree.
+ *
+ * The boxes are the plan's, so a card's size is the size the window was measured
+ * against rather than one the browser worked out afterwards — the same exactness
+ * the row heights have, for the same reason (ADR 0045).
+ */
+interface PlacedCards {
+  /** Where each card goes, by its position in the whole list. */
+  boxes: PlannedBox[];
+  /** The whole scroll height those boxes occupy, both paddings included. */
+  total: number;
+}
+
+/** The window over a list too long to mount (ADR 0016), and the way in to a card
  * that has no node yet.
  *
  * Thirty cards in the DOM out of five thousand fetched, because 5,000 images and
@@ -264,12 +431,25 @@ export function rowHeight(boxWidth: number, columns: number): number {
  * the hook never holds the rows. The scroller arrives as a ref the host already
  * owns, because the page needs that same element for its own scroll position and
  * a hook that created it would have to hand it back (ADR 0015, ADR 0027).
+ *
+ * `columns` arrives too, rather than being read here. It was the viewport's
+ * answer and nothing else until #264; it is now the viewport's answer offset by
+ * the curator's zoom, and the one place that resolves the two is `useDensity`
+ * above. A window that read the viewport for itself would go on cutting rows of
+ * five while the cells drew eight.
  */
 function useGridWindow(
   count: number,
+  columns: number,
   scroller: RefObject<HTMLDivElement | null>,
-): { mounted: PlannedWindow; reveal: (index: number) => void } {
-  const columns = useGridColumns();
+  layout: LibraryLayout,
+  ratios: ReadonlyArray<number | null>,
+): {
+  mounted: PlannedWindow;
+  reveal: (index: number) => void;
+  /** Where the cards go, for a layout that positions its own; absent for the grid. */
+  placed?: PlacedCards;
+} {
   // The scroll box as last measured, and the width the plan is computed
   // against. The last non-zero measurement is kept, so a view the shell has
   // hidden — which zeroes the box — keeps the size it had rather than rebuilding
@@ -280,15 +460,34 @@ function useGridWindow(
   // facts it is computed from, because it is what the virtualiser's options and
   // the cells are both read out of and a fresh one per render would rebuild both
   // on every scroll notch.
-  const plan: LayoutPlan = useMemo(
+  const masonry = layout === "masonry";
+  // A plan, and for masonry the boxes on it. The union rather than `LayoutPlan`
+  // with an optional field, because a box per card is what separates a layout
+  // that positions its own cards from one a CSS grid places: a plan that carries
+  // the field and never fills it is a field nothing checks (ADR 0045).
+  const plan: LayoutPlan | MasonryPlan = useMemo<LayoutPlan | MasonryPlan>(
     () =>
-      planUniformGrid({
-        ...SPACING,
-        count,
-        columns,
-        rowHeight: rowHeight(boxWidth, columns),
-      }),
-    [count, columns, boxWidth],
+      masonry
+        ? planMasonry({
+            ...SPACING,
+            ratios,
+            columns,
+            width: boxWidth,
+            // The shape a wallpaper with no Dimensions is drawn at, and it is
+            // the grid's own `aspect-video` rather than a number this layout
+            // invented: the fallback is "draw it the way the app has always
+            // drawn it", so a library mid-backfill reads as the layout the
+            // curator switched away from rather than as a collapsed row.
+            unknownRatio: CARD_ASPECT.ratio,
+            unmeasuredHeight: UNMEASURED_ROW,
+          })
+        : planUniformGrid({
+            ...SPACING,
+            count,
+            columns,
+            rowHeight: rowHeight(boxWidth, columns),
+          }),
+    [masonry, ratios, count, columns, boxWidth],
   );
 
   const virtualiser = useVirtualizer({
@@ -306,8 +505,20 @@ function useGridWindow(
     // One row above and one below. Two rows doubles the in-flight image
     // requests to buy a margin the memory cache already provides after the
     // first pass (ADR 0016).
-    overscan: 1,
-    gap: GAP.px,
+    //
+    // A masonry row is not a row of cards, so the same number would not be the
+    // same margin: its rows are bands between consecutive card tops, and a card
+    // height holds about as many of those as there are columns. So masonry
+    // overscans by the column count, which buys it the one card of lead-in the
+    // grid gets — inheriting the 1 unchanged would mount cards at the viewport
+    // edge, and ADR 0041 puts the gesture's cost in card mount.
+    overscan: masonry ? columns : 1,
+    // The space between two rows, which masonry has already spent. Its rows are
+    // bands running from one card top to the next, so the gaps between cards are
+    // inside those heights and a gap between bands would be counted twice — the
+    // virtualiser's offsets would then disagree with the boxes the same plan
+    // computed.
+    gap: masonry ? 0 : GAP.px,
     paddingStart: PADDING.px,
     paddingEnd: PADDING.px,
     // The measurement, with the fallback above under it. The virtualiser's own
@@ -367,7 +578,12 @@ function useGridWindow(
     [virtualiser, plan],
   );
 
-  return { mounted, reveal };
+  return {
+    mounted,
+    reveal,
+    placed:
+      "boxes" in plan ? { boxes: plan.boxes, total: plan.total } : undefined,
+  };
 }
 
 export interface WallpaperGridProps {
@@ -391,6 +607,22 @@ export interface WallpaperGridProps {
    */
   scoresMoved?: ReadonlySet<number>;
   /**
+   * The curator's Minimum resolution, which is what decides whether a card
+   * wears the undersized badge (#258).
+   *
+   * The size itself rather than the verdict per row, because the verdict is one
+   * comparison against two numbers and the rows are the list this component
+   * already holds — a set of ids handed down beside them would be the same fact
+   * arranged twice. `scoresMoved` above is a set for the opposite reason: that
+   * one arrives as ids, because `score-changed` names wallpapers and nothing
+   * about them can be recomputed from the row.
+   *
+   * Absent judges nothing undersized, which is what a grid mounted outside the
+   * app's settings gets. Both pages pass it, and a wallpaper whose Dimensions
+   * are unknown is answered by `isUndersized` rather than here (ADR 0044).
+   */
+  minimumResolution?: Resolution;
+  /**
    * The scroll box this grid sits inside, for a host that has one.
    *
    * With it the grid windows itself: a few dozen cards in the DOM out of the
@@ -410,6 +642,27 @@ export interface WallpaperGridProps {
    * would remount its cards.
    */
   scroller?: RefObject<HTMLDivElement | null>;
+  /**
+   * Which tab this grid is on, which is what bounds the density gesture: see
+   * `DENSITY` above.
+   *
+   * A name and not a pair of numbers. What the curator zoomed to is the grid's,
+   * the way the cursor and the geometry are (ADR 0027, ADR 0042); the one thing
+   * the grid cannot work out for itself is which page it was mounted on. So the
+   * host says that and nothing else, and the bounds never leave this module —
+   * which is also what makes the prop impossible to churn the identity of.
+   */
+  density: DensityTab;
+  /**
+   * How the cards are laid out: cropped to one shape, or each at its own.
+   *
+   * Read only by the windowed shape, and not because masonry is expensive. Its
+   * cards carry their own position, that position comes out of the plan, and the
+   * plan is what the window builds — so a host with no scroll box has no plan
+   * and nothing to position from. Review is the only such host and it draws the
+   * uniform grid, which is what an absent `scroller` already means here.
+   */
+  layout?: LibraryLayout;
   /**
    * The curator asking to look at a wallpaper properly, carrying the one they
    * asked about: a click on a card that was not on one of its buttons, or
@@ -471,11 +724,28 @@ export interface WallpaperGridProps {
  * the ordering control, the reject destination line and the mounted lightbox
  * (#231).
  */
-export function WallpaperGrid({ scroller, ...props }: WallpaperGridProps) {
+export function WallpaperGrid({
+  scroller,
+  density,
+  layout = "grid",
+  ...props
+}: WallpaperGridProps) {
+  // The density is resolved here, above the branch, because both shapes need
+  // the count and neither is the whole grid: the windowed one cuts its rows at
+  // it one component down and the cells move the selection by it two. Holding
+  // it here is also what makes the zoom survive a host swapping shapes, which
+  // nothing does today and which the props say nothing to forbid.
+  const { columns, step } = useDensity(density);
   return scroller ? (
-    <WindowedGrid scroller={scroller} {...props} />
+    <WindowedGrid
+      scroller={scroller}
+      columns={columns}
+      onDensityStep={step}
+      layout={layout}
+      {...props}
+    />
   ) : (
-    <Grid {...props} />
+    <Grid columns={columns} onDensityStep={step} {...props} />
   );
 }
 
@@ -486,7 +756,23 @@ export function WallpaperGrid({ scroller, ...props }: WallpaperGridProps) {
  * They are still the same two facts crossing the same seam; the seam is inside
  * this file now, which is the whole of what that ticket moved.
  */
-interface GridProps extends Omit<WallpaperGridProps, "scroller"> {
+interface GridProps
+  extends Omit<WallpaperGridProps, "scroller" | "density" | "layout"> {
+  /**
+   * How many cards share a row, resolved from the viewport and the curator's
+   * zoom together. `WallpaperGrid` above is the one reader of either.
+   */
+  columns: number;
+  /**
+   * Move the density a step: 1 in towards fewer, larger cards, -1 out towards
+   * more, smaller ones. Bounded by the host's range, which this side never sees.
+   */
+  onDensityStep: (by: number) => void;
+  /**
+   * Where the cards go, for a layout that positions its own. Absent lets the CSS
+   * grid below place them, which is every layout that crops to one shape.
+   */
+  placed?: PlacedCards;
   /**
    * Which of the cards to mount, and the empty space that holds the rest of the
    * scroll height open around them. See `PlannedWindow`. Absent mounts every
@@ -535,10 +821,30 @@ interface GridProps extends Omit<WallpaperGridProps, "scroller"> {
  */
 function WindowedGrid({
   scroller,
+  layout,
   ...props
-}: GridProps & { scroller: RefObject<HTMLDivElement | null> }) {
-  const { mounted, reveal } = useGridWindow(props.wallpapers.length, scroller);
-  return <Grid {...props} mounted={mounted} reveal={reveal} />;
+}: GridProps & {
+  scroller: RefObject<HTMLDivElement | null>;
+  layout: LibraryLayout;
+}) {
+  // The shapes the plan packs, and only for the layout that reads them: the
+  // uniform grid crops every wallpaper to one shape, so a ratio per card reaches
+  // nothing there and would be a list of five thousand numbers rebuilt on every
+  // patch to be ignored. `NO_RATIOS` is stable, so that grid's plan still
+  // depends on a length and not on a list.
+  const ratios = useMemo(
+    () =>
+      layout === "masonry" ? props.wallpapers.map(shapeOf) : NO_RATIOS,
+    [layout, props.wallpapers],
+  );
+  const { mounted, reveal, placed } = useGridWindow(
+    props.wallpapers.length,
+    props.columns,
+    scroller,
+    layout,
+    ratios,
+  );
+  return <Grid {...props} mounted={mounted} reveal={reveal} placed={placed} />;
 }
 
 /**
@@ -569,14 +875,17 @@ function Grid({
   onAction,
   animated = false,
   scoresMoved,
+  minimumResolution,
   reveal,
   mounted,
+  columns,
+  onDensityStep,
+  placed,
   onOpen,
   className,
   ref,
   startOn,
 }: GridProps) {
-  const columns = useGridColumns();
   const gridRef = useRef<HTMLDivElement>(null);
   // The cursor, and the rule that resolves it against the list: the selection
   // follows the wallpaper, then the position (ADR 0019). It is here rather than
@@ -629,9 +938,54 @@ function Grid({
   );
   const cards = mounted ? mounted.cards : everyCard;
 
+  /**
+   * Ctrl and the wheel, changing the density rather than the page's scale.
+   *
+   * Listened for here rather than through React's `onWheel`, and that is the
+   * whole reason this is an effect. React attaches its `wheel` listener to the
+   * root as a passive one, so `preventDefault` from a synthetic handler is a
+   * no-op and the webview zooms the app anyway — which is the gesture's own
+   * default action and the one thing #264 says must not happen. A listener with
+   * `passive: false` is the only way to refuse it.
+   *
+   * On the container and not the window, which is the line ADR 0019 draws for
+   * the keys below and the same line here: the gesture is about these cards, and
+   * a grid on a view the shell is only hiding must not answer a wheel over the
+   * view in front of it.
+   *
+   * One step per event. A trackpad pinch sends a run of them and will cross the
+   * range in a flick, which the range is what makes survivable: both ends are a
+   * density that still renders, so the worst the gesture does is arrive.
+   */
+  useEffect(() => {
+    const container = gridRef.current;
+    if (!container) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey || event.deltaY === 0) return;
+      event.preventDefault();
+      onDensityStep(event.deltaY < 0 ? 1 : -1);
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
+  }, [onDensityStep]);
+
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)
+    // Every chord the shell answers is a `Ctrl` one and nothing here may eat
+    // those; `Ctrl` and `+` is the webview's own zoom and not this grid's.
+    const chord = event.ctrlKey || event.altKey || event.metaKey;
+
+    // The density keys, ahead of the `Shift` half of the guard below rather than
+    // behind it. `+` is `Shift` and `=` on most layouts, so a curator pressing
+    // the key this gesture is named for arrives holding a modifier, and a guard
+    // written for the app's chords would send them away.
+    const by = DENSITY_KEYS[event.key];
+    if (by !== undefined && !chord) {
+      event.preventDefault();
+      onDensityStep(by);
       return;
+    }
+
+    if (chord || event.shiftKey) return;
     const last = wallpapers.length - 1;
     if (index === -1 || !selected) return;
 
@@ -693,6 +1047,13 @@ function Grid({
       // that column of the next row. Clamping to the last card instead would
       // make Down mean two different things depending on how full the last row
       // happens to be.
+      //
+      // The column count and not the plan, in every layout. Under masonry the
+      // card that number lands on is usually the one below and is not obliged to
+      // be, since a tall card makes its column take fewer of them — and reading
+      // the plan here is the version where Down means one thing in the grid and
+      // another in masonry. #255 asks for navigation that works identically in
+      // every layout, and one rule over one list is what that is.
       case "ArrowDown":
         next = index + columns > last ? index : index + columns;
         break;
@@ -735,21 +1096,42 @@ function Grid({
       // told to the virtualiser and `PADDING.className` is worn here, off the
       // one pair. Review mounts every card and its own `pb-8` reaches this same
       // element (ADR 0027).
-      className={cn(
-        "grid",
-        GAP.className,
-        mounted && PADDING.className,
-        GRID_COLUMN_CLASSES,
-        className,
-      )}
+      //
+      // A layout that positions its own cards wears none of it. Its cards are
+      // out of the flow, so a CSS grid has nothing to flow and the padding is
+      // already inside the boxes — what this element is then is the box those
+      // offsets are measured from, which is what `relative` says.
+      className={
+        placed
+          ? cn("relative", className)
+          : cn(
+              "grid",
+              GAP.className,
+              mounted && PADDING.className,
+              // The class for the count the arrows move by and the plan cuts its
+              // rows at, rather than a set of responsive utilities stating the
+              // same thing a second time. A count outside `COLUMN_CLASSES` is a
+              // density range wider than the table, which is a bug in the range
+              // and not in a render, so the grid falls back to its own auto-flow
+              // rather than disappearing.
+              COLUMN_CLASSES[columns],
+              className,
+            )
+      }
       // The window's position inside the scroller, and the reason the class
       // above can still carry a `p-4`: an inline `padding-top` replaces only the
       // top of that shorthand, so the host's horizontal padding survives being
       // told where the mounted range sits.
+      //
+      // Held open by a height instead when the cards position themselves: the
+      // space above and below the window is the space nothing is drawn in, and
+      // an absolutely positioned card adds none of it.
       style={
-        mounted
-          ? { paddingTop: mounted.before, paddingBottom: mounted.after }
-          : undefined
+        placed
+          ? { height: placed.total }
+          : mounted
+            ? { paddingTop: mounted.before, paddingBottom: mounted.after }
+            : undefined
       }
     >
       {/*
@@ -771,6 +1153,11 @@ function Grid({
         keyed on the grid rather than on the selection, and `scoreMoved` a
         boolean read out of the page's set — three identities that all used to
         churn, and each of which would quietly defeat the memo on its own.
+
+        `undersized` is resolved here for the same reason: the comparison is the
+        page's setting against this row's Dimensions, and a card handed the size
+        object would be a card whose props move when the settings struct is
+        replaced, whatever key was actually written (#258).
       */}
       {cards.map((cardIndex) => {
         const wallpaper = wallpapers[cardIndex];
@@ -784,6 +1171,12 @@ function Grid({
             onOpen={onOpen}
             cellIndex={cardIndex}
             selected={cardIndex === index}
+            box={placed?.boxes[cardIndex]}
+            undersized={
+              minimumResolution
+                ? isUndersized(wallpaper, minimumResolution)
+                : false
+            }
           />
         );
       })}

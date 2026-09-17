@@ -21,6 +21,7 @@ const REJECT_DESTINATION: &str = "reject_destination";
 const SCREEN: &str = "screen";
 const MINIMUM_RESOLUTION: &str = "minimum_resolution";
 const REVIEW_LAYOUT: &str = "review_layout";
+const LIBRARY_LAYOUT: &str = "library_layout";
 
 /// The screen to assume when the platform will not name one.
 ///
@@ -161,6 +162,33 @@ impl Default for Detected {
     }
 }
 
+/// How the Library draws its wallpapers: cropped to one shape, or each at its
+/// own.
+///
+/// A choice per tab rather than one for the app, so a browse surface and a
+/// decision queue are not obliged to look alike. This key is the Library tab's;
+/// Review's is its own, and neither is offered in the Settings view — the
+/// control sits on the page bar of the tab it changes, because a control in two
+/// places is two places to look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryLayout {
+    /// The uniform grid: every wallpaper cropped to fill a box of one shape.
+    Grid,
+    /// Columns packed shortest-first, every wallpaper at its own aspect ratio.
+    Masonry,
+}
+
+impl LibraryLayout {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "grid" => Some(Self::Grid),
+            "masonry" => Some(Self::Masonry),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub theme: Theme,
@@ -170,6 +198,8 @@ pub struct Settings {
     pub library_root: String,
     /// A Written path. Relative means one rejected folder beside each wallpaper.
     pub reject_destination: String,
+    /// Which layout the Library tab draws, remembered across restarts.
+    pub library_layout: LibraryLayout,
     /// The screen the curator is curating for, defaulting to the monitor.
     ///
     /// One screen and not two: the crop preview reads its ratio and the
@@ -209,6 +239,9 @@ impl Settings {
             theme: Theme::System,
             library_root: String::new(),
             reject_destination: "./rejected".to_string(),
+            // The layout the app has always had, so a curator who ignores the
+            // control sees exactly what they saw before it existed.
+            library_layout: LibraryLayout::Grid,
             screen: detected.screen,
             minimum_resolution: detected.screen,
             review_layout: ReviewLayout::default(),
@@ -290,6 +323,8 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         theme: read(stored, THEME, Theme::parse).unwrap_or(defaults.theme),
         library_root: text(LIBRARY_ROOT).unwrap_or(defaults.library_root),
         reject_destination: text(REJECT_DESTINATION).unwrap_or(defaults.reject_destination),
+        library_layout: read(stored, LIBRARY_LAYOUT, LibraryLayout::parse)
+            .unwrap_or(defaults.library_layout),
         screen,
         // The one default that is another setting rather than a constant, which
         // is why it is resolved after the screen rather than beside it.
@@ -338,6 +373,14 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         // filesystem: an unmounted drive is not a bad setting.
         LIBRARY_ROOT => Ok(value == without.library_root),
         REJECT_DESTINATION => Ok(value == without.reject_destination),
+        LIBRARY_LAYOUT => {
+            let layout = LibraryLayout::parse(value).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{value:?} is not a layout; expected grid or masonry"
+                ))
+            })?;
+            Ok(layout == without.library_layout)
+        }
         SCREEN => Ok(resolution(value)? == without.screen),
         MINIMUM_RESOLUTION => Ok(resolution(value)? == without.minimum_resolution),
         REVIEW_LAYOUT => {
@@ -415,6 +458,7 @@ mod tests {
                 theme: Theme::System,
                 library_root: String::new(),
                 reject_destination: "./rejected".to_string(),
+                library_layout: LibraryLayout::Grid,
                 screen: size(3840, 2160),
                 minimum_resolution: size(3840, 2160),
                 review_layout: ReviewLayout::Grid,
@@ -828,11 +872,13 @@ mod tests {
         set(&conn, "screen", "2560x1440", detected()).unwrap();
         set(&conn, "minimum_resolution", "1280x720", detected()).unwrap();
         set(&conn, "review_layout", "strip", detected()).unwrap();
+        set(&conn, "library_layout", "masonry", detected()).unwrap();
 
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
         set(&conn, "reject_destination", "./rejected", detected()).unwrap();
         set(&conn, "review_layout", "grid", detected()).unwrap();
+        set(&conn, "library_layout", "grid", detected()).unwrap();
         // The minimum resolution goes back first, against the overridden screen
         // it currently defaults to. Doing it the other way round would mean
         // writing 3840x2160 into a key whose default had already moved there,
@@ -845,10 +891,69 @@ mod tests {
     }
 
     #[test]
+    fn the_library_layout_round_trips_and_survives_the_connection_that_wrote_it() {
+        // The whole of what the control on the Library bar promises: a layout
+        // picked once and still there on the next launch.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            crate::db::init_schema(&conn).unwrap();
+            assert_eq!(
+                get(&conn, detected()).unwrap().library_layout,
+                LibraryLayout::Grid
+            );
+            let returned = set(&conn, "library_layout", "masonry", detected()).unwrap();
+            assert_eq!(returned.library_layout, LibraryLayout::Masonry);
+        }
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().library_layout,
+            LibraryLayout::Masonry
+        );
+        // And it is the Library's alone: nothing else moved with it.
+        assert_eq!(get(&conn, detected()).unwrap().theme, Theme::System);
+    }
+
+    #[test]
+    fn an_invalid_library_layout_on_write_is_a_bad_request_and_changes_nothing() {
+        let conn = store();
+        set(&conn, "library_layout", "masonry", detected()).unwrap();
+
+        let err = set(&conn, "library_layout", "justified", detected()).unwrap_err();
+
+        assert!(
+            matches!(err, AppError::BadRequest(ref m) if m.contains("justified")),
+            "got {err:?}"
+        );
+        assert_eq!(
+            get(&conn, detected()).unwrap().library_layout,
+            LibraryLayout::Masonry
+        );
+    }
+
+    #[test]
+    fn a_library_layout_row_holding_garbage_reads_as_the_grid() {
+        // Boot never fails over a preference, and a layout nothing can draw is
+        // the layout the app has always had rather than a blank page.
+        let conn = store();
+        write_raw_row(&conn, "library_layout", "mosaic");
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().library_layout,
+            LibraryLayout::Grid
+        );
+    }
+
+    #[test]
     fn settings_cross_the_ipc_with_the_fields_client_ts_expects() {
         let conn = store();
         set(&conn, "theme", "dark", detected()).unwrap();
         set(&conn, "library_root", "~/pics", detected()).unwrap();
+        set(&conn, "library_layout", "masonry", detected()).unwrap();
         set(&conn, "screen", "2560x1440", detected()).unwrap();
         set(&conn, "review_layout", "strip", detected()).unwrap();
 
@@ -859,6 +964,9 @@ mod tests {
         assert_eq!(json["theme"], "dark");
         assert_eq!(json["library_root"], "~/pics");
         assert_eq!(json["reject_destination"], "./rejected");
+        // A layout crosses as the same string a write accepts, the way the theme
+        // does, so the frontend can hand a read value straight back.
+        assert_eq!(json["library_layout"], "masonry");
         // A size crosses as the two numbers rather than as the `2560x1440` the
         // column holds, because its readers want different halves of it.
         // `encodeSetting` in `client.ts` writes the stored form back.

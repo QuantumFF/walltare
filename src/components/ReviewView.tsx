@@ -60,6 +60,11 @@ export function ReviewView() {
    * move each other.
    */
   const layout = settings.review_layout;
+  // `settings.minimum_resolution` is here for the undersized badge alone, which
+  // is what the cards below wear it off. It is a display fact and nothing more:
+  // what this worklist holds is `list_wallpapers("active", "score_asc", 50)`
+  // before and after, because excluding undersized wallpapers from review would
+  // silently change what the ranking is over (CONTEXT.md, #258).
   // Where a reject goes, read once for the line on the bar, for the string
   // `move_wallpaper` is handed and for what the toast has left to say. The
   // `movePath` state that used to stand here is gone with the field that edited
@@ -361,15 +366,22 @@ export function ReviewView() {
               startOn={resumeOn}
             />
           ) : (
+            /* The grid's `density` is the same gesture Library answers, bounded
+               shorter: six cards to a row rather than eight, because this
+               page's fifty are wallpapers the curator is deciding about and a
+               card too small to judge has stopped doing that job. Two is the
+               same at the other end, so both tabs go equally large (#264). */
             <WallpaperGrid
               ref={setGrid}
               wallpapers={wallpapers}
               label="Wallpapers to review"
               onAction={perform}
               onOpen={lightbox.openOn}
+              minimumResolution={settings.minimum_resolution}
               animated
               className="pb-8"
               startOn={resumeOn}
+              density="review"
             />
           )}
         </div>

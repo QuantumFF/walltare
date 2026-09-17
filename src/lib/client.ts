@@ -112,6 +112,16 @@ export type Theme = "system" | "light" | "dark";
 export type ReviewLayout = "strip" | "grid";
 
 /**
+ * Mirrors settings::LibraryLayout: how the Library draws its wallpapers.
+ *
+ * `grid` crops every wallpaper to one shape; `masonry` packs columns
+ * shortest-first and draws each at its own aspect ratio. The choice belongs to
+ * the Library tab, which is why the key names it: Review's layout is its own
+ * key, so masonry in Library and something else in Review is a valid pair.
+ */
+export type LibraryLayout = "grid" | "masonry";
+
+/**
  * Mirrors settings::Resolution: a size in pixels, width by height.
  *
  * What the Screen and the Minimum resolution settings hold. Not a wallpaper's
@@ -139,6 +149,15 @@ export interface Settings {
   library_root: string;
   /** A Written path. Relative means one rejected folder beside each wallpaper. */
   reject_destination: string;
+  /**
+   * Which layout the Library tab draws, remembered across restarts.
+   *
+   * Stored here because the store is what survives a restart, and offered
+   * nowhere in the Settings view: the control sits on the Library bar, where
+   * the curator is when they want it changed, and a control in two places is
+   * two places to look.
+   */
+  library_layout: LibraryLayout;
   /**
    * The screen the curator is curating for, defaulting to the monitor the
    * backend detected. One screen and not two: the crop preview reads its ratio
@@ -201,6 +220,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   library_root: "",
   reject_destination: "./rejected",
+  library_layout: "grid",
   screen: FALLBACK_SCREEN,
   minimum_resolution: FALLBACK_SCREEN,
   review_layout: "grid",
