@@ -72,10 +72,15 @@ theme that is not one of three.
 
 σ is the app's own uncertainty scale. It has no unit, the page has no room to
 teach one, and a curator typing `6.5` into a box is guessing — so the control
-names the trade-off it makes and not the number it stores. This is the rule
-[#255](https://github.com/QuantumFF/walltare/issues/255) already set for the
-Review worklist size, which is presets of 10, 25, 50 and 100 rather than a free
-number, for the same reason.
+names the trade-off it makes and not the number it stores.
+
+**Neither issue asked for presets, and this is the decision being recorded.**
+[#255](https://github.com/QuantumFF/walltare/issues/255) makes the Review
+worklist size presets of 10, 25, 50 and 100 rather than a free number, and says
+why; it says nothing either way about this one. The reasoning carries across and
+carries further, because a worklist of 37 is at least a number the curator can
+picture and a σ of 6.5 is not. Extending it is a judgement, and reopening it is
+an amendment to this ADR rather than a change of mind about a control.
 
 The σ is not printed on the page at all. A curator who knows what 4.0 means
 already knows what the three words mean, and one who does not would be reading a
@@ -162,11 +167,19 @@ backend's.
 
 ## Consequences
 
-**A number in the Rank headline now moves without a vote.** `get_stats` is
-re-fetched on the events that already trigger it; a curator who changes the
-threshold while looking at Rank sees the count move on the next fetch rather than
-instantly. Every badge moves immediately, because `set_setting` answers with the
-whole struct and the pages read it from `AppContext`.
+**A number in the Rank headline now moves without a vote.** Every badge moves on
+the write itself, because `set_setting` answers with the whole struct and the
+pages read it out of `AppContext`. The count is the backend's, so the Settings
+section re-reads `get_stats` after a successful write and publishes
+`stats-changed` — the same patch a vote raises, onto a Rank that never unmounted
+(ADR 0015). It is the one section on that page that publishes anything, and it
+has to: "the count and the badges agree" is false for as long as one of them is
+a fetch behind.
+
+A re-read that fails leaves the old count standing rather than blanking it. The
+write has already landed, so the badges are right and the headline is one fetch
+behind — which is where Rank is after any other failed read, and the next vote
+recovers it.
 
 **`Settings` is no longer `Eq`.** Nothing compared two of them for equality in a
 way `PartialEq` does not serve, and the tests that assert a whole struct still

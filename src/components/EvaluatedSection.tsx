@@ -1,7 +1,12 @@
 import { Section } from "@/components/SettingsView";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useApp } from "@/context/AppContext";
-import { DEFAULT_EVALUATED_THRESHOLD, EVALUATED_THRESHOLDS } from "@/lib/client";
+import { useAppEvents } from "@/context/AppEventsContext";
+import {
+  client,
+  DEFAULT_EVALUATED_THRESHOLD,
+  EVALUATED_THRESHOLDS,
+} from "@/lib/client";
 
 // The one setting that changes what a word in the app means rather than what the
 // app looks like. Evaluated used to be a fact about a wallpaper — σ below 4.0 —
@@ -16,6 +21,14 @@ import { DEFAULT_EVALUATED_THRESHOLD, EVALUATED_THRESHOLDS } from "@/lib/client"
 //
 // No Reset control, which is ADR 0020's rule: pressing Balanced is what deletes
 // the row, and the line under the control says so.
+//
+// It is also the only section on this page that publishes. Every badge in the
+// app reads the threshold out of `AppContext`, so those move on the write; the
+// Evaluated count in the Rank headline is the backend's and is patched onto
+// Rank by `stats-changed`, which nothing else here has reason to raise. Without
+// that the two halves of the same claim would be a change apart until the next
+// vote — which is exactly what "the count and the badges agree" forbids
+// (ADR 0046).
 
 /** One offered confidence: the σ stored, the word on the control, and its cost. */
 interface Confidence {
@@ -83,6 +96,24 @@ const CONFIDENCES: Confidence[] = [
  */
 export function EvaluatedSection() {
   const { settings, saveSetting } = useApp();
+  const { publish } = useAppEvents();
+
+  /**
+   * Store the threshold, then tell Rank what the count is now.
+   *
+   * The re-read is `get_stats` and not `readLibrary`, which is the same numbers
+   * plus two side effects this has no business causing: it sets `libraryTotal`
+   * and retires an unreadable-library notice. Nothing about a σ says either.
+   *
+   * A failed re-read leaves the old count standing rather than blanking it. The
+   * write has already landed, so the badges are right and the headline is one
+   * stats fetch behind — which is the state Rank is in after any other failure
+   * to read, and is recoverable by the next vote.
+   */
+  const choose = async (threshold: number) => {
+    await saveSetting("evaluated_threshold", threshold);
+    publish({ type: "stats-changed", stats: await client.getStats() });
+  };
 
   const chosen =
     CONFIDENCES.find(
@@ -108,11 +139,9 @@ export function EvaluatedSection() {
         // refuse cannot be in the table to be shown.
         value={String(settings.evaluated_threshold)}
         onValueChange={(next) => {
-          void saveSetting("evaluated_threshold", Number(next)).catch(
-            (error: unknown) => {
-              console.error("Failed to store the Evaluated threshold:", error);
-            },
-          );
+          void choose(Number(next)).catch((error: unknown) => {
+            console.error("Failed to store the Evaluated threshold:", error);
+          });
         }}
       >
         {CONFIDENCES.map(({ threshold, label }) => (
