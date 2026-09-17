@@ -887,11 +887,6 @@ function Grid({
   startOn,
 }: GridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
-  // The cursor, and the rule that resolves it against the list: the selection
-  // follows the wallpaper, then the position (ADR 0019). It is here rather than
-  // in the page since #230, which is what makes a move a re-render of this
-  // component and of the two cards whose `selected` changed, instead of the page
-  // and every card on it (ADR 0041).
   // How this layout finds a cell and brings one on screen, which is the whole of
   // what the shared roving focus does not already know (`selection.ts`).
   // Rebuilt per render and latched in there, so nothing here has to be stable.

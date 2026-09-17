@@ -133,9 +133,12 @@ export function ReviewView() {
    */
   const handOver = useRef<number | null>(null);
   const resumeOn = handOver.current;
+  // Keyed on the layout change, so an unrelated render between the click and
+  // the confirmed flip does not spend the handover early and drop the curator
+  // back at the top of the worklist.
   useEffect(() => {
     handOver.current = null;
-  });
+  }, [layout]);
 
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
@@ -363,6 +366,7 @@ export function ReviewView() {
               label="Wallpapers to review"
               onAction={perform}
               onOpen={lightbox.openOn}
+              minimumResolution={settings.minimum_resolution}
               startOn={resumeOn}
             />
           ) : (

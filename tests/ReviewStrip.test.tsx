@@ -198,6 +198,32 @@ test("the strip shows one wallpaper and the whole worklist under it", async () =
   ]);
 });
 
+test("an undersized wallpaper is badged on the hero and still in the worklist (#258)", async () => {
+  // The same verdict the grid's cards wear, on the one wallpaper being judged:
+  // Review lists undersized wallpapers rather than excluding them, so the hero
+  // has to say so.
+  stored = settings({
+    review_layout: "strip",
+    minimum_resolution: { width: 1920, height: 1080 },
+  });
+  await openStrip([
+    wallpaper(1, { filename: "small.jpg", width: 1280, height: 720 }),
+    wallpaper(2, { filename: "big.jpg", width: 3840, height: 2160 }),
+  ]);
+
+  expect(
+    reviewView().querySelector('[data-slot="review-hero-undersized"]')
+      ?.textContent,
+  ).toBe("Undersized");
+  expect(entries()).toHaveLength(2);
+
+  await click(inReview().getByRole("option", { name: "big.jpg" }));
+
+  expect(
+    reviewView().querySelector('[data-slot="review-hero-undersized"]'),
+  ).toBeNull();
+});
+
 test("clicking a filmstrip entry moves the hero to it", async () => {
   await openStrip([
     wallpaper(3, { filename: "first.jpg" }),
@@ -382,6 +408,9 @@ test("Enter on a control activates it rather than opening the lightbox", async (
   await press("Enter");
 
   expect(screen.queryByRole("dialog")).toBeNull();
+  // `[]` pins the runner rather than the contract: happy-dom performs no button
+  // activation, so a real `Enter` on the focused Keep still keeps via click and
+  // the guard above is only what keeps the lightbox closed.
   expect(keptIds).toEqual([]);
 });
 

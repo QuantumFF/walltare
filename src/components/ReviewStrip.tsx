@@ -11,8 +11,18 @@ import {
 } from "@/components/selection";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
-import { FILE_IS_GONE, grouped, isEvaluated, score, counted } from "@/lib/copy";
+import { wallpaperImageUrl, type Resolution, type Wallpaper } from "@/lib/client";
+import {
+  FILE_IS_GONE,
+  grouped,
+  isEvaluated,
+  score,
+  counted,
+  dimensionsOf,
+  isUndersized,
+  readableSize,
+  UNDERSIZED,
+} from "@/lib/copy";
 import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { ImageOff } from "lucide-react";
@@ -77,6 +87,16 @@ export interface ReviewStripProps {
   /** The curator asking to look at a wallpaper properly: a click on the hero, or `Enter`. */
   onOpen?: (wallpaper: Wallpaper) => void;
   /**
+   * The curator's Minimum resolution, which is what decides whether the hero
+   * wears the undersized badge (#258).
+   *
+   * The size itself rather than the verdict, because the verdict is one
+   * comparison against the selected row's Dimensions and the hero is the one
+   * wallpaper being judged — the same reason the grid resolves it per card
+   * rather than taking a set of ids. Absent judges nothing undersized.
+   */
+  minimumResolution?: Resolution;
+  /**
    * The handle: the way focus is handed back, and the way the published
    * selection is read.
    *
@@ -124,6 +144,7 @@ export function ReviewStrip({
   label,
   onAction,
   onOpen,
+  minimumResolution,
   ref,
   startOn,
 }: ReviewStripProps) {
@@ -155,6 +176,16 @@ export function ReviewStrip({
     onBlur: handleBlur,
   } = usePublishedSelection(wallpapers, focus, ref, startOn);
   const { wallpaper: selected, index, length, moveTo } = selection;
+
+  // The same verdict the grid's cards wear, on the one wallpaper being judged:
+  // Review lists undersized wallpapers rather than excluding them, so the hero
+  // has to say so (#258). Resolved here off the setting for the same reason
+  // the grid resolves it per card rather than taking a verdict per row.
+  const undersized =
+    selected && minimumResolution
+      ? isUndersized(selected, minimumResolution)
+      : false;
+  const heroSize = selected ? dimensionsOf(selected) : null;
 
   // The hero's area as last measured, and the box the picture is drawn in. The
   // last non-zero measurement is kept, so a view the shell has hidden — which
@@ -228,7 +259,7 @@ export function ReviewStrip({
     if (index === -1 || !selected) return;
 
     // The direct keys, before the movement keys and resolved against the Status
-    // by the grid's own `actionFor`: `K` and `Delete` do exactly what they do on
+    // by the shared `actionFor` beside `STATUS_ACTIONS` in `WallpaperCard.tsx`: `K` and `Delete` do exactly what they do on
     // a card, and a key the Status has no action for does nothing at all. One
     // action vocabulary in the app, so no surface can offer the curator one set
     // with the mouse and another with the keyboard (ADR 0019, ADR 0022).
@@ -391,6 +422,15 @@ export function ReviewStrip({
           >
             {score(selected)}
           </Badge>
+          {undersized && (
+            <Badge
+              data-slot="review-hero-undersized"
+              title={heroSize ? readableSize(heroSize) : undefined}
+              className="shrink-0 bg-white font-medium text-neutral-900"
+            >
+              {UNDERSIZED}
+            </Badge>
+          )}
 
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium" title={selected.path}>
