@@ -28,8 +28,15 @@ import {
   type StatusFilter,
 } from "@/lib/client";
 // The words for a Status, from the file that holds the app's phrasings, so the
-// empty state and the card's own pill spell them alike.
-import { STATUS_LABEL } from "@/lib/copy";
+// empty state and the card's own pill spell them alike — and the one comparison
+// behind the badge and the control below, so the two cannot disagree about which
+// wallpapers are undersized.
+import {
+  isUndersized,
+  readableSize,
+  STATUS_LABEL,
+  UNDERSIZED,
+} from "@/lib/copy";
 import {
   Filter,
   Images,
@@ -41,6 +48,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -98,6 +106,25 @@ function matchesFilter(status: Status, filter: StatusFilter): boolean {
 }
 
 /**
+ * What the empty state says when the list is empty because the curator narrowed
+ * it, which is one sentence over two axes rather than one per combination.
+ *
+ * The adjective before the proper noun, so the two controls read in the order
+ * they were applied: `No undersized Active wallpapers in the library.` A Status
+ * of All contributes nothing, and so does the size control when it is off —
+ * which is also the case this sentence is never used for, since a library with
+ * nothing in it under no narrowing is the other empty state entirely.
+ */
+function emptyNarrowingSentence(
+  filter: StatusFilter,
+  undersizedOnly: boolean,
+): string {
+  const size = undersizedOnly ? "undersized " : "";
+  const status = filter === "all" ? "" : `${STATUS_LABEL[filter]} `;
+  return `No ${size}${status}wallpapers in the library.`;
+}
+
+/**
  * The library page: every matching row in one fetch (ADR 0016), drawn as the
  * shared card in the shared grid, inside the scroll container this view owns.
  *
@@ -123,13 +150,19 @@ export function LibraryView() {
   // `setView` is the empty library's way out: nothing on this page can name a
   // library root, so the state that says so routes to the page that can
   // (ADR 0015, ADR 0020).
+  // `settings` answers two of this page's questions. Which layout the grid
+  // draws, read from the store rather than held here, which is the whole of what
+  // makes it survive a restart: the provider reads every setting before the
+  // first paint, so the first grid the curator sees is already the one they
+  // chose (ADR 0010). And the Minimum resolution, which is the one thing both
+  // the badge on a card and the size control on the bar are comparisons
+  // against — the page holds it once and hands the grid the size, so a curator
+  // who narrows to the undersized wallpapers gets exactly the cards wearing the
+  // badge (CONTEXT.md, #258).
   const { view, setView, settings, saveSetting } = useApp();
   const showing = view === "library";
-  // Which layout the grid draws, read from the store rather than held here,
-  // which is the whole of what makes it survive a restart: the provider reads
-  // every setting before the first paint, so the first grid the curator sees is
-  // already the one they chose (ADR 0010).
   const layout = settings.library_layout;
+  const minimumResolution = settings.minimum_resolution;
 
   // Where a reject goes, read once for the two things that must agree about it:
   // the string `move_wallpaper` is handed, and the boolean the toast reads to
@@ -142,6 +175,21 @@ export function LibraryView() {
   const destination = useRejectDestination();
 
   const [filter, setFilter] = useState<StatusFilter>("all");
+  /**
+   * Whether the list is narrowed to the wallpapers too small for the curator's
+   * screen.
+   *
+   * Its own axis and not a fifth Status chip. The chips answer what the curator
+   * decided about a wallpaper; this answers whether the file is usable at all,
+   * so the two combine and Active and undersized can be asked for together
+   * (CONTEXT.md, #258).
+   *
+   * View state, like the filter and the ordering beside it, and not persisted:
+   * ADR 0016 refused to remember either of those, and a narrowing that survives
+   * a restart is a library that opens missing most of itself for a reason
+   * nothing on screen explains.
+   */
+  const [undersizedOnly, setUndersizedOnly] = useState(false);
   const [ordering, setOrdering] = useState<ListOrdering>("score_desc");
   const [error, setError] = useState<string | null>(null);
   // Rows whose Score has moved since they were fetched. `score-changed` names
@@ -267,7 +315,34 @@ export function LibraryView() {
     scroller.current.scrollTop = scrollTop.current;
   }, [showing]);
 
-  const list = rows ?? [];
+  /**
+   * The rows the grid draws: everything the fetch returned, or only the
+   * undersized ones.
+   *
+   * Narrowed here rather than in `list_wallpapers`, which is the decision this
+   * control turns on. The Status filter is a backend argument because it is a
+   * `WHERE` over a column and ADR 0016 made the four names a serde enum for
+   * exactly that; undersized is not a column and not a Status — it is a
+   * comparison between a wallpaper's Dimensions and a preference, and asking
+   * the backend for it would mean the listing query reading the settings table
+   * and the list going stale the moment a curator changed the Minimum
+   * resolution in another view. Every row is already here (ADR 0016), so the
+   * comparison is over rows in hand and moves with the setting on the next
+   * render.
+   *
+   * A wallpaper whose Dimensions are unknown is skipped rather than counted
+   * either way, which is `isUndersized`'s rule and the same one the badge
+   * follows (ADR 0044).
+   *
+   * Memoised because it is the grid's `wallpapers`, which the selection cursor
+   * and the window are both resolved against: a fresh array per render is a
+   * fresh dependency for both.
+   */
+  const list = useMemo(() => {
+    const fetched = rows ?? [];
+    if (!undersizedOnly) return fetched;
+    return fetched.filter((w) => isUndersized(w, minimumResolution));
+  }, [rows, undersizedOnly, minimumResolution]);
 
   /**
    * The grid, once it has mounted, and the whole of what this page knows about
@@ -328,6 +403,50 @@ export function LibraryView() {
             );
           })}
         </div>
+
+        {/* The other axis, and deliberately not a fifth chip.
+
+            The chips answer what the curator decided about a wallpaper and this
+            answers whether the file is usable at all, so the two combine rather
+            than replacing one another: Active and undersized is a question this
+            bar can be asked, and it is the question that makes cleaning them out
+            one action rather than a hunt (CONTEXT.md, #258).
+
+            Said in the shape as well as in the position. The chips are a group
+            of four pills sharing one accessible name; this is one square-edged
+            button standing outside that group, so what a curator sees is two
+            controls rather than five of one. `aria-pressed` is the same
+            statement to a screen reader that the fill is to an eye, and it is
+            pressed and not checked for the reason the chips are: a `radiogroup`
+            would put the arrow keys on the bar, which this page spends on the
+            grid (ADR 0019).
+
+            The word on it is the word on the badge, from `copy.ts`, so the
+            control and the mark it rounds up cannot come to be called two
+            things. The `title` names the number behind both, since the Minimum
+            resolution is a setting two views away and the word alone does not
+            say what a wallpaper is being measured against. It states the
+            threshold rather than the gesture, so it reads the same pressed and
+            unpressed.
+
+            It returns the list to the top, which is `fetchRows`' reorder rule
+            applied to the one narrowing that does not refetch: a position means
+            something different in a list of forty than in the five thousand it
+            was taken in, so the curator is put at the start of what they asked
+            for rather than somewhere in the middle of it (ADR 0016). */}
+        <Button
+          size="sm"
+          variant={undersizedOnly ? "secondary" : "ghost"}
+          aria-pressed={undersizedOnly}
+          title={`Below the minimum resolution of ${readableSize(minimumResolution)}`}
+          onClick={() => {
+            setUndersizedOnly((on) => !on);
+            toTop();
+          }}
+          className="shrink-0"
+        >
+          {UNDERSIZED}
+        </Button>
 
         {/* ADR 0018's line, and it sits between the two controls because it is
             the thing that truncates when the bar runs out of width: the chips
@@ -427,11 +546,16 @@ export function LibraryView() {
 
         {/* The row count, which is the size of the library under this filter and
             not a page of it: one call returns every matching row, so nothing
-            asks a second question to say how many there are (ADR 0016). */}
+            asks a second question to say how many there are (ADR 0016).
+
+            It counts what is on the page rather than what came back, so the
+            size control moves it the way a chip does. A number that stayed at
+            the whole library's size while the grid showed forty cards would be
+            the one thing on the bar disagreeing with the thing under it. */}
         <span className="shrink-0 text-xs whitespace-nowrap text-muted-foreground">
           {rows === null
             ? "Loading…"
-            : `${rows.length} ${rows.length === 1 ? "wallpaper" : "wallpapers"}`}
+            : `${list.length} ${list.length === 1 ? "wallpaper" : "wallpapers"}`}
         </span>
       </PageBar>
 
@@ -471,14 +595,20 @@ export function LibraryView() {
             is empty because a call has not come back is the state this
             distinction exists to prevent.
 
-            Which of the two is showing is read off the filter, because that is
-            the only thing that can tell them apart. With All selected the fetch
-            asked about the whole library, so no rows means no library. The other
-            three asked about one Status, so no rows means a library with nothing
-            of that Status in it — the library is fine and this view of it is
-            not. */}
-        {rows !== null && rows.length === 0 ? (
-          filter === "all" ? (
+            Which of the two is showing is what the two controls are read for,
+            and they are read differently because they narrow at different
+            points. With the Status filter on All the fetch asked about the whole
+            library, so a fetch that came back with nothing is a library with
+            nothing in it — whatever the size control is doing, since a narrowing
+            of no rows is still no rows. Any other case is a library with nothing
+            matching in it: the library is fine and this view of it is not.
+
+            So the empty library is the *fetch* coming back empty under All, and
+            not the list on screen being empty, which is the distinction the size
+            control introduces: it drops rows after the fetch, and a curator who
+            pressed it must not be told their library was never scanned. */}
+        {rows !== null && list.length === 0 ? (
+          filter === "all" && rows.length === 0 ? (
             /* The route carries `focus`, so the curator lands on the field they
                have to fill in rather than on a page of four sections with the
                answer somewhere in it (ADR 0020). `returnTo` is this page by
@@ -501,18 +631,26 @@ export function LibraryView() {
                domain's proper nouns and `STATUS_LABEL` is where the app agrees
                with itself about them, card pill included (`copy.ts`).
 
-               The way out is the same state setter the chips on the bar write,
-               not a chip itself: #130 turned that control from a `<select>`
-               into four buttons, and an empty state reaching for a DOM node
-               would have gone with it. Going through `setFilter` also means the
-               refetch and the scroll reset are the ones a filter change already
-               owns (ADR 0016). */
+               The way out is the same state setters the controls on the bar
+               write, not a control itself: #130 turned the filter from a
+               `<select>` into four buttons, and an empty state reaching for a
+               DOM node would have gone with it. Going through `setFilter` also
+               means the refetch and the scroll reset are the ones a filter
+               change already owns (ADR 0016).
+
+               It clears both axes, because it promises all the wallpapers and
+               the curator cannot be expected to know which of the two controls
+               emptied the page — a way out that left the size control pressed
+               would land them on the same empty screen. */
             <EmptyState
               icon={Filter}
               action="Show all wallpapers"
-              onAction={() => setFilter("all")}
+              onAction={() => {
+                setFilter("all");
+                setUndersizedOnly(false);
+              }}
             >
-              No {STATUS_LABEL[filter]} wallpapers in the library.
+              {emptyNarrowingSentence(filter, undersizedOnly)}
             </EmptyState>
           )
         ) : (
@@ -559,6 +697,7 @@ export function LibraryView() {
             onAction={perform}
             onOpen={lightbox.openOn}
             scoresMoved={scoresMoved}
+            minimumResolution={minimumResolution}
             scroller={scroller}
             density="library"
             /* The one thing the layout choice changes down here. The grid is

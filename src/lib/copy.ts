@@ -17,7 +17,7 @@
  * Nothing here is a component and nothing here reaches the backend, which is why
  * it sits beside `client.ts` rather than inside any of the files that call it.
  */
-import type { Status, Wallpaper } from "@/lib/client";
+import type { Resolution, Status, Wallpaper } from "@/lib/client";
 
 /**
  * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
@@ -153,4 +153,73 @@ export const EVALUATED_SIGMA = 4.0;
 
 export function isEvaluated(wallpaper: Wallpaper): boolean {
   return wallpaper.rating_sigma < EVALUATED_SIGMA;
+}
+
+/**
+ * A size as the curator reads it: `3840 × 2160`, with the multiplication sign
+ * rather than the `x` the settings column holds.
+ *
+ * Two kinds of thing are written this way and they are not the same kind. The
+ * Screen and the Minimum resolution are stated preferences; a wallpaper's
+ * Dimensions are a fact about a file. What they share is the shape and so the
+ * phrasing, which is the whole of why it is down here rather than in either of
+ * the surfaces that prints one (CONTEXT.md).
+ */
+export function readableSize({ width, height }: Resolution): string {
+  return `${width} × ${height}`;
+}
+
+/**
+ * What a wallpaper below the Minimum resolution is called, on the badge that
+ * says so and in the accessible name of the card carrying it.
+ *
+ * Not a Status, and not written like one. CONTEXT.md has three of those and
+ * undersized is not a fourth: it is a fact about a file next to a preference, so
+ * an undersized wallpaper is still Eligible, still votes and still appears in
+ * review. The word sits here for the reason `FILE_IS_GONE` does — one fact, one
+ * phrasing, wherever it is printed.
+ */
+export const UNDERSIZED = "Undersized";
+
+/**
+ * A wallpaper's Dimensions as one size, or `null` while nothing has read them.
+ *
+ * The two columns are NULL together and set together — they are written in one
+ * statement and read off one file — so the pair is one fact and this is the one
+ * place that says so (ADR 0044). Both readers want the pair rather than either
+ * half: the comparison below needs two numbers and the badge's tooltip prints
+ * two numbers, and each of them re-deriving "unknown means both" is a second
+ * copy of a rule that can only ever be wrong in the same way.
+ */
+export function dimensionsOf(wallpaper: Wallpaper): Resolution | null {
+  const { width, height } = wallpaper;
+  return width === null || height === null ? null : { width, height };
+}
+
+/**
+ * CONTEXT.md's undersized: a wallpaper whose Dimensions fall below the Minimum
+ * resolution.
+ *
+ * Below on either axis, rather than by a count of pixels. The question the
+ * curator is asking is whether the file covers their screen, and a 3840x1080
+ * ultrawide holds more pixels than a 2560x1440 while leaving half of a 4K
+ * desktop for the upscaler to invent.
+ *
+ * **A wallpaper whose Dimensions nothing has read is not undersized.** That is
+ * ADR 0044's rule, and it is one rule for both readers: no badge on the card,
+ * and out of the filter rather than counted either way. `dimensionsOf` above is
+ * where the unread row is recognised, so this reads as the comparison it is.
+ *
+ * The minimum arrives as an argument rather than being read from the settings
+ * store here, because this file reaches nothing: the card is handed a boolean
+ * and the library page holds the setting, which is what keeps a badge and a
+ * filter that must agree reading one comparison.
+ */
+export function isUndersized(
+  wallpaper: Wallpaper,
+  minimum: Resolution,
+): boolean {
+  const size = dimensionsOf(wallpaper);
+  if (size === null) return false;
+  return size.width < minimum.width || size.height < minimum.height;
 }

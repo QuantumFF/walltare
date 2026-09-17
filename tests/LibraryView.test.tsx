@@ -174,6 +174,25 @@ async function filterBy(label: string) {
   await click(bar().getByRole("button", { name: label }));
 }
 
+/** The size control on the bar: its own axis, not a fifth chip (#258). */
+const sizeControl = () => bar().getByRole("button", { name: "Undersized" });
+
+/** The buttons inside the chips' group, which is the Status axis and only that. */
+const chipLabels = () =>
+  within(screen.getByRole("group", { name: "Filter by Status" }))
+    .getAllByRole("button")
+    .map((el) => el.textContent);
+
+/** Narrow the list to the undersized wallpapers, or widen it back. */
+const narrowToUndersized = () => click(sizeControl());
+
+/** Whether the bar marks the size control as the one narrowing the list. */
+const narrowedToUndersized = () =>
+  sizeControl().getAttribute("aria-pressed") === "true";
+
+/** The row count the bar prints, which is a count of what is on the page. */
+const rowCount = () => bar().getByText(/^\d+ wallpapers?$/).textContent;
+
 /** The chip the bar marks as the current filter, or `null` for none. */
 const pressedChip = () =>
   bar()
@@ -1082,4 +1101,195 @@ test("a layout switch under a window keeps the selection on the wallpaper, node 
   expect(
     selected.map((el) => el.getAttribute("aria-label")),
   ).toEqual(["wall-400.jpg, Active"]);
+});
+
+// The undersized badge and the control that rounds them up (#258). Two axes and
+// two controls: the chips answer what the curator decided about a wallpaper, and
+// this answers whether the file is usable at all, so Active and undersized is a
+// question the bar can be asked.
+//
+// Every test below states the Minimum resolution it is about rather than leaning
+// on the mocked monitor, because the whole of what these assert is a comparison
+// against that number.
+
+/** A Minimum resolution these tests can put wallpapers on either side of. */
+const MINIMUM = { minimum_resolution: { width: 1920, height: 1080 } };
+
+test("a wallpaper below the minimum resolution is badged and one at it is not", async () => {
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: 1280, height: 720 }),
+      wallpaper(2, { width: 1920, height: 1080 }),
+      wallpaper(3, { width: 3840, height: 2160 }),
+      // Wide enough and too short. The comparison is per axis rather than over
+      // a count of pixels, because what the curator is asking is whether the
+      // file covers their screen — this one holds more pixels than the minimum
+      // and still leaves a third of the height to the upscaler (CONTEXT.md).
+      wallpaper(4, { width: 3840, height: 1000 }),
+    ],
+    MINIMUM,
+  );
+
+  // The badge is a word on the card and a word in the cell's accessible name,
+  // for the reason the Status is both: a cell's own name hides its contents, so
+  // a mark nobody reading with a screen reader is told about is a mark half the
+  // curators do not have (ADR 0019).
+  expect(cardName(1)).toBe("wall-1.jpg, Active, Undersized");
+  expect(within(cardFor(1) as HTMLElement).getByText("Undersized")).toBeTruthy();
+
+  // At the minimum is not below it.
+  expect(cardName(2)).toBe("wall-2.jpg, Active");
+  expect(cardName(3)).toBe("wall-3.jpg, Active");
+  expect(cardName(4)).toBe("wall-4.jpg, Active, Undersized");
+});
+
+test("a wallpaper whose Dimensions are unknown carries no badge", async () => {
+  await openLibraryOf([wallpaper(1, { width: null, height: null })], MINIMUM);
+
+  // A library still being backfilled says nothing rather than something wrong:
+  // the curator cannot tell a measured library from one being measured, so a
+  // badge on an unread row would be a verdict the app has not reached
+  // (ADR 0044).
+  expect(cardName(1)).toBe("wall-1.jpg, Active");
+  expect(
+    within(cardFor(1) as HTMLElement).queryByText("Undersized"),
+  ).toBeNull();
+});
+
+test("the size control narrows the list to the undersized wallpapers", async () => {
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: 1280, height: 720 }),
+      wallpaper(2, { width: 3840, height: 2160 }),
+      wallpaper(3, { width: null, height: null }),
+    ],
+    MINIMUM,
+  );
+  expect(rowCount()).toBe("3 wallpapers");
+
+  await narrowToUndersized();
+
+  // The one wallpaper wearing the badge, and the count says so: what the bar
+  // prints is what the grid is showing.
+  expect(cardFor(1)).not.toBeNull();
+  expect(cardFor(2)).toBeNull();
+  // Skipped rather than counted either way. An unread row is not undersized and
+  // is not proof that it is fine, so it leaves with the rest (ADR 0044).
+  expect(cardFor(3)).toBeNull();
+  expect(rowCount()).toBe("1 wallpaper");
+  expect(narrowedToUndersized()).toBe(true);
+
+  await narrowToUndersized();
+
+  expect(mountedCards()).toHaveLength(3);
+  expect(narrowedToUndersized()).toBe(false);
+
+  // Nothing was asked of the backend for any of it. The narrowing is a
+  // comparison against a preference over rows already fetched, not a listing,
+  // which is what keeps it off every other surface asking the same command
+  // (ADR 0016).
+  expect(listCalls).toBe(1);
+  expect(listArgs).toEqual([["all", "score_desc"]]);
+});
+
+test("the size control combines with a Status chip rather than replacing one", async () => {
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: 1280, height: 720 }),
+      wallpaper(2, { width: 1280, height: 720, status: "kept" }),
+      wallpaper(3, { width: 3840, height: 2160 }),
+    ],
+    MINIMUM,
+  );
+
+  await filterBy("Active");
+  await narrowToUndersized();
+
+  // Both controls are on at once, and the bar says so on both: the chip is the
+  // pressed one of four and the size control is pressed beside them. Asking for
+  // one did not clear the other.
+  expect(pressedChip()).toBe("Active");
+  expect(narrowedToUndersized()).toBe(true);
+
+  // And it is not one of the chips. The group the four sit in is the Status
+  // axis, and a fifth entry in it would be a control that replaces a Status
+  // rather than combining with one (CONTEXT.md, ADR 0016).
+  expect(chipLabels()).toEqual(["All", "Active", "Kept", "Rejected"]);
+
+  // The Active wallpaper that is too small, and neither the Kept one that is
+  // nor the Active one that is big enough.
+  expect(cardFor(1)).not.toBeNull();
+  expect(cardFor(2)).toBeNull();
+  expect(cardFor(3)).toBeNull();
+  expect(rowCount()).toBe("1 wallpaper");
+});
+
+test("a size control matching nothing names both axes and the way out clears both", async () => {
+  await openLibraryOf([wallpaper(1, { width: 3840, height: 2160 })], MINIMUM);
+
+  await filterBy("Active");
+  await narrowToUndersized();
+
+  // One sentence over two axes, in the order they were applied, rather than one
+  // per combination. The library is fine and this view of it is not, which is
+  // what separates it from the empty-library screen.
+  expect(
+    screen.getByText("No undersized Active wallpapers in the library."),
+  ).toBeTruthy();
+  expect(
+    screen.queryByText("Nothing has been scanned into the library yet."),
+  ).toBeNull();
+
+  await click(screen.getByRole("button", { name: "Show all wallpapers" }));
+
+  // Both, because the button promises all the wallpapers and the curator cannot
+  // be expected to know which of the two controls emptied the page.
+  expect(pressedChip()).toBe("All");
+  expect(narrowedToUndersized()).toBe(false);
+  expect(cardFor(1)).not.toBeNull();
+});
+
+test("an empty library still reads as one under the size control", async () => {
+  await openLibraryOf([], MINIMUM);
+
+  await narrowToUndersized();
+
+  // Nothing was narrowed away, because the fetch came back with nothing to
+  // narrow. A library that has never been scanned into keeps the route to the
+  // field that fixes it rather than blaming a control the curator just pressed,
+  // which is why the empty library is read off the fetch and not off the list
+  // on screen (ADR 0015, ADR 0020).
+  expect(
+    screen.getByText("Nothing has been scanned into the library yet."),
+  ).toBeTruthy();
+  expect(
+    screen.queryByText("No undersized wallpapers in the library."),
+  ).toBeNull();
+
+  await click(screen.getByRole("button", { name: "Choose a library root" }));
+
+  expect(currentView()).toBe("settings");
+  expect(focusedField()).toBe("library_root");
+});
+
+test("the badge is on the card in masonry too, not only in the grid", async () => {
+  // The badge is a fact about the file rather than about how the cards were laid
+  // out, and both layouts draw the same card: what masonry changes is the box
+  // the card is given, not what is printed on it (ADR 0045, #262).
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: 1280, height: 720 }),
+      wallpaper(2, { width: 3840, height: 2160 }),
+    ],
+    { ...MINIMUM, library_layout: "masonry" },
+  );
+
+  // Masonry is drawing, which is the half that would otherwise go unstated: each
+  // card carries the position the plan gave it rather than being flowed.
+  expect(pressedLayout()).toBe("Masonry");
+  expect(positionedCards().length).toBe(mountedCards().length);
+
+  expect(cardName(1)).toBe("wall-1.jpg, Active, Undersized");
+  expect(within(cardFor(1) as HTMLElement).getByText("Undersized")).toBeTruthy();
+  expect(cardName(2)).toBe("wall-2.jpg, Active");
 });

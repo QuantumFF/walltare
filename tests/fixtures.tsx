@@ -68,10 +68,13 @@ export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper 
     rating_sigma: 8.333,
     comparisons_count: 0,
     origin_path: null,
-    // A 16:9 wallpaper. Pass `width: null` and `height: null` for a row whose
-    // Dimensions nothing has read yet (ADR 0044).
-    width: 1920,
-    height: 1080,
+    // A 16:9 wallpaper exactly as large as `DETECTED_SCREEN`, which is the
+    // Minimum resolution a test that overrides nothing gets: a default row is
+    // therefore not undersized, so a file that carries the badge is one a test
+    // asked to be too small (#258). Pass `width: null` and `height: null` for a
+    // row whose Dimensions nothing has read yet (ADR 0044).
+    width: DETECTED_SCREEN.width,
+    height: DETECTED_SCREEN.height,
     ...over,
   };
 }

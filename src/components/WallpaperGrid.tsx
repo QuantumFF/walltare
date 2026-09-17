@@ -3,7 +3,13 @@ import {
   WallpaperCard,
   type CardAction,
 } from "@/components/WallpaperCard";
-import type { LibraryLayout, Status, Wallpaper } from "@/lib/client";
+import type {
+  LibraryLayout,
+  Resolution,
+  Status,
+  Wallpaper,
+} from "@/lib/client";
+import { isUndersized } from "@/lib/copy";
 import {
   NOTHING_MOUNTED,
   densityColumns,
@@ -914,6 +920,22 @@ export interface WallpaperGridProps {
    */
   scoresMoved?: ReadonlySet<number>;
   /**
+   * The curator's Minimum resolution, which is what decides whether a card
+   * wears the undersized badge (#258).
+   *
+   * The size itself rather than the verdict per row, because the verdict is one
+   * comparison against two numbers and the rows are the list this component
+   * already holds — a set of ids handed down beside them would be the same fact
+   * arranged twice. `scoresMoved` above is a set for the opposite reason: that
+   * one arrives as ids, because `score-changed` names wallpapers and nothing
+   * about them can be recomputed from the row.
+   *
+   * Absent judges nothing undersized, which is what a grid mounted outside the
+   * app's settings gets. Both pages pass it, and a wallpaper whose Dimensions
+   * are unknown is answered by `isUndersized` rather than here (ADR 0044).
+   */
+  minimumResolution?: Resolution;
+  /**
    * The scroll box this grid sits inside, for a host that has one.
    *
    * With it the grid windows itself: a few dozen cards in the DOM out of the
@@ -1156,6 +1178,7 @@ function Grid({
   onAction,
   animated = false,
   scoresMoved,
+  minimumResolution,
   reveal,
   mounted,
   columns,
@@ -1556,6 +1579,11 @@ function Grid({
         keyed on the grid rather than on the selection, and `scoreMoved` a
         boolean read out of the page's set — three identities that all used to
         churn, and each of which would quietly defeat the memo on its own.
+
+        `undersized` is resolved here for the same reason: the comparison is the
+        page's setting against this row's Dimensions, and a card handed the size
+        object would be a card whose props move when the settings struct is
+        replaced, whatever key was actually written (#258).
       */}
       {cards.map((cardIndex) => {
         const wallpaper = wallpapers[cardIndex];
@@ -1570,6 +1598,11 @@ function Grid({
             cellIndex={cardIndex}
             selected={cardIndex === index}
             box={placed?.boxes[cardIndex]}
+            undersized={
+              minimumResolution
+                ? isUndersized(wallpaper, minimumResolution)
+                : false
+            }
           />
         );
       })}
