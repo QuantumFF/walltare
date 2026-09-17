@@ -1228,10 +1228,10 @@ mod tests {
         set(&conn, "review_worklist_size", "50", detected()).unwrap();
         set(&conn, "startup_view", "rank", detected()).unwrap();
         set(&conn, "review_ordering", "score_asc", detected()).unwrap();
-        set(&conn, "evaluated_threshold", "4", detected()).unwrap();        // The minimum resolution goes back first, against the overridden screen
-        // it currently defaults to. Doing it the other way round would mean
-        // writing 3840x2160 into a key whose default had already moved there,
-        // which is the same reset arriving by a different route.
+        set(&conn, "evaluated_threshold", "4", detected()).unwrap(); // The minimum resolution goes back first, against the overridden screen
+                                                                     // it currently defaults to. Doing it the other way round would mean
+                                                                     // writing 3840x2160 into a key whose default had already moved there,
+                                                                     // which is the same reset arriving by a different route.
         set(&conn, "minimum_resolution", "2560x1440", detected()).unwrap();
         let returned = set(&conn, "screen", "3840x2160", detected()).unwrap();
 
@@ -1628,5 +1628,6 @@ mod tests {
         assert_eq!(
             evaluated_threshold(&conn).unwrap(),
             DEFAULT_EVALUATED_THRESHOLD
-        );    }
+        );
+    }
 }
