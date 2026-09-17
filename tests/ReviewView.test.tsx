@@ -370,7 +370,7 @@ test("ordering by the highest Scores asks for that, and the bar says so", async 
   // own (ADR 0028).
   expect(orderings).toEqual(["score_desc"]);
   // And the bar says which, because the control that decided it is on another
-  // page and fifty of the best and fifty of the worst look alike.
+  // page and a worklist of the best and one of the worst look alike.
   expect(orderingSentence()).toBe("Highest Scores first");
 });
 
