@@ -1,4 +1,4 @@
-import type { Resolution, SettingKey, Settings, Wallpaper } from "@/lib/client";
+import type { AppError, Resolution, SettingKey, Settings, Wallpaper } from "@/lib/client";
 import { act, cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
@@ -187,7 +187,10 @@ test.each(["strip", "lightbox"])(
     await enterStrip();
     if (surface === "lightbox") await press("Enter");
     mockCommand("set_setting", () =>
-      Promise.reject({ kind: "database", message: "The settings database is read-only" }),
+      Promise.reject({
+        kind: "db",
+        message: "The settings database is read-only",
+      } satisfies AppError),
     );
 
     await press("c");
