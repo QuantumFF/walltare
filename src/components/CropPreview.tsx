@@ -1,9 +1,10 @@
+import { useToaster } from "@/components/ToastSurface";
 import { useApp } from "@/context/AppContext";
 import type { Wallpaper } from "@/lib/client";
 import { cropCaption, dimensionsOf } from "@/lib/copy";
 import { cropToFill, ratioOf, type CropPlan } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
-import { useCallback, type CSSProperties } from "react";
+import { useCallback } from "react";
 
 /**
  * Whether the crop preview is up, and the press that changes that.
@@ -20,17 +21,14 @@ import { useCallback, type CSSProperties } from "react";
  */
 export function useCropPreview(): { on: boolean; toggle: () => void } {
   const { settings, saveSetting } = useApp();
+  const { show } = useToaster();
   const on = settings.crop_preview;
 
   const toggle = useCallback(() => {
-    // Nothing is said about a write that failed. What is on screen is a
-    // read-out of the setting, so a refused write leaves the bars where they
-    // were, which is the whole of what there is to report — the same bargain
-    // the two layout controls make (ADR 0010).
     void saveSetting("crop_preview", !on).catch((error: unknown) => {
-      console.error("Failed to store the crop preview:", error);
+      show({ kind: "save-failed", noun: "the crop preview", error });
     });
-  }, [on, saveSetting]);
+  }, [on, saveSetting, show]);
 
   return { on, toggle };
 }
@@ -92,20 +90,22 @@ export function CropPreview({ wallpaper }: CropPreviewProps) {
           own shape draws neither. */}
       {plan && plan.side > 0 && (
         <>
-          <Bar edge="left" style={{ left: 0, width: percent(plan.side) }} />
-          <Bar edge="right" style={{ right: 0, width: percent(plan.side) }} />
+          <Bar edge="left" share={plan.side} />
+          <Bar edge="right" share={plan.side} />
         </>
       )}
       {plan && plan.band > 0 && (
         <>
-          <Bar edge="top" style={{ top: 0, height: percent(plan.band) }} />
-          <Bar edge="bottom" style={{ bottom: 0, height: percent(plan.band) }} />
+          <Bar edge="top" share={plan.band} />
+          <Bar edge="bottom" share={plan.band} />
         </>
       )}
 
       {/* The kept region, outlined so the boundary between kept and lost is
-          unambiguous, and the caption's own box so the line always sits inside
-          what survives rather than in a band about to be thrown away.
+          unambiguous, and the caption so the line is always readable: it sits
+          across the bottom of the whole picture rather than inside what
+          survives, because a wallpaper cropped almost out of existence leaves
+          a kept region too narrow to hold its own percentage.
 
           An `outline` drawn inwards rather than a border: a border would take
           its two pixels out of the region it is marking, and on the axis that is
@@ -129,13 +129,14 @@ export function CropPreview({ wallpaper }: CropPreviewProps) {
             : { inset: 0 }
         }
         className={cn(
-          "absolute flex items-end justify-center",
+          "absolute",
           plan && "outline-2 -outline-offset-2 outline-white/90",
         )}
-      >
+      />
+      <div className="absolute inset-x-0 bottom-0 flex justify-center p-3">
         <p
           data-slot="crop-caption"
-          className="m-3 max-w-full truncate rounded-full bg-neutral-950/80 px-3 py-1 text-xs font-medium text-white tabular-nums"
+          className="max-w-full rounded-xl bg-neutral-950/80 px-3 py-1 text-center text-xs font-medium wrap-anywhere text-white tabular-nums"
         >
           {cropCaption(screen, plan?.lost ?? null)}
         </p>
@@ -152,15 +153,14 @@ function percent(share: number): string {
 /**
  * One discarded region.
  *
- * The two in a pair are opposite edges of the same axis, so each is handed the
- * edge and the length that differ and stretches across the other axis from here.
+ * The edge determines position and axis; the share determines thickness.
  */
 function Bar({
   edge,
-  style,
+  share,
 }: {
   edge: "left" | "right" | "top" | "bottom";
-  style: CSSProperties;
+  share: number;
 }) {
   const vertical = edge === "left" || edge === "right";
   return (
@@ -172,8 +172,10 @@ function Bar({
       // the arithmetic `layout-plan.test.ts` already pins.
       data-edge={edge}
       style={{
-        ...style,
-        ...(vertical ? { top: 0, bottom: 0 } : { left: 0, right: 0 }),
+        [edge]: 0,
+        ...(vertical
+          ? { top: 0, bottom: 0, width: percent(share) }
+          : { left: 0, right: 0, height: percent(share) }),
       }}
       className="absolute bg-neutral-950/70"
     />

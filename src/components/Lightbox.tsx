@@ -421,7 +421,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
       // sending them back to the strip to ask it (#266).
       if (event.key === "c" || event.key === "C") {
         event.preventDefault();
-        toggleCrop();
+        if (!event.repeat) toggleCrop();
         return;
       }
 

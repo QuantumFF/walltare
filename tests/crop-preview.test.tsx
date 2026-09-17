@@ -157,6 +157,53 @@ test("C turns the crop preview on and off in the Review strip", async () => {
   expect(preview()).toBeNull();
 });
 
+test.each(["strip", "lightbox"])(
+  "holding C in the %s toggles only once per press",
+  async (surface) => {
+    await openStrip([wallpaper(1)]);
+    await enterStrip();
+    if (surface === "lightbox") await press("Enter");
+
+    await press("c");
+    await press("c", { repeat: true });
+    await press("c", { repeat: true });
+    expect(preview()).not.toBeNull();
+    expect(settingWrites).toEqual([{ key: "crop_preview", value: "true" }]);
+
+    await press("c");
+    await press("c", { repeat: true });
+    expect(preview()).toBeNull();
+    expect(settingWrites).toEqual([
+      { key: "crop_preview", value: "true" },
+      { key: "crop_preview", value: "false" },
+    ]);
+  },
+);
+
+test.each(["strip", "lightbox"])(
+  "a failed crop setting write in the %s explains the failure without changing the preview",
+  async (surface) => {
+    await openStrip([wallpaper(1)]);
+    await enterStrip();
+    if (surface === "lightbox") await press("Enter");
+    mockCommand("set_setting", () =>
+      Promise.reject({ kind: "database", message: "The settings database is read-only" }),
+    );
+
+    await press("c");
+
+    expect(preview()).toBeNull();
+    const toast = document.querySelector('[data-slot="toast"]');
+    expect(toast?.querySelector('[data-slot="toast-title"]')?.textContent).toBe(
+      "Couldn't save the crop preview",
+    );
+    expect(toast?.querySelector('[data-slot="toast-description"]')?.textContent).toBe(
+      "The settings database is read-only",
+    );
+    expect(stored.crop_preview).toBe(false);
+  },
+);
+
 test("the preview stays up while the curator arrows through the worklist", async () => {
   // The whole reason it is a toggle. A key held down is a key that cannot
   // arrow, so the bars have to survive a step.

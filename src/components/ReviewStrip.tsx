@@ -300,7 +300,7 @@ export function ReviewStrip({
     // curator arrows through the worklist (#266).
     if (event.key === "c" || event.key === "C") {
       event.preventDefault();
-      crop.toggle();
+      if (!event.repeat) crop.toggle();
       return;
     }
 

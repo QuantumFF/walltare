@@ -487,6 +487,7 @@ export async function press(
   key: string,
   options: {
     target?: Window | Element;
+    repeat?: boolean;
     ctrlKey?: boolean;
     altKey?: boolean;
     metaKey?: boolean;
