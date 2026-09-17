@@ -4,7 +4,6 @@ import type { Settings, Wallpaper } from "@/lib/client";
 import {
   act,
   cleanup,
-  createEvent,
   fireEvent,
   screen,
   within,
@@ -12,7 +11,9 @@ import {
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  cardsInARow,
   click,
+  ctrlWheel,
   currentView,
   deferred,
   flush,
@@ -258,33 +259,12 @@ async function enterGrid() {
   });
 }
 
-/**
- * Ctrl and the wheel over the grid, as a browser delivers it.
- *
- * `ctrlKey` is set on the event rather than passed to `fireEvent`: happy-dom's
- * `WheelEvent` takes the init and leaves the modifier flags undefined, so the
- * flag is arranged on the real event the way `browserLaysOutTheScroller`
- * arranges a real box.
- */
-async function ctrlWheel(deltaY: number): Promise<void> {
-  const target = screen.getByRole("grid", {
-    name: "Wallpapers in the library",
-  });
-  const event = createEvent.wheel(target, { deltaY });
-  Object.defineProperty(event, "ctrlKey", { value: true });
-  await act(async () => {
-    fireEvent(target, event);
-  });
-  await flush();
-}
-
-/** Which card `ArrowDown` reaches from the first, which is the row's width. */
-async function cardsInARow(): Promise<number> {
-  await press("Home");
-  await press("ArrowDown");
-  const name = document.activeElement?.getAttribute("aria-label") ?? "";
-  return Number(/^wall-(\d+)\.jpg/.exec(name)?.[1]) - 1;
-}
+/** The density gesture over this page's grid. */
+const zoom = (deltaY: number) =>
+  ctrlWheel(
+    screen.getByRole("grid", { name: "Wallpapers in the library" }),
+    deltaY,
+  );
 
 test("the density gesture reaches this page, and stops at the browse surface's bound", async () => {
   // The count the curator sees is how many cards share a row, and `ArrowDown`
@@ -297,12 +277,12 @@ test("the density gesture reaches this page, and stops at the browse surface's b
   await enterGrid();
   expect(await cardsInARow()).toBe(4);
 
-  await ctrlWheel(-100);
+  await zoom(-100);
   expect(await cardsInARow()).toBe(3);
 
   // Eight is where Library stops, which is wider than Review goes: this is the
   // browse surface, and going wide over five thousand wallpapers is the point.
-  for (let at = 0; at < 8; at++) await ctrlWheel(100);
+  for (let at = 0; at < 8; at++) await zoom(100);
   expect(await cardsInARow()).toBe(8);
 
   // The keys are the same gesture, and the same wall.
@@ -311,6 +291,36 @@ test("the density gesture reaches this page, and stops at the browse surface's b
   await press("-");
   await press("-");
   expect(await cardsInARow()).toBe(8);
+});
+
+test("a density change under a window leaves the selection on the same wallpaper", async () => {
+  // The one place the "neither gesture disturbs the selection" criterion can
+  // fail, and the place a grid that mounted every row cannot show it: every row
+  // height is rewritten while the scroll offset stays put, so the window over
+  // that offset lands on a different slice of the library and the selected card
+  // can lose its node. The selection is resolved against the whole list rather
+  // than the mounted window, which is what makes it survive that (#137, #230).
+  await openLibrary(400);
+  browserLaysOutTheScroller();
+  await enterGrid();
+
+  // The far end of the library, which the window has to be moved to reach —
+  // so the cursor is on a card a hundred rows from where the plan starts, and
+  // the cards it started among have given their nodes up.
+  await press("End");
+  await browserReportsScroll();
+  expect(document.activeElement).toBe(card(400));
+  expect(card(1)).toBeNull();
+
+  for (let at = 0; at < 4; at++) await zoom(100);
+  await browserReportsScroll();
+
+  // Where the cursor is, asked the only way a curator can ask it: one step
+  // back. Landing on 399 is the cursor having stayed on 400 through four
+  // relayouts of every row in the library, each of which moved the window.
+  await press("ArrowLeft");
+  await browserReportsScroll();
+  expect(document.activeElement).toBe(card(399));
 });
 
 test("a library past the window has only a window of it in the DOM", async () => {

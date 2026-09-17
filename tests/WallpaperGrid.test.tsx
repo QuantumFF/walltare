@@ -1,24 +1,18 @@
 import type { CardAction } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
 import {
-  LIBRARY_DENSITY,
-  REVIEW_DENSITY,
   rowHeight,
   WallpaperGrid,
   type GridSelection,
   type WallpaperGridHandle,
+  type WallpaperGridProps,
 } from "@/components/WallpaperGrid";
-import type { DensityRange } from "@/lib/layout-plan";
-import {
-  act,
-  cleanup,
-  createEvent,
-  fireEvent,
-  screen,
-} from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useRef, useState } from "react";
 import {
+  cardsInARow,
+  ctrlWheel,
   flush,
   mockBootedApp,
   press,
@@ -162,7 +156,7 @@ function selection(): GridSelection {
 function Harness({
   initial,
   windowed = false,
-  density = LIBRARY_DENSITY,
+  density = "library",
 }: {
   initial: Wallpaper[];
   /**
@@ -172,11 +166,10 @@ function Harness({
    */
   windowed?: boolean;
   /**
-   * How far the density gesture may go, which is the host's to say and differs
-   * between the two tabs. The two real ones are the defaults a page passes;
-   * the tests below use both (#264).
+   * Which tab the grid is standing in, which is what bounds the density
+   * gesture: Library goes wider at the far end than Review does (#264).
    */
-  density?: DensityRange;
+  density?: WallpaperGridProps["density"];
 }) {
   const [list, set] = useState(initial);
   setList = set;
@@ -204,7 +197,10 @@ function Harness({
   );
 }
 
-async function mount(list: Wallpaper[], density?: DensityRange) {
+async function mount(
+  list: Wallpaper[],
+  density?: WallpaperGridProps["density"],
+) {
   await renderInApp(<Harness initial={list} density={density} />);
   await flush();
 }
@@ -450,43 +446,8 @@ test("Home and End reach the first and last card", async () => {
 // every card as the same zero-sized box at any density, which is why the
 // assertion is the keyboard's answer rather than a width (ADR 0027).
 
-/**
- * A wheel notch over the grid, with or without the Ctrl that makes it the
- * gesture. A negative `deltaY` is the wheel going up, which is the direction
- * that zooms in everywhere else.
- *
- * `ctrlKey` is set on the event rather than passed to `fireEvent`, because
- * happy-dom's `WheelEvent` does not carry the modifier flags a browser's does —
- * the constructor takes the init and leaves `ctrlKey` undefined. So the flag is
- * arranged on the real event the way `browserLaysOutTheScroller` arranges a real
- * box: the thing under test is still the grid's own listener reading the
- * modifier a browser would have put there.
- *
- * It answers with whether the event survived, which is the other half of the
- * question — the gesture's default action is the webview's own zoom, and a grid
- * that did not refuse it would scale the whole app under the curator.
- */
-async function wheel(deltaY: number, ctrlKey: boolean): Promise<boolean> {
-  const event = createEvent.wheel(grid(), { deltaY });
-  Object.defineProperty(event, "ctrlKey", { value: ctrlKey });
-  let survived = true;
-  await act(async () => {
-    survived = fireEvent(grid(), event);
-  });
-  await flush();
-  return survived;
-}
-
-/** The gesture itself: Ctrl held, which is what makes a wheel a density change. */
-const ctrlWheel = (deltaY: number) => wheel(deltaY, true);
-
-/** Which card `ArrowDown` reaches from the first one, which is the row's width. */
-async function cardsInARow(): Promise<number> {
-  await press("Home");
-  await press("ArrowDown");
-  const name = document.activeElement?.getAttribute("aria-label") ?? "";
-  return Number(/^wall-(\d+)\.jpg/.exec(name)?.[1]) - 1;
-}
+/** The gesture over this harness's grid: a negative `deltaY` is the wheel up. */
+const zoom = (deltaY: number) => ctrlWheel(grid(), deltaY);
 
 test("Ctrl and the wheel change how many cards share a row", async () => {
   // lg, so the viewport asks for four on its own.
@@ -496,13 +457,19 @@ test("Ctrl and the wheel change how many cards share a row", async () => {
   expect(await cardsInARow()).toBe(4);
 
   // Up is in: fewer cards, each of them larger.
-  await ctrlWheel(-100);
+  await zoom(-100);
   expect(await cardsInARow()).toBe(3);
+  // And the container is drawn at the count the arrows just moved by. The class
+  // is the only observable difference here, because happy-dom does no layout —
+  // the same carve-out `Layout.test.tsx` makes for the active tab — and it is
+  // the one thing in this change that moved from a CSS guarantee to a lookup.
+  expect(grid().className).toContain("grid-cols-3");
 
   // And down is out, past where it started.
-  await ctrlWheel(100);
-  await ctrlWheel(100);
+  await zoom(100);
+  await zoom(100);
   expect(await cardsInARow()).toBe(5);
+  expect(grid().className).toContain("grid-cols-5");
 });
 
 test("the plus and minus keys move the density the wheel does", async () => {
@@ -547,19 +514,19 @@ test("the density stops at each tab's own bounds", async () => {
   // Review's range, which is the narrower of the two: a worklist of fifty has
   // no scale for the far end to buy, and a card too small to judge has stopped
   // doing this page's job.
-  await mount(cards(40), REVIEW_DENSITY);
+  await mount(cards(40), "review");
   await enterGrid();
 
-  for (let at = 0; at < 6; at++) await ctrlWheel(100);
+  for (let at = 0; at < 6; at++) await zoom(100);
   expect(await cardsInARow()).toBe(6);
 
   // And one step back moves, rather than spending five the gesture banked at
   // the wall. A zoom clamped where it is read instead of where it is written
   // fails exactly here: the curator makes the gesture and watches it do nothing.
-  await ctrlWheel(-100);
+  await zoom(-100);
   expect(await cardsInARow()).toBe(5);
 
-  for (let at = 0; at < 8; at++) await ctrlWheel(-100);
+  for (let at = 0; at < 8; at++) await zoom(-100);
   expect(await cardsInARow()).toBe(2);
 });
 
@@ -567,7 +534,7 @@ test("Library goes wider than Review does", async () => {
   viewportWidth(1024);
   // The same gesture on the browse surface, where going wide is the point: a
   // library of up to five thousand is what the far end of this range is for.
-  await mount(cards(40), LIBRARY_DENSITY);
+  await mount(cards(40), "library");
   await enterGrid();
 
   for (let at = 0; at < 8; at++) await press("-");
@@ -583,11 +550,17 @@ test("the gesture refuses the webview's own zoom, and an ordinary wheel is left 
   // it has to say so: React attaches its own `wheel` listener passively, so a
   // handler that did not take the event itself would change the density *and*
   // scale the whole app.
-  expect(await ctrlWheel(-100)).toBe(false);
+  expect(await zoom(-100)).toBe(false);
   expect(await cardsInARow()).toBe(3);
 
-  // Without Ctrl it is a scroll, and the scroll box keeps it.
-  expect(await wheel(-100, false)).toBe(true);
+  // Without Ctrl it is a scroll, and the scroll box keeps it. Fired straight
+  // rather than through the fixture, which is the gesture and always holds it.
+  let survived = true;
+  await act(async () => {
+    survived = fireEvent.wheel(grid(), { deltaY: -100 });
+  });
+  await flush();
+  expect(survived).toBe(true);
   expect(await cardsInARow()).toBe(3);
 });
 
@@ -599,7 +572,7 @@ test("neither gesture disturbs the selection", async () => {
   await press("ArrowRight");
   expect(document.activeElement).toBe(cell(3));
 
-  await ctrlWheel(-100);
+  await zoom(-100);
   // The same wallpaper, still selected and still holding the focus. The count
   // the arrows move by changed under it, which is the whole gesture; where the
   // cursor is did not (ADR 0042).

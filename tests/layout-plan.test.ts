@@ -38,7 +38,15 @@ function uniformGrid(count: number, columns: number, width: number) {
 // through a grid — what a mounted grid can show is that the arrows move by the
 // count, which is `WallpaperGrid.test.tsx`'s question.
 
-/** Library's range and Review's, which differ at the far end only. */
+/**
+ * Library's bounds and Review's, which differ at the far end only.
+ *
+ * Restated here rather than imported, the way `SPACING` above restates the
+ * grid's `gap-6` and `p-4`: the real pair is private to `WallpaperGrid.tsx`,
+ * and that module builds its media queries off `window` as it loads — so
+ * importing it would give this unit seam a DOM to have, which is the whole
+ * thing it exists without.
+ */
 const LIBRARY = { min: 2, max: 8 };
 const REVIEW = { min: 2, max: 6 };
 

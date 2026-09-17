@@ -7,7 +7,6 @@ import {
 } from "@/components/RejectDestination";
 import { useToaster } from "@/components/ToastSurface";
 import {
-  REVIEW_DENSITY,
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -245,7 +244,7 @@ export function ReviewView() {
               onOpen={lightbox.openOn}
               animated
               className="pb-8"
-              density={REVIEW_DENSITY}
+              density="review"
             />
           )}
         </div>

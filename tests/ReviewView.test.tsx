@@ -1,17 +1,12 @@
 import type { Settings, Wallpaper } from "@/lib/client";
-import {
-  act,
-  cleanup,
-  createEvent,
-  fireEvent,
-  screen,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
   cacheSize,
+  cardsInARow,
   click,
+  ctrlWheel,
   deferred,
   flush,
   mockBootedApp,
@@ -186,32 +181,12 @@ test("renders the rows the backend returned, in the order it returned them", asy
   ]);
 });
 
-/**
- * Ctrl and the wheel over Review's grid, as a browser delivers it.
- *
- * `ctrlKey` is set on the event rather than passed to `fireEvent`: happy-dom's
- * `WheelEvent` takes the init and leaves the modifier flags undefined, so the
- * flag is arranged on the real event rather than stubbed in front of the grid.
- */
-async function ctrlWheel(deltaY: number): Promise<void> {
-  const target = inReview().getByRole("grid", {
-    name: "Wallpapers to review",
-  });
-  const event = createEvent.wheel(target, { deltaY });
-  Object.defineProperty(event, "ctrlKey", { value: true });
-  await act(async () => {
-    fireEvent(target, event);
-  });
-  await flush();
-}
-
-/** Which card `ArrowDown` reaches from the first, which is the row's width. */
-async function cardsInARow(): Promise<number> {
-  await press("Home");
-  await press("ArrowDown");
-  const name = selectedCard() ?? "";
-  return Number(/^wall-(\d+)\.jpg/.exec(name)?.[1]) - 1;
-}
+/** The density gesture over this page's grid. */
+const zoom = (deltaY: number) =>
+  ctrlWheel(
+    inReview().getByRole("grid", { name: "Wallpapers to review" }),
+    deltaY,
+  );
 
 test("the density gesture reaches this page too, and stops shorter than Library's", async () => {
   // The same gesture on the other tab, which is the whole of user story 11:
@@ -225,10 +200,10 @@ test("the density gesture reaches this page too, and stops shorter than Library'
   await enterGrid();
   expect(await cardsInARow()).toBe(4);
 
-  await ctrlWheel(-100);
+  await zoom(-100);
   expect(await cardsInARow()).toBe(3);
 
-  for (let at = 0; at < 8; at++) await ctrlWheel(100);
+  for (let at = 0; at < 8; at++) await zoom(100);
   expect(await cardsInARow()).toBe(6);
 
   // And the keys are the same gesture against the same wall.
@@ -248,7 +223,7 @@ test("neither half of the gesture moves the selection", async () => {
 
   // The count the arrows move by changes under the cursor, which is the whole
   // gesture. Where the cursor is does not (ADR 0042).
-  await ctrlWheel(-100);
+  await zoom(-100);
   expect(selectedCard()).toBe("wall-3.jpg, Active");
   await press("-");
   expect(selectedCard()).toBe("wall-3.jpg, Active");

@@ -5,7 +5,6 @@ import {
 } from "@/components/useWallpaperRows";
 import { WallpaperCard } from "@/components/WallpaperCard";
 import {
-  LIBRARY_DENSITY,
   WallpaperGrid,
   type GridSelection,
   type WallpaperGridHandle,
@@ -114,7 +113,7 @@ function Page({ list }: { list: Wallpaper[] }) {
         label="Wallpapers"
         onAction={perform}
         scroller={scroller}
-        density={LIBRARY_DENSITY}
+        density="library"
       />
     </div>
   );

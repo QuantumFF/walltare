@@ -57,17 +57,16 @@ const COLUMNS = [
 ] as const;
 
 /**
- * What the grid container wears for a column count, and the ceiling on any
- * tab's density range.
+ * What the grid container wears for a column count, and the whole of what the
+ * CSS can draw.
  *
  * Spelled out rather than built from the number, because Tailwind generates a
  * utility only when it finds the literal in the source — the same constraint
  * that used to make `COLUMNS` carry its class strings. A count with no entry
- * here is a count the CSS cannot draw, so the two `DensityRange`s below stay
- * inside it and this table is where a wider one would have to start.
+ * here is a count the CSS cannot draw, so the bounds below stay inside two and
+ * eight, and this table is where a wider tab would have to start.
  */
 const COLUMN_CLASSES: Record<number, string> = {
-  1: "grid-cols-1",
   2: "grid-cols-2",
   3: "grid-cols-3",
   4: "grid-cols-4",
@@ -77,29 +76,34 @@ const COLUMN_CLASSES: Record<number, string> = {
   8: "grid-cols-8",
 };
 
-/**
- * How far Library's density goes: two enormous cards to a row, or eight small
- * ones.
- *
- * Wider at the far end than Review's, because this is the browse surface. The
- * epic's story is going "from a few large wallpapers to many small ones" over a
- * library of up to five thousand, and eight is the point where a card is still a
- * picture rather than a swatch. It also has a cost Review's does not: more
- * columns is shorter rows, and shorter rows is more cards inside the same window
- * — which is the mount rate ADR 0041 measured the grid's frame time against.
- */
-export const LIBRARY_DENSITY: DensityRange = { min: 2, max: 8 };
+/** The two tabs that mount this grid, which is what their bounds are named by. */
+type DensityTab = "library" | "review";
 
 /**
- * How far Review's goes: the same two at the near end, six at the far one.
+ * How far the density goes on each tab.
  *
- * Narrower, because Review is fifty wallpapers the curator is deciding about
- * rather than scanning. A card small enough to need opening before it can be
- * judged is a card that has stopped doing this page's job, and the page has
- * exactly fifty of them, so there is no scale here for the far end to buy
- * (ADR 0028).
+ * Both go equally large, because the wallpaper is the point on either page. What
+ * differs is the far end. Library is the browse surface, and the epic's story is
+ * going "from a few large wallpapers to many small ones" over a library of up to
+ * five thousand, so eight is where a card is still a picture rather than a
+ * swatch. Review is fifty wallpapers the curator is deciding about, and a card
+ * too small to judge without opening it has stopped doing that page's job — there
+ * is no scale there for a wider end to buy (ADR 0028).
+ *
+ * Library's far end has a cost Review's does not: more columns is shorter rows,
+ * and shorter rows is more cards inside the same window, which is the mount rate
+ * ADR 0041 measured the grid's frame time against.
+ *
+ * The numbers are the grid's, and they stay here. A host names which tab it is
+ * and the grid looks the bounds up, rather than the two pairs being exported for
+ * a page to import and hand straight back — which would widen this module's
+ * interface by two names without deepening anything, the shape ADR 0027 refused
+ * for the geometry constants.
  */
-export const REVIEW_DENSITY: DensityRange = { min: 2, max: 6 };
+const DENSITY: Record<DensityTab, DensityRange> = {
+  library: { min: 2, max: 8 },
+  review: { min: 2, max: 6 },
+};
 
 /**
  * Which way each key moves the density: in towards fewer, larger cards, or out
@@ -232,15 +236,20 @@ function useGridColumns(): number {
  * in at every window width rather than pinned to the number that width happened
  * to be showing (see `densityColumns`).
  *
- * `step` is written functionally, so it depends on the base and the range rather
+ * `step` is written functionally, so it depends on the base and the bounds rather
  * than on the zoom it is reading — a gesture on a grid mid-commit cannot be
  * applied to a stale one. Its identity moves when the viewport crosses a
  * breakpoint and not otherwise, and no card is ever handed it (ADR 0042).
+ *
+ * The tab arrives as a name and the bounds are looked up here, so the caller
+ * cannot hand over an object rebuilt per render — which would make the callback
+ * a fresh one per render and the wheel listener a resubscription per render.
  */
-function useDensity(range: DensityRange): {
+function useDensity(tab: DensityTab): {
   columns: number;
   step: (by: number) => void;
 } {
+  const range = DENSITY[tab];
   const base = useGridColumns();
   const [zoom, setZoom] = useState(0);
   const step = useCallback(
@@ -825,20 +834,16 @@ export interface WallpaperGridProps {
    */
   scroller?: RefObject<HTMLDivElement | null>;
   /**
-   * How far this tab's density may be moved — `LIBRARY_DENSITY` or
-   * `REVIEW_DENSITY`, both above.
+   * Which tab this grid is on, which is what bounds the density gesture: see
+   * `DENSITY` above.
    *
-   * A range and not a density. What the curator zoomed to is the grid's, the
-   * way the cursor and the geometry are (ADR 0027, ADR 0042); what the host
-   * says is how far the gesture may go on the page it is on, because that is
-   * the one fact about the density the grid cannot work out for itself. Passing
-   * the range rather than a tab's name is what keeps the numbers in this module
-   * while the choice between them stays with the page.
-   *
-   * It has to hold one identity for the life of the host — a module constant,
-   * not a literal per render — because the gesture's handler is keyed on it.
+   * A name and not a pair of numbers. What the curator zoomed to is the grid's,
+   * the way the cursor and the geometry are (ADR 0027, ADR 0042); the one thing
+   * the grid cannot work out for itself is which page it was mounted on. So the
+   * host says that and nothing else, and the bounds never leave this module —
+   * which is also what makes the prop impossible to churn the identity of.
    */
-  density: DensityRange;
+  density: DensityTab;
   /**
    * The curator asking to look at a wallpaper properly, carrying the one they
    * asked about: a click on a card that was not on one of its buttons, or
@@ -1214,20 +1219,22 @@ function Grid({
   }, [onDensityStep]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    // The density keys, before the modifier guard below rather than after it.
-    // `+` is `Shift` and `=` on most layouts, so a curator pressing the key the
-    // gesture is named for arrives here holding a modifier — and the guard,
-    // which exists so the app's own `Ctrl` chords reach the shell untouched,
-    // would send them away. Ctrl, Alt and Meta still do: `Ctrl` and `+` is the
-    // webview's own zoom and not this one.
+    // Every chord the shell answers is a `Ctrl` one and nothing here may eat
+    // those; `Ctrl` and `+` is the webview's own zoom and not this grid's.
+    const chord = event.ctrlKey || event.altKey || event.metaKey;
+
+    // The density keys, ahead of the `Shift` half of the guard below rather than
+    // behind it. `+` is `Shift` and `=` on most layouts, so a curator pressing
+    // the key this gesture is named for arrives holding a modifier, and a guard
+    // written for the app's chords would send them away.
     const by = DENSITY_KEYS[event.key];
-    if (by !== undefined && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    if (by !== undefined && !chord) {
       event.preventDefault();
       onDensityStep(by);
       return;
     }
 
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+    if (chord || event.shiftKey) return;
     const last = wallpapers.length - 1;
     if (index === -1 || !selected) return;
 

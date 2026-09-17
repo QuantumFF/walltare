@@ -6,7 +6,6 @@ import {
   useRejectDestination,
 } from "@/components/RejectDestination";
 import {
-  LIBRARY_DENSITY,
   WallpaperGrid,
   type WallpaperGridHandle,
 } from "@/components/WallpaperGrid";
@@ -481,7 +480,7 @@ export function LibraryView() {
             onOpen={lightbox.openOn}
             scoresMoved={scoresMoved}
             scroller={scroller}
-            density={LIBRARY_DENSITY}
+            density="library"
           />
         )}
       </div>
