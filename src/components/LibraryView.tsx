@@ -22,6 +22,7 @@ import { useApp } from "@/context/AppContext";
 import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
 import {
   client,
+  type LibraryLayout,
   type ListOrdering,
   type Status,
   type StatusFilter,
@@ -29,7 +30,13 @@ import {
 // The words for a Status, from the file that holds the app's phrasings, so the
 // empty state and the card's own pill spell them alike.
 import { STATUS_LABEL } from "@/lib/copy";
-import { Filter, Images } from "lucide-react";
+import {
+  Filter,
+  Images,
+  LayoutGrid,
+  LayoutPanelTop,
+  type LucideIcon,
+} from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -69,6 +76,22 @@ const ORDERINGS: Array<{ value: ListOrdering; label: string }> = [
   { value: "recently_added", label: "Recently added" },
 ];
 
+/**
+ * The layouts the Library offers, in the order the control sits in, and the grid
+ * first because it is what the app has always drawn and what a curator who
+ * ignores this control keeps.
+ *
+ * Icons rather than words, because the bar has four things on it already and the
+ * two names are longer than the chips beside them. The name is on the control
+ * for a screen reader regardless, which is the half that must not be an icon
+ * (ADR 0019).
+ */
+const LAYOUTS: Array<{ value: LibraryLayout; label: string; Icon: LucideIcon }> =
+  [
+    { value: "grid", label: "Grid", Icon: LayoutGrid },
+    { value: "masonry", label: "Masonry", Icon: LayoutPanelTop },
+  ];
+
 /** Whether a row still belongs in a list filtered this way. */
 function matchesFilter(status: Status, filter: StatusFilter): boolean {
   return filter === "all" || filter === status;
@@ -100,8 +123,13 @@ export function LibraryView() {
   // `setView` is the empty library's way out: nothing on this page can name a
   // library root, so the state that says so routes to the page that can
   // (ADR 0015, ADR 0020).
-  const { view, setView } = useApp();
+  const { view, setView, settings, saveSetting } = useApp();
   const showing = view === "library";
+  // Which layout the grid draws, read from the store rather than held here,
+  // which is the whole of what makes it survive a restart: the provider reads
+  // every setting before the first paint, so the first grid the curator sees is
+  // already the one they chose (ADR 0010).
+  const layout = settings.library_layout;
 
   // Where a reject goes, read once for the two things that must agree about it:
   // the string `move_wallpaper` is handed, and the boolean the toast reads to
@@ -345,6 +373,55 @@ export function LibraryView() {
           </SelectContent>
         </Select>
 
+        {/* The layout, as two buttons in a named group — the chips' shape, for
+            the same reason: two controls in a row with no word between them are
+            two unrelated buttons to a screen reader, and `aria-pressed` is what
+            makes the current layout the same fact there that the fill makes it
+            to an eye.
+
+            Here and not in Settings. A control in two places is two places to
+            look, and this is the page the choice is about: the curator changes
+            how the Library looks while they are looking at it. The choice is
+            still stored, which is what a restart reads it back from.
+
+            Pressed and not checked, for the reason the chips are: a
+            `radiogroup` would put the two on the arrow keys, and this page
+            spends the arrows on moving the selection through the grid
+            (ADR 0019). */}
+        <div
+          role="group"
+          aria-label="Layout"
+          className="flex shrink-0 items-center gap-1"
+        >
+          {LAYOUTS.map(({ value, label, Icon }) => {
+            const current = layout === value;
+            return (
+              <Button
+                key={value}
+                size="sm"
+                variant={current ? "secondary" : "ghost"}
+                aria-pressed={current}
+                aria-label={label}
+                title={label}
+                onClick={() => {
+                  // The write is what the next launch reads, and the control
+                  // follows the store rather than a copy held here — so a write
+                  // that fails leaves the bar saying what the app is actually
+                  // drawing instead of a layout nothing chose.
+                  void saveSetting("library_layout", value).catch(
+                    (error: unknown) => {
+                      console.error("Failed to save the library layout:", error);
+                    },
+                  );
+                }}
+                className="rounded-full"
+              >
+                <Icon aria-hidden />
+              </Button>
+            );
+          })}
+        </div>
+
         {/* The row count, which is the size of the library under this filter and
             not a page of it: one call returns every matching row, so nothing
             asks a second question to say how many there are (ADR 0016). */}
@@ -481,6 +558,12 @@ export function LibraryView() {
             scoresMoved={scoresMoved}
             scroller={scroller}
             density="library"
+            /* The one thing the layout choice changes down here. The grid is
+               the same component with the same cards, the same cursor and the
+               same keys — what moves is where the plan puts them, which is why
+               the selection survives a switch without anything carrying it
+               across (ADR 0045). */
+            layout={layout}
           />
         )}
       </div>

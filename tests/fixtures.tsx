@@ -251,6 +251,7 @@ export function settings(over: Partial<Settings> = {}): Settings {
     theme: "system",
     library_root: "",
     reject_destination: "./rejected",
+    library_layout: "grid",
     screen,
     minimum_resolution: screen,
     // What the monitor said, which no override moves: a test that overrides the

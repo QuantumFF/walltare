@@ -3,16 +3,19 @@ import {
   WallpaperCard,
   type CardAction,
 } from "@/components/WallpaperCard";
-import type { Status, Wallpaper } from "@/lib/client";
+import type { LibraryLayout, Status, Wallpaper } from "@/lib/client";
 import {
   NOTHING_MOUNTED,
   densityColumns,
   densityZoom,
+  planMasonry,
   planUniformGrid,
   uniformRowHeight,
   windowOf,
   type DensityRange,
   type LayoutPlan,
+  type MasonryPlan,
+  type PlannedBox,
   type PlannedWindow,
 } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
@@ -339,6 +342,34 @@ export function rowHeight(boxWidth: number, columns: number): number {
     unmeasuredHeight: UNMEASURED_ROW,
   });
 }
+
+/**
+ * A wallpaper's shape, as height over width, or `null` while the app has not
+ * read its Dimensions.
+ *
+ * `null` and not a guess, because the guess belongs to the layout rather than to
+ * the row: a plan that draws uncropped answers for an unknown shape with the one
+ * the uniform grid crops to, and a plan that crops never asks. CONTEXT.md is
+ * what makes that the rule — a wallpaper whose Dimensions have not been read has
+ * none rather than a guess (ADR 0044).
+ *
+ * Exported for its test, the way `rowHeight` above is: the arithmetic is
+ * otherwise reachable only through a mounted grid whose every box measures zero.
+ */
+export function cardRatio(wallpaper: Wallpaper): number | null {
+  const { width, height } = wallpaper;
+  if (width === null || height === null || width <= 0) return null;
+  return height / width;
+}
+
+/**
+ * What a grid that is not drawing masonry hands the plan.
+ *
+ * One array for the life of the module, because it is a dependency of the memo
+ * that builds the plan: a fresh `[]` per render would rebuild the whole plan on
+ * every scroll notch.
+ */
+const NO_RATIOS: ReadonlyArray<number | null> = [];
 
 /**
  * The direct keys, as the actions each one names.
@@ -692,7 +723,16 @@ function useGridWindow(
   count: number,
   columns: number,
   scroller: RefObject<HTMLDivElement | null>,
-): { mounted: PlannedWindow; reveal: (index: number) => void } {
+  layout: LibraryLayout,
+  ratios: ReadonlyArray<number | null>,
+): {
+  mounted: PlannedWindow;
+  reveal: (index: number) => void;
+  /** Where each card goes, for a layout that positions its own; absent for the grid. */
+  boxes?: PlannedBox[];
+  /** The whole scroll height, which a self-positioning layout has to hold open itself. */
+  total: number;
+} {
   // The scroll box as last measured, and the width the plan is computed
   // against. The last non-zero measurement is kept, so a view the shell has
   // hidden — which zeroes the box — keeps the size it had rather than rebuilding
@@ -703,15 +743,34 @@ function useGridWindow(
   // facts it is computed from, because it is what the virtualiser's options and
   // the cells are both read out of and a fresh one per render would rebuild both
   // on every scroll notch.
-  const plan: LayoutPlan = useMemo(
+  const masonry = layout === "masonry";
+  // A plan, and for masonry the boxes on it. The union rather than `LayoutPlan`
+  // with an optional field, because a box per card is what separates a layout
+  // that positions its own cards from one a CSS grid places: a plan that carries
+  // the field and never fills it is a field nothing checks (ADR 0045).
+  const plan: LayoutPlan | MasonryPlan = useMemo<LayoutPlan | MasonryPlan>(
     () =>
-      planUniformGrid({
-        ...SPACING,
-        count,
-        columns,
-        rowHeight: rowHeight(boxWidth, columns),
-      }),
-    [count, columns, boxWidth],
+      masonry
+        ? planMasonry({
+            ...SPACING,
+            ratios,
+            columns,
+            width: boxWidth,
+            // The shape a wallpaper with no Dimensions is drawn at, and it is
+            // the grid's own `aspect-video` rather than a number this layout
+            // invented: the fallback is "draw it the way the app has always
+            // drawn it", so a library mid-backfill reads as the layout the
+            // curator switched away from rather than as a collapsed row.
+            unknownRatio: CARD_ASPECT.ratio,
+            unmeasuredHeight: UNMEASURED_ROW,
+          })
+        : planUniformGrid({
+            ...SPACING,
+            count,
+            columns,
+            rowHeight: rowHeight(boxWidth, columns),
+          }),
+    [masonry, ratios, count, columns, boxWidth],
   );
 
   const virtualiser = useVirtualizer({
@@ -730,7 +789,12 @@ function useGridWindow(
     // requests to buy a margin the memory cache already provides after the
     // first pass (ADR 0016).
     overscan: 1,
-    gap: GAP.px,
+    // The space between two rows, which masonry has already spent. Its rows are
+    // bands running from one card top to the next, so the gaps between cards are
+    // inside those heights and a gap between bands would be counted twice — the
+    // virtualiser's offsets would then disagree with the boxes the same plan
+    // computed.
+    gap: masonry ? 0 : GAP.px,
     paddingStart: PADDING.px,
     paddingEnd: PADDING.px,
     // The measurement, with the fallback above under it. The virtualiser's own
@@ -790,7 +854,12 @@ function useGridWindow(
     [virtualiser, plan],
   );
 
-  return { mounted, reveal };
+  return {
+    mounted,
+    reveal,
+    boxes: "boxes" in plan ? plan.boxes : undefined,
+    total: plan.total,
+  };
 }
 
 export interface WallpaperGridProps {
@@ -845,6 +914,16 @@ export interface WallpaperGridProps {
    */
   density: DensityTab;
   /**
+   * How the cards are laid out: cropped to one shape, or each at its own.
+   *
+   * Read only by the windowed shape, and not because masonry is expensive. Its
+   * cards carry their own position, that position comes out of the plan, and the
+   * plan is what the window builds — so a host with no scroll box has no plan
+   * and nothing to position from. Review is the only such host and it draws the
+   * uniform grid, which is what an absent `scroller` already means here.
+   */
+  layout?: LibraryLayout;
+  /**
    * The curator asking to look at a wallpaper properly, carrying the one they
    * asked about: a click on a card that was not on one of its buttons, or
    * `Enter` on the selected cell (#134, #138).
@@ -898,6 +977,7 @@ export interface WallpaperGridProps {
 export function WallpaperGrid({
   scroller,
   density,
+  layout = "grid",
   ...props
 }: WallpaperGridProps) {
   // The density is resolved here, above the branch, because both shapes need
@@ -911,6 +991,7 @@ export function WallpaperGrid({
       scroller={scroller}
       columns={columns}
       onDensityStep={step}
+      layout={layout}
       {...props}
     />
   ) : (
@@ -925,7 +1006,8 @@ export function WallpaperGrid({
  * They are still the same two facts crossing the same seam; the seam is inside
  * this file now, which is the whole of what that ticket moved.
  */
-interface GridProps extends Omit<WallpaperGridProps, "scroller" | "density"> {
+interface GridProps
+  extends Omit<WallpaperGridProps, "scroller" | "density" | "layout"> {
   /**
    * How many cards share a row, resolved from the viewport and the curator's
    * zoom together. `WallpaperGrid` above is the one reader of either.
@@ -936,6 +1018,22 @@ interface GridProps extends Omit<WallpaperGridProps, "scroller" | "density"> {
    * more, smaller ones. Bounded by the host's range, which this side never sees.
    */
   onDensityStep: (by: number) => void;
+  /**
+   * Where each mounted card goes, by its position in the whole list, for a
+   * layout that positions its own cards. Absent lets the CSS grid below place
+   * them, which is every layout that crops to one shape.
+   *
+   * The boxes are the plan's, so a card's size is the size the window was
+   * measured against rather than one the browser worked out afterwards — the
+   * same exactness the row heights have, for the same reason (ADR 0045).
+   */
+  boxes?: PlannedBox[];
+  /**
+   * The whole scroll height, which a self-positioning layout holds open itself
+   * because its cards are out of the flow and hold nothing open at all. Absent
+   * with `boxes`.
+   */
+  total?: number;
   /**
    * Which of the cards to mount, and the empty space that holds the rest of the
    * scroll height open around them. See `PlannedWindow`. Absent mounts every
@@ -984,14 +1082,38 @@ interface GridProps extends Omit<WallpaperGridProps, "scroller" | "density"> {
  */
 function WindowedGrid({
   scroller,
+  layout,
   ...props
-}: GridProps & { scroller: RefObject<HTMLDivElement | null> }) {
-  const { mounted, reveal } = useGridWindow(
+}: GridProps & {
+  scroller: RefObject<HTMLDivElement | null>;
+  layout: LibraryLayout;
+}) {
+  // The shapes the plan packs, and only for the layout that reads them: the
+  // uniform grid crops every wallpaper to one shape, so a ratio per card reaches
+  // nothing there and would be a list of five thousand numbers rebuilt on every
+  // patch to be ignored. `NO_RATIOS` is stable, so that grid's plan still
+  // depends on a length and not on a list.
+  const ratios = useMemo(
+    () =>
+      layout === "masonry" ? props.wallpapers.map(cardRatio) : NO_RATIOS,
+    [layout, props.wallpapers],
+  );
+  const { mounted, reveal, boxes, total } = useGridWindow(
     props.wallpapers.length,
     props.columns,
     scroller,
+    layout,
+    ratios,
   );
-  return <Grid {...props} mounted={mounted} reveal={reveal} />;
+  return (
+    <Grid
+      {...props}
+      mounted={mounted}
+      reveal={reveal}
+      boxes={boxes}
+      total={total}
+    />
+  );
 }
 
 /**
@@ -1026,6 +1148,8 @@ function Grid({
   mounted,
   columns,
   onDensityStep,
+  boxes,
+  total,
   onOpen,
   className,
   ref,
@@ -1357,26 +1481,42 @@ function Grid({
       // told to the virtualiser and `PADDING.className` is worn here, off the
       // one pair. Review mounts every card and its own `pb-8` reaches this same
       // element (ADR 0027).
-      className={cn(
-        "grid",
-        GAP.className,
-        mounted && PADDING.className,
-        // The class for the count the arrows move by and the plan cuts its rows
-        // at, rather than a set of responsive utilities stating the same thing a
-        // second time. A count outside `COLUMN_CLASSES` is a density range wider
-        // than the table, which is a bug in the range and not in a render, so
-        // the grid falls back to its own auto-flow rather than disappearing.
-        COLUMN_CLASSES[columns],
-        className,
-      )}
+      //
+      // A layout that positions its own cards wears none of it. Its cards are
+      // out of the flow, so a CSS grid has nothing to flow and the padding is
+      // already inside the boxes — what this element is then is the box those
+      // offsets are measured from, which is what `relative` says.
+      className={
+        boxes
+          ? cn("relative", className)
+          : cn(
+              "grid",
+              GAP.className,
+              mounted && PADDING.className,
+              // The class for the count the arrows move by and the plan cuts its
+              // rows at, rather than a set of responsive utilities stating the
+              // same thing a second time. A count outside `COLUMN_CLASSES` is a
+              // density range wider than the table, which is a bug in the range
+              // and not in a render, so the grid falls back to its own auto-flow
+              // rather than disappearing.
+              COLUMN_CLASSES[columns],
+              className,
+            )
+      }
       // The window's position inside the scroller, and the reason the class
       // above can still carry a `p-4`: an inline `padding-top` replaces only the
       // top of that shorthand, so the host's horizontal padding survives being
       // told where the mounted range sits.
+      //
+      // Held open by a height instead when the cards position themselves: the
+      // space above and below the window is the space nothing is drawn in, and
+      // an absolutely positioned card adds none of it.
       style={
-        mounted
-          ? { paddingTop: mounted.before, paddingBottom: mounted.after }
-          : undefined
+        boxes
+          ? { height: total }
+          : mounted
+            ? { paddingTop: mounted.before, paddingBottom: mounted.after }
+            : undefined
       }
     >
       {/*
@@ -1411,6 +1551,7 @@ function Grid({
             onOpen={onOpen}
             cellIndex={cardIndex}
             selected={cardIndex === index}
+            box={boxes?.[cardIndex]}
           />
         );
       })}

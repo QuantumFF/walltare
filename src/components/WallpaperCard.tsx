@@ -159,6 +159,21 @@ export interface WallpaperCardProps {
   cellIndex?: number;
   /** Whether this cell is the one holding the grid's selection. */
   selected?: boolean;
+  /**
+   * Where the layout put this card, for a layout that positions its own.
+   *
+   * With it the card takes the shape it was given and sits where it was put;
+   * without it the card is `aspect-video` and a CSS grid decides where it goes.
+   * That is the whole of what separates masonry from the uniform grid on this
+   * component: one crops every wallpaper to the grid's shape, the other hands
+   * each card a box of the wallpaper's own — so the picture is uncropped because
+   * the box already has its ratio, not because anything here stopped cropping.
+   *
+   * The box is the plan's, computed before any card mounted, and its identity is
+   * stable for as long as the plan is — which is what keeps the memo above
+   * holding through a scroll (ADR 0045, #230).
+   */
+  box?: { left: number; top: number; width: number; height: number };
 }
 
 /**
@@ -198,6 +213,7 @@ export const WallpaperCard = memo(function WallpaperCard({
   onOpen,
   cellIndex,
   selected = false,
+  box,
 }: WallpaperCardProps) {
   // Whether this card is a cell in a grid at all, which is the one thing the
   // absent object used to say and the index says now.
@@ -267,7 +283,17 @@ export const WallpaperCard = memo(function WallpaperCard({
       // end of the bubble path, and a card outside a grid with no host asking
       // for the gesture simply does not fire it.
       onClick={() => onOpen?.(wallpaper)}
-      className="group relative aspect-video overflow-hidden rounded-lg border border-border bg-card"
+      // `aspect-video` is the uniform grid's crop, worn by the element that
+      // crops (ADR 0027's `CARD_ASPECT.className`). A card handed a box wears
+      // that box instead: the shape came from the wallpaper's own Dimensions, so
+      // declaring a second one here would be the layout and the card disagreeing
+      // about how tall the card is — and the window is positioned against the
+      // layout's answer.
+      className={cn(
+        "group overflow-hidden rounded-lg border border-border bg-card",
+        box ? "absolute" : "relative aspect-video",
+      )}
+      style={box}
     >
       <img
         src={wallpaperImageUrl(wallpaper.id, "small")}

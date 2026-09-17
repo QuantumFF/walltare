@@ -2,6 +2,7 @@ import {
   densityColumns,
   densityZoom,
   layoutPlan,
+  planMasonry,
   planUniformGrid,
   uniformRowHeight,
   windowOf,
@@ -22,6 +23,22 @@ const SPACING = { gap: 24, padding: 16 };
 
 /** The uniform grid, as the app wears it: every card cropped to `aspect-video`. */
 const UNIFORM = { ...SPACING, cardRatio: 9 / 16, unmeasuredHeight: 130 };
+
+/**
+ * Masonry as the app wears it: 16:9 for a wallpaper whose Dimensions nothing has
+ * read, and the same fallback height as the grid for a box that measures nothing
+ * (ADR 0044).
+ */
+const MASONRY = { ...SPACING, unknownRatio: 9 / 16, unmeasuredHeight: 130 };
+
+/** Masonry at a width, the way `WallpaperGrid` composes it. */
+function masonry(
+  ratios: ReadonlyArray<number | null>,
+  columns: number,
+  width: number,
+) {
+  return planMasonry({ ...MASONRY, ratios, columns, width });
+}
 
 /** The uniform grid at a width, the way `WallpaperGrid` composes the two halves. */
 function uniformGrid(count: number, columns: number, width: number) {
@@ -253,4 +270,141 @@ test("a uniform plan holds the scroll height its own rows add up to", () => {
   expect(plan.total).toBeCloseTo(100 * height + 99 * 24 + 32);
   const last = plan.rows[99];
   expect(last.top + last.height).toBeCloseTo(plan.total - 16);
+});
+
+// Masonry (#262): every wallpaper at its own aspect ratio, packed into columns
+// shortest-first. This is the part of that work happy-dom structurally cannot
+// check — which card is in which column, how tall it is drawn, and which cards a
+// scroll offset puts on screen are all facts about a layout, and there is no
+// layout under test.
+
+test("masonry draws every wallpaper at its own shape, and a 16:9 box for one it has not measured", () => {
+  // A 16:9, a square, a 4:3 portrait, and a wallpaper still waiting on the
+  // backfill. The last is the one that must not collapse: drawn at a ratio of
+  // nothing it would be a card of no height, in a column that then swallows
+  // every card after it (ADR 0044).
+  const plan = masonry([9 / 16, 1, 4 / 3, null], 4, 1200);
+
+  for (const [at, shape] of [9 / 16, 1, 4 / 3, 9 / 16].entries()) {
+    const box = plan.boxes[at];
+    expect(box.height / box.width).toBeCloseTo(shape);
+    expect(box.height).toBeGreaterThan(0);
+  }
+});
+
+test("the columns are equal and together they fill the width", () => {
+  // Eight cards over four columns, so every column is used. A column width the
+  // gaps and the padding were not taken out of would run the last column off the
+  // right-hand edge of the scroll box.
+  const plan = masonry(Array.from({ length: 8 }, () => 9 / 16), 4, 1200);
+
+  // (1200 - 32 of padding - 72 of gaps) / 4.
+  expect(plan.boxes.map((box) => box.width)).toEqual(Array(8).fill(274));
+  expect([...new Set(plan.boxes.map((box) => box.left))]).toEqual([
+    16, 314, 612, 910,
+  ]);
+  const last = plan.boxes[3];
+  expect(last.left + last.width).toBe(1200 - 16);
+});
+
+test("each wallpaper goes to whichever column is shortest, and a tall one is not stacked on", () => {
+  // Three columns 200px wide. The second wallpaper is twice as tall as the
+  // others, which is the case the whole layout exists for: the cards after it
+  // fill the two short columns rather than queueing underneath it.
+  const plan = masonry([1, 2, 1, 1, 1], 3, 680);
+
+  expect(plan.boxes.map((box) => box.height)).toEqual([
+    200, 400, 200, 200, 200,
+  ]);
+  // Columns 0, 1, 2, then back to 0 and 2 — the two that the 400px card left
+  // shortest. Ties go leftmost, so the order down the page still reads as the
+  // order the curator asked for.
+  expect(plan.boxes.map((box) => box.left)).toEqual([16, 240, 464, 16, 464]);
+  expect(plan.boxes.map((box) => box.top)).toEqual([16, 16, 16, 240, 240]);
+
+  // And the scroll height is the tallest column's bottom plus the trailing
+  // padding, rather than every card's height added up.
+  expect(plan.total).toBe(456);
+});
+
+test("a masonry window mounts a card that started above it, exactly once", () => {
+  // The property that separates masonry's rows from the grid's. Its rows are
+  // bands between card tops, and a card taller than a band is listed in each
+  // band it crosses — so a window has to mount it while it is on screen without
+  // mounting it twice, which would be two nodes claiming one cell index.
+  const plan = masonry([1, 2, 1, 1, 1], 3, 680);
+
+  expect(plan.rows.map((row) => row.cards)).toEqual([
+    [0, 1, 2],
+    [1, 3, 4],
+  ]);
+  // The tall card is still on screen in the second band and is mounted there.
+  expect(windowOf(plan, 1, 1).cards).toEqual([1, 3, 4]);
+  // Over both bands it is one node, and the cards come in list order.
+  expect(windowOf(plan, 0, 1).cards).toEqual([0, 1, 2, 3, 4]);
+
+  // The way back is the band holding a card's own top, so revealing a card
+  // scrolls to where it starts rather than to where it ends.
+  expect(plan.rowOfCard).toEqual([0, 0, 0, 1, 1]);
+});
+
+test("a masonry plan's bands account for the whole scroll height", () => {
+  // The number a virtualiser holds the scroll range open with. The bands carry
+  // their own spacing — they run from one card top to the next — so they are
+  // stacked with no gap between them, and the total has to come out the same as
+  // the tallest column's bottom.
+  const plan = masonry([1, 2, 1, 1, 1], 3, 680);
+
+  expect(plan.rows.map((row) => row.top)).toEqual([16, 240]);
+  const last = plan.rows[plan.rows.length - 1];
+  expect(last.top + last.height).toBe(plan.total - 16);
+  const whole = windowOf(plan, 0, plan.rows.length - 1);
+  expect(whole.before).toBe(16);
+  expect(whole.after).toBe(16);
+});
+
+test("a box that measures nothing gives masonry cards about a card tall rather than none", () => {
+  // The branch every happy-dom run takes, and the one a real browser takes for a
+  // view the shell is hiding under `display: none` (ADR 0015). With no width to
+  // divide there is no ratio to apply, so every card takes the fallback height
+  // and the columns pack round-robin — which is the uniform grid's own answer to
+  // the same nothing.
+  const plan = masonry([9 / 16, 1, 4 / 3, null, 9 / 16], 2, 0);
+
+  expect(plan.boxes.map((box) => box.height)).toEqual(Array(5).fill(130));
+  expect(plan.boxes.map((box) => box.top)).toEqual([16, 16, 170, 170, 324]);
+  expect(plan.rows.length).toBe(3);
+});
+
+test("a masonry plan of a whole library windows onto a few dozen cards", () => {
+  // ADR 0016's ceiling, at the ratios a real library has. What the window mounts
+  // has to stay a few dozen out of five thousand however uneven the rows get,
+  // and every one of them has to be there once.
+  const shapes = [9 / 16, 1, 4 / 3, 10 / 21, null];
+  const plan = masonry(
+    Array.from({ length: 5000 }, (_, at) => shapes[at % shapes.length]),
+    4,
+    1200,
+  );
+
+  expect(plan.boxes.length).toBe(5000);
+  // Six bands is about a screen of a 1200px-wide library.
+  const mounted = windowOf(plan, 40, 45);
+  expect(mounted.cards.length).toBeLessThan(40);
+  expect(new Set(mounted.cards).size).toBe(mounted.cards.length);
+  // And the space above plus the mounted bands plus the space below is the whole
+  // scroll height, which is what stops the list shifting under a scroll.
+  const first = plan.rows[40];
+  const last = plan.rows[45];
+  expect(mounted.before).toBe(first.top);
+  expect(mounted.before + (last.top + last.height - first.top)).toBeCloseTo(
+    plan.total - mounted.after,
+  );
+});
+
+test("masonry plans nothing for an empty library and occupies its own padding", () => {
+  const plan = masonry([], 4, 1200);
+  expect(plan.rows).toEqual([]);
+  expect(plan.boxes).toEqual([]);
+  expect(plan.total).toBe(32);
 });
