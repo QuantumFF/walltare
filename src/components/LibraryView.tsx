@@ -5,10 +5,8 @@ import {
   RejectDestinationLine,
   useRejectDestination,
 } from "@/components/RejectDestination";
-import {
-  WallpaperGrid,
-  type WallpaperGridHandle,
-} from "@/components/WallpaperGrid";
+import { WallpaperGrid } from "@/components/WallpaperGrid";
+import type { SelectionHandle } from "@/components/selection";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import {
@@ -362,7 +360,7 @@ export function LibraryView() {
    * state *instead of* the grid, and the lightbox has to hear about that.
    * `setGrid`'s identity is stable, so nothing downstream churns on it.
    */
-  const [grid, setGrid] = useState<WallpaperGridHandle | null>(null);
+  const [grid, setGrid] = useState<SelectionHandle | null>(null);
   const lightbox = useLightbox(grid);
 
   return (

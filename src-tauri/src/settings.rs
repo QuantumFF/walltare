@@ -20,6 +20,7 @@ const LIBRARY_ROOT: &str = "library_root";
 const REJECT_DESTINATION: &str = "reject_destination";
 const SCREEN: &str = "screen";
 const MINIMUM_RESOLUTION: &str = "minimum_resolution";
+const REVIEW_LAYOUT: &str = "review_layout";
 const LIBRARY_LAYOUT: &str = "library_layout";
 
 /// The screen to assume when the platform will not name one.
@@ -45,6 +46,37 @@ impl Theme {
             "system" => Some(Self::System),
             "light" => Some(Self::Light),
             "dark" => Some(Self::Dark),
+            _ => None,
+        }
+    }
+}
+
+/// Which layout Review draws its worklist in.
+///
+/// Stored per tab rather than once for the app: browsing a library and judging a
+/// queue are different jobs, so a choice made on one page must not decide the
+/// other. Library's own key arrives with the layouts it chooses between
+/// ([#262](https://github.com/QuantumFF/walltare/issues/262)); the two never
+/// share a row.
+///
+/// `Grid` is the default, so a curator who never touches the control sees the
+/// page they already had. The strip is one press away on Review's own bar and
+/// the choice is remembered, so saying it once is the whole cost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewLayout {
+    /// One wallpaper at the size it would be hung, with the worklist beneath it.
+    Strip,
+    /// The uniform grid of cards Review has always drawn.
+    #[default]
+    Grid,
+}
+
+impl ReviewLayout {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "strip" => Some(Self::Strip),
+            "grid" => Some(Self::Grid),
             _ => None,
         }
     }
@@ -181,6 +213,9 @@ pub struct Settings {
     /// their exact pixels without lying to the crop preview about what they are
     /// looking at.
     pub minimum_resolution: Resolution,
+    /// Which layout Review draws its worklist in, remembered across launches
+    /// and held apart from whatever Library is drawing.
+    pub review_layout: ReviewLayout,
     /// What the monitor said, which is what [`Settings::screen`] reads as until
     /// the curator overrides it.
     ///
@@ -209,6 +244,7 @@ impl Settings {
             library_layout: LibraryLayout::Grid,
             screen: detected.screen,
             minimum_resolution: detected.screen,
+            review_layout: ReviewLayout::default(),
             detected_screen: detected.screen,
         }
     }
@@ -293,6 +329,8 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         // The one default that is another setting rather than a constant, which
         // is why it is resolved after the screen rather than beside it.
         minimum_resolution: read(stored, MINIMUM_RESOLUTION, Resolution::parse).unwrap_or(screen),
+        review_layout: read(stored, REVIEW_LAYOUT, ReviewLayout::parse)
+            .unwrap_or(defaults.review_layout),
         // Never read off the table: it is what the monitor said, and the table
         // holds what the curator said.
         detected_screen: detected.screen,
@@ -345,6 +383,14 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         }
         SCREEN => Ok(resolution(value)? == without.screen),
         MINIMUM_RESOLUTION => Ok(resolution(value)? == without.minimum_resolution),
+        REVIEW_LAYOUT => {
+            let layout = ReviewLayout::parse(value).ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "{value:?} is not a Review layout; expected strip or grid"
+                ))
+            })?;
+            Ok(layout == without.review_layout)
+        }
         _ => Err(AppError::BadRequest(format!("unknown setting {key:?}"))),
     }
 }
@@ -415,6 +461,7 @@ mod tests {
                 library_layout: LibraryLayout::Grid,
                 screen: size(3840, 2160),
                 minimum_resolution: size(3840, 2160),
+                review_layout: ReviewLayout::Grid,
                 detected_screen: size(3840, 2160),
             }
         );
@@ -614,6 +661,85 @@ mod tests {
     }
 
     #[test]
+    fn review_starts_on_the_grid_it_has_always_drawn() {
+        let conn = store();
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().review_layout,
+            ReviewLayout::Grid
+        );
+        // Nothing was written to reach that answer, so a curator who never opens
+        // the control has no row and sees the page they already had.
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn the_review_layout_survives_the_connection_that_wrote_it() {
+        // The whole point of storing it: a layout that resets on every launch is
+        // a control the curator presses every session.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            crate::db::init_schema(&conn).unwrap();
+            let written = set(&conn, "review_layout", "strip", detected()).unwrap();
+            assert_eq!(written.review_layout, ReviewLayout::Strip);
+        }
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().review_layout,
+            ReviewLayout::Strip
+        );
+    }
+
+    #[test]
+    fn a_review_layout_write_leaves_the_other_keys_alone() {
+        let conn = store();
+        set(&conn, "theme", "dark", detected()).unwrap();
+        set(&conn, "screen", "2560x1440", detected()).unwrap();
+
+        let settings = set(&conn, "review_layout", "strip", detected()).unwrap();
+
+        assert_eq!(settings.theme, Theme::Dark);
+        assert_eq!(settings.screen, size(2560, 1440));
+        assert_eq!(settings.minimum_resolution, size(2560, 1440));
+        assert_eq!(settings.review_layout, ReviewLayout::Strip);
+    }
+
+    #[test]
+    fn a_review_layout_that_is_not_one_is_a_bad_request_and_changes_nothing() {
+        let conn = store();
+        set(&conn, "review_layout", "strip", detected()).unwrap();
+        let before = get(&conn, detected()).unwrap();
+
+        for refused in ["masonry", "Strip", "", "justified"] {
+            let err = set(&conn, "review_layout", refused, detected()).unwrap_err();
+            assert!(
+                matches!(err, AppError::BadRequest(_)),
+                "{refused:?}: {err:?}"
+            );
+        }
+
+        assert_eq!(get(&conn, detected()).unwrap(), before);
+    }
+
+    #[test]
+    fn a_review_layout_row_that_will_not_read_falls_back_to_the_grid() {
+        // Boot never fails over a preference, and a layout is one more row
+        // someone can edit by hand.
+        let conn = store();
+        write_raw_row(&conn, "review_layout", "filmstrip");
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().review_layout,
+            ReviewLayout::Grid
+        );
+    }
+
+    #[test]
     fn a_written_path_is_stored_exactly_as_written() {
         // ADR 0011: expanding at write time would freeze whatever a variable
         // meant during one session, and would show the user a path they never
@@ -745,11 +871,13 @@ mod tests {
         set(&conn, "reject_destination", "/bin", detected()).unwrap();
         set(&conn, "screen", "2560x1440", detected()).unwrap();
         set(&conn, "minimum_resolution", "1280x720", detected()).unwrap();
+        set(&conn, "review_layout", "strip", detected()).unwrap();
         set(&conn, "library_layout", "masonry", detected()).unwrap();
 
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
         set(&conn, "reject_destination", "./rejected", detected()).unwrap();
+        set(&conn, "review_layout", "grid", detected()).unwrap();
         set(&conn, "library_layout", "grid", detected()).unwrap();
         // The minimum resolution goes back first, against the overridden screen
         // it currently defaults to. Doing it the other way round would mean
@@ -827,6 +955,7 @@ mod tests {
         set(&conn, "library_root", "~/pics", detected()).unwrap();
         set(&conn, "library_layout", "masonry", detected()).unwrap();
         set(&conn, "screen", "2560x1440", detected()).unwrap();
+        set(&conn, "review_layout", "strip", detected()).unwrap();
 
         let json = serde_json::to_value(get(&conn, detected()).unwrap()).unwrap();
 
@@ -846,5 +975,8 @@ mod tests {
         assert_eq!(json["minimum_resolution"]["width"], 2560);
         assert_eq!(json["detected_screen"]["width"], 3840);
         assert_eq!(json["detected_screen"]["height"], 2160);
+        // A layout crosses as the same string a write accepts, so the frontend
+        // can hand a read value straight back to `set_setting`.
+        assert_eq!(json["review_layout"], "strip");
     }
 }

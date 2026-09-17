@@ -16,6 +16,7 @@ import type {
   LibraryLayout,
   MissingFiles,
   Resolution,
+  ReviewLayout,
   SettingKey,
   Settings,
   Theme,
@@ -72,6 +73,8 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
       return { library_root: value };
     case "reject_destination":
       return { reject_destination: value };
+    case "review_layout":
+      return { review_layout: value as ReviewLayout };
     // Not a section on this page — the control is on the Library bar (#262) —
     // but it is a writable key, so the switch has to answer for it or the mock
     // stops being exhaustive over `SettingKey`.

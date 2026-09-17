@@ -4,11 +4,11 @@ import {
   type WallpaperRows,
 } from "@/components/useWallpaperRows";
 import { WallpaperCard } from "@/components/WallpaperCard";
-import {
-  WallpaperGrid,
-  type GridSelection,
-  type WallpaperGridHandle,
-} from "@/components/WallpaperGrid";
+import { WallpaperGrid } from "@/components/WallpaperGrid";
+import type {
+  SelectionHandle,
+  WallpaperSelection,
+} from "@/components/selection";
 import type { Wallpaper } from "@/lib/client";
 import { act, cleanup, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -68,12 +68,12 @@ const DESTINATION: RejectDestination = {
 /** What each render of the page handed over, oldest first. */
 let performs: Array<WallpaperRows["perform"]>;
 /** The grid's handle, which is what a page holds instead of a selection (#230). */
-let gridHandle: WallpaperGridHandle | null;
+let gridHandle: SelectionHandle | null;
 /** Re-render the page with nothing about it changed. */
 let rerender: () => void;
 
 /** The selection as the grid last published it. */
-function selection(): GridSelection {
+function selection(): WallpaperSelection {
   if (gridHandle === null) throw new Error("the grid has not mounted");
   return gridHandle.selection();
 }
@@ -100,7 +100,7 @@ function Page({ list }: { list: Wallpaper[] }) {
     destination: DESTINATION,
     owe: () => {},
   });
-  const [handle, setHandle] = useState<WallpaperGridHandle | null>(null);
+  const [handle, setHandle] = useState<SelectionHandle | null>(null);
   gridHandle = handle;
 
   performs.push(perform);

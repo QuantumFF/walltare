@@ -1,15 +1,16 @@
 import {
   ACTION_CONTROLS,
+  actionFor,
+  printedKey,
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
 import {
-  actionFor,
-  printedKey,
-  useGridSelection,
-  type GridSelection,
-  type WallpaperGridHandle,
-} from "@/components/WallpaperGrid";
+  useSelection,
+  type SelectionHandle,
+  type WallpaperSelection,
+} from "@/components/selection";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
@@ -59,7 +60,7 @@ const ROW_FLOOR = 500;
 
 /**
  * The three readings of the grid's publication this file takes, as module-level
- * functions because `useGridSelection` compares snapshots and a reader rebuilt
+ * functions because `useSelection` compares snapshots and a reader rebuilt
  * per render is a new snapshot per render.
  *
  * They are the whole of why the publication carries a reader rather than handing
@@ -77,9 +78,10 @@ const ROW_FLOOR = 500;
  * commit — which is the difference between the surface painting the outgoing
  * wallpaper for a frame and never painting it at all.
  */
-const WHOLE = (selection: GridSelection) => selection;
-const HAS_WALLPAPER = (selection: GridSelection) => selection.wallpaper !== null;
-const NOTHING: GridSelection = {
+const WHOLE = (selection: WallpaperSelection) => selection;
+const HAS_WALLPAPER = (selection: WallpaperSelection) =>
+  selection.wallpaper !== null;
+const NOTHING: WallpaperSelection = {
   wallpaper: null,
   index: -1,
   length: 0,
@@ -149,9 +151,7 @@ export interface LightboxControls {
  * is a no-op in a browser and a lie under happy-dom. Only the caller can tell
  * the three apart (ADR 0029).
  */
-export function useLightbox(
-  grid: WallpaperGridHandle | null,
-): LightboxControls {
+export function useLightbox(grid: SelectionHandle | null): LightboxControls {
   const { view } = useApp();
   const { setOpen: reportToShell } = useLightboxHost();
   const [open, setOpen] = useState(false);
@@ -159,7 +159,7 @@ export function useLightbox(
   // this page that turns on the cursor — and a boolean, so a curator walking the
   // grid with the arrows re-renders neither this hook's page nor anything above
   // it. It flips when the list empties or fills, and on no other keystroke.
-  const anySelection = useGridSelection(grid, HAS_WALLPAPER);
+  const anySelection = useSelection(grid, HAS_WALLPAPER);
 
   /**
    * The page's flag and the shell's, set together.
@@ -263,7 +263,7 @@ export interface LightboxProps {
    * empty list. There is nothing to be a rendering of then, and the hook above
    * closes this surface in the same pass.
    */
-  grid: WallpaperGridHandle | null;
+  grid: SelectionHandle | null;
   /** Whether one is up, from `useLightbox` over that same grid. */
   open: boolean;
   /**
@@ -323,7 +323,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   // hear about the selection it opened onto one commit later; staying subscribed
   // costs a constant snapshot that no cursor move changes, so a curator walking
   // the grid with the arrows re-renders nothing in here (#230).
-  const { wallpaper, index, length, moveTo } = useGridSelection(
+  const { wallpaper, index, length, moveTo } = useSelection(
     grid,
     open ? WHOLE : CLOSED,
   );
@@ -742,7 +742,8 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                         className="truncate font-mono text-[11px] text-white/50"
                         title={wallpaper.path}
                       >
-                        {wallpaper.status === "rejected" && wallpaper.origin_path
+                        {wallpaper.status === "rejected" &&
+                        wallpaper.origin_path
                           ? wallpaper.origin_path
                           : wallpaper.path}
                       </p>

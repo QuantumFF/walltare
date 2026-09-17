@@ -1,9 +1,12 @@
 import {
+  fittedBox,
   densityColumns,
   densityZoom,
   layoutPlan,
   planMasonry,
   planUniformGrid,
+  ratioOf,
+  UNKNOWN_RATIO,
   uniformRowHeight,
   windowOf,
 } from "@/lib/layout-plan";
@@ -270,6 +273,85 @@ test("a uniform plan holds the scroll height its own rows add up to", () => {
   expect(plan.total).toBeCloseTo(100 * height + 99 * 24 + 32);
   const last = plan.rows[99];
   expect(last.top + last.height).toBeCloseTo(plan.total - 16);
+});
+
+// The hero's box, which is the other thing happy-dom structurally cannot check:
+// the Review strip measures its area and computes the picture's box from it, and
+// under a runner that lays nothing out every rect is zero. The arithmetic is
+// here, so the property a curator sees — one wallpaper as large as its own shape
+// allows — is assertable without a layout engine (#265).
+
+test("a wallpaper's shape is its own, and 16:9 while nothing has read it", () => {
+  expect(ratioOf(1920, 1080)).toBeCloseTo(16 / 9);
+  expect(ratioOf(2560, 1080)).toBeCloseTo(2560 / 1080);
+  expect(ratioOf(1080, 1920)).toBeCloseTo(1080 / 1920);
+
+  // A library still being backfilled is the ordinary state, not an edge case:
+  // a row with no Dimensions is drawn rather than waited for (ADR 0044).
+  expect(ratioOf(null, null)).toBe(UNKNOWN_RATIO);
+  expect(ratioOf(1920, null)).toBe(UNKNOWN_RATIO);
+  expect(ratioOf(null, 1080)).toBe(UNKNOWN_RATIO);
+  // A row someone wrote by hand. Nothing divides by it.
+  expect(ratioOf(0, 1080)).toBe(UNKNOWN_RATIO);
+  expect(ratioOf(1920, 0)).toBe(UNKNOWN_RATIO);
+  expect(ratioOf(-1920, 1080)).toBe(UNKNOWN_RATIO);
+});
+
+test("the hero fills whichever axis runs out first, and never overflows the other", () => {
+  // An area wider than the wallpaper: the height is what is used up, and the
+  // width follows from the ratio.
+  const wide = fittedBox({ width: 1200, height: 400 }, 16 / 9);
+  expect(wide.height).toBeCloseTo(400);
+  expect(wide.width).toBeCloseTo(400 * (16 / 9));
+  expect(wide.width).toBeLessThanOrEqual(1200);
+
+  // An area taller than the wallpaper: the width is what is used up.
+  const tall = fittedBox({ width: 600, height: 900 }, 16 / 9);
+  expect(tall.width).toBeCloseTo(600);
+  expect(tall.height).toBeCloseTo(600 / (16 / 9));
+  expect(tall.height).toBeLessThanOrEqual(900);
+
+  // A portrait wallpaper in a landscape area, which is the case the uniform
+  // grid could never show: the box is tall and narrow rather than cropped.
+  const portrait = fittedBox({ width: 1200, height: 800 }, 1080 / 1920);
+  expect(portrait.height).toBeCloseTo(800);
+  expect(portrait.width).toBeCloseTo(800 * (1080 / 1920));
+});
+
+test("the hero's box is exactly the wallpaper's own shape, whatever the area", () => {
+  // The property #266 depends on: the crop preview draws its bars as
+  // percentages of this box, so any letterboxing inside it would be measured as
+  // if it were the picture.
+  for (const ratio of [16 / 9, 21 / 9, 4 / 3, 1, 1080 / 1920]) {
+    for (const area of [
+      { width: 1200, height: 800 },
+      { width: 300, height: 900 },
+      { width: 1920, height: 200 },
+    ]) {
+      const box = fittedBox(area, ratio);
+      expect(box.width / box.height).toBeCloseTo(ratio);
+      expect(box.width).toBeLessThanOrEqual(area.width + 0.001);
+      expect(box.height).toBeLessThanOrEqual(area.height + 0.001);
+    }
+  }
+});
+
+test("an area with nothing in it is a box with nothing in it", () => {
+  // Not an edge case: happy-dom reports every rect as zero, and ADR 0015 hides
+  // a view with `display: none`, which zeroes the box in a browser too. The
+  // caller holds its last measurement and a fallback under that.
+  expect(fittedBox({ width: 0, height: 0 }, 16 / 9)).toEqual({
+    width: 0,
+    height: 0,
+  });
+  expect(fittedBox({ width: 1200, height: 0 }, 16 / 9)).toEqual({
+    width: 0,
+    height: 0,
+  });
+  expect(fittedBox({ width: 0, height: 800 }, 16 / 9)).toEqual({
+    width: 0,
+    height: 0,
+  });
 });
 
 // Masonry (#262): every wallpaper at its own aspect ratio, packed into columns

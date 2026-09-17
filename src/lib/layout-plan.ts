@@ -19,6 +19,71 @@
  * nothing about a card, a Wallpaper or a class name.
  */
 
+/**
+ * The shape a wallpaper is drawn at while nothing has read its Dimensions, as
+ * width over height.
+ *
+ * 16:9, which is what the library mostly is and what the card has always cropped
+ * to. A row with null Dimensions is the ordinary state of a library still being
+ * backfilled, so every layout answers for it rather than waiting: no badge, out
+ * of the undersized filter, and this ratio on screen (CONTEXT.md, ADR 0044).
+ */
+export const UNKNOWN_RATIO = 16 / 9;
+
+/**
+ * A wallpaper's shape, as width over height, from Dimensions that may not have
+ * been read yet.
+ *
+ * Two nullable numbers rather than a `Wallpaper`, because this module imports
+ * nothing about one: it is arithmetic over numbers it is handed. A zero in
+ * either axis reads the same as an unread pair — nothing divides by it, and a
+ * row holding one is a row someone wrote by hand.
+ */
+export function ratioOf(width: number | null, height: number | null): number {
+  if (!width || !height || width <= 0 || height <= 0) return UNKNOWN_RATIO;
+  return width / height;
+}
+
+/** A rectangle in pixels. Both the area a box is fitted into, and the box. */
+export interface Box {
+  width: number;
+  height: number;
+}
+
+/**
+ * The largest box of a given shape that fits inside an area.
+ *
+ * What the Review strip's hero is sized from, and it is a computed box rather
+ * than `max-width: 100%; max-height: 100%` on the image because the crop preview
+ * draws its bars as percentages of the image (#266). A letterboxed `<img>` is as
+ * wide as its container and only as tall as the picture, so a bar measured
+ * against it measures the letterboxing around the picture rather than the
+ * picture. A box of exactly the wallpaper's own ratio has no letterboxing in it
+ * to measure.
+ *
+ * Declaring the ratio in CSS is the obvious answer and it collapses: a box that
+ * states only an `aspect-ratio` and a maximum, inside a flex parent, has a
+ * definite size in neither axis and resolves to nothing. So the area is measured
+ * and the box computed from it, which is this function.
+ *
+ * An area with nothing in either axis is a box with nothing in it. That is not
+ * an edge case: happy-dom does no layout and reports every rect as zero, and
+ * ADR 0015 keeps a view mounted under `display: none`, which zeroes the box in a
+ * real browser too. The caller holds the last measurement it had and a fallback
+ * under that, the way the grid's window does.
+ */
+export function fittedBox(area: Box, ratio: number): Box {
+  if (area.width <= 0 || area.height <= 0 || ratio <= 0) {
+    return { width: 0, height: 0 };
+  }
+  // Whichever axis runs out first is the one the box is pinned to, and the other
+  // is derived from it — so the box is always exactly `ratio` and never larger
+  // than the area in either direction.
+  return area.width / area.height > ratio
+    ? { width: area.height * ratio, height: area.height }
+    : { width: area.width, height: area.width / ratio };
+}
+
 /** One row of a plan, and the whole of what a window needs about it. */
 export interface PlannedRow {
   /**

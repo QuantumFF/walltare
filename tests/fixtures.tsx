@@ -257,6 +257,9 @@ export function settings(over: Partial<Settings> = {}): Settings {
     library_layout: "grid",
     screen,
     minimum_resolution: screen,
+    // The layout Review draws with no row in the table, which is the grid it has
+    // always drawn: a test that wants the strip arranges it (#265).
+    review_layout: "grid",
     // What the monitor said, which no override moves: a test that overrides the
     // screen is arranging exactly the case where the two differ.
     detected_screen: DETECTED_SCREEN,
