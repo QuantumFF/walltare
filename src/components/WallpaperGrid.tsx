@@ -643,6 +643,17 @@ export interface WallpaperGridProps {
    */
   minimumResolution?: Resolution;
   /**
+   * The curator's Evaluated threshold, which is the σ each card's Score badge
+   * reads as solid below (#260).
+   *
+   * Carried rather than resolved, unlike `minimumResolution` above: a threshold
+   * is one number, so handing it to the card costs the memo nothing and saves
+   * this component making the same comparison the card would. Absent falls back
+   * to what Evaluated meant before it was a setting, which is what a grid
+   * mounted outside the app's settings gets.
+   */
+  evaluatedThreshold?: number;
+  /**
    * The scroll box this grid sits inside, for a host that has one.
    *
    * With it the grid windows itself: a few dozen cards in the DOM out of the
@@ -919,6 +930,7 @@ function Grid({
   animated = false,
   scoresMoved,
   minimumResolution,
+  evaluatedThreshold,
   reveal,
   mounted,
   columns,
@@ -1220,6 +1232,7 @@ function Grid({
             // loud about a wallpaper and nobody says their favourite is number
             // zero.
             rank={ranked ? cardIndex + 1 : undefined}
+            evaluatedThreshold={evaluatedThreshold}
           />
         );
       })}

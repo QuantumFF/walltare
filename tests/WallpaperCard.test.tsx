@@ -36,9 +36,9 @@ beforeEach(() => {
  * A card as the live library produces one: rated, and not yet Evaluated.
  *
  * The dimmed badge is the default here because it is the default everywhere. σ
- * crosses 4.0 at around seven comparisons, so a young library holds no
- * Evaluated wallpaper at all and the solid badge is the case a test has to
- * arrange (ADR 0013).
+ * is a late signal at every threshold the curator can choose, so a young library
+ * holds no Evaluated wallpaper at all and the solid badge is the case a test has
+ * to arrange (ADR 0013).
  */
 function card(over: Partial<Wallpaper> = {}): Wallpaper {
   return wallpaper(1, {
@@ -63,12 +63,18 @@ function rejected(over: Partial<Wallpaper> = {}): Wallpaper {
  * Mount one card inside the real providers, with a host that answers the way a
  * page does: it records what was asked for and makes the call behind it.
  */
-async function mount(w: Wallpaper, animated = false, undersized = false) {
+async function mount(
+  w: Wallpaper,
+  animated = false,
+  undersized = false,
+  evaluatedThreshold?: number,
+) {
   await renderInApp(
     <WallpaperCard
       wallpaper={w}
       animated={animated}
       undersized={undersized}
+      evaluatedThreshold={evaluatedThreshold}
       onAction={(action, subject) => {
         asked.push({ action, id: subject.id });
         if (action === "restore") void client.restoreWallpaper(subject.id);
@@ -128,11 +134,47 @@ test("the badge is dimmed until the wallpaper is Evaluated", async () => {
   expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
 
   cleanup();
-  // Under 4.0 the app trusts the number, and one visual state says so. No
-  // second number and no bands: there is one definition of confidence.
+  // Under the threshold the app trusts the number, and one visual state says
+  // so. No second number and no bands: there is one definition of confidence.
   await mount(card({ rating_sigma: 3.9 }));
   expect(badge().className).toContain("bg-white");
   expect(badge().getAttribute("title")).toBe("Evaluated");
+});
+
+test("the badge reads against the threshold the curator set, not a constant", async () => {
+  // One wallpaper, three curators. σ 4.5 is not confident enough for the app as
+  // it shipped and is for a curator who asked to be told sooner, which is the
+  // whole of what #260 moved (ADR 0046).
+  const rated = card({ rating_sigma: 4.5 });
+
+  await mount(rated, false, false, 5);
+  expect(badge().getAttribute("title")).toBe("Evaluated");
+  expect(badge().className).toContain("bg-white");
+
+  cleanup();
+  await mount(rated, false, false, 4);
+  expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
+
+  cleanup();
+  await mount(rated, false, false, 3);
+  expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
+
+  cleanup();
+  // A card told nothing reads against what Evaluated meant before it was a
+  // setting, which is the answer for every curator who has not moved it.
+  await mount(rated);
+  expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
+});
+
+test("a wallpaper in no Comparison is Evaluated at no threshold the page offers", async () => {
+  // The starting σ is 8.333, above the loosest choice, so the dimmed badge and
+  // `Unrated` agree without either checking the other.
+  for (const threshold of [5, 4, 3]) {
+    await mount(card({ comparisons_count: 0, rating_mu: 25 }), false, false, threshold);
+    expect(badge().textContent).toBe("Unrated");
+    expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
+    cleanup();
+  }
 });
 
 test("a card names itself with its filename and its Status", async () => {

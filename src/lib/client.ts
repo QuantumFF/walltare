@@ -246,6 +246,20 @@ export interface Settings {
    */
   review_layout: ReviewLayout;
   /**
+   * The σ below which a wallpaper's rating counts as Evaluated.
+   *
+   * The curator's answer to how many Comparisons make a Score trustworthy
+   * (CONTEXT.md, ADR 0046). The number itself rather than a name for it, because
+   * the card compares a wallpaper's σ against it directly and the backend counts
+   * `evaluated_count` against the same row — a name would need the same three
+   * numbers written out on both sides of the IPC, which is exactly how the
+   * headline and the badges would come to disagree.
+   *
+   * Only the values `EVALUATED_THRESHOLDS` offers are writable; the backend
+   * refuses the rest.
+   */
+  evaluated_threshold: number;
+  /**
    * What the monitor said, which is what `screen` reads as until the curator
    * overrides it.
    *
@@ -275,6 +289,31 @@ export type SettingKey = Exclude<keyof Settings, "detected_screen">;
 const FALLBACK_SCREEN: Resolution = { width: 1920, height: 1080 };
 
 /**
+ * The Evaluated threshold with no row in the table, mirroring
+ * `settings::DEFAULT_EVALUATED_THRESHOLD`.
+ *
+ * What Evaluated meant while it was a constant — σ below 4.0, roughly half the
+ * starting uncertainty — so a curator who never opens the control sees the count
+ * and the badges they always did (CONTEXT.md, ADR 0046).
+ *
+ * The one place the frontend may fall back to it is a card mounted outside the
+ * app's settings. Every surface inside them reads `settings.evaluated_threshold`,
+ * because that is the row the backend counted against.
+ */
+export const DEFAULT_EVALUATED_THRESHOLD = 4.0;
+
+/**
+ * The three thresholds Settings offers, loosest first, mirroring
+ * `settings::EVALUATED_THRESHOLDS`.
+ *
+ * A preset list and not a free number: σ is the app's own uncertainty scale, and
+ * a curator typing `6.5` into it is guessing at a unit nothing on the page can
+ * explain. The backend refuses anything else, so this list and its refusal are
+ * the same rule (ADR 0046).
+ */
+export const EVALUATED_THRESHOLDS = [5.0, DEFAULT_EVALUATED_THRESHOLD, 3.0];
+
+/**
  * What every key means with no row in the table, mirroring `Settings::defaults`.
  *
  * settings.rs owns the answer; this copy exists only for the boot path, which
@@ -293,6 +332,7 @@ export const DEFAULT_SETTINGS: Settings = {
   screen: FALLBACK_SCREEN,
   minimum_resolution: FALLBACK_SCREEN,
   review_layout: "grid",
+  evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
   detected_screen: FALLBACK_SCREEN,
 };
 

@@ -1540,3 +1540,75 @@ test("switching between the uncropped layouts keeps the selection", async () => 
   expect(card(2)?.getAttribute("tabindex")).toBe("0");
   expect(rankOf(2)).toBe("2");
 });
+
+// The Evaluated threshold, on the surface that draws the most badges at once
+// (#260). The setting is the σ below which a Score badge goes solid, and the
+// same σ `voting.rs` counts `evaluated_count` with — so what these assert is
+// that the library's badges are the rows the Rank headline counted.
+//
+// The count itself is not asserted here. It is the backend's, and the arithmetic
+// is `voting.rs`'s; what this page can be wrong about is which cards it draws
+// solid, which is the half that lives on this side of the IPC.
+
+/** Whether a card's Score badge says the app trusts the number, by its tooltip. */
+const evaluatedOn = (id: number) =>
+  cardFor(id)?.querySelector("[title$='Evaluated']")?.getAttribute("title") ??
+  null;
+
+/** Four rows straddling all three thresholds, loosest σ first. */
+const STRADDLING = [
+  wallpaper(1, { rating_sigma: 5.5, comparisons_count: 4 }),
+  wallpaper(2, { rating_sigma: 4.5, comparisons_count: 8 }),
+  wallpaper(3, { rating_sigma: 3.5, comparisons_count: 16 }),
+  wallpaper(4, { rating_sigma: 2.5, comparisons_count: 30 }),
+];
+
+test("the badges follow the Evaluated threshold the curator set", async () => {
+  // Balanced, which is what an untouched settings table reads as, so this first
+  // case is also the one every other test in this file is standing on.
+  await openLibraryOf(STRADDLING);
+  expect([1, 2, 3, 4].map(evaluatedOn)).toEqual([
+    "Not yet Evaluated",
+    "Not yet Evaluated",
+    "Evaluated",
+    "Evaluated",
+  ]);
+
+  // Lenient: the curator asked to be told sooner, and two more rows qualify.
+  cleanup();
+  await openLibraryOf(STRADDLING, { evaluated_threshold: 5 });
+  expect([1, 2, 3, 4].map(evaluatedOn)).toEqual([
+    "Not yet Evaluated",
+    "Evaluated",
+    "Evaluated",
+    "Evaluated",
+  ]);
+
+  // Strict: only the row with thirty Comparisons behind it survives.
+  cleanup();
+  await openLibraryOf(STRADDLING, { evaluated_threshold: 3 });
+  expect([1, 2, 3, 4].map(evaluatedOn)).toEqual([
+    "Not yet Evaluated",
+    "Not yet Evaluated",
+    "Not yet Evaluated",
+    "Evaluated",
+  ]);
+});
+
+test("masonry draws the same Evaluated badges the grid does", async () => {
+  // Confidence is a fact about a rating rather than about how the cards were
+  // laid out, which is the same rule the undersized badge follows: what a layout
+  // changes is the box, not what is printed in it (ADR 0045, #262).
+  await openLibraryOf(STRADDLING, {
+    evaluated_threshold: 5,
+    library_layout: "masonry",
+  });
+
+  expect(pressedLayout()).toBe("Masonry");
+  expect([1, 2, 3, 4].map(evaluatedOn)).toEqual([
+    "Not yet Evaluated",
+    "Evaluated",
+    "Evaluated",
+    "Evaluated",
+  ]);
+});

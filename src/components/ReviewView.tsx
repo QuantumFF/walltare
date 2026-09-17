@@ -408,6 +408,7 @@ export function ReviewView() {
               onAction={perform}
               onOpen={lightbox.openOn}
               minimumResolution={settings.minimum_resolution}
+              evaluatedThreshold={settings.evaluated_threshold}
               startOn={resumeOn}
             />
           ) : (
@@ -423,6 +424,7 @@ export function ReviewView() {
               onAction={perform}
               onOpen={lightbox.openOn}
               minimumResolution={settings.minimum_resolution}
+              evaluatedThreshold={settings.evaluated_threshold}
               animated
               className="pb-8"
               startOn={resumeOn}

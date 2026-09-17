@@ -14,6 +14,7 @@ import {
   ReviewWorklistSection,
   StartupViewSection,
 } from "@/components/ChoiceSections";
+import { EvaluatedSection } from "@/components/EvaluatedSection";
 import { MissingFilesSection } from "@/components/MissingFilesSection";
 import {
   FirstRunBlock,
@@ -503,12 +504,18 @@ export function SettingsView() {
                 default is the first (ADR 0020, ADR 0032). */}
             <ScreenSection />
             <MinimumResolutionSection />
+            {/* Under the two sizes, because it is neither a size nor maintenance:
+                the sizes say what the app is being curated for and this says
+                how sure it has to be before it will say so. It is the one
+                setting on the page that changes what a word in the app means
+                rather than what the app looks like (ADR 0046). */}
+            <EvaluatedSection />
             {/* The three preferences about how the app runs rather than how it
-                looks, after the pair about the display and before the
-                maintenance pair. Startup view first because it is about the
-                whole app and the two under it are about one page; the worklist
-                before the ordering because how long a session is comes before
-                which end of the ranking it comes off (#259). */}
+                looks, after the threshold and before the maintenance pair.
+                Startup view first because it is about the whole app and the two
+                under it are about one page; the worklist before the ordering
+                because how long a session is comes before which end of the
+                ranking it comes off (#259). */}
             <StartupViewSection />
             <ReviewWorklistSection />
             <ReviewOrderingSection />
