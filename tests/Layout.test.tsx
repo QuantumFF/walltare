@@ -400,15 +400,16 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
     filters.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
   ).toEqual(["All"]);
   expect(bar.getByLabelText("Order by").textContent).toBe("Score, high to low");
-  // And #262's layout control beside them, opening on the grid — the layout the
+  // And the layout control beside them, opening on the grid — the layout the
   // app has always drawn, so a curator who never touches it sees what they saw
-  // before it existed.
+  // before it existed. One control with all three layouts in it rather than a
+  // second one arriving beside it per layout (#262, #263).
   const layouts = within(bar.getByRole("group", { name: "Layout" }));
   expect(
     layouts
       .getAllByRole("button")
       .map((el) => el.getAttribute("aria-label")),
-  ).toEqual(["Grid", "Masonry"]);
+  ).toEqual(["Grid", "Masonry", "Justified"]);
   expect(
     layouts
       .getAllByRole("button", { pressed: true })

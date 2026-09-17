@@ -274,6 +274,22 @@ export interface WallpaperCardProps {
    * (ADR 0044).
    */
   undersized?: boolean;
+  /**
+   * Where this wallpaper sits in the ordering the curator asked for, counted
+   * from one, drawn large across the card — and absent everywhere it is not.
+   *
+   * Justified rows are the one layout that asks for it, and the ranking is the
+   * reason that layout exists: the app's whole output is an order, and the other
+   * two layouts state it in a badge the size of a word (#263). It is the card's
+   * position in the list rather than anything stored, so re-ordering the list is
+   * the whole of what re-ranks the cards.
+   *
+   * Drawn and not announced, which is the same call the Score badge already
+   * makes: a cell's `aria-label` replaces its contents, so neither number
+   * reaches a screen reader from inside the card, and the ordering is named by
+   * the control that set it (ADR 0019).
+   */
+  rank?: number;
 }
 
 /**
@@ -296,7 +312,7 @@ export interface WallpaperCardProps {
  *
  * **Memoised, and every one of its props is a value or a stable identity so
  * that the memo holds.** This is what a card costs when a cursor moves past it:
- * one shallow comparison of seven props instead of a badge, up to two buttons,
+ * one shallow comparison of its props instead of a badge, up to two buttons,
  * two icons and roughly eight `twMerge` calls. Fifty of those thirty-five times
  * a second is 110 dropped frames per ten seconds of held arrow key, which is
  * ADR 0041's arrow-key run and the whole of why the cursor moved into the grid
@@ -315,6 +331,7 @@ export const WallpaperCard = memo(function WallpaperCard({
   selected = false,
   box,
   undersized = false,
+  rank,
 }: WallpaperCardProps) {
   // Whether this card is a cell in a grid at all, which is the one thing the
   // absent object used to say and the index says now.
@@ -443,6 +460,39 @@ export const WallpaperCard = memo(function WallpaperCard({
             "transition-transform duration-500 group-hover:scale-105 will-change-transform",
         )}
       />
+
+      {/*
+        The rank, set as large as the card is tall.
+
+        Over the picture rather than under it, which is the only place it can be:
+        a justified card is filled edge to edge by a wallpaper drawn at its own
+        shape, so a numeral behind the image is a numeral nobody sees. What makes
+        it read as behind is the treatment — white at a fraction of its opacity,
+        blended into whatever it is lying on, so it belongs to the picture rather
+        than sitting on top of it as a label would.
+
+        Sized from the box the layout gave the card, because that is the only
+        number here that knows how big the card is: a fixed size would be a
+        watermark taller than the card at eight columns and a footnote at two,
+        and the density gesture is exactly the thing that moves between them.
+        `leading-none` is what makes the height the glyph's own rather than a
+        line box's, so the number stays centred as it grows.
+
+        Before the badge, the pill and the reveal layer in the DOM and none of
+        those is in a stacking context of its own, so all three still paint over
+        it — a rank is what the curator reads while scanning, and the Score, the
+        Status and the actions are what they read when they stop.
+      */}
+      {rank !== undefined && (
+        <span
+          data-slot="wallpaper-rank"
+          aria-hidden
+          className="pointer-events-none absolute inset-0 flex items-center justify-center font-bold text-white/25 tabular-nums mix-blend-overlay leading-none"
+          style={{ fontSize: rankSize(box) }}
+        >
+          {rank}
+        </span>
+      )}
 
       {/*
         The file is gone, said in the space the picture would have taken.
@@ -674,6 +724,23 @@ export const WallpaperCard = memo(function WallpaperCard({
     </div>
   );
 });
+
+/**
+ * How big the rank numeral is drawn, from the box the layout gave the card.
+ *
+ * Seven tenths of the card's height, which leaves a two-digit rank inside a
+ * wallpaper of ordinary shape and lets a three-digit one run past the edges —
+ * deliberately, because the card clips it and a number cropped by the picture it
+ * is lying under is still legible while a number shrunk to fit is not.
+ *
+ * A card with no box has no height to take a fraction of, so it takes none: the
+ * `undefined` leaves the element at its inherited size. No layout produces that
+ * pair — the one layout that ranks is the one that places every card — so it is
+ * a guard rather than a case the app reaches.
+ */
+function rankSize(box: PlannedBox | undefined): number | undefined {
+  return box ? box.height * 0.7 : undefined;
+}
 
 /**
  * The name of the folder a path sits in, for the `now in rejected/` clause.

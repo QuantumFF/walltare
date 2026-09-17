@@ -40,6 +40,7 @@ import {
   Images,
   LayoutGrid,
   LayoutPanelTop,
+  Rows3,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -88,14 +89,20 @@ const ORDERINGS: Array<{ value: ListOrdering; label: string }> = [
  * ignores this control keeps.
  *
  * Icons rather than words, because the bar has four things on it already and the
- * two names are longer than the chips beside them. The name is on the control
+ * three names are longer than the chips beside them. The name is on the control
  * for a screen reader regardless, which is the half that must not be an icon
  * (ADR 0019).
+ *
+ * Justified joins the end rather than sitting beside masonry, so a curator's
+ * finger finds the same control in the same place it was before this one
+ * existed. The two uncropped layouts being adjacent is the order this already
+ * had, since the grid is first.
  */
 const LAYOUTS: Array<{ value: LibraryLayout; label: string; Icon: LucideIcon }> =
   [
     { value: "grid", label: "Grid", Icon: LayoutGrid },
     { value: "masonry", label: "Masonry", Icon: LayoutPanelTop },
+    { value: "justified", label: "Justified", Icon: Rows3 },
   ];
 
 /** Whether a row still belongs in a list filtered this way. */
@@ -490,9 +497,9 @@ export function LibraryView() {
           </SelectContent>
         </Select>
 
-        {/* The layout, as two buttons in a named group — the chips' shape, for
-            the same reason: two controls in a row with no word between them are
-            two unrelated buttons to a screen reader, and `aria-pressed` is what
+        {/* The layout, as a button each in a named group — the chips' shape, for
+            the same reason: controls in a row with no word between them are
+            unrelated buttons to a screen reader, and `aria-pressed` is what
             makes the current layout the same fact there that the fill makes it
             to an eye.
 
@@ -502,7 +509,7 @@ export function LibraryView() {
             still stored, which is what a restart reads it back from.
 
             Pressed and not checked, for the reason the chips are: a
-            `radiogroup` would put the two on the arrow keys, and this page
+            `radiogroup` would put them on the arrow keys, and this page
             spends the arrows on moving the selection through the grid
             (ADR 0019). */}
         <div
