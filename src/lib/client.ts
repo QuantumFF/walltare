@@ -151,6 +151,18 @@ export type StartupView = "rank" | "review" | "library";
 export const WORKLIST_SIZES = [10, 25, 50, 100] as const;
 
 /**
+ * Mirrors settings::WorklistSize: a worklist length, which is one of the presets
+ * and cannot be anything else.
+ *
+ * Derived from the list above rather than written out, so the presets and the
+ * type cannot drift apart. The restriction is the Rust newtype's, and stating it
+ * here too is what keeps this setting as typed as the three unions beside it —
+ * `review_worklist_size: number` would have let a caller name a length the
+ * backend refuses and learn about it from a runtime rejection.
+ */
+export type WorklistSize = (typeof WORKLIST_SIZES)[number];
+
+/**
  * Mirrors settings::Resolution: a size in pixels, width by height.
  *
  * What the Screen and the Minimum resolution settings hold. Not a wallpaper's
@@ -191,11 +203,11 @@ export interface Settings {
    * How many wallpapers Review puts in front of the curator at once, which is
    * the `limit` its listing asks for.
    *
-   * One of `WORKLIST_SIZES`, which the backend enforces: a number crosses as a
-   * number rather than as a preset index, because the `limit` is what the value
-   * is for.
+   * One of `WORKLIST_SIZES`, which the backend enforces and the type says: a
+   * length crosses as the number rather than as a preset index, because the
+   * `limit` is what the value is for.
    */
-  review_worklist_size: number;
+  review_worklist_size: WorklistSize;
   /**
    * Which view the app opens on, as a fixed choice rather than wherever the
    * curator was last (ADR 0015).

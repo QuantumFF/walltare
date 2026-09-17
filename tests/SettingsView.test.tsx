@@ -36,6 +36,7 @@ import {
   showingView,
   stats,
   wallpaper,
+  worklistSize,
 } from "./fixtures";
 import { emitEvent, mockCommand, mockFolderPicker } from "./ipc-mocks";
 
@@ -83,9 +84,10 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
     case "library_layout":
       return { library_layout: value as LibraryLayout };
     // A worklist size crosses as its own digits and comes back a number, which
-    // is what the listing's `limit` takes.
+    // is what the listing's `limit` takes — and only ever one of the presets,
+    // because that is all the store would have accepted.
     case "review_worklist_size":
-      return { review_worklist_size: Number(value) };
+      return { review_worklist_size: worklistSize(value) };
     case "startup_view":
       return { startup_view: value as StartupView };
     case "review_ordering":

@@ -17,6 +17,7 @@ import {
   settings,
   showingView,
   wallpaper,
+  worklistSize,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
@@ -324,10 +325,15 @@ test("asks the listing for the 50 Active wallpapers with the lowest Scores", asy
 // asked for — the last one because a `limit` and an `ordering` are invisible on
 // screen and wrong under the wrong key.
 
-/** The sentence on Review's bar naming which end of the ranking this list is. */
+/**
+ * The sentence on Review's bar naming which end of the ranking this list is.
+ *
+ * Found by what it says rather than by walking out of the heading into the bar:
+ * where the sentence sits is arrangement, and the two ends read the same to the
+ * curator wherever it is drawn.
+ */
 const orderingSentence = () =>
-  inReview().getByRole("heading", { name: "Review", level: 1 }).nextElementSibling
-    ?.firstElementChild?.textContent;
+  inReview().getByText(/Scores first$/).textContent;
 
 for (const size of WORKLIST_SIZES) {
   test(`a worklist of ${size} asks for ${size} and puts ${size} cards on the page`, async () => {
@@ -379,7 +385,7 @@ test("a worklist lengthened from Settings is fetched when Review is next shown",
   let stored = settings();
   mockCommand("get_settings", () => stored);
   mockCommand("set_setting", (args) => {
-    stored = { ...stored, review_worklist_size: Number(args.value) };
+    stored = { ...stored, review_worklist_size: worklistSize(args.value) };
     return stored;
   });
   mockCommand("list_wallpapers", (args) => {

@@ -8,6 +8,7 @@ import {
   type Settings,
   type StartupView,
   type Theme,
+  type WorklistSize,
 } from "@/lib/client";
 
 // The four settings that are one named thing out of a handful, in one module
@@ -137,9 +138,8 @@ export function AppearanceSection() {
  * labels are the numbers, because the question is how many wallpapers and the
  * number is the answer.
  */
-const WORKLIST_CHOICES: ReadonlyArray<Choice<number>> = WORKLIST_SIZES.map(
-  (size) => ({ value: size, label: String(size) }),
-);
+const WORKLIST_CHOICES: ReadonlyArray<Choice<WorklistSize>> =
+  WORKLIST_SIZES.map((size) => ({ value: size, label: String(size) }));
 
 /**
  * The Review worklist section: how many wallpapers Review puts in front of the
