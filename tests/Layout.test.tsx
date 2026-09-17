@@ -389,19 +389,31 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
       '[data-view="library"] [data-slot="page-bar"]',
     ) as HTMLElement,
   );
-  const chips = within(
-    bar.getByRole("group", { name: "Filter by Status" }),
-  ).getAllByRole("button");
-  expect(chips.map((el) => el.textContent)).toEqual([
+  const filters = within(bar.getByRole("group", { name: "Filter by Status" }));
+  expect(filters.getAllByRole("button").map((el) => el.textContent)).toEqual([
     "All",
     "Active",
     "Kept",
     "Rejected",
   ]);
   expect(
-    bar.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
+    filters.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
   ).toEqual(["All"]);
   expect(bar.getByLabelText("Order by").textContent).toBe("Score, high to low");
+  // And #262's layout control beside them, opening on the grid — the layout the
+  // app has always drawn, so a curator who never touches it sees what they saw
+  // before it existed.
+  const layouts = within(bar.getByRole("group", { name: "Layout" }));
+  expect(
+    layouts
+      .getAllByRole("button")
+      .map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["Grid", "Masonry"]);
+  expect(
+    layouts
+      .getAllByRole("button", { pressed: true })
+      .map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["Grid"]);
 });
 
 test("an empty library says so on the page that would have listed it", async () => {

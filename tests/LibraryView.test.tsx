@@ -845,3 +845,241 @@ test("neither empty state renders while the first fetch is still out", async () 
     screen.getByText("Nothing has been scanned into the library yet."),
   ).toBeTruthy();
 });
+
+// Masonry, and the control that chooses it (#262). The grid is the same
+// component with the same cards, the same cursor and the same keys — what moves
+// is where the plan puts them, so what these ask is that nothing a curator can
+// do stops working when it does.
+//
+// Where the cards actually land is `layout-plan.test.ts`': happy-dom does no
+// layout, so a box measures zero here and every card falls back to the same
+// height. What is observable is which layout is drawing — a masonry card carries
+// the position the plan gave it, and a grid card is placed by the CSS grid and
+// carries none — which is the same reading `Layout.test.tsx` takes of the active
+// tab, for the same reason.
+
+/** The layout control on the bar, as the two buttons it is. */
+const layoutButton = (name: string) =>
+  within(bar().getByRole("group", { name: "Layout" })).getByRole("button", {
+    name,
+  });
+
+/** The layout the bar marks as the current one. */
+const pressedLayout = () =>
+  within(bar().getByRole("group", { name: "Layout" }))
+    .getAllByRole("button", { pressed: true })
+    .map((el) => el.getAttribute("aria-label"))[0] ?? null;
+
+/** Whether the cards are being positioned by the layout rather than flowed. */
+const positionedCards = () =>
+  mountedCards().filter((el) => el.style.top !== "");
+
+test("the bar offers the two layouts, and the choice is written where a restart reads it", async () => {
+  const written: unknown[] = [];
+  await openLibraryOf([wallpaper(1), wallpaper(2)]);
+  mockCommand("set_setting", (args) => {
+    written.push(args);
+    return settings({ library_layout: "masonry" });
+  });
+
+  // The grid is where the page opens, because it is what the app has always
+  // drawn: a curator who never touches this control sees what they saw before it
+  // existed. Its cards are placed by the CSS grid and carry no position.
+  expect(pressedLayout()).toBe("Grid");
+  expect(positionedCards()).toEqual([]);
+
+  await click(layoutButton("Masonry"));
+
+  // Into the settings store, which is the only thing in the app that survives a
+  // restart — and under a key naming the Library, so Review's layout is its own
+  // (ADR 0010).
+  expect(written).toEqual([{ key: "library_layout", value: "masonry" }]);
+  expect(pressedLayout()).toBe("Masonry");
+  // And the cards are drawn where the plan put them rather than where a CSS grid
+  // would have: each carries its own box.
+  expect(positionedCards().length).toBe(mountedCards().length);
+  // The layout is not a question about the library, so nothing is re-fetched.
+  expect(listCalls).toBe(1);
+});
+
+test("a stored masonry layout is what the first grid draws", async () => {
+  // The other half of surviving a restart. The provider reads every setting
+  // before the first paint, so the curator never sees the grid flash past on the
+  // way to the layout they chose.
+  await openLibraryOf([wallpaper(1), wallpaper(2)], {
+    library_layout: "masonry",
+  });
+
+  expect(pressedLayout()).toBe("Masonry");
+  expect(positionedCards().length).toBe(mountedCards().length);
+});
+
+test("the selection is where it was after a layout switch", async () => {
+  await openLibraryOf([wallpaper(1), wallpaper(2), wallpaper(3)]);
+  mockCommand("set_setting", () => settings({ library_layout: "masonry" }));
+  await enterGrid();
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(card(2));
+
+  await click(layoutButton("Masonry"));
+
+  // The cursor is the grid's and the layout is a plan the grid reads, so there
+  // is nothing to carry across: the same component is still holding the same
+  // selected id (ADR 0045).
+  expect(card(2)?.getAttribute("tabindex")).toBe("0");
+  expect(card(1)?.getAttribute("tabindex")).toBe("-1");
+});
+
+test("the arrows reach every card in masonry, as they do in the grid", async () => {
+  await openLibraryOf(
+    Array.from({ length: 9 }, (_, at) => wallpaper(at + 1)),
+    { library_layout: "masonry" },
+  );
+  await enterGrid();
+
+  // Left and Right walk the list, which is what makes every card reachable
+  // however the columns were packed: the rows are a wrapping of one sequence and
+  // a sweep reads it as one (ADR 0019).
+  for (let at = 2; at <= 9; at++) {
+    await press("ArrowRight");
+    expect(document.activeElement).toBe(card(at));
+  }
+  await press("Home");
+  expect(document.activeElement).toBe(card(1));
+  // And Down still moves by the column count, which is the same count the plan
+  // packed the columns to.
+  await press("ArrowDown");
+  expect(document.activeElement).toBe(card(5));
+  await press("End");
+  expect(document.activeElement).toBe(card(9));
+});
+
+test("the lightbox opens from a masonry card", async () => {
+  await openLibraryOf([wallpaper(1), wallpaper(2)], {
+    library_layout: "masonry",
+  });
+
+  await click(screen.getByRole("gridcell", { name: "wall-1.jpg, Active" }));
+
+  // The lightbox is a second rendering of the grid's selection and knows nothing
+  // about which layout drew it (ADR 0022).
+  expect(screen.getByRole("dialog", { name: "wall-1.jpg" })).toBeTruthy();
+});
+
+test("keep, reject and restore all work from masonry", async () => {
+  await openLibraryOf(
+    [
+      wallpaper(1),
+      wallpaper(2),
+      wallpaper(3, {
+        status: "rejected",
+        path: "/library/rejected/wall-3.jpg",
+        origin_path: "/library/wall-3.jpg",
+      }),
+    ],
+    { library_layout: "masonry" },
+  );
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, `/library/rejected/${wrote(args).filename}`),
+  );
+  mockCommand("restore_wallpaper", (args) =>
+    restoredTo(args, "/library/wall-3.jpg"),
+  );
+
+  await click(button(/keep wall-1\.jpg/i));
+  expect(cardName(1)).toBe("wall-1.jpg, Kept");
+
+  await click(button(/reject wall-2\.jpg/i));
+  expect(cardName(2)).toBe("wall-2.jpg, Rejected");
+
+  await click(button(/restore wall-3\.jpg/i));
+  expect(cardName(3)).toBe("wall-3.jpg, Active");
+
+  // The actions are a property of a wallpaper rather than of a view, so a layout
+  // choice costs the curator none of them (ADR 0023).
+  expect(listCalls).toBe(1);
+});
+
+test("a library past the window has only a window of it in masonry too", async () => {
+  await openLibraryOf(
+    Array.from({ length: 400 }, (_, at) => wallpaper(at + 1)),
+    { library_layout: "masonry" },
+  );
+
+  // Exactly what the uniform grid promises at ADR 0016's ceiling, and the reason
+  // the plan is computed rather than measured: a virtualiser given estimates
+  // corrects them as rows mount and moves everything below by the difference.
+  const mounted = mountedCards();
+  expect(mounted.length).toBeGreaterThan(0);
+  expect(mounted.length).toBeLessThan(library.length);
+  expect(card(1)).not.toBeNull();
+  expect(card(400)).toBeNull();
+
+  // And no wallpaper is mounted twice, which masonry's bands make possible: a
+  // card taller than a band is listed in every band it crosses.
+  const names = mounted.map((el) => el.getAttribute("aria-label"));
+  expect(new Set(names).size).toBe(names.length);
+});
+
+test("a masonry selection off the end of the window is scrolled in and focused", async () => {
+  await openLibraryOf(
+    Array.from({ length: 400 }, (_, at) => wallpaper(at + 1)),
+    { library_layout: "masonry" },
+  );
+  browserLaysOutTheScroller();
+  await enterGrid();
+
+  // The reveal reads the plan for the band holding the card's own top, which for
+  // masonry is not the band it ends in — scrolling to that one would put the
+  // card above the window it was asked for (ADR 0019).
+  await press("End");
+  await browserReportsScroll();
+
+  expect(document.activeElement).toBe(card(400));
+  expect(card(1)).toBeNull();
+});
+
+test("a wallpaper whose Dimensions are unknown keeps a card in masonry", async () => {
+  // The ordinary state of a library still being backfilled, which nothing waits
+  // for: drawn at a ratio of nothing the card would have no height, and the
+  // column under it would swallow every card after it (ADR 0044).
+  await openLibraryOf(
+    [
+      wallpaper(1, { width: null, height: null }),
+      wallpaper(2, { width: 3840, height: 1600 }),
+    ],
+    { library_layout: "masonry" },
+  );
+
+  expect(cardName(1)).toBe("wall-1.jpg, Active");
+  expect(positionedCards().length).toBe(2);
+  expect(card(1)?.style.height).not.toBe("0px");
+});
+
+test("a layout switch under a window keeps the selection on the wallpaper, node or no node", async () => {
+  // The switch the other selection test cannot reach: at ADR 0016's scale the
+  // plan is replaced wholesale, and the card the selection is on may be mounted
+  // before it and not after. The cursor follows the wallpaper rather than a
+  // position in the mounted window, so neither answer is a lost selection
+  // (ADR 0019, #230).
+  await openLibraryOf(Array.from({ length: 400 }, (_, at) => wallpaper(at + 1)));
+  mockCommand("set_setting", () => settings({ library_layout: "masonry" }));
+  browserLaysOutTheScroller();
+  await enterGrid();
+  await press("End");
+  await browserReportsScroll();
+  expect(document.activeElement).toBe(card(400));
+
+  await click(layoutButton("Masonry"));
+
+  // The wallpaper the curator was on is still the selection, and the grid is
+  // still the one holding it: the layout is a plan the grid reads, so a switch
+  // rebuilds where the cards go and nothing about which one is chosen.
+  expect(pressedLayout()).toBe("Masonry");
+  const selected = mountedCards().filter(
+    (el) => el.getAttribute("tabindex") === "0",
+  );
+  expect(
+    selected.map((el) => el.getAttribute("aria-label")),
+  ).toEqual(["wall-400.jpg, Active"]);
+});

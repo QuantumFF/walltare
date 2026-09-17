@@ -9,6 +9,7 @@ const stored: Settings = {
   theme: "dark",
   library_root: "~/pics",
   reject_destination: "/bin/walls",
+  library_layout: "masonry",
   screen: { width: 2560, height: 1440 },
   minimum_resolution: { width: 1920, height: 1080 },
   detected_screen: { width: 3840, height: 2160 },
