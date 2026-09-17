@@ -102,6 +102,16 @@ export type ListOrdering =
 export type Theme = "system" | "light" | "dark";
 
 /**
+ * Mirrors settings::ReviewLayout: which layout Review draws its worklist in.
+ *
+ * `strip` is one wallpaper at the size it would be hung with the worklist as a
+ * filmstrip beneath it; `grid` is the uniform grid of cards Review has always
+ * drawn. Stored per tab rather than once for the app, so a choice made while
+ * browsing the library cannot decide how a decision queue is judged (#265).
+ */
+export type ReviewLayout = "strip" | "grid";
+
+/**
  * Mirrors settings::Resolution: a size in pixels, width by height.
  *
  * What the Screen and the Minimum resolution settings hold. Not a wallpaper's
@@ -142,6 +152,14 @@ export interface Settings {
    * pixels has nothing to set.
    */
   minimum_resolution: Resolution;
+  /**
+   * Which layout Review draws its worklist in, remembered across launches and
+   * held apart from whatever Library is drawing.
+   *
+   * `grid` by default, so a curator who never opens the control on Review's bar
+   * gets the page they already had.
+   */
+  review_layout: ReviewLayout;
   /**
    * What the monitor said, which is what `screen` reads as until the curator
    * overrides it.
@@ -185,6 +203,7 @@ export const DEFAULT_SETTINGS: Settings = {
   reject_destination: "./rejected",
   screen: FALLBACK_SCREEN,
   minimum_resolution: FALLBACK_SCREEN,
+  review_layout: "grid",
   detected_screen: FALLBACK_SCREEN,
 };
 

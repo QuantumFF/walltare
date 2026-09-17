@@ -5,18 +5,24 @@ import {
   RejectDestinationLine,
   useRejectDestination,
 } from "@/components/RejectDestination";
+import { ReviewStrip } from "@/components/ReviewStrip";
 import { useToaster } from "@/components/ToastSurface";
-import {
-  WallpaperGrid,
-  type WallpaperGridHandle,
-} from "@/components/WallpaperGrid";
+import { WallpaperGrid } from "@/components/WallpaperGrid";
+import type { SelectionHandle } from "@/components/selection";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
-import { client } from "@/lib/client";
+import { client, type ReviewLayout } from "@/lib/client";
 import { cn } from "@/lib/utils";
-import { Check, Loader2, RefreshCw } from "lucide-react";
+import {
+  Check,
+  Columns2,
+  Loader2,
+  type LucideIcon,
+  RefreshCw,
+  Rows3,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 /**
@@ -25,9 +31,35 @@ import { useCallback, useEffect, useState } from "react";
  */
 export const REVIEW_LIMIT = 50;
 
+/**
+ * The two layouts Review offers, in the order the control lays them out and the
+ * strip first because it is the one this page's job asks for.
+ *
+ * On the page bar and nowhere else. A control in two places is two places to
+ * look, so it does not appear in Settings either — the choice is stored there
+ * and changed here, the way the Status filter and the ordering already are
+ * (ADR 0018's rule, applied the other way round: a preference this page owns is
+ * edited on this page).
+ */
+const LAYOUTS: Array<{ value: ReviewLayout; label: string; Icon: LucideIcon }> =
+  [
+    { value: "strip", label: "Strip", Icon: Columns2 },
+    { value: "grid", label: "Grid", Icon: Rows3 },
+  ];
+
 export function ReviewView() {
   const [loading, setLoading] = useState(true);
-  const { setView } = useApp();
+  const { setView, settings, saveSetting } = useApp();
+  /**
+   * Which layout this page is drawing, straight off the stored settings.
+   *
+   * No state of its own beside the setting, which is what makes "survives a
+   * restart" true rather than hoped for: `saveSetting` writes the row and holds
+   * the whole struct that comes back, so what renders is what is stored
+   * (ADR 0010). Review's key is its own, so Library's choice and this one cannot
+   * move each other.
+   */
+  const layout = settings.review_layout;
   // Where a reject goes, read once for the line on the bar, for the string
   // `move_wallpaper` is handed and for what the toast has left to say. The
   // `movePath` state that used to stand here is gone with the field that edited
@@ -78,7 +110,7 @@ export function ReviewView() {
   // State rather than the `useRef` ADR 0029 wrote, because this page renders its
   // own empty state instead of the grid, and a subscriber has to hear about the
   // handle arriving and going. `setGrid`'s identity is stable.
-  const [grid, setGrid] = useState<WallpaperGridHandle | null>(null);
+  const [grid, setGrid] = useState<SelectionHandle | null>(null);
   const lightbox = useLightbox(grid);
 
   const fetchReviewList = useCallback(async () => {
@@ -137,6 +169,58 @@ export function ReviewView() {
           Lowest Scores first
         </span>
         <RejectDestinationLine destination={destination} />
+
+        {/* The layout choice, as two buttons laid out rather than two entries
+            behind a menu — the shape Library's Status chips already use, for the
+            same reason: both values are one word, both fit, and a row of them is
+            where the current choice and the alternative are legible without
+            opening anything.
+
+            One group with one accessible name, because two buttons in a row are
+            otherwise two unrelated controls with no word between them saying
+            what they are for, and `aria-pressed` is what makes the current
+            layout the same fact to a screen reader that the fill makes it to an
+            eye.
+
+            Pressed and not checked: a `radiogroup` would put the two on the
+            arrow keys, and this page spends the arrows on walking the worklist
+            (ADR 0019). */}
+        <div
+          role="group"
+          aria-label="Layout"
+          className="flex shrink-0 items-center gap-1"
+        >
+          {LAYOUTS.map(({ value, label, Icon }) => {
+            const current = layout === value;
+            return (
+              <Button
+                key={value}
+                size="sm"
+                variant={current ? "secondary" : "ghost"}
+                aria-pressed={current}
+                // Nothing is said about a write that failed. The control is a
+                // read-out of the setting, so a refused write leaves the layout
+                // where it was and the button un-pressed, which is the whole of
+                // what there is to report.
+                onClick={() => {
+                  void saveSetting("review_layout", value).catch(
+                    (error: unknown) => {
+                      console.error(
+                        "Failed to store the Review layout:",
+                        error,
+                      );
+                    },
+                  );
+                }}
+                className="rounded-full"
+              >
+                <Icon />
+                {label}
+              </Button>
+            );
+          })}
+        </div>
+
         {/* Refresh, and nothing beside it.
 
             A **Back** button went to Rank from here, which is the shape
@@ -213,8 +297,7 @@ export function ReviewView() {
             >
               No wallpapers to review.
             </EmptyState>
-          ) : (
-            /* The grid is the shared one, and Review's own `div.grid` went with
+          ) : /* The grid is the shared one, and Review's own `div.grid` went with
                the card markup it used to hold. One tab stop with a roving
                selection, so the keyboard reaches every card here the same way it
                reaches every card on a library page mounting thirty of five
@@ -229,7 +312,30 @@ export function ReviewView() {
 
                `animated` is Review's alone. ADR 0016 gives the library's instance
                of this card no animated property and no `will-change`, and ADR
-               0007's licence stays scoped to the fifty rows it was measured on. */
+               0007's licence stays scoped to the fifty rows it was measured on.
+
+               The strip beside it is the other layout the bar offers, and the
+               two are handed the same three things: the worklist, `perform`, and
+               the setter that publishes a selection. Nothing below this line
+               knows which one is up — the lightbox takes the handle, and both
+               surfaces publish the same one — which is what keeps "the Lightbox
+               opens from the strip" a property of the seam rather than a second
+               wiring (ADR 0022, #265).
+
+               Swapping layout remounts the surface, so the selection starts over
+               at the first wallpaper rather than following the curator across.
+               It is a one-line fix and the wrong one: the cursor would have to
+               live above both surfaces again, which is the shape #230 took it
+               out of, and a worklist is judged from the top. */
+          layout === "strip" ? (
+            <ReviewStrip
+              ref={setGrid}
+              wallpapers={wallpapers}
+              label="Wallpapers to review"
+              onAction={perform}
+              onOpen={lightbox.openOn}
+            />
+          ) : (
             <WallpaperGrid
               ref={setGrid}
               wallpapers={wallpapers}

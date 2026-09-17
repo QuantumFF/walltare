@@ -1,11 +1,10 @@
 import type { CardAction } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
-import {
-  rowHeight,
-  WallpaperGrid,
-  type GridSelection,
-  type WallpaperGridHandle,
-} from "@/components/WallpaperGrid";
+import { rowHeight, WallpaperGrid } from "@/components/WallpaperGrid";
+import type {
+  SelectionHandle,
+  WallpaperSelection,
+} from "@/components/selection";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useRef, useState } from "react";
@@ -124,14 +123,14 @@ let setList: (list: Wallpaper[]) => void = () => {};
  * from outside, and the publication a page's lightbox subscribes to (ADR 0029,
  * #230). `null` until the grid has mounted.
  */
-let gridHandle: WallpaperGridHandle | null = null;
+let gridHandle: SelectionHandle | null = null;
 
 /**
  * The selection as the grid last published it: the wallpaper on screen, where it
  * sits in the list, a move, and a set to a named id (#137). The lightbox is the
  * caller; these tests read it off the handle the way it does.
  */
-function selection(): GridSelection {
+function selection(): WallpaperSelection {
   if (gridHandle === null) throw new Error("the grid has not mounted");
   return gridHandle.selection();
 }
@@ -166,7 +165,7 @@ function Harness({
   setList = set;
   // The shape both pages hold it in: state, because when the handle exists is
   // what a subscriber has to hear about.
-  const [handle, setHandle] = useState<WallpaperGridHandle | null>(null);
+  const [handle, setHandle] = useState<SelectionHandle | null>(null);
   gridHandle = handle;
   const box = useRef<HTMLDivElement | null>(null);
   return (

@@ -20,7 +20,10 @@ import { Dialog } from "radix-ui";
  * keys live on the element that owns the focus — and it is why `←` and `→` are
  * listed twice: in a grid they move the selection, and they reach Rank only from
  * outside one. Review mounts that grid today and the library page mounts the
- * same one (#79), so the heading names the grid rather than either page.
+ * same one (#79), so the heading names the grid rather than either page — and
+ * Review's strip beside it, which answers the same keys off the same tables
+ * (#265). The two vertical arrows are the only line where the two surfaces
+ * differ, because a strip has no second row to move into.
  *
  * The lightbox contributes two entries and no more, and that is ADR 0022
  * showing through rather than a gap: it walks with the grid's own `←` and `→`
@@ -48,12 +51,12 @@ const GROUPS = [
     ],
   },
   {
-    heading: "Wallpaper grid",
+    heading: "Wallpaper grid and strip",
     bindings: [
       { keys: ["←"], action: "Select the wallpaper before this one" },
       { keys: ["→"], action: "Select the wallpaper after this one" },
-      { keys: ["↑"], action: "Select the wallpaper a row up" },
-      { keys: ["↓"], action: "Select the wallpaper a row down" },
+      { keys: ["↑"], action: "Select the wallpaper a row up, or the one before" },
+      { keys: ["↓"], action: "Select the wallpaper a row down, or the one after" },
       { keys: ["Home"], action: "Select the first wallpaper" },
       { keys: ["End"], action: "Select the last wallpaper" },
       { keys: ["Enter"], action: "Open the selected wallpaper" },

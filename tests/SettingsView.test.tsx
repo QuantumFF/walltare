@@ -15,6 +15,7 @@ import type {
   CacheSize,
   MissingFiles,
   Resolution,
+  ReviewLayout,
   SettingKey,
   Settings,
   Theme,
@@ -71,6 +72,8 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
       return { library_root: value };
     case "reject_destination":
       return { reject_destination: value };
+    case "review_layout":
+      return { review_layout: value as ReviewLayout };
   }
 }
 
