@@ -1,0 +1,28 @@
+{
+  "lspServers": {
+    "rust-analyzer": {
+      "command": "rust-analyzer",
+      "extensionToLanguage": {
+        ".rs": "rust"
+      },
+      "initializationOptions": {
+        "linkedProjects": ["src-tauri/Cargo.toml"]
+      },
+      "startupTimeout": 120000
+    },
+    "typescript": {
+      "command": "typescript-language-server",
+      "args": ["--stdio"],
+      "extensionToLanguage": {
+        ".ts": "typescript",
+        ".tsx": "typescriptreact",
+        ".mts": "typescript",
+        ".cts": "typescript",
+        ".js": "javascript",
+        ".jsx": "javascriptreact",
+        ".mjs": "javascript",
+        ".cjs": "javascript"
+      }
+    }
+  }
+}
