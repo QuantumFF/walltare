@@ -536,11 +536,12 @@ test("a shifted plus still changes the density", async () => {
 
 test("the density stops at each tab's own bounds", async () => {
   viewportWidth(1024);
-  // Review's range, which is the narrower of the two: a worklist of fifty has
-  // no scale for the far end to buy, and a card too small to judge has stopped
-  // doing this page's job.
+  // Review's range, #254's one to six: a worklist of fifty has no scale for the
+  // far end to buy, and it goes down to one wallpaper across. It starts on three
+  // however wide the window, where the viewport alone would give four here.
   await mount(cards(40), "review");
   await enterGrid();
+  expect(await cardsInARow()).toBe(3);
 
   for (let at = 0; at < 6; at++) await zoom(100);
   expect(await cardsInARow()).toBe(6);
@@ -552,7 +553,7 @@ test("the density stops at each tab's own bounds", async () => {
   expect(await cardsInARow()).toBe(5);
 
   for (let at = 0; at < 8; at++) await zoom(-100);
-  expect(await cardsInARow()).toBe(2);
+  expect(await cardsInARow()).toBe(1);
 });
 
 test("Library goes wider than Review does", async () => {
@@ -563,7 +564,7 @@ test("Library goes wider than Review does", async () => {
   await enterGrid();
 
   for (let at = 0; at < 8; at++) await press("-");
-  expect(await cardsInARow()).toBe(8);
+  expect(await cardsInARow()).toBe(10);
 });
 
 test("the gesture refuses the webview's own zoom, and an ordinary wheel is left alone", async () => {

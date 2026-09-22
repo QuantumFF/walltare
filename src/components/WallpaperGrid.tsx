@@ -3,6 +3,7 @@ import {
   WallpaperCard,
   type CardAction,
 } from "@/components/WallpaperCard";
+import { densityKeyStep, useDensityWheel } from "@/components/density";
 import {
   usePublishedSelection,
   type SelectionHandle,
@@ -28,12 +29,12 @@ import {
   type MasonryPlan,
   type PlannedBox,
   type PlannedWindow,
+  type PlanSpacing,
 } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { observeElementRect, useVirtualizer } from "@tanstack/react-virtual";
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -74,10 +75,11 @@ const COLUMNS = [
  * Spelled out rather than built from the number, because Tailwind generates a
  * utility only when it finds the literal in the source — the same constraint
  * that used to make `COLUMNS` carry its class strings. A count with no entry
- * here is a count the CSS cannot draw, so the bounds below stay inside two and
- * eight, and this table is where a wider tab would have to start.
+ * here is a count the CSS cannot draw, so the bounds below stay inside one and
+ * ten, and this table is where a wider tab would have to start.
  */
 const COLUMN_CLASSES: Record<number, string> = {
+  1: "grid-cols-1",
   2: "grid-cols-2",
   3: "grid-cols-3",
   4: "grid-cols-4",
@@ -85,25 +87,30 @@ const COLUMN_CLASSES: Record<number, string> = {
   6: "grid-cols-6",
   7: "grid-cols-7",
   8: "grid-cols-8",
+  9: "grid-cols-9",
+  10: "grid-cols-10",
 };
 
 /** The two tabs that mount this grid, which is what their bounds are named by. */
 type DensityTab = "library" | "review";
 
 /**
- * How far the density goes on each tab.
+ * How far the density goes on each tab, and the most columns it starts on.
  *
- * Both go equally large, because the wallpaper is the point on either page. What
- * differs is the far end. Library is the browse surface, and the epic's story is
- * going "from a few large wallpapers to many small ones" over a library of up to
- * five thousand, so eight is where a card is still a picture rather than a
- * swatch. Review is fifty wallpapers the curator is deciding about, and a card
- * too small to judge without opening it has stopped doing that page's job — there
- * is no scale there for a wider end to buy (ADR 0028).
+ * #254's prototype, which is what the curator agreed on: Library runs from two
+ * to ten and starts on five, Review from one to six and starts on three. Library
+ * is the browse surface, going "from a few large wallpapers to many small ones"
+ * over a library of up to five thousand. Review is fifty wallpapers the curator
+ * is deciding about, so it goes down to one wallpaper across and starts larger.
+ *
+ * `start` caps the viewport's own count rather than replacing it, so a narrow
+ * window still starts on the two or three that fit. Library's five is the widest
+ * breakpoint's count already, so it changes nothing there.
  *
  * Library's far end has a cost Review's does not: more columns is shorter rows,
  * and shorter rows is more cards inside the same window, which is the mount rate
- * ADR 0041 measured the grid's frame time against.
+ * ADR 0041 measured the grid's frame time against. Ten is past the eight it was
+ * measured at, and nobody has measured it.
  *
  * The numbers are the grid's, and they stay here. A host names which tab it is
  * and the grid looks the bounds up, rather than the two pairs being exported for
@@ -111,26 +118,9 @@ type DensityTab = "library" | "review";
  * interface by two names without deepening anything, the shape ADR 0027 refused
  * for the geometry constants.
  */
-const DENSITY: Record<DensityTab, DensityRange> = {
-  library: { min: 2, max: 8 },
-  review: { min: 2, max: 6 },
-};
-
-/**
- * Which way each key moves the density: in towards fewer, larger cards, or out
- * towards more, smaller ones.
- *
- * Four keys for two directions, because both of the obvious ones need their
- * unshifted twin. `+` is `Shift` and `=` on most layouts, so a curator reaching
- * for it without the shift lands on `=`; `_` is the other half of the same pair
- * for `-`. The numeric keypad reports its own two as `+` and `-`, so it is
- * already covered.
- */
-const DENSITY_KEYS: Record<string, number> = {
-  "+": 1,
-  "=": 1,
-  "-": -1,
-  _: -1,
+const DENSITY: Record<DensityTab, DensityRange & { start: number }> = {
+  library: { min: 2, max: 10, start: 5 },
+  review: { min: 1, max: 6, start: 3 },
 };
 
 /**
@@ -261,7 +251,7 @@ function useDensity(tab: DensityTab): {
   step: (by: number) => void;
 } {
   const range = DENSITY[tab];
-  const base = useGridColumns();
+  const base = Math.min(useGridColumns(), range.start);
   const [zoom, setZoom] = useState(0);
   const step = useCallback(
     (by: number) => setZoom((was) => densityZoom(base, was, by, range)),
@@ -293,6 +283,19 @@ const CARD_ASPECT = { ratio: 9 / 16, className: "aspect-video" };
 const PADDING = { px: 16, className: "p-4" };
 
 /**
+ * The gutter between wallpapers in the two layouts that draw each one at its own
+ * shape: 4px, which is what #254's prototype put between them and what the
+ * verdict picked.
+ *
+ * Its own number rather than `GAP`, because the uniform grid kept its spacing
+ * and these two are a wall rather than a page of cards. With no border and no
+ * rounding on the card either, the pictures are what the eye reads as the edges.
+ * No class beside it, because both layouts place every card themselves and
+ * nothing in the CSS wears it.
+ */
+const WALL_GAP = { px: 4 };
+
+/**
  * What a box that measures zero is taken to be: a row about as tall as a card
  * in the default 1280x800 window, inside a viewport about as tall as that
  * window.
@@ -314,7 +317,20 @@ const UNMEASURED_BOX = 800;
  * Written once here rather than at each of the two calls below, which is the
  * same rule the pairs above follow: a copy of `GAP.px` is a copy that drifts.
  */
-const SPACING = { gap: GAP.px, padding: PADDING.px };
+const SPACING: PlanSpacing = { gap: GAP.px, padding: PADDING.px };
+const WALL_SPACING: PlanSpacing = { gap: WALL_GAP.px, padding: PADDING.px };
+
+/**
+ * Which spacing each layout is planned against: the uniform grid's own, or the
+ * wall's 4px gutter for the two that draw each wallpaper at its own shape. One
+ * table, so the plan and the virtualiser read the same answer rather than each
+ * branching on the layout for it.
+ */
+const LAYOUT_SPACING: Record<LibraryLayout, PlanSpacing> = {
+  grid: SPACING,
+  masonry: WALL_SPACING,
+  justified: WALL_SPACING,
+};
 
 /**
  * How tall one row of cards is, from the width the row has to fill and the
@@ -341,9 +357,13 @@ const SPACING = { gap: GAP.px, padding: PADDING.px };
  * The plan below is where a row height becomes a fact per row rather than one
  * number for all of them.
  */
-export function rowHeight(boxWidth: number, columns: number): number {
+export function rowHeight(
+  boxWidth: number,
+  columns: number,
+  spacing: PlanSpacing = SPACING,
+): number {
   return uniformRowHeight({
-    ...SPACING,
+    ...spacing,
     columns,
     width: boxWidth,
     cardRatio: CARD_ASPECT.ratio,
@@ -477,9 +497,10 @@ function useGridWindow(
     // mid-backfill reads as the layout the curator switched away from rather
     // than as a collapsed row.
     const unknownRatio = CARD_ASPECT.ratio;
+    const spacing = LAYOUT_SPACING[layout];
     if (masonry) {
       return planMasonry({
-        ...SPACING,
+        ...spacing,
         ratios,
         columns,
         width: boxWidth,
@@ -489,21 +510,23 @@ function useGridWindow(
     }
     if (layout === "justified") {
       return planJustified({
-        ...SPACING,
+        ...spacing,
         ratios,
         columns,
         width: boxWidth,
-        // The uniform grid's own row height, as the height a justified row aims
-        // for. That is what makes the density gesture mean one thing across the
-        // layouts: the same zoom that puts four cards in a grid row puts about
-        // four wallpapers in a justified one, because it is the same number of
-        // the same width being asked for (#264).
-        targetHeight: rowHeight(boxWidth, columns),
+        // The height of a row of `columns` 16:9 cards across this width, as the
+        // height a justified row aims for. That is what makes the density
+        // gesture mean one thing across the layouts: the same zoom that puts four
+        // cards in a grid row puts about four wallpapers in a justified one,
+        // because it is the same number of the same width being asked for
+        // (#264). Worked out against the wall's own gutter rather than the
+        // grid's, so four is four across the width this layout actually has.
+        targetHeight: rowHeight(boxWidth, columns, spacing),
         unknownRatio,
       });
     }
     return planUniformGrid({
-      ...SPACING,
+      ...spacing,
       count,
       columns,
       rowHeight: rowHeight(boxWidth, columns),
@@ -538,7 +561,7 @@ function useGridWindow(
     // inside those heights and a gap between bands would be counted twice — the
     // virtualiser's offsets would then disagree with the boxes the same plan
     // computed.
-    gap: masonry ? 0 : GAP.px,
+    gap: masonry ? 0 : LAYOUT_SPACING[layout].gap,
     paddingStart: PADDING.px,
     paddingEnd: PADDING.px,
     // The measurement, with the fallback above under it. The virtualiser's own
@@ -989,36 +1012,9 @@ function Grid({
   );
   const cards = mounted ? mounted.cards : everyCard;
 
-  /**
-   * Ctrl and the wheel, changing the density rather than the page's scale.
-   *
-   * Listened for here rather than through React's `onWheel`, and that is the
-   * whole reason this is an effect. React attaches its `wheel` listener to the
-   * root as a passive one, so `preventDefault` from a synthetic handler is a
-   * no-op and the webview zooms the app anyway — which is the gesture's own
-   * default action and the one thing #264 says must not happen. A listener with
-   * `passive: false` is the only way to refuse it.
-   *
-   * On the container and not the window, which is the line ADR 0019 draws for
-   * the keys below and the same line here: the gesture is about these cards, and
-   * a grid on a view the shell is only hiding must not answer a wheel over the
-   * view in front of it.
-   *
-   * One step per event. A trackpad pinch sends a run of them and will cross the
-   * range in a flick, which the range is what makes survivable: both ends are a
-   * density that still renders, so the worst the gesture does is arrive.
-   */
-  useEffect(() => {
-    const container = gridRef.current;
-    if (!container) return;
-    const onWheel = (event: WheelEvent) => {
-      if (!event.ctrlKey || event.deltaY === 0) return;
-      event.preventDefault();
-      onDensityStep(event.deltaY < 0 ? 1 : -1);
-    };
-    container.addEventListener("wheel", onWheel, { passive: false });
-    return () => container.removeEventListener("wheel", onWheel);
-  }, [onDensityStep]);
+  // Ctrl and the wheel over the cards, changing the density rather than the
+  // page's scale. See `useDensityWheel`, which Review's strip reads too.
+  useDensityWheel(gridRef, onDensityStep);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // Every chord the shell answers is a `Ctrl` one and nothing here may eat
@@ -1029,8 +1025,8 @@ function Grid({
     // behind it. `+` is `Shift` and `=` on most layouts, so a curator pressing
     // the key this gesture is named for arrives holding a modifier, and a guard
     // written for the app's chords would send them away.
-    const by = DENSITY_KEYS[event.key];
-    if (by !== undefined && !chord) {
+    const by = densityKeyStep(event);
+    if (by !== undefined) {
       event.preventDefault();
       onDensityStep(by);
       return;

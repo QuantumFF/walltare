@@ -385,7 +385,7 @@ test("the pages behind are inert while it is open, and the toast viewport is not
   await press("Enter");
 
   // The containment ADR 0022 chose in place of a focus trap: nothing behind the
-  // opaque backdrop takes focus or a click.
+  // backdrop takes focus or a click.
   expect(viewContainer().hasAttribute("inert")).toBe(true);
 
   // And the toast viewport sits outside that container, which is what keeps it

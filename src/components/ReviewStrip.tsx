@@ -1,11 +1,11 @@
 import {
   ACTION_CONTROLS,
   actionFor,
-  printedKey,
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
 import { CropPreview, useCropPreview } from "@/components/CropPreview";
+import { densityKeyStep, useDensityWheel } from "@/components/density";
 import {
   usePublishedSelection,
   type SelectionHandle,
@@ -20,10 +20,8 @@ import {
 } from "@/lib/client";
 import {
   FILE_IS_GONE,
-  grouped,
   isEvaluated,
   score,
-  counted,
   dimensionsOf,
   isUndersized,
   readableSize,
@@ -34,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { ImageOff } from "lucide-react";
 import {
   memo,
+  useCallback,
   useLayoutEffect,
   useRef,
   useState,
@@ -41,16 +40,60 @@ import {
   type Ref,
 } from "react";
 
+
 /**
- * What the hero's area is taken to be while nothing has measured it.
+ * How tall a filmstrip entry is at each density step, in pixels, and the step it
+ * starts on.
  *
- * The default 1280x800 window, less what is above and below the hero: 1280 wide
- * less the page's own `p-4` at both ends is 1248, and 800 tall less the chrome's
- * 48, the page bar's 44, that same 32 of padding, the filmstrip's 96, the row
- * under the picture at about 44, and the two 12px gaps between the three is
- * about 512. Rounded to 1216x520, because the number it feeds is a fallback and
- * not a measurement — the moment a browser lays the box out, the observer below
- * replaces it.
+ * Three steps above the prototype's range, at the curator's request: its `h-14`
+ * of 56 was the second step of 40, 56, 72, 96, 128, and the list here starts at
+ * the fourth and carries the same progression on past 128. The density
+ * gesture moves along this list rather than a column count, because the strip
+ * has no columns: #254's verdict gives zoom to both tabs and says that in the
+ * strip it sizes the filmstrip (#264).
+ *
+ * A height and not a share of the column, because what the strip is for is
+ * seeing what is coming: a strip that grew with the window would take the space
+ * from the one wallpaper the page exists to show. The hero gets everything left
+ * over, and it gets it from the browser rather than from arithmetic here, since
+ * the area is measured. That makes this number the strip's own business and
+ * nothing the hero has to know (ADR 0027).
+ *
+ * Not persisted, the same as the grid's zoom.
+ */
+const FILMSTRIP_HEIGHTS = [96, 128, 160, 200, 256] as const;
+const FILMSTRIP_START = 1;
+
+/**
+ * An entry's width over its height: the prototype's `w-24` over `h-14`.
+ *
+ * Every entry has the same shape and crops to it, as the prototype drew them.
+ * The filmstrip is for picking which wallpaper the hero shows, and the hero is
+ * where the shape is judged. A row of uniform boxes also keeps the current
+ * entry's ring in the same place on the screen from one step to the next.
+ */
+const FILMSTRIP_ENTRY_RATIO = 96 / 56;
+
+/**
+ * The current entry's ring, as the number and the class it restates, and the
+ * room the filmstrip leaves around its entries so that ring is not clipped: a
+ * scroll container clips on both axes once it scrolls on one, and a ring sits
+ * outside the entry's box. The same number-and-class pair ADR 0027 keeps for the
+ * grid's geometry, so the inset cannot drift from the ring it makes room for.
+ */
+const ENTRY_RING = { px: 2, className: "ring-2" };
+
+/**
+ * What the hero's area is taken to be while nothing has measured it: the
+ * default 1280x800 window less what is above, below and beside the hero.
+ *
+ * 1280 wide less the page's own `p-4` at both ends is 1248, less another 32 for
+ * luck is 1216. 800 tall less the chrome's 48, the page bar's 44, that same 32
+ * of padding, the row under the picture at about 32 and the two 12px gaps
+ * between the three, less the filmstrip at its starting step. The filmstrip is
+ * read off its own constants rather than written in as a number, so changing
+ * the zoom range moves this with it. It is a fallback and not a measurement: the
+ * moment a browser lays the box out, the observer below replaces it.
  *
  * Not an edge case. happy-dom reports every rect as zero, and ADR 0015 keeps
  * this view mounted under `display: none` while another one is showing, which
@@ -58,19 +101,17 @@ import {
  * that paints nothing on the way back. The same pair the grid's window carries,
  * for the same two reasons (ADR 0027).
  */
-const UNMEASURED_AREA: Box = { width: 1216, height: 520 };
-
-/**
- * How tall the filmstrip is.
- *
- * A fixed height and not a share of the column, because what the strip is for is
- * seeing what is coming: a strip that grew with the window would take the space
- * from the one wallpaper the page exists to show. The hero gets everything left
- * over, and it gets it from the browser rather than from arithmetic here — the
- * area is measured, which is what makes this number the strip's own business
- * and nothing the hero has to know (ADR 0027).
- */
-const FILMSTRIP_HEIGHT = "h-24";
+const UNMEASURED_AREA: Box = {
+  width: 1216,
+  height:
+    800 -
+    48 -
+    44 -
+    32 -
+    32 -
+    2 * 12 -
+    (FILMSTRIP_HEIGHTS[FILMSTRIP_START] + 2 * ENTRY_RING.px),
+};
 
 export interface ReviewStripProps {
   /** The worklist, in the order the backend returned it. */
@@ -192,7 +233,7 @@ export function ReviewStrip({
     onFocus: handleFocus,
     onBlur: handleBlur,
   } = usePublishedSelection(wallpapers, focus, ref, startOn);
-  const { wallpaper: selected, index, length, moveTo } = selection;
+  const { wallpaper: selected, index, moveTo } = selection;
 
   // The same verdict the grid's cards wear, on the one wallpaper being judged:
   // Review lists undersized wallpapers rather than excluding them, so the hero
@@ -263,6 +304,21 @@ export function ReviewStrip({
   // (#266).
   const crop = useCropPreview();
 
+  // Which of `FILMSTRIP_HEIGHTS` the filmstrip is drawn at. In is larger, the
+  // same direction the grid's zoom runs.
+  const [step, setStep] = useState(FILMSTRIP_START);
+  const moveStep = useCallback(
+    (by: number) =>
+      setStep((was) =>
+        Math.max(0, Math.min(FILMSTRIP_HEIGHTS.length - 1, was + by)),
+      ),
+    [],
+  );
+  const entryHeight = FILMSTRIP_HEIGHTS[step];
+
+  // Ctrl and the wheel anywhere over the strip, read the way the grid reads it.
+  useDensityWheel(stripRef, moveStep);
+
   // In a layout effect and not a passive one: the `<img>`'s `src` changes in the
   // same commit, and a reset that lands a frame later paints "File is gone" over
   // the outgoing picture on the way to a wallpaper that is perfectly fine.
@@ -277,6 +333,17 @@ export function ReviewStrip({
   // on. The lightbox binds on `window` for the same reason and cannot here,
   // since Review's grid is the other layout and would answer the same keys.
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // The density keys, ahead of the `Shift` guard: `+` arrives with `Shift`
+    // held on most layouts. On this element rather than on `window`, like the
+    // grid's: a strip on a view the shell is only hiding must not answer keys
+    // meant for the view in front of it (ADR 0019).
+    const by = densityKeyStep(event);
+    if (by !== undefined) {
+      event.preventDefault();
+      moveStep(by);
+      return;
+    }
+
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)
       return;
     if (index === -1 || !selected) return;
@@ -368,61 +435,71 @@ export function ReviewStrip({
       {/* The area the hero is fitted into, and the element that is measured.
           `min-h-0` is what lets it actually shrink inside the flex column —
           without it the row below can be pushed off the page by a picture that
-          refuses to give up its height. */}
+          refuses to give up its height.
+
+          The hero is centred inside an absolutely positioned layer rather than
+          being a flex child of this box. Its size is in pixels, taken from the
+          last measurement of this box, and as an in-flow child that size fed back
+          into the page's minimum height: when the filmstrip grew, or the window
+          shrank, this box could not give up the height its own picture was
+          holding, and the filmstrip was pushed out of the bottom of the window.
+          Out of the flow, the picture takes no space, the box shrinks to what is
+          left, and the observer refits the picture to it. */}
       <div
         ref={heroRef}
         data-slot="review-hero-area"
-        className="flex min-h-0 flex-1 items-center justify-center"
+        className="relative min-h-0 flex-1"
       >
-        {selected && (
-          <div
-            data-slot="review-hero"
-            // The box, at exactly the wallpaper's own ratio. In pixels rather
-            // than as an `aspect-ratio` because the latter collapses here, and
-            // because #266's crop bars are percentages of this box — see
-            // `fittedBox`.
-            style={{ width: hero.width, height: hero.height }}
-            className="relative cursor-zoom-in overflow-hidden rounded-lg bg-muted"
-            onClick={() => onOpen?.(selected)}
-          >
-            {!arrived && (
-              // The first frame, and the reason arriving here never shows an
-              // empty box: the filmstrip's own `small` is already in the memory
-              // cache under ADR 0016's `max-age=300`, so this is one element and
-              // no request. Nothing announces it — the picture over it is named.
+        <div className="absolute inset-0 flex items-center justify-center">
+          {selected && (
+            <div
+              data-slot="review-hero"
+              // The box, at exactly the wallpaper's own ratio. In pixels rather
+              // than as an `aspect-ratio` because the latter collapses here, and
+              // because #266's crop bars are percentages of this box — see
+              // `fittedBox`.
+              style={{ width: hero.width, height: hero.height }}
+              className="relative cursor-zoom-in overflow-hidden rounded-lg bg-muted"
+              onClick={() => onOpen?.(selected)}
+            >
+              {!arrived && (
+                // The first frame, and the reason arriving here never shows an
+                // empty box: the filmstrip's own `small` is already in the memory
+                // cache under ADR 0016's `max-age=300`, so this is one element and
+                // no request. Nothing announces it — the picture over it is named.
+                <img
+                  data-slot="review-hero-placeholder"
+                  src={wallpaperImageUrl(selected.id, "small")}
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
+              )}
               <img
-                data-slot="review-hero-placeholder"
-                src={wallpaperImageUrl(selected.id, "small")}
-                alt=""
+                data-slot="review-hero-picture"
+                src={wallpaperImageUrl(selected.id, "medium")}
+                alt={selected.filename}
+                // No `key`, deliberately: an `<img>` whose `src` changes keeps
+                // painting the image it has until the new one decodes, so the
+                // outgoing wallpaper holds the frame for the whole of a step. A
+                // fresh element per wallpaper remounts with nothing painted, which
+                // is a held arrow key strobing to black (ADR 0022).
+                onLoad={() => {
+                  setArrived(true);
+                  setGone(false);
+                }}
+                // `error` counts as arrival too, for ADR 0006's reason: a
+                // thumbnail held in front of a picture that is never coming is the
+                // spinner that never resolves.
+                onError={() => {
+                  setArrived(true);
+                  setGone(true);
+                }}
+                // `object-cover` inside a box of the picture's own ratio crops
+                // nothing: the box *is* the picture's shape, so there is no
+                // letterboxing for #266's bars to measure.
                 className="absolute inset-0 h-full w-full object-cover"
               />
-            )}
-            <img
-              data-slot="review-hero-picture"
-              src={wallpaperImageUrl(selected.id, "medium")}
-              alt={selected.filename}
-              // No `key`, deliberately: an `<img>` whose `src` changes keeps
-              // painting the image it has until the new one decodes, so the
-              // outgoing wallpaper holds the frame for the whole of a step. A
-              // fresh element per wallpaper remounts with nothing painted, which
-              // is a held arrow key strobing to black (ADR 0022).
-              onLoad={() => {
-                setArrived(true);
-                setGone(false);
-              }}
-              // `error` counts as arrival too, for ADR 0006's reason: a
-              // thumbnail held in front of a picture that is never coming is the
-              // spinner that never resolves.
-              onError={() => {
-                setArrived(true);
-                setGone(true);
-              }}
-              // `object-cover` inside a box of the picture's own ratio crops
-              // nothing: the box *is* the picture's shape, so there is no
-              // letterboxing for #266's bars to measure.
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-            {/* What the Screen would cut off, over the picture it would cut it
+              {/* What the Screen would cut off, over the picture it would cut it
                 off. The hero's box is exactly the wallpaper's own ratio, which
                 is what makes the bars percentages of the picture rather than of
                 letterboxing around it — see `fittedBox`.
@@ -430,45 +507,57 @@ export function ReviewStrip({
                 Not drawn over a wallpaper whose file is gone: the panel below
                 says there is no picture, and bars over it would be a claim about
                 one. */}
-            {crop.on && !gone && <CropPreview wallpaper={selected} />}
-            {gone && (
-              <div
-                data-slot="review-hero-gone"
-                className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-muted text-muted-foreground"
-              >
-                <ImageOff className="h-8 w-8" aria-hidden />
-                <span className="text-sm font-medium">{FILE_IS_GONE}</span>
-              </div>
-            )}
-          </div>
-        )}
+              {crop.on && !gone && <CropPreview wallpaper={selected} />}
+              {gone && (
+                <div
+                  data-slot="review-hero-gone"
+                  className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-muted text-muted-foreground"
+                >
+                  <ImageOff className="h-8 w-8" aria-hidden />
+                  <span className="text-sm font-medium">{FILE_IS_GONE}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* The row under the picture: what this wallpaper is, how far through the
-          worklist it is, and the decision. It sits between the hero and the
-          filmstrip rather than over the picture, because the picture is the
-          thing being judged and an overlay on it is a judgement made through
-          something. */}
+      {/* The row under the picture, as #254's prototype laid it out: centred,
+          the filename and Score in one muted line, the crop preview's key, then
+          the decision. It sits between the hero and the filmstrip rather than
+          over the picture, because the picture is the thing being judged and an
+          overlay on it is a judgement made through something.
+
+          This is the opposite trade to the lightbox's, on purpose. ADR 0022
+          prints each key on its button and keeps the position because the
+          arrows clamp; the strip carries neither, and names only `C`, because
+          that is the row the curator agreed on in the prototype. The filmstrip
+          under it already shows where the current wallpaper is in the queue,
+          and K, Delete and the arrows are in the `?` dialog. */}
       {selected && (
         <div
           data-slot="review-hero-row"
-          className="flex shrink-0 items-center gap-3 px-1"
+          className="flex shrink-0 flex-wrap items-center justify-center gap-3"
         >
-          <Badge
-            title={
-              isEvaluated(selected, evaluatedThreshold)
-                ? "Evaluated"
-                : "Not yet Evaluated"
-            }
-            className={cn(
-              "shrink-0 tabular-nums",
-              isEvaluated(selected, evaluatedThreshold)
-                ? undefined
-                : "border-muted-foreground/30 bg-transparent text-muted-foreground",
-            )}
+          <span
+            className="min-w-0 truncate text-sm text-muted-foreground"
+            title={selected.path}
           >
-            {score(selected)}
-          </Badge>
+            {selected.filename} ·{" "}
+            {/* The Score, in the same muted line as the prototype had it. Its
+                title still reads against the curator's Evaluated threshold, so
+                the hero says which side of it this wallpaper is on (#260). */}
+            <span
+              title={
+                isEvaluated(selected, evaluatedThreshold)
+                  ? "Evaluated"
+                  : "Not yet Evaluated"
+              }
+              className="tabular-nums"
+            >
+              {score(selected)}
+            </span>
+          </span>
           {undersized && (
             <Badge
               data-slot="review-hero-undersized"
@@ -478,57 +567,34 @@ export function ReviewStrip({
               {UNDERSIZED}
             </Badge>
           )}
-
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium" title={selected.path}>
-              {selected.filename}
-            </p>
-            <p className="truncate text-xs text-muted-foreground">
-              {counted(selected.comparisons_count, "comparison")}
-            </p>
-          </div>
-
-          {/* Where this wallpaper sits in the worklist, which is worth printing
-              because the arrows clamp rather than wrapping: reaching the end of
-              a fifty-row queue is the moment the sweep is done. */}
           <span
-            data-slot="review-position"
-            className="shrink-0 text-xs tabular-nums text-muted-foreground"
+            data-slot="review-crop-hint"
+            className="shrink-0 text-xs text-muted-foreground/70"
           >
-            {`${grouped(index + 1)} / ${grouped(length)}`}
+            C: crop preview
           </span>
 
           {/* The decision, without leaving the layout that made it possible.
               One button per action the Status offers, off the same
               `STATUS_ACTIONS` the card's overlay and the lightbox's row render
-              from — so a curator cannot be offered one set here and another
+              from, so a curator cannot be offered one set here and another
               there. Review lists Active rows only, so in practice that is Keep
               and Reject; nothing here branches on the page it is mounted in. */}
-          <div className="flex shrink-0 items-center gap-2">
-            {STATUS_ACTIONS[selected.status].map((action) => {
-              const {
-                label: actionLabel,
-                Icon,
-                destructive,
-              } = ACTION_CONTROLS[action];
-              return (
-                <Button
-                  key={action}
-                  size="sm"
-                  variant={destructive ? "destructive" : "secondary"}
-                  aria-label={`${actionLabel} ${selected.filename}`}
-                  onClick={() => onAction(action, selected)}
-                >
-                  <Icon />
-                  {actionLabel}
-                  {/* The key, on the control it fires (#140). */}
-                  <kbd className="rounded border border-current/25 px-1 py-0.5 font-mono text-[10px] leading-none opacity-70">
-                    {printedKey(action)}
-                  </kbd>
-                </Button>
-              );
-            })}
-          </div>
+          {STATUS_ACTIONS[selected.status].map((action) => {
+            const { label: actionLabel, destructive } = ACTION_CONTROLS[action];
+            return (
+              <Button
+                key={action}
+                size="sm"
+                variant={destructive ? "destructive" : "default"}
+                aria-label={`${actionLabel} ${selected.filename}`}
+                onClick={() => onAction(action, selected)}
+                className="shrink-0"
+              >
+                {actionLabel}
+              </Button>
+            );
+          })}
         </div>
       )}
 
@@ -547,10 +613,11 @@ export function ReviewStrip({
         aria-label={label}
         aria-orientation="horizontal"
         tabIndex={-1}
-        className={cn(
-          "flex shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden",
-          FILMSTRIP_HEIGHT,
-        )}
+        className="flex shrink-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden"
+        style={{
+          height: entryHeight + 2 * ENTRY_RING.px,
+          padding: ENTRY_RING.px,
+        }}
       >
         {wallpapers.map((entry, at) => (
           <FilmstripEntry
@@ -559,6 +626,7 @@ export function ReviewStrip({
             at={at}
             current={at === index}
             onSelect={moveTo}
+            height={entryHeight}
           />
         ))}
       </div>
@@ -574,11 +642,13 @@ interface FilmstripEntryProps {
   current: boolean;
   /** Select it, by the position above. */
   onSelect: (at: number) => void;
+  /** How tall it is, in pixels: the filmstrip's density step. */
+  height: number;
 }
 
 /**
- * One wallpaper in the filmstrip: a thumbnail at its own shape, marked when it
- * is the one the hero is showing.
+ * One wallpaper in the filmstrip: a thumbnail cropped to the strip's one shape,
+ * ringed when it is the one the hero is showing and dimmed when it is not.
  *
  * **Memoised, and every prop is a value or a stable identity so that the memo
  * holds.** `onSelect` is the cursor's `moveTo`, which follows the list rather
@@ -600,6 +670,7 @@ const FilmstripEntry = memo(function FilmstripEntry({
   at,
   current,
   onSelect,
+  height,
 }: FilmstripEntryProps) {
   const [gone, setGone] = useState(false);
 
@@ -617,18 +688,18 @@ const FilmstripEntry = memo(function FilmstripEntry({
       data-entry={at}
       tabIndex={current ? 0 : -1}
       onClick={() => onSelect(at)}
+      // The prototype's marker: a ring on the current entry and the rest at
+      // half opacity, so the eye finds the current one by what is lit.
       className={cn(
-        "relative h-full shrink-0 cursor-pointer overflow-hidden rounded border-2 bg-muted outline-none",
+        "relative shrink-0 cursor-pointer overflow-hidden rounded-md bg-muted outline-none",
         current
-          ? "border-primary"
-          : "border-transparent opacity-60 hover:opacity-100",
+          ? cn(ENTRY_RING.className, "ring-primary")
+          : "opacity-50 hover:opacity-100",
       )}
-      // The entry's own shape, so a 21:9 in the strip is a wider entry rather
-      // than a cropped one — which is the whole reason the curator can see what
-      // is coming. An `aspect-ratio` resolves here and not on the hero because
-      // this box has a definite height to derive its width from; the hero has a
-      // definite size in neither axis, which is what `fittedBox` is for.
-      style={{ aspectRatio: ratioOf(wallpaper.width, wallpaper.height) }}
+      // One shape for every entry, the prototype's `w-24` by `h-14` scaled to
+      // the density step. The hero shows the wallpaper's own shape; this only
+      // has to say which one is coming.
+      style={{ height, width: Math.round(height * FILMSTRIP_ENTRY_RATIO) }}
     >
       <img
         src={wallpaperImageUrl(wallpaper.id, "small")}

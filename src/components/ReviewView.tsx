@@ -412,11 +412,11 @@ export function ReviewView() {
               startOn={resumeOn}
             />
           ) : (
-            /* The grid's `density` is the same gesture Library answers, bounded
-               shorter: six cards to a row rather than eight, because this
-               page's cards are wallpapers the curator is deciding about and a
-               card too small to judge has stopped doing that job. Two is the
-               same at the other end, so both tabs go equally large (#264). */
+            /* The grid's `density` is the same gesture Library answers, on
+               #254's range for this tab: one to six cards to a row, starting on
+               three, where Library runs two to ten. This page's cards are
+               wallpapers the curator is deciding about, so it stops shorter and
+               goes larger (#264). */
             <WallpaperGrid
               ref={setGrid}
               wallpapers={wallpapers}

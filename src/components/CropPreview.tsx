@@ -128,17 +128,19 @@ export function CropPreview({ wallpaper }: CropPreviewProps) {
               }
             : { inset: 0 }
         }
+        // One pixel at 70%, the prototype's line: enough to mark the boundary
+        // without a white frame competing with the picture inside it.
         className={cn(
           "absolute",
-          plan && "outline-2 -outline-offset-2 outline-white/90",
+          plan && "outline-1 -outline-offset-1 outline-white/70",
         )}
       />
-      <div className="absolute inset-x-0 bottom-0 flex justify-center p-3">
+      <div className="absolute inset-x-0 bottom-0 flex justify-center p-2">
         <p
           data-slot="crop-caption"
-          className="max-w-full rounded-xl bg-neutral-950/80 px-3 py-1 text-center text-xs font-medium wrap-anywhere text-white tabular-nums"
+          className="max-w-full rounded-md bg-neutral-950/80 px-2 py-1 text-center text-[11px] wrap-anywhere text-white tabular-nums"
         >
-          {cropCaption(screen, plan?.lost ?? null)}
+          {cropCaption(screen, plan)}
         </p>
       </div>
     </div>

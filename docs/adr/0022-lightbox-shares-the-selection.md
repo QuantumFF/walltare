@@ -12,6 +12,15 @@ under it at the image's own width, identity on the left and the read-out beside
 it, on an opaque backdrop. Every action in it raised a toast and did nothing, so
 the behaviour was untouched.
 
+> **Amended 2026-09-23, at the curator's request.** The backdrop is translucent
+> now: `neutral-950` at 80%, where #44 had it opaque because at 97% the
+> chrome's tabs ghosted through. The curator asked for the page behind to show
+> anyway, and it stays inert either way. There is no blur: translucency was the
+> request, and a full-window blur is not what ADR 0006 measured, since its
+> blurs were badge-sized. One thing the opaque backdrop used to guarantee no
+> longer holds: the page behind paints, so the second bar's line (ADR 0018) and
+> the chrome's tabs show through the lightbox.
+
 Two of the four open questions turned out to be answered already.
 [ADR 0016](0016-library-page-scale.md) decided Review and Library share a card,
 a lightbox and an action set but not a page, so there is one component walking

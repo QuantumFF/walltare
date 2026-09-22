@@ -460,3 +460,62 @@ test("a card says nothing about its size unless it was told to", async () => {
   expect(screen.queryByText("Undersized")).toBeNull();
   expect(cardElement("wall-1.jpg, Active")).toBeTruthy();
 });
+
+test("a placed card wears a ring when selected, and a grid card never does (#254)", async () => {
+  // Drawn off `selected` rather than off focus, so the cursor is still visible
+  // after the curator clicks somewhere else on the page. The uncropped layouts
+  // are the prototype's; the uniform grid is the one the verdict kept as it was.
+  const box = { left: 0, top: 0, width: 320, height: 180 };
+  await renderInApp(
+    <div role="grid">
+      <WallpaperCard
+        wallpaper={card({ id: 1, filename: "one.jpg" })}
+        onAction={() => {}}
+        cellIndex={0}
+        selected
+        box={box}
+      />
+      <WallpaperCard
+        wallpaper={card({ id: 2, filename: "two.jpg" })}
+        onAction={() => {}}
+        cellIndex={1}
+        box={box}
+      />
+      <WallpaperCard
+        wallpaper={card({ id: 3, filename: "three.jpg" })}
+        onAction={() => {}}
+        cellIndex={2}
+        selected
+      />
+    </div>,
+  );
+  await flush();
+
+  const [placed, unselected, grid] = screen.getAllByRole("gridcell");
+  expect(placed.classList.contains("ring-primary")).toBe(true);
+  expect(unselected.classList.contains("ring-primary")).toBe(false);
+  expect(grid.classList.contains("ring-primary")).toBe(false);
+});
+
+test("a card the layout placed has no frame, and a grid card keeps its own (#254)", async () => {
+  // Masonry and justified rows are a wall of pictures with a 4px gutter; the
+  // uniform grid is still a grid of cards.
+  const classes = (element: HTMLElement) => [...element.classList];
+  await renderInApp(
+    <WallpaperCard
+      wallpaper={card({ id: 1, filename: "placed.jpg" })}
+      onAction={() => {}}
+      box={{ left: 0, top: 0, width: 320, height: 180 }}
+    />,
+  );
+  await flush();
+  const placed = classes(cardElement("placed.jpg, Active"));
+  expect(placed).not.toContain("border");
+  expect(placed.some((name) => name.startsWith("rounded"))).toBe(false);
+
+  cleanup();
+  await mount(card({ id: 1, filename: "grid.jpg" }));
+  const framed = classes(cardElement("grid.jpg, Active"));
+  expect(framed).toContain("border");
+  expect(framed).toContain("rounded-lg");
+});

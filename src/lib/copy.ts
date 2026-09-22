@@ -18,6 +18,7 @@
  * it sits beside `client.ts` rather than inside any of the files that call it.
  */
 import type { Resolution, Status, Wallpaper } from "@/lib/client";
+import { croppedAxis, type CropPlan } from "@/lib/layout-plan";
 
 /**
  * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
@@ -201,33 +202,38 @@ export function dimensionsOf(wallpaper: Wallpaper): Resolution | null {
 
 /**
  * What the crop preview says it is answering about, and how much it costs:
- * `3840 × 2160 · 24% cropped`.
+ * `3840 × 2160 · 24% of the width is cut`, the prototype's sentence (#254).
  *
  * The Screen is named rather than assumed, because the whole claim the bars make
  * is about one particular display and the curator may have overridden what the
  * app detected (CONTEXT.md). The share follows it, because a percentage with no
  * subject is a number nobody can check.
  *
- * `null` is a wallpaper whose Dimensions nothing has read. There is no share to
+ * `null` is a wallpaper whose Dimensions nothing has read, so there is no plan. There is no share to
  * print then and no bars beside this line either: ADR 0044's rule is that a
  * wallpaper with no Dimensions says nothing rather than something wrong, and a
  * caption that named a percentage off the 16:9 the layouts fall back to would be
  * the app inventing one. It still names the Screen, so pressing `C` on a row
  * mid-backfill answers with why there is nothing to see.
  *
- * `nothing cropped` rather than `0% cropped` for a wallpaper of the Screen's own
- * shape, and `under 1%` for a loss that would round to zero: both are cases
- * where the rounded number would read as "none of it goes" when only one of them
- * means it.
+ * The axis is named because cropping to fill cuts on one only: a wallpaper wider
+ * in ratio than the Screen loses width, a narrower one height, and "24% of the
+ * width" is a sentence the curator can check against the bars on the sides.
+ *
+ * `nothing cropped` rather than `0% of the width is cut` for a wallpaper of the
+ * Screen's own shape, and `under 1%` for a loss that would round to zero: both
+ * are cases where the rounded number would read as "none of it goes" when only
+ * one of them means it.
  */
-export function cropCaption(screen: Resolution, lost: number | null): string {
+export function cropCaption(screen: Resolution, plan: CropPlan | null): string {
   const size = readableSize(screen);
-  if (lost === null) return `${size} · dimensions not read yet`;
-  if (lost <= 0) return `${size} · nothing cropped`;
-  const percent = Math.round(lost * 100);
+  if (plan === null) return `${size} · dimensions not read yet`;
+  const axis = croppedAxis(plan);
+  if (axis === null) return `${size} · nothing cropped`;
+  const percent = Math.round(plan.lost * 100);
   return percent === 0
-    ? `${size} · under 1% cropped`
-    : `${size} · ${percent}% cropped`;
+    ? `${size} · under 1% of the ${axis} is cut`
+    : `${size} · ${percent}% of the ${axis} is cut`;
 }
 
 /**

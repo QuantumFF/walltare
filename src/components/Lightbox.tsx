@@ -609,12 +609,16 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
             // unmounted one. Which card is right is `useLightbox`'s `close` to
             // ask for; all this owes is refusing the wrong one.
             onCloseAutoFocus={(event) => event.preventDefault()}
-            // Opaque, not 97%: the prototype's translucent backdrop let the
-            // chrome's tabs ghost through the top of the picture, which is a
-            // distraction and a lie about what is clickable. No z-index of its
-            // own — the shell's portal node is a `z-50` stacking context, so
-            // this paints over the pages and under the toast by sitting in it.
-            className="fixed inset-0 flex flex-col bg-neutral-950 outline-none"
+            // Translucent, at the curator's request: the page stays faintly
+            // visible behind the picture. #44 had it opaque because at 97% the
+            // chrome's tabs ghosted through and read as clickable; the curator
+            // asked for the page behind anyway, and it is inert either way
+            // (ADR 0022, amended). No blur, because a translucent backdrop was
+            // what was asked for and a full-window blur is a cost nobody has
+            // measured. No z-index of its own — the shell's portal node is a
+            // `z-50` stacking context, so this paints over the pages and under
+            // the toast by sitting in it.
+            className="fixed inset-0 flex flex-col bg-neutral-950/80 outline-none"
           >
             <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
               {/* Both renderings of the wallpaper sit in one grid cell, each
@@ -689,7 +693,15 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                   // grid; this surface exists to show one picture at full size,
                   // which is the opposite job, and the Status pill below
                   // carries the signal instead (ADR 0019, ADR 0022).
-                  className="col-start-1 row-start-1 max-h-full max-w-full object-contain"
+                  //
+                  // Hidden once it has failed, rather than covered by an opaque
+                  // panel: what a failed `<img>` paints is its `alt`, and over a
+                  // translucent backdrop a solid box would stand out. `invisible`
+                  // keeps it mounted, so a later `load` can still clear `gone`.
+                  className={cn(
+                    "col-start-1 row-start-1 max-h-full max-w-full object-contain",
+                    gone && "invisible",
+                  )}
                 />
 
                 {/*
@@ -710,11 +722,9 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                   their own library changing rather than as the app breaking
                   (ADR 0032).
 
-                  It fills the cell in the dialog's own colour rather than
-                  shrink-wrapping the message, because what a failed `<img>`
-                  paints is its `alt` — the filename, which is on the row below
-                  already — and a panel sized to its text would leave that
-                  showing around the edges of it.
+                  No fill of its own: the failed `<img>` is hidden, so there is
+                  no `alt` text left to cover, and the backdrop shows through as
+                  it does around the picture.
 
                   `pointer-events-none` so the arrows and the Close behind the
                   edges of the box keep taking their own clicks.
@@ -748,7 +758,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                 {gone && (
                   <div
                     data-slot="lightbox-gone"
-                    className="pointer-events-none col-start-1 row-start-1 flex h-full w-full flex-col items-center justify-center gap-2 bg-neutral-950 px-8 text-center"
+                    className="pointer-events-none col-start-1 row-start-1 flex h-full w-full flex-col items-center justify-center gap-2 px-8 text-center"
                   >
                     <ImageOff className="h-10 w-10 text-white/40" aria-hidden />
                     <p className="text-sm font-medium text-white">
@@ -916,8 +926,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                       return (
                         <Button
                           key={action}
-                          size="xs"
-                          variant={destructive ? "destructive" : undefined}
+                          size="sm"
                           // Not `disabled`, for ADR 0019's reason: a disabled
                           // button is not focusable, so the sentence explaining
                           // why a Rejected wallpaper cannot go back would be
@@ -940,16 +949,23 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                           // on the card, and pressing `R` on either are one
                           // event with one outcome (ADR 0023).
                           onClick={() => onAction(action, wallpaper)}
-                          // The card's own treatment, because these sit on the
-                          // same dark ground. Not `flex-1`: on a card the two
-                          // buttons split the overlay's width, and here they are
-                          // the part of the row that never shrinks.
+                          // The Review strip's pair as the dark theme draws
+                          // it: the dark `--primary` (neutral-200) with its dark
+                          // foreground, and the destructive variant's red tint
+                          // with the dark `--destructive` as the text. Spelled out here
+                          // rather than taken from the variants, because the
+                          // theme tokens follow the page and this ground is dark
+                          // in both themes, so in Light the primary would be a
+                          // near-black button on a near-black backdrop. The base
+                          // variant is `default` because it carries no `dark:`
+                          // classes to outrank these. Not `flex-1`: here the
+                          // buttons are the part of the row that never shrinks.
                           className={cn(
                             destructive
-                              ? "bg-destructive/90 text-white hover:bg-destructive"
-                              : "bg-white/15 text-white hover:bg-white/25",
+                              ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                              : "bg-neutral-200 text-neutral-900 hover:bg-neutral-200/80",
                             unavailable &&
-                              "cursor-not-allowed opacity-40 hover:bg-white/15",
+                              "cursor-not-allowed opacity-40 hover:bg-neutral-200",
                           )}
                         >
                           <Icon />
@@ -959,8 +975,11 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                               drop, which is why the prototype's
                               `← → navigate · Esc close` hint went and the
                               arrows and Escape live in the `?` dialog instead
-                              (ADR 0022). */}
-                          <kbd className="rounded border border-white/25 px-1 py-0.5 font-mono text-[10px] leading-none text-white/70">
+                              (ADR 0022). A chip tinted from the button's own
+                              text colour rather than a bordered box, so it
+                              reads as part of the button on both the white one
+                              and the red one. */}
+                          <kbd className="ml-0.5 rounded bg-current/15 px-1 font-mono text-[10px] leading-4 font-normal">
                             {printedKey(action)}
                           </kbd>
                         </Button>
