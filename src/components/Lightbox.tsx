@@ -609,12 +609,16 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
             // unmounted one. Which card is right is `useLightbox`'s `close` to
             // ask for; all this owes is refusing the wrong one.
             onCloseAutoFocus={(event) => event.preventDefault()}
-            // Opaque, not 97%: the prototype's translucent backdrop let the
-            // chrome's tabs ghost through the top of the picture, which is a
-            // distraction and a lie about what is clickable. No z-index of its
-            // own — the shell's portal node is a `z-50` stacking context, so
-            // this paints over the pages and under the toast by sitting in it.
-            className="fixed inset-0 flex flex-col bg-neutral-950 outline-none"
+            // Translucent, at the curator's request: the page stays faintly
+            // visible behind the picture. It used to be opaque because the
+            // chrome's tabs ghosting through read as clickable, and the blur is
+            // what keeps them from reading that way now: they come through as
+            // colour, not as controls. The pages behind are inert either way.
+            // ADR 0006 measured backdrop blurs as free on WebKitGTK. No z-index
+            // of its own — the shell's portal node is a `z-50` stacking context,
+            // so this paints over the pages and under the toast by sitting in
+            // it.
+            className="fixed inset-0 flex flex-col bg-neutral-950/80 outline-none backdrop-blur-md"
           >
             <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
               {/* Both renderings of the wallpaper sit in one grid cell, each
@@ -689,7 +693,15 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                   // grid; this surface exists to show one picture at full size,
                   // which is the opposite job, and the Status pill below
                   // carries the signal instead (ADR 0019, ADR 0022).
-                  className="col-start-1 row-start-1 max-h-full max-w-full object-contain"
+                  //
+                  // Hidden once it has failed, rather than covered by an opaque
+                  // panel: what a failed `<img>` paints is its `alt`, and over a
+                  // translucent backdrop a solid box would stand out. `invisible`
+                  // keeps it mounted, so a later `load` can still clear `gone`.
+                  className={cn(
+                    "col-start-1 row-start-1 max-h-full max-w-full object-contain",
+                    gone && "invisible",
+                  )}
                 />
 
                 {/*
@@ -710,11 +722,9 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                   their own library changing rather than as the app breaking
                   (ADR 0032).
 
-                  It fills the cell in the dialog's own colour rather than
-                  shrink-wrapping the message, because what a failed `<img>`
-                  paints is its `alt` — the filename, which is on the row below
-                  already — and a panel sized to its text would leave that
-                  showing around the edges of it.
+                  No fill of its own: the failed `<img>` is hidden, so there is
+                  no `alt` text left to cover, and the backdrop shows through as
+                  it does around the picture.
 
                   `pointer-events-none` so the arrows and the Close behind the
                   edges of the box keep taking their own clicks.
@@ -748,7 +758,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                 {gone && (
                   <div
                     data-slot="lightbox-gone"
-                    className="pointer-events-none col-start-1 row-start-1 flex h-full w-full flex-col items-center justify-center gap-2 bg-neutral-950 px-8 text-center"
+                    className="pointer-events-none col-start-1 row-start-1 flex h-full w-full flex-col items-center justify-center gap-2 px-8 text-center"
                   >
                     <ImageOff className="h-10 w-10 text-white/40" aria-hidden />
                     <p className="text-sm font-medium text-white">
