@@ -129,6 +129,19 @@ screen with less room.
 A rescan finishing under an open lightbox adds rows and cannot remove the
 current one, per the reading above, so it needs no handling.
 
+> **Amended 2026-09-23, by [#285](https://github.com/QuantumFF/walltare/issues/285).**
+> That was not true on Review until #285, and the reading was not what failed.
+> Review swapped its populated surface for a spinner on every fetch, so a
+> `library-scanned` refetch unmounted the grid, the page's handle to it went
+> to `null`, and the lightbox read that as the list emptying and closed. Review
+> now keeps the surface mounted through a refetch and hands it the new rows,
+> the way Library always has; the spinner is the first load's alone. So the
+> sentence above holds on a condition worth writing down: **a refetch replaces
+> the rows under the surface and never the surface itself.** A page that
+> tears the surface down for a loading state reopens this question, and it
+> takes the cursor and the density with it too, since both are the surface's
+> own since ADR 0042 and #264.
+
 ### It clamps at the ends
 
 `←` at the first wallpaper and `→` at the last do nothing, and the arrow buttons
