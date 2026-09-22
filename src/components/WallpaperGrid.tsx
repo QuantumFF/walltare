@@ -293,6 +293,19 @@ const CARD_ASPECT = { ratio: 9 / 16, className: "aspect-video" };
 const PADDING = { px: 16, className: "p-4" };
 
 /**
+ * The gutter between wallpapers in the two layouts that draw each one at its own
+ * shape: 4px, which is what #254's prototype put between them and what the
+ * verdict picked.
+ *
+ * Its own number rather than `GAP`, because the uniform grid kept its spacing
+ * and these two are a wall rather than a page of cards. With no border and no
+ * rounding on the card either, the pictures are what the eye reads as the edges.
+ * No class beside it, because both layouts place every card themselves and
+ * nothing in the CSS wears it.
+ */
+const WALL_GAP = { px: 4 };
+
+/**
  * What a box that measures zero is taken to be: a row about as tall as a card
  * in the default 1280x800 window, inside a viewport about as tall as that
  * window.
@@ -315,6 +328,7 @@ const UNMEASURED_BOX = 800;
  * same rule the pairs above follow: a copy of `GAP.px` is a copy that drifts.
  */
 const SPACING = { gap: GAP.px, padding: PADDING.px };
+const WALL_SPACING = { gap: WALL_GAP.px, padding: PADDING.px };
 
 /**
  * How tall one row of cards is, from the width the row has to fill and the
@@ -479,7 +493,7 @@ function useGridWindow(
     const unknownRatio = CARD_ASPECT.ratio;
     if (masonry) {
       return planMasonry({
-        ...SPACING,
+        ...WALL_SPACING,
         ratios,
         columns,
         width: boxWidth,
@@ -489,16 +503,24 @@ function useGridWindow(
     }
     if (layout === "justified") {
       return planJustified({
-        ...SPACING,
+        ...WALL_SPACING,
         ratios,
         columns,
         width: boxWidth,
-        // The uniform grid's own row height, as the height a justified row aims
-        // for. That is what makes the density gesture mean one thing across the
-        // layouts: the same zoom that puts four cards in a grid row puts about
-        // four wallpapers in a justified one, because it is the same number of
-        // the same width being asked for (#264).
-        targetHeight: rowHeight(boxWidth, columns),
+        // The height of a row of `columns` 16:9 cards across this width, as the
+        // height a justified row aims for. That is what makes the density
+        // gesture mean one thing across the layouts: the same zoom that puts four
+        // cards in a grid row puts about four wallpapers in a justified one,
+        // because it is the same number of the same width being asked for
+        // (#264). Worked out against the wall's own gutter rather than the
+        // grid's, so four is four across the width this layout actually has.
+        targetHeight: uniformRowHeight({
+          ...WALL_SPACING,
+          columns,
+          width: boxWidth,
+          cardRatio: CARD_ASPECT.ratio,
+          unmeasuredHeight: UNMEASURED_ROW,
+        }),
         unknownRatio,
       });
     }
@@ -538,7 +560,7 @@ function useGridWindow(
     // inside those heights and a gap between bands would be counted twice — the
     // virtualiser's offsets would then disagree with the boxes the same plan
     // computed.
-    gap: masonry ? 0 : GAP.px,
+    gap: masonry ? 0 : layout === "justified" ? WALL_GAP.px : GAP.px,
     paddingStart: PADDING.px,
     paddingEnd: PADDING.px,
     // The measurement, with the fallback above under it. The virtualiser's own

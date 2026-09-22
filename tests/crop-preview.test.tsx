@@ -84,7 +84,7 @@ function caption(root?: HTMLElement): string | null {
 /** Whether the kept region is outlined, which is the boundary's own marker. */
 function outlined(root?: HTMLElement): boolean {
   const kept = preview(root)?.querySelector("[data-slot='crop-kept']");
-  return kept?.className.includes("outline-2") ?? false;
+  return kept?.className.includes("outline-1") ?? false;
 }
 
 afterEach(cleanup);
@@ -239,7 +239,7 @@ test("a wallpaper wider in ratio than the screen shows bars on its sides", async
   // left to the eye to guess at.
   expect(outlined()).toBe(true);
   // And the caption names the screen and what it costs.
-  expect(caption()).toBe("1920 × 1080 · 26% cropped");
+  expect(caption()).toBe("1920 × 1080 · 26% of the width is cut");
 });
 
 test("a wallpaper narrower in ratio than the screen shows them top and bottom", async () => {
@@ -250,7 +250,7 @@ test("a wallpaper narrower in ratio than the screen shows them top and bottom", 
   await press("c");
 
   expect(dimmedEdges()).toEqual(["bottom", "top"]);
-  expect(caption()).toBe("1920 × 1080 · 25% cropped");
+  expect(caption()).toBe("1920 × 1080 · 25% of the height is cut");
 });
 
 test("a wallpaper matching the screen's ratio shows no bars", async () => {
@@ -287,7 +287,7 @@ test("the preview follows the screen setting, including an overridden one", asyn
   // An ultrawide screen throws away the top and bottom of a 16:9 wallpaper,
   // which is the opposite of what the same file loses on a 16:9 screen.
   expect(dimmedEdges()).toEqual(["bottom", "top"]);
-  expect(caption()).toBe("2560 × 1080 · 25% cropped");
+  expect(caption()).toBe("2560 × 1080 · 25% of the height is cut");
 });
 
 test("a wallpaper whose Dimensions nothing has read says so rather than guessing", async () => {
@@ -351,7 +351,7 @@ test("C does the same in the Lightbox, over the same stored toggle", async () =>
   await press("c");
 
   expect(dimmedEdges(dialog)).toEqual(["left", "right"]);
-  expect(caption(dialog)).toBe("1920 × 1080 · 26% cropped");
+  expect(caption(dialog)).toBe("1920 × 1080 · 26% of the width is cut");
   expect(outlined(dialog)).toBe(true);
 
   await press("c");

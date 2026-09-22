@@ -201,7 +201,7 @@ export function dimensionsOf(wallpaper: Wallpaper): Resolution | null {
 
 /**
  * What the crop preview says it is answering about, and how much it costs:
- * `3840 × 2160 · 24% cropped`.
+ * `3840 × 2160 · 24% of the width is cut`, the prototype's sentence (#254).
  *
  * The Screen is named rather than assumed, because the whole claim the bars make
  * is about one particular display and the curator may have overridden what the
@@ -215,19 +215,27 @@ export function dimensionsOf(wallpaper: Wallpaper): Resolution | null {
  * the app inventing one. It still names the Screen, so pressing `C` on a row
  * mid-backfill answers with why there is nothing to see.
  *
- * `nothing cropped` rather than `0% cropped` for a wallpaper of the Screen's own
- * shape, and `under 1%` for a loss that would round to zero: both are cases
- * where the rounded number would read as "none of it goes" when only one of them
- * means it.
+ * The axis is named because cropping to fill cuts on one only: a wallpaper wider
+ * in ratio than the Screen loses width, a narrower one height, and "24% of the
+ * width" is a sentence the curator can check against the bars on the sides.
+ *
+ * `nothing cropped` rather than `0% of the width is cut` for a wallpaper of the
+ * Screen's own shape, and `under 1%` for a loss that would round to zero: both
+ * are cases where the rounded number would read as "none of it goes" when only
+ * one of them means it.
  */
-export function cropCaption(screen: Resolution, lost: number | null): string {
+export function cropCaption(
+  screen: Resolution,
+  lost: number | null,
+  axis: "width" | "height" = "width",
+): string {
   const size = readableSize(screen);
   if (lost === null) return `${size} · dimensions not read yet`;
   if (lost <= 0) return `${size} · nothing cropped`;
   const percent = Math.round(lost * 100);
   return percent === 0
-    ? `${size} · under 1% cropped`
-    : `${size} · ${percent}% cropped`;
+    ? `${size} · under 1% of the ${axis} is cut`
+    : `${size} · ${percent}% of the ${axis} is cut`;
 }
 
 /**

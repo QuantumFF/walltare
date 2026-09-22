@@ -319,7 +319,9 @@ export interface WallpaperCardProps {
  * Its design is #44's prototype at ADR 0019's corrections: a dense
  * `aspect-video` card with the Score badge top right, the Status pill top left,
  * and the actions in a bottom overlay revealed by `group-hover` and
- * `group-focus-within`.
+ * `group-focus-within`. #254's prototype is what the two uncropped layouts wear
+ * on top of that: no border and no rounding once the card is handed a box, and a
+ * ring on the selected card in every layout.
  *
  * It carries no hover shadow, deliberately. A wheel scroll holds the pointer
  * still while cards stream underneath, so every card that passes fires
@@ -442,9 +444,26 @@ export const WallpaperCard = memo(function WallpaperCard({
       // declaring a second one here would be the layout and the card disagreeing
       // about how tall the card is — and the window is positioned against the
       // layout's answer.
+      //
+      // A card handed a box also drops the frame. Masonry and justified rows
+      // are #254's wall: true ratios, a 4px gutter and no chrome until a hover,
+      // so a border and a rounded corner on every picture would put back the
+      // boxes that layout exists to take away. The uniform grid keeps both.
+      //
+      // The selection is a ring, drawn whether or not the grid has focus, which
+      // is what every layout in the prototype did. A cursor the curator can only
+      // see while the grid holds focus is a cursor lost the moment they click the
+      // page bar. It is a `box-shadow`, and ADR 0006 is why that is safe here and
+      // not on `:hover`: it changes on two cards per arrow key, never on every
+      // card a wheel pass slides under the pointer. The browser's own focus
+      // outline goes, because the ring is already on the one cell that can hold
+      // focus.
       className={cn(
-        "group overflow-hidden rounded-lg border border-border bg-card",
-        box ? "absolute" : "relative aspect-video",
+        "group overflow-hidden bg-card outline-none",
+        box
+          ? "absolute"
+          : "relative aspect-video rounded-lg border border-border",
+        selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
       )}
       style={box}
     >
@@ -509,7 +528,7 @@ export const WallpaperCard = memo(function WallpaperCard({
         <span
           data-slot="wallpaper-rank"
           aria-hidden
-          className="pointer-events-none absolute inset-0 flex items-center justify-center font-bold text-white/25 tabular-nums mix-blend-overlay leading-none"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center font-bold text-white/15 tabular-nums mix-blend-overlay leading-none"
           style={{ fontSize: rankSize(box) }}
         >
           {rank}

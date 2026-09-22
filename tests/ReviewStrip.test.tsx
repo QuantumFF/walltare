@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
   click,
+  ctrlWheel,
   mockBootedApp,
   mockTransitions,
   openApp,
@@ -76,7 +77,7 @@ const heroBox = () => {
 };
 
 /** The area the strip falls back to while nothing has measured one. */
-const UNMEASURED_AREA = { width: 1216, height: 520 };
+const UNMEASURED_AREA = { width: 1216, height: 560 };
 
 /**
  * Assert the hero's box is the one `fittedBox` works out for this shape.
@@ -92,8 +93,7 @@ function expectHeroBox(ratio: number): void {
   expect(drawn?.height).toBeCloseTo(want.height);
 }
 
-/** The picture the hero is showing, by the filename it is named with. */
-/** The Score badge on the hero row, which is where the strip says Evaluated. */
+/** The Score on the hero row, which is where the strip says Evaluated. */
 const heroScoreBadge = () =>
   reviewView().querySelector(
     '[data-slot="review-hero-row"] [title$="Evaluated"]',
@@ -252,6 +252,63 @@ test("the hero's Score badge reads against the curator's Evaluated threshold (#2
   stored = settings({ review_layout: "strip" });
   await openStrip([wallpaper(1, { filename: "sure.jpg", rating_sigma: 4.5 })]);
   expect(heroScoreBadge()?.getAttribute("title")).toBe("Not yet Evaluated");
+});
+
+/** How tall the filmstrip draws its entries, in pixels, off the one it marks. */
+const entryHeight = () => Number.parseFloat(marked()[0]?.style.height ?? "");
+
+test("the hero row names the crop preview's key, as the prototype did (#254)", async () => {
+  await openStrip([wallpaper(1, { filename: "first.jpg" })]);
+
+  const row = reviewView().querySelector(
+    '[data-slot="review-hero-row"]',
+  ) as HTMLElement;
+  expect(row.textContent).toContain("first.jpg");
+  expect(
+    row.querySelector('[data-slot="review-crop-hint"]')?.textContent,
+  ).toBe("C: crop preview");
+});
+
+test("plus and minus size the filmstrip, clamped at both ends (#264)", async () => {
+  await openStrip([
+    wallpaper(3, { filename: "first.jpg" }),
+    wallpaper(1, { filename: "second.png" }),
+  ]);
+  await enterStrip();
+
+  // The prototype's 56px, until the curator says otherwise.
+  expect(entryHeight()).toBe(56);
+
+  await press("+");
+  expect(entryHeight()).toBe(72);
+  await press("-");
+  await press("-");
+  expect(entryHeight()).toBe(40);
+  // Past the small end is still the small end.
+  await press("-");
+  expect(entryHeight()).toBe(40);
+
+  for (let at = 0; at < 6; at++) await press("=");
+  expect(entryHeight()).toBe(128);
+
+  // Every entry moves together, and the selection stays where it was.
+  expect(
+    entries().map((entry) => Number.parseFloat(entry.style.height)),
+  ).toEqual([128, 128]);
+  expect(marked().map((entry) => entry.getAttribute("aria-label"))).toEqual([
+    "first.jpg",
+  ]);
+});
+
+test("Ctrl and the wheel size the filmstrip and not the webview (#264)", async () => {
+  await openStrip([wallpaper(3, { filename: "first.jpg" })]);
+
+  // Wheel up is in, towards larger, the same way it runs on the grid. The
+  // event is refused, so the webview's own zoom never sees it.
+  expect(await ctrlWheel(strip() as HTMLElement, -100)).toBe(false);
+  expect(entryHeight()).toBe(72);
+  expect(await ctrlWheel(strip() as HTMLElement, 100)).toBe(false);
+  expect(entryHeight()).toBe(56);
 });
 
 test("clicking a filmstrip entry moves the hero to it", async () => {
