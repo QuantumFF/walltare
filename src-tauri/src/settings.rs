@@ -116,7 +116,7 @@ macro_rules! vocabulary {
     (
         $(#[$attr:meta])*
         pub enum $name:ident: $noun:literal {
-            $( $(#[$variant_attr:meta])* $variant:ident => $spelling:literal, )+
+            $( $(#[$variant_attr:meta])* $variant:ident => $spelling:literal ),+ $(,)?
         }
     ) => {
         $(#[$attr])*
@@ -1509,7 +1509,8 @@ mod tests {
         // Each key beside spellings near enough to a legal one that a forgiving
         // parse would take them, which is the other half of "exactly": the
         // refusal may not name a value the parse refuses, and the parse may not
-        // take a spelling the refusal did not name.
+        // take a spelling the refusal did not name. A new enumerated key needs
+        // a row here, or that guarantee lapses for it without a failure.
         let table: [(&str, &[&str]); 8] = [
             ("theme", &["System", " dark", "solarized"]),
             ("library_layout", &["Grid", "masonry ", "mosaic"]),

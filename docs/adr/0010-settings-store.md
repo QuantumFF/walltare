@@ -75,7 +75,7 @@ later is a match arm rather than a data migration.
 > **Amended by [#281](https://github.com/QuantumFF/walltare/issues/281),
 > 2026-09-23.** Still no data migration, but no longer only a match arm. A key
 > whose values are a closed list — every key but the two Written paths and the
-> two sizes — declares that list once, as a `Vocabulary`: each value beside the
+> two Resolutions, `screen` and `minimum_resolution` — declares that list once, as a `Vocabulary`: each value beside the
 > spelling the column stores. The parse takes exactly those spellings and the
 > refusal names exactly those, so the two cannot disagree; before, every such
 > key listed its values twice, once in a hand-written parse and once in the
