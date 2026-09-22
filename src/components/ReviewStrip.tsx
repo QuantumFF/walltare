@@ -45,9 +45,9 @@ import {
  *
  * The default 1280x800 window, less what is above and below the hero: 1280 wide
  * less the page's own `p-4` at both ends is 1248, and 800 tall less the chrome's
- * 48, the page bar's 44, that same 32 of padding, the filmstrip's 60, the row
+ * 48, the page bar's 44, that same 32 of padding, the filmstrip's 132, the row
  * under the picture at about 32, and the two 12px gaps between the three is
- * about 560. Rounded to 1216x560, because the number it feeds is a fallback and
+ * about 488. Rounded to 1216x488, because the number it feeds is a fallback and
  * not a measurement — the moment a browser lays the box out, the observer below
  * replaces it.
  *
@@ -57,13 +57,15 @@ import {
  * that paints nothing on the way back. The same pair the grid's window carries,
  * for the same two reasons (ADR 0027).
  */
-const UNMEASURED_AREA: Box = { width: 1216, height: 560 };
+const UNMEASURED_AREA: Box = { width: 1216, height: 488 };
 
 /**
  * How tall a filmstrip entry is at each density step, in pixels, and the step it
  * starts on.
  *
- * 56 is the prototype's `h-14`, which is what #254 agreed on. The density
+ * Three steps above the prototype's range, at the curator's request: its `h-14`
+ * of 56 was the second step of 40, 56, 72, 96, 128, and the list here starts at
+ * the fourth and carries the same progression on past 128. The density
  * gesture moves along this list rather than a column count, because the strip
  * has no columns: #254's verdict gives zoom to both tabs and says that in the
  * strip it sizes the filmstrip (#264).
@@ -77,7 +79,7 @@ const UNMEASURED_AREA: Box = { width: 1216, height: 560 };
  *
  * Not persisted, the same as the grid's zoom.
  */
-const FILMSTRIP_HEIGHTS = [40, 56, 72, 96, 128] as const;
+const FILMSTRIP_HEIGHTS = [96, 128, 160, 200, 256] as const;
 const FILMSTRIP_START = 1;
 
 /**

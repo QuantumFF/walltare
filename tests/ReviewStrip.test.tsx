@@ -77,7 +77,7 @@ const heroBox = () => {
 };
 
 /** The area the strip falls back to while nothing has measured one. */
-const UNMEASURED_AREA = { width: 1216, height: 560 };
+const UNMEASURED_AREA = { width: 1216, height: 488 };
 
 /**
  * Assert the hero's box is the one `fittedBox` works out for this shape.
@@ -276,25 +276,26 @@ test("plus and minus size the filmstrip, clamped at both ends (#264)", async () 
   ]);
   await enterStrip();
 
-  // The prototype's 56px, until the curator says otherwise.
-  expect(entryHeight()).toBe(56);
+  // 128px, three steps above the prototype's 56, until the curator says
+  // otherwise.
+  expect(entryHeight()).toBe(128);
 
   await press("+");
-  expect(entryHeight()).toBe(72);
+  expect(entryHeight()).toBe(160);
   await press("-");
   await press("-");
-  expect(entryHeight()).toBe(40);
+  expect(entryHeight()).toBe(96);
   // Past the small end is still the small end.
   await press("-");
-  expect(entryHeight()).toBe(40);
+  expect(entryHeight()).toBe(96);
 
   for (let at = 0; at < 6; at++) await press("=");
-  expect(entryHeight()).toBe(128);
+  expect(entryHeight()).toBe(256);
 
   // Every entry moves together, and the selection stays where it was.
   expect(
     entries().map((entry) => Number.parseFloat(entry.style.height)),
-  ).toEqual([128, 128]);
+  ).toEqual([256, 256]);
   expect(marked().map((entry) => entry.getAttribute("aria-label"))).toEqual([
     "first.jpg",
   ]);
@@ -306,9 +307,9 @@ test("Ctrl and the wheel size the filmstrip and not the webview (#264)", async (
   // Wheel up is in, towards larger, the same way it runs on the grid. The
   // event is refused, so the webview's own zoom never sees it.
   expect(await ctrlWheel(strip() as HTMLElement, -100)).toBe(false);
-  expect(entryHeight()).toBe(72);
+  expect(entryHeight()).toBe(160);
   expect(await ctrlWheel(strip() as HTMLElement, 100)).toBe(false);
-  expect(entryHeight()).toBe(56);
+  expect(entryHeight()).toBe(128);
 });
 
 test("clicking a filmstrip entry moves the hero to it", async () => {
