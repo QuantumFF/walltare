@@ -139,6 +139,20 @@ ADR 0039 recorded as a debt owed by whoever gave it a caller. It got one in a te
 and so it is two halves now, `purge_cache_files` and `purge_thumbnails`. It still
 has no production caller.
 
+> **Amended by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** Two of the three signals are operations of the thumbnail cache
+> now, and the third is gone. Clear is `ThumbnailCache::clear`, which empties the
+> files, then the rows, then the bytes itself, so the order this list states is
+> held by one function rather than by `lib.rs` calling three; a test fails if the
+> real Clear drops the bytes or deletes the rows before the files. The regenerate
+> invalidates from inside the same module for both of its callers — a request
+> through `ThumbnailCache::answer` and the pass through `ThumbnailCache::warm` —
+> where it used to be written once in `serving` and again in `pregen`. The purge
+> is deleted: two `#[allow(dead_code)]` halves with no production caller were a
+> shape to keep in step with nothing, and whoever gives a single wallpaper's purge
+> a caller writes it as a fourth operation, behind which the three halves are
+> this module's to order.
+
 **`Cache-Control: max-age=300` is untouched**, and so is the 30 seconds #227 gave
 a failure. This ADR does not replace either. A memory hit is served with the same
 five minutes as any other response, because what the header says is how long the
@@ -149,6 +163,17 @@ tier answered.
 
 Behind the serving module, on the Rust side, and ADR 0016's fallback is settled
 rather than still parked.
+
+> **Amended by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** `ImageCache` sits behind the thumbnail cache module rather than
+> behind serving. `thumbnails::ThumbnailCache` owns the four things a thumbnail
+> is kept as — the cache file, its row, a failure note and the bytes in memory —
+> and `ImageCache` is private to it. Serving keeps the pool, `InFlight` and the
+> HTTP mapping, and asks the cache twice: `remembered` on the UI thread, which is
+> the hash lookup this section argues for and nothing more, and `answer` on a
+> worker. Everything else here is unchanged, including the side of the seam the
+> bytes live on: still Rust, still the side that already holds them, and still
+> invisible to every caller in `src/`.
 
 It serves all three of the callers that ADR named without any of them knowing it
 exists: the library card and the review card share a component that asks for
@@ -327,6 +352,14 @@ rule through this door.
 **`thumbnails::purge` is two functions and still has no production caller.** The
 `#[allow(dead_code)]` moved with it. Whoever gives it a caller now owes it three
 halves rather than two: the files, the rows, and `ImageCache::forget`.
+
+> **Closed by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** Deleted rather than given a caller; see the amendment under
+> "The bytes go when the thumbnail goes". The same change closes ADR 0039's
+> consequence about Clear's ordering being spread across two functions and a
+> caller: it is one operation again, and the trigger that consequence named — a
+> second caller — never came, because what it would have been guarding against
+> was every caller having to know the order.
 
 **Nothing already measured is undone.** ADR 0004's three phases with the decode
 outside the lock, `Size::donors` including the lookup that runs when a row exists,

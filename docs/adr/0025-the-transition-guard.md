@@ -178,6 +178,15 @@ column on the thumbnail path, which runs per card rather than per click, and it
 is not a transition. It keeps its own read and its own closure, which is the one
 that remains.
 
+> **Retired by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** By then there were three copies of the read, not one — `plan`,
+> `still_due` and `current_source_path` — and only `plan` mapped the missing row.
+> They are one private helper in the thumbnail cache, over `get_wallpaper`, so
+> the crate has the one `QueryReturnedNoRows` closure this ADR was after. The
+> per-card cost the bullet weighed is one prepared-cached query reading ten
+> columns where it read one, inside a critical section that also runs up to three
+> thumbnail lookups; the pass's re-check wanted two of them anyway.
+
 **Leave the three kinds and just note the inconsistency.** Cheapest, and it
 keeps the thing the unification buys: a stale id that cannot ask for a refetch,
 in the one place ADR 0017 established that a refetch is the right answer.
