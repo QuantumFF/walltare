@@ -640,21 +640,30 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let id = seed_image_wallpaper(&conn, tmp.path(), "cached.png");
-        crate::thumbnails::resolve(&conn, cache.path(), id, crate::thumbnails::Size::Small)
+        let db = crate::Db::new(conn);
+        let small = crate::thumbnails::Size::Small;
+        crate::thumbnails::ThumbnailCache::new(cache.path().to_path_buf())
+            .answer(&db, id, small)
             .unwrap();
         let cache_file = cache.path().join(format!("{id}_small.jpg"));
         assert!(cache_file.is_file());
 
-        reject(&conn, id, dest.path().to_str().unwrap()).unwrap();
+        db.write(|conn| reject(conn, id, dest.path().to_str().unwrap()))
+            .unwrap();
 
-        assert_eq!(count_thumbnails(&conn, id), 1);
+        assert_eq!(db.read(|conn| count_thumbnails(conn, id)), 1);
         assert!(cache_file.is_file());
 
-        // And the moved row still resolves to that same file: `record_mtime` is
-        // `None` only on a cache hit, so this is a decode that did not happen.
-        let plan = crate::thumbnails::plan(&conn, id, crate::thumbnails::Size::Small).unwrap();
-        let resolved = crate::thumbnails::fulfill(&plan, cache.path()).unwrap();
-        assert!(resolved.record_mtime.is_none());
+        // And the moved row still answers with that same file rather than a
+        // decode. The file is tampered with, so its bytes coming back is the
+        // cache hit and can be nothing else, and the answer comes from a fresh
+        // cache — a relaunch — so memory cannot be what answered.
+        std::fs::write(&cache_file, b"the cache said so").unwrap();
+        let relaunched = crate::thumbnails::ThumbnailCache::new(cache.path().to_path_buf());
+        assert_eq!(
+            relaunched.answer(&db, id, small).unwrap().as_slice(),
+            b"the cache said so"
+        );
     }
 
     #[test]

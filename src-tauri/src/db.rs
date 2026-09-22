@@ -1003,7 +1003,12 @@ mod tests {
 
         assert!(table_exists(&conn, "thumbnail_failures").unwrap());
         assert_eq!(schema_version(&conn).unwrap(), before);
-        crate::thumbnails::note_failure(&conn, id, 42, "not an image").unwrap();
+        conn.execute(
+            "INSERT INTO thumbnail_failures (wallpaper_id, source_mtime, message)
+             VALUES (?1, 42, 'not an image')",
+            [id],
+        )
+        .unwrap();
         assert_eq!(count_wallpapers(&conn), 1);
     }
 

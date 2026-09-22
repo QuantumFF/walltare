@@ -4,20 +4,23 @@
 //! `start_pregen` and `cancel_pregen` stay in the command surface; everything
 //! they set in motion lives here.
 //!
-//! The decoding does not. Every wallpaper goes through [`crate::serving`]'s
-//! worker pool, one at a time, behind every `wallpaper://` request the curator
-//! is waiting for (#232, ADR 0012's amendment). The thread this module owns
-//! reads the list, waits, and counts.
+//! The warming does not. What a wallpaper is owed, how it is generated, which
+//! failures are written down and what that does to the bytes in memory are all
+//! [`ThumbnailCache`]'s (#280), and this module asks it for the work list and
+//! then for one wallpaper at a time. Every wallpaper goes through
+//! [`crate::serving`]'s worker pool, behind every `wallpaper://` request the
+//! curator is waiting for (#232, ADR 0012's amendment). The thread this module
+//! owns reads the list, waits, and counts.
 
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::serving::{ImageCache, ImageWorkers};
-use crate::{error, thumbnails, CacheDir, Db};
+use crate::serving::ImageWorkers;
+use crate::thumbnails::{self, Pending, ThumbnailCache, Warmed};
+use crate::{error, Db};
 
 /// How far through its work list the pre-generation pass is.
 ///
@@ -156,31 +159,21 @@ pub fn supervise(app: AppHandle) {
 /// no `pregen-failed` event for it (ADR 0012).
 fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
     let db = app.state::<Db>();
-    let cache_dir = app.state::<CacheDir>();
+    let cache = app.state::<ThumbnailCache>();
 
-    // Two halves in the order `missing.rs` documents for its own pair: the
-    // query under the connection, and the `read_dir` plus one `stat` per row
-    // with it released. `Db::read` drops the guard before it returns, so the
-    // second half — 5,000 filesystem calls at ADR 0016's ceiling, on whatever
-    // drive the Library root sits on — holds nothing while the first view
-    // fetches its listing and fires fifty thumbnail requests (ADR 0039).
-    let work = match db
-        .read(thumbnails::candidates)
-        .and_then(|candidates| thumbnails::work_list(&candidates, &cache_dir.0))
-    {
+    let work = match cache.work_list(&db) {
         Ok(work) => work,
         Err(e) => {
             eprintln!("pre-generation could not read the library: {e}");
             return;
         }
     };
-    pass(&db, &work, cancel, &EventReport(app), |pending| {
-        generate_on_the_pool(app, cancel, pending)
+    pass(&work, cancel, &EventReport(app), |pending| {
+        warm_on_the_pool(app, cancel, pending)
     });
 }
 
-/// Generates one wallpaper on the pool that serves `wallpaper://`, and waits for
-/// it.
+/// Warms one wallpaper on the pool that serves `wallpaper://`, and waits for it.
 ///
 /// The pass's whole claim on the machine, and there is exactly one of these in
 /// flight at a time. Submitting is what makes an interactive request overtake
@@ -194,44 +187,35 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
 /// exit while holding the [`Pregen`] mutex, and an IPC call to Cancel or to Clear
 /// thumbnail cache queues behind it. The wallpaper left in the lane reads the
 /// flag for itself where the work starts, which is
-/// [`generate_unless_cancelled`]'s whole job.
-fn generate_on_the_pool(
+/// [`warm_unless_cancelled`]'s whole job.
+fn warm_on_the_pool(
     app: &AppHandle,
     cancel: &Arc<AtomicBool>,
-    pending: &thumbnails::Pending,
-) -> Result<Step, error::AppError> {
+    pending: &Pending,
+) -> Result<Warmed, error::AppError> {
     let handle = app.clone();
     let flag = Arc::clone(cancel);
     let pending = pending.clone();
     let answer = app.state::<ImageWorkers>().background(
         move || {
             let db = handle.state::<Db>();
-            let cache_dir = handle.state::<CacheDir>();
-            let step = generate_unless_cancelled(&db, &cache_dir.0, &flag, &pending);
-            if matches!(step, Ok(Step::Generated)) {
-                // The window ADR 0040 left open: this pass wrote files and rows
-                // without going through `serve`, so bytes in memory for this
-                // wallpaper were made from an older read of the source it has
-                // just read again. A regenerate invalidates them the same way an
-                // on-demand one does.
-                handle.state::<ImageCache>().forget(pending.wallpaper_id);
-            }
-            step
+            let cache = handle.state::<ThumbnailCache>();
+            warm_unless_cancelled(&db, &cache, &flag, &pending)
         },
         || cancel.load(Ordering::SeqCst),
     );
     match answer {
-        Some(step) => step,
+        Some(warmed) => warmed,
         // Stood down while this wallpaper waited, so the pass is not waiting for
         // it any more. It is a skip for the same reason a Rejected one is: the
         // pass came away having written nothing, and it stops at the top of its
         // next turn regardless.
-        None if cancel.load(Ordering::SeqCst) => Ok(Step::Skipped),
-        // No answer and nothing was cancelled, which in a running app means the
-        // decode panicked. The pool's worker survived it and the pass counts a
-        // failure, which ADR 0034's note then keys to these bytes — so the next
-        // pass does not spend the same panic learning the same thing.
-        None => Err(crate::serving::panicked()),
+        None if cancel.load(Ordering::SeqCst) => Ok(Warmed::Skipped),
+        // No answer and nothing was cancelled. A decode that panics is caught by
+        // [`ThumbnailCache::warm`] and noted there, so what is left is the job
+        // panicking around it, and the pool's worker survived that too. The pass
+        // counts a failure, because it came away with no thumbnail.
+        None => Err(thumbnails::panicked()),
     }
 }
 
@@ -248,16 +232,16 @@ fn generate_on_the_pool(
 ///
 /// A decode already under way is not interrupted. The `image` crate cannot be,
 /// and a partial cache is a correct cache.
-fn generate_unless_cancelled(
+fn warm_unless_cancelled(
     db: &Db,
-    cache_dir: &Path,
+    cache: &ThumbnailCache,
     cancel: &AtomicBool,
-    pending: &thumbnails::Pending,
-) -> Result<Step, error::AppError> {
+    pending: &Pending,
+) -> Result<Warmed, error::AppError> {
     if cancel.load(Ordering::SeqCst) {
-        return Ok(Step::Skipped);
+        return Ok(Warmed::Skipped);
     }
-    generate_one(db, cache_dir, pending)
+    cache.warm(db, pending)
 }
 
 /// Where a pass reports to.
@@ -314,7 +298,7 @@ impl Tally {
 /// clean prefix: fully warm, in the order the curator will reach it. The cancel
 /// flag is read between wallpapers, never inside one — and twice more around the
 /// gap between handing a wallpaper to the pool and a worker starting it, which
-/// [`generate_on_the_pool`] explains.
+/// [`warm_on_the_pool`] explains.
 ///
 /// One wallpaper at a time is the budget rather than an implementation detail.
 /// ADR 0012 gave the pass one thread of an N-core machine while the curator
@@ -322,19 +306,18 @@ impl Tally {
 /// filling the pool to finish a first launch faster is a different feature,
 /// argued on first-launch time.
 ///
-/// Where a wallpaper is generated is a parameter, for [`Report`]'s reason.
-/// Production passes [`on_the_pool`], which needs a running Tauri app; what the
-/// pass counts, the order it works in and where it stops are worth asserting
+/// Where a wallpaper is warmed is a parameter, for [`Report`]'s reason.
+/// Production passes [`warm_on_the_pool`], which needs a running Tauri app; what
+/// the pass counts, the order it works in and where it stops are worth asserting
 /// without one.
 ///
 /// An empty work list — every launch after the first — emits nothing at all,
 /// rather than flashing a finished progress bar for work that never happened.
 fn pass(
-    db: &Db,
-    work: &[thumbnails::Pending],
+    work: &[Pending],
     cancel: &AtomicBool,
     report: &impl Report,
-    generate: impl Fn(&thumbnails::Pending) -> Result<Step, error::AppError>,
+    warm: impl Fn(&Pending) -> Result<Warmed, error::AppError>,
 ) {
     if work.is_empty() {
         return;
@@ -352,7 +335,7 @@ fn pass(
             cancelled = true;
             break;
         }
-        step(db, pending, &mut tally, &generate);
+        step(pending, &mut tally, &warm);
         report.progress(Progress {
             done: tally.done(),
             total,
@@ -369,187 +352,24 @@ fn pass(
 /// One wallpaper, and the only part of the pass a test drives directly.
 ///
 /// A missing or undecodable source is counted and left behind, because one bad
-/// file must not stop a pass over the whole library. An undecodable one is also
-/// written down, so the next pass does not spend the same decode learning the
-/// same thing — see [`remember`].
+/// file must not stop a pass over the whole library. Writing down the
+/// undecodable ones, so the next pass does not spend the same decode learning
+/// the same thing, is [`ThumbnailCache::warm`]'s: the note and the work list
+/// that reads it are one module (ADR 0034).
 fn step(
-    db: &Db,
-    pending: &thumbnails::Pending,
+    pending: &Pending,
     tally: &mut Tally,
-    generate: impl Fn(&thumbnails::Pending) -> Result<Step, error::AppError>,
+    warm: impl Fn(&Pending) -> Result<Warmed, error::AppError>,
 ) {
-    match generate(pending) {
-        Ok(Step::Generated) => tally.generated += 1,
-        Ok(Step::Measured) => tally.measured += 1,
-        Ok(Step::Skipped) => tally.skipped += 1,
+    match warm(pending) {
+        Ok(Warmed::Generated) => tally.generated += 1,
+        Ok(Warmed::Measured) => tally.measured += 1,
+        Ok(Warmed::Skipped) => tally.skipped += 1,
         Err(e) => {
             eprintln!("pre-generation skipped {}: {e}", pending.source.display());
             tally.failed += 1;
-            remember(db, pending.wallpaper_id, &e);
         }
     }
-}
-
-/// Writes down a source that was read and would not decode, so the work list
-/// leaves it out until the file changes (ADR 0034).
-///
-/// Only [`error::AppError::Image`], which is the one variant that means the
-/// bytes were there and are not an image this build can decode: a zero-byte
-/// file, a download that stopped halfway, a `.jpg` that is really something
-/// else. Every other variant is either about the file being absent — ADR 0032's
-/// subject, and cheap, because it costs a `stat` rather than a decode — or about
-/// the machine, and a full disk must not permanently retire a wallpaper that is
-/// perfectly fine.
-///
-/// The mtime comes from the row's current `path` rather than from the snapshot,
-/// for [`thumbnails::still_due`]'s reason: a reject or a Restore moves the file
-/// while the pass is running. A source that cannot be `stat`ed at all is not
-/// noted, because there is nothing to say the note is about.
-///
-/// A note that cannot be written is logged and dropped. It is a cache
-/// optimisation, and the pass has already counted the failure the curator reads.
-fn remember(db: &Db, wallpaper_id: i64, error: &error::AppError) {
-    if !matches!(error, error::AppError::Image(_)) {
-        return;
-    }
-    // Three steps rather than one, with the `stat` in the middle and outside
-    // both closures (ADR 0039): where the row points now, what that file's
-    // mtime is, then the note.
-    let Some(source) = db.read(|conn| thumbnails::current_source_path(conn, wallpaper_id)) else {
-        return;
-    };
-    let Ok(source_mtime) = thumbnails::source_mtime(&source) else {
-        return;
-    };
-    let message = error.to_string();
-    db.write(|conn| {
-        if let Err(e) = thumbnails::note_failure(conn, wallpaper_id, source_mtime, &message) {
-            eprintln!("could not record an undecodable source: {e}");
-        }
-    });
-}
-
-/// Which way one wallpaper went, short of an error.
-#[derive(Debug, PartialEq, Eq)]
-enum Step {
-    Generated,
-    /// Nothing was generated: a wallpaper whose cache was already warm and that
-    /// was on the list for its pixel dimensions alone (ADR 0044). It says what
-    /// the pass did not do rather than what it wrote — a source that will not
-    /// give up its dimensions lands here too, because there is no thumbnail to
-    /// report either way.
-    ///
-    /// Apart from `Generated` because the curator's ending counts thumbnails.
-    /// A backfill over a warm library would otherwise report every wallpaper in
-    /// it as a thumbnail made, which is a number nothing on disk agrees with.
-    Measured,
-    Skipped,
-}
-
-/// Generates whichever sizes one wallpaper is short of, and records the source's
-/// pixel dimensions.
-///
-/// Three branches rather than two, because a warm wallpaper can be on the list
-/// for its dimensions alone (ADR 0044). Every branch measures, and none of them
-/// asks whether the row already has numbers: a wallpaper is only in the other
-/// two branches because its `source_mtime` stopped matching, which is the file
-/// having been rewritten, and a re-export at a different size is exactly the
-/// case where the stored dimensions have gone stale. The measurement is a header
-/// read either way, so refreshing costs a file open against a decode the pass is
-/// doing regardless.
-///
-/// Runs on a worker of [`crate::serving`]'s pool in production, which is the
-/// only place in this module that decodes anything.
-///
-/// The connection is taken for the reads and again for the writes, and is never
-/// held across a decode (ADR 0004) — the same ordering [`crate::serving`] keeps
-/// for a request that misses. Both sizes missing is the single decode
-/// [`thumbnails::generate_both`] exists for; one size missing goes through
-/// `plan` / `fulfill` / `record`, so the cached size beside it donates its
-/// pixels instead of the source being decoded a second time.
-fn generate_one(
-    db: &Db,
-    cache_dir: &Path,
-    pending: &thumbnails::Pending,
-) -> Result<Step, error::AppError> {
-    let id = pending.wallpaper_id;
-    // Where the file sits now and which way this wallpaper went, or a skip. The
-    // three branches differ in what they generate and agree on everything after,
-    // so the measurement below is written once rather than in each of them.
-    let (source, step) = match pending.missing {
-        // Nothing to generate: a warm wallpaper listed for its pixel dimensions
-        // alone, which is the whole of a library scanned before the columns
-        // existed (ADR 0044). The Status and the path are re-read the same way
-        // every other branch re-reads them, so a wallpaper rejected since the
-        // list was built is left alone here too.
-        None => {
-            let Some(source) = db.read(|conn| thumbnails::still_due(conn, pending)) else {
-                return Ok(Step::Skipped);
-            };
-            (source, Step::Measured)
-        }
-        Some(thumbnails::Missing::Both) => {
-            let Some(source) = db.read(|conn| thumbnails::still_due(conn, pending)) else {
-                return Ok(Step::Skipped);
-            };
-            let recorded = thumbnails::generate_both(id, &source, cache_dir)?;
-            db.write(|conn| {
-                for r in recorded {
-                    thumbnails::record_one(conn, id, r.size, r.width, r.height, r.source_mtime)?;
-                }
-                Ok::<(), error::AppError>(())
-            })?;
-            (source, Step::Generated)
-        }
-        Some(thumbnails::Missing::Only(size)) => {
-            // One read for both questions, which is the point: the Status the
-            // pass acts on and the path it acts on come from one view of the
-            // row. The path `still_due` answers with is the one `plan` reads for
-            // itself a line later, and the one the measurement below reads.
-            //
-            // A skip comes back as `None` rather than returning from here,
-            // because the closure cannot return from its caller. That is the
-            // interface doing its job: what leaves it is owned data.
-            let planned = db.read(|conn| match thumbnails::still_due(conn, pending) {
-                Some(source) => thumbnails::plan(conn, id, size).map(|plan| Some((plan, source))),
-                None => Ok(None),
-            })?;
-            let Some((plan, source)) = planned else {
-                return Ok(Step::Skipped);
-            };
-            let resolved = thumbnails::fulfill(&plan, cache_dir)?;
-            db.write(|conn| thumbnails::record(conn, &plan, &resolved))?;
-            (source, Step::Generated)
-        }
-    };
-    measure_and_record(db, id, &source);
-    Ok(step)
-}
-
-/// Reads one source's pixel dimensions and writes them to its row (ADR 0044).
-///
-/// The read is a file open outside the connection and the write is one
-/// statement inside it, which is ADR 0039's split — the same shape [`remember`]
-/// keeps for its `stat`.
-///
-/// A source that will not give up its dimensions is left as it was: the row
-/// keeps whatever it held, which is NULL for a wallpaper nothing has measured
-/// and the last known pair for one that has been. Overwriting a known pair with
-/// NULL would turn a file that went missing for a moment into a wallpaper the
-/// app has forgotten the size of, and a badge drawn off no dimensions is a badge
-/// nothing draws.
-///
-/// A write that fails is logged for the reason [`remember`]'s is: the pass has
-/// already done the work the curator is waiting on.
-fn measure_and_record(db: &Db, wallpaper_id: i64, source: &Path) {
-    let Some((width, height)) = crate::scanner::dimensions(source) else {
-        return;
-    };
-    db.write(|conn| {
-        if let Err(e) = crate::db::record_dimensions(conn, wallpaper_id, width, height) {
-            eprintln!("could not record pixel dimensions: {e}");
-        }
-    });
 }
 
 #[cfg(test)]
@@ -561,11 +381,11 @@ mod tests {
     use std::cell::RefCell;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
-    use thumbnails::{Missing, Pending, Size};
+    use thumbnails::{Missing, Size};
 
     /// A library the pre-generation pass can be run against: the connection
-    /// behind the mutex the pass locks, a folder of source images, and a cache
-    /// directory of its own.
+    /// behind the mutex the pass locks, a folder of source images, and the
+    /// thumbnail cache the pass warms, over a directory of its own.
     ///
     /// The supervisor thread, its join and the atomic flag are deliberately not
     /// covered here. What is worth asserting is which wallpapers the pass
@@ -573,18 +393,21 @@ mod tests {
     /// Tauri app.
     struct Library {
         db: Db,
+        thumbnails: ThumbnailCache,
         sources: tempfile::TempDir,
-        cache: tempfile::TempDir,
+        cache_dir: tempfile::TempDir,
     }
 
     impl Library {
         fn new() -> Self {
             let conn = rusqlite::Connection::open_in_memory().unwrap();
             db::init_schema(&conn).unwrap();
+            let cache_dir = tempfile::tempdir().unwrap();
             Self {
                 db: Db::new(conn),
+                thumbnails: ThumbnailCache::new(cache_dir.path().to_path_buf()),
                 sources: tempfile::tempdir().unwrap(),
-                cache: tempfile::tempdir().unwrap(),
+                cache_dir,
             }
         }
 
@@ -662,9 +485,8 @@ mod tests {
         /// What the next pass would be handed, which is the question "is this
         /// wallpaper retried" is actually asking.
         fn work_list(&self) -> Vec<i64> {
-            self.db
-                .read(thumbnails::candidates)
-                .and_then(|candidates| thumbnails::work_list(&candidates, self.cache.path()))
+            self.thumbnails
+                .work_list(&self.db)
                 .unwrap()
                 .into_iter()
                 .map(|p| p.wallpaper_id)
@@ -699,20 +521,20 @@ mod tests {
             moved
         }
 
-        /// Where a wallpaper is generated in these tests: on the calling thread,
-        /// which is what production's [`on_the_pool`] arranges for on a worker.
-        /// The pool itself is `serving`'s to test, and reaching it needs a
-        /// running Tauri app.
-        fn generate(&self) -> impl Fn(&Pending) -> Result<Step, error::AppError> + '_ {
-            |pending| generate_one(&self.db, self.cache.path(), pending)
+        /// Where a wallpaper is warmed in these tests: on the calling thread,
+        /// which is what production's [`warm_on_the_pool`] arranges for on a
+        /// worker. The pool itself is `serving`'s to test, and reaching it needs
+        /// a running Tauri app.
+        fn warm(&self) -> impl Fn(&Pending) -> Result<Warmed, error::AppError> + '_ {
+            |pending| self.thumbnails.warm(&self.db, pending)
         }
 
         fn step(&self, pending: &Pending, tally: &mut Tally) {
-            super::step(&self.db, pending, tally, self.generate());
+            super::step(pending, tally, self.warm());
         }
 
         fn pass(&self, work: &[Pending], report: &impl Report, cancel: &AtomicBool) {
-            super::pass(&self.db, work, cancel, report, self.generate());
+            super::pass(work, cancel, report, self.warm());
         }
 
         /// The wallpaper row's own pixel dimensions, which is what the pass
@@ -735,7 +557,9 @@ mod tests {
         }
 
         fn cache_file(&self, wallpaper_id: i64, size: &str) -> PathBuf {
-            self.cache.path().join(format!("{wallpaper_id}_{size}.jpg"))
+            self.cache_dir
+                .path()
+                .join(format!("{wallpaper_id}_{size}.jpg"))
         }
 
         /// The colour of a written cache file, so a test can tell which image
@@ -796,6 +620,34 @@ mod tests {
                 skipped: 0,
                 measured: 0,
             }
+        );
+    }
+
+    #[test]
+    fn a_wallpaper_the_step_generates_is_forgotten_in_memory() {
+        // The window ADR 0040 left open and #232 closed: the pass writes files
+        // and rows without going through a request, so bytes in memory for the
+        // wallpaper were made from an older read of the source it has just read
+        // again. That used to be pinned by nothing, because reaching the pass's
+        // copy of the rule needed an `AppHandle`; the rule is the thumbnail
+        // cache's now, and this is the pass's way into it.
+        let library = Library::new();
+        let pending = library.seed("held.png", 800, 400, [10, 200, 10, 255], Missing::Both);
+        let id = pending.wallpaper_id;
+        library
+            .thumbnails
+            .answer(&library.db, id, Size::Small)
+            .unwrap();
+        assert!(library.thumbnails.remembered(id, Size::Small).is_some());
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert_eq!(tally.generated, 1);
+        assert_eq!(
+            library.thumbnails.remembered(id, Size::Small),
+            None,
+            "a small made before the pass regenerated its wallpaper was still held in memory"
         );
     }
 
@@ -1363,19 +1215,13 @@ mod tests {
         let most = AtomicUsize::new(0);
         let recorder = Recorder::default();
 
-        super::pass(
-            &library.db,
-            &work,
-            &AtomicBool::new(false),
-            &recorder,
-            |pending| {
-                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                most.fetch_max(now, Ordering::SeqCst);
-                let step = generate_one(&library.db, library.cache.path(), pending);
-                in_flight.fetch_sub(1, Ordering::SeqCst);
-                step
-            },
-        );
+        super::pass(&work, &AtomicBool::new(false), &recorder, |pending| {
+            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            most.fetch_max(now, Ordering::SeqCst);
+            let warmed = library.thumbnails.warm(&library.db, pending);
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            warmed
+        });
 
         assert_eq!(
             most.load(Ordering::SeqCst),
@@ -1403,10 +1249,9 @@ mod tests {
         let pending = library.seed("queued.png", 800, 400, [7, 7, 7, 255], Missing::Both);
         let cancelled = AtomicBool::new(true);
 
-        let step =
-            generate_unless_cancelled(&library.db, library.cache.path(), &cancelled, &pending);
+        let warmed = warm_unless_cancelled(&library.db, &library.thumbnails, &cancelled, &pending);
 
-        assert_eq!(step.unwrap(), Step::Skipped);
+        assert_eq!(warmed.unwrap(), Warmed::Skipped);
         assert_eq!(library.row(pending.wallpaper_id, "medium"), None);
         assert!(!library.cache_file(pending.wallpaper_id, "medium").exists());
     }

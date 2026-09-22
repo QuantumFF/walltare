@@ -1,6 +1,45 @@
-use std::collections::HashSet;
+//! The thumbnail cache: every thumbnail the app has made, and everything it
+//! remembers about them.
+//!
+//! Four things are kept, and this module is the only one that touches any of
+//! them: a JPEG per wallpaper and size in the cache directory, a `thumbnails`
+//! row saying which source mtime that JPEG was made from, a `thumbnail_failures`
+//! note for a source that would not decode (ADR 0034), and the bytes of the last
+//! few hundred thumbnails in memory (ADR 0040).
+//!
+//! One type, [`ThumbnailCache`], and a handful of operations on it:
+//!
+//! - [`ThumbnailCache::answer`] — one wallpaper at one size, for `serving`.
+//! - [`ThumbnailCache::warm`] — one wallpaper the pre-generation pass reached.
+//! - [`ThumbnailCache::work_list`] — which wallpapers the pass owes something.
+//! - [`ThumbnailCache::clear`] — Settings' Clear thumbnail cache.
+//! - [`ThumbnailCache::size`] — the Settings readout.
+//!
+//! Everything that has an order lives behind them. ADR 0004's three phases, with
+//! ADR 0039's rule that the connection is taken for the queries and released
+//! across the image work. The rule that a regenerate drops the wallpaper's bytes
+//! in memory (ADR 0040). The order a Clear goes in. Which failures get written
+//! down, beside the work list that decides what a note means.
+//!
+//! Before [#280](https://github.com/QuantumFF/walltare/issues/280) those were
+//! seventeen public functions, and the three callers put them in order
+//! themselves: `serving` and `pregen` each sequenced the phases and each dropped
+//! the bytes in memory on a regenerate, and `lib.rs` alone knew the order of a
+//! Clear. A rule written in two places is a rule one of them breaks, and the
+//! pregen copy of the invalidation had no test, because reaching it needed an
+//! `AppHandle`. Every operation here takes a [`Db`] and nothing from Tauri, so an
+//! in-memory database and a temp directory are the whole of a test's setup.
+//!
+//! What stays outside is what is not about the cache. `serving` keeps the worker
+//! pool, the flight table and the mapping from an answer to an HTTP response;
+//! `pregen` keeps the run's lifecycle, its tally and its report. Neither holds a
+//! connection or names a cache file.
+
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::UNIX_EPOCH;
 
 use image::codecs::jpeg::JpegEncoder;
@@ -8,12 +47,33 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ExtendedColorType, ImageEncoder, ImageReader, Rgb, RgbImage};
 use rusqlite::Connection;
 
-use crate::db::Status;
+use crate::db::{self, Status};
 use crate::error::AppError;
+use crate::Db;
 
-pub const SMALL_MAX_WIDTH: u32 = 400;
-pub const MEDIUM_MAX_WIDTH: u32 = 1920;
+const SMALL_MAX_WIDTH: u32 = 400;
+const MEDIUM_MAX_WIDTH: u32 = 1920;
 const JPEG_QUALITY: u8 = 85;
+
+/// How many thumbnails [`ImageCache`] holds at once.
+///
+/// An entry count, and it bounds memory because an entry's size is bounded:
+/// ADR 0012 measured a `small` at about 31KB and a `medium` at about 383KB, and
+/// both are capped by a maximum width — 400px and 1920px — rather than by the
+/// source. So 256 entries is about 8MB of `small`s, which is the shape a scroll
+/// through Library or Review produces, and 98MB in the pathological case of
+/// nothing but `medium`s, which takes 256 lightbox steps with no revisit to
+/// reach. Next to the 2GB of disk cache ADR 0016 already allows at its ceiling,
+/// the first number is nothing and the second is affordable.
+///
+/// It is sized to hold more than the views can show. Review mounts fifty cards
+/// and Library's virtual window with ADR 0016's one row of overscan is around
+/// thirty five, so 256 covers both grids at once plus several screens of
+/// scrollback and the lightbox's `medium`s — a wheel gesture down and back up
+/// hits memory the whole way.
+///
+/// `full` is not held at all; [`ImageCache::store`] says why.
+const IMAGE_CACHE_ENTRIES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Size {
@@ -63,20 +123,322 @@ impl Size {
     }
 }
 
+/// The thumbnail cache, on disk, in the database and in memory.
+///
+/// Held as app state for the life of the process, beside the [`Db`] every
+/// operation takes. The connection is a parameter rather than a field because it
+/// is the app's one connection and not this module's: the Soft reject, voting
+/// and the listings share it, and ADR 0039's closures are how anything reaches
+/// it.
+pub struct ThumbnailCache {
+    dir: PathBuf,
+    memory: ImageCache,
+}
+
+/// Which way one wallpaper went when the pass warmed it, short of an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Warmed {
+    Generated,
+    /// Nothing was generated: a wallpaper whose cache was already warm and that
+    /// was on the list for its pixel dimensions alone (ADR 0044). It says what
+    /// the pass did not do rather than what it wrote — a source that will not
+    /// give up its dimensions lands here too, because there is no thumbnail to
+    /// report either way.
+    ///
+    /// Apart from `Generated` because the curator's ending counts thumbnails.
+    /// A backfill over a warm library would otherwise report every wallpaper in
+    /// it as a thumbnail made, which is a number nothing on disk agrees with.
+    Measured,
+    /// Left alone: rejected since the list was built, or gone from the table.
+    Skipped,
+}
+
+impl ThumbnailCache {
+    /// A cache over one directory, with nothing yet in memory.
+    ///
+    /// The directory need not exist. Nothing is cached before the first
+    /// thumbnail is written, and writing one creates it.
+    pub fn new(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            memory: ImageCache::new(IMAGE_CACHE_ENTRIES),
+        }
+    }
+
+    /// The bytes for one wallpaper at one size if they are in memory, and
+    /// nothing else.
+    ///
+    /// The one operation that may run on the thread Tauri calls the protocol
+    /// handler on, which is the UI thread. It takes a mutex held only for a hash
+    /// lookup, and copies nothing: never a `stat`, never a file read, never a
+    /// decode, and never a lock any of those are holding (ADR 0040).
+    pub fn remembered(&self, wallpaper_id: i64, size: Size) -> Option<Arc<Vec<u8>>> {
+        self.memory.get(wallpaper_id, size)
+    }
+
+    /// One wallpaper at one size, as JPEG bytes: from memory, from the cache
+    /// file, or generated.
+    ///
+    /// Never on the UI thread. A miss decodes, and a decode there freezes the
+    /// window for as long as it takes (ADR 0004).
+    pub fn answer(&self, db: &Db, wallpaper_id: i64, size: Size) -> Result<Arc<Vec<u8>>, AppError> {
+        self.answer_with(db, wallpaper_id, size, fulfill)
+    }
+
+    /// [`ThumbnailCache::answer`], with phase two as a parameter.
+    ///
+    /// Production always passes [`fulfill`]. A test passes a phase two that
+    /// asserts the connection is free before it decodes, which is the half of
+    /// ADR 0039's rule no type can hold: a phase one whose guard survived into a
+    /// temporary would compile, return the right bytes, and quietly serialize
+    /// every request in the app behind one decode.
+    fn answer_with<F>(
+        &self,
+        db: &Db,
+        wallpaper_id: i64,
+        size: Size,
+        fulfill: F,
+    ) -> Result<Arc<Vec<u8>>, AppError>
+    where
+        F: FnOnce(&Plan, &Path) -> Result<Resolved, AppError>,
+    {
+        // Asked again here, having been asked on the UI thread: a request that
+        // queued behind an identical one may have been overtaken by its answer,
+        // which under a stack is the common case rather than the rare one.
+        if let Some(bytes) = self.memory.get(wallpaper_id, size) {
+            return Ok(bytes);
+        }
+        let plan = db.read(|conn| {
+            let (_, source) = wallpaper_row(conn, wallpaper_id)?;
+            plan(conn, wallpaper_id, size, source)
+        })?;
+        let resolved = self.fulfill_and_record(db, &plan, fulfill)?;
+        let bytes = Arc::new(resolved.thumbnail.bytes);
+        self.memory.store(wallpaper_id, size, Arc::clone(&bytes));
+        Ok(bytes)
+    }
+
+    /// Phases two and three, and what a regenerate owes the memory tier.
+    ///
+    /// Shared by [`ThumbnailCache::answer`] and the one-size case of
+    /// [`ThumbnailCache::warm`], which differ only in their phase one: a request
+    /// reads the row and fails on a missing one, and the pass re-checks the
+    /// Status the list saw and skips.
+    fn fulfill_and_record<F>(&self, db: &Db, plan: &Plan, fulfill: F) -> Result<Resolved, AppError>
+    where
+        F: FnOnce(&Plan, &Path) -> Result<Resolved, AppError>,
+    {
+        let resolved = fulfill(plan, &self.dir)?;
+        db.write(|conn| record(conn, plan, &resolved))?;
+        if resolved.record_mtime.is_some() {
+            // These bytes were made from the source as it is now, so every other
+            // size of this wallpaper in memory was made from an older read of it.
+            // The source's mtime moving is the only thing that invalidates a
+            // thumbnail (ADR 0016), and a regenerate is this module hearing that
+            // it moved — for one size, about a file all the sizes share.
+            //
+            // A first generation of a second size lands here too, and drops a
+            // sibling that was in fact still fresh. That costs one cache-file read
+            // the next time the sibling is asked for; keeping a stale one would
+            // show the curator the wrong picture until it fell out of the cache.
+            self.memory.forget(plan.wallpaper_id);
+        }
+        Ok(resolved)
+    }
+
+    /// Generates whichever sizes one listed wallpaper is short of, records the
+    /// source's pixel dimensions, and writes down a source that would not decode.
+    ///
+    /// Three branches rather than two, because a warm wallpaper can be on the list
+    /// for its dimensions alone (ADR 0044). Every branch measures, and none of them
+    /// asks whether the row already has numbers: a wallpaper is only in the other
+    /// two branches because its `source_mtime` stopped matching, which is the file
+    /// having been rewritten, and a re-export at a different size is exactly the
+    /// case where the stored dimensions have gone stale. The measurement is a header
+    /// read either way, so refreshing costs a file open against a decode the pass is
+    /// doing regardless.
+    ///
+    /// The connection is taken for the reads and again for the writes, and is never
+    /// held across a decode (ADR 0004) — the same phases a request that misses goes
+    /// through. Both sizes missing is the single decode [`generate_both`] exists
+    /// for; one size missing goes through [`plan`], [`fulfill`] and [`record`], so
+    /// the cached size beside it donates its pixels instead of the source being
+    /// decoded a second time. Either way the bytes in memory for this wallpaper go
+    /// before this returns, so the pass cannot regenerate behind the memory tier's
+    /// back (ADR 0040).
+    ///
+    /// A failure is the caller's to count and this module's to remember: an
+    /// undecodable source is noted against the mtime it failed at, which is what
+    /// [`ThumbnailCache::work_list`] reads to leave it out (ADR 0034). A decode
+    /// that panics is caught here and treated as one that failed, because the
+    /// `image` crate panicking on somebody's malformed file is a fact about those
+    /// bytes, and the next pass should not spend the same panic learning it.
+    pub fn warm(&self, db: &Db, pending: &Pending) -> Result<Warmed, AppError> {
+        let warmed = std::panic::catch_unwind(AssertUnwindSafe(|| self.warm_one(db, pending)))
+            .unwrap_or_else(|_| Err(panicked()));
+        if let Err(e) = &warmed {
+            remember(db, pending.wallpaper_id, e);
+        }
+        warmed
+    }
+
+    fn warm_one(&self, db: &Db, pending: &Pending) -> Result<Warmed, AppError> {
+        let id = pending.wallpaper_id;
+        // Where the file sits now and which way this wallpaper went, or a skip. The
+        // three branches differ in what they generate and agree on everything after,
+        // so the measurement below is written once rather than in each of them.
+        let (source, warmed) = match pending.missing {
+            // Nothing to generate: a warm wallpaper listed for its pixel dimensions
+            // alone, which is the whole of a library scanned before the columns
+            // existed (ADR 0044). The Status and the path are re-read the same way
+            // every other branch re-reads them, so a wallpaper rejected since the
+            // list was built is left alone here too.
+            None => {
+                let Some(source) = db.read(|conn| still_due(conn, pending))? else {
+                    return Ok(Warmed::Skipped);
+                };
+                (source, Warmed::Measured)
+            }
+            Some(Missing::Both) => {
+                let Some(source) = db.read(|conn| still_due(conn, pending))? else {
+                    return Ok(Warmed::Skipped);
+                };
+                let recorded = generate_both(id, &source, &self.dir)?;
+                db.write(|conn| {
+                    recorded.iter().try_for_each(|r| {
+                        record_one(conn, id, r.size, r.width, r.height, r.source_mtime)
+                    })
+                })?;
+                // Both sizes were just made from the source as it is now, for
+                // [`ThumbnailCache::fulfill_and_record`]'s reason.
+                self.memory.forget(id);
+                (source, Warmed::Generated)
+            }
+            Some(Missing::Only(size)) => {
+                // One read for both questions, which is the point: the Status the
+                // pass acts on and the path it acts on come from one view of the
+                // row, and the path is the one `plan` is handed.
+                //
+                // A skip comes back as `None` rather than returning from here,
+                // because the closure cannot return from its caller. That is the
+                // interface doing its job: what leaves it is owned data.
+                let planned = db.read(|conn| match still_due(conn, pending)? {
+                    Some(source) => {
+                        plan(conn, id, size, source.clone()).map(|plan| Some((plan, source)))
+                    }
+                    None => Ok(None),
+                })?;
+                let Some((plan, source)) = planned else {
+                    return Ok(Warmed::Skipped);
+                };
+                self.fulfill_and_record(db, &plan, fulfill)?;
+                (source, Warmed::Generated)
+            }
+        };
+        measure_and_record(db, id, &source);
+        Ok(warmed)
+    }
+
+    /// Every wallpaper the pre-generation pass would warm, in the order it would
+    /// reach them.
+    ///
+    /// Two halves in the order `missing.rs` documents for its own pair: the query
+    /// under the connection, and the `read_dir` plus one `stat` per row with it
+    /// released. `Db::read` drops the guard before it returns, so the second half
+    /// — 5,000 filesystem calls at ADR 0016's ceiling, on whatever drive the
+    /// Library root sits on — holds nothing while the first view fetches its
+    /// listing and fires fifty thumbnail requests (ADR 0039).
+    pub fn work_list(&self, db: &Db) -> Result<Vec<Pending>, AppError> {
+        let candidates = db.read(candidates)?;
+        work_list(&candidates, &self.dir)
+    }
+
+    /// Throws the whole cache away: the files, then the rows and the failure
+    /// notes, then the bytes in memory.
+    ///
+    /// The order is the whole of this function, and it is here rather than in its
+    /// caller so there is one place to break it. The caller stands any running
+    /// pass down first and does not wait for it, because the flag is read between
+    /// wallpapers and joining would block the IPC thread for up to one decode
+    /// (ADR 0012), so a pass can still finish the wallpaper it is on while this
+    /// runs. The pass writes a wallpaper's files and only then records its rows,
+    /// so removing them in the same order leaves the row delete last, and every
+    /// row the pass manages to write before that instant goes with it. Reversed,
+    /// a pass recording a row after the `DELETE` and having its files swept a
+    /// moment later would leave a dangling row for almost every way the two can
+    /// interleave.
+    ///
+    /// Two residues survive the narrow windows that remain, and the app already
+    /// handles both: a file with no row is regenerated on demand and relisted by
+    /// the work list, and a row with no file is exactly what [`fulfill`] and the
+    /// work list both read as missing. What cannot happen is a row promising
+    /// bytes that differ from the file beside it, because nothing records a row
+    /// for a file it did not just write.
+    ///
+    /// The bytes in memory go last and go regardless of whether the rows did. A
+    /// request that was mid-flight through the first two can still have stored
+    /// bytes, and a curator who asked for the cache to be thrown away and then
+    /// saw the same thumbnails come back would have been told the button does not
+    /// work (ADR 0040).
+    ///
+    /// The failure notes go with the rows, which makes Clear thumbnail cache the
+    /// one control that gives an undecodable source another go — the curator
+    /// asking for the whole cache to be rebuilt is asking for that too
+    /// (ADR 0034).
+    ///
+    /// Emptying the directory is up to 10,000 unlinks at ADR 0016's ceiling and
+    /// takes no connection, so the curator's grid keeps being served while it
+    /// happens (ADR 0039). The directory itself stays, and nothing restarts:
+    /// clearing is a rebuild the next launch pays for rather than a way to
+    /// reclaim disk (ADR 0012).
+    pub fn clear(&self, db: &Db) -> Result<(), AppError> {
+        clear_cache_files(&self.dir)?;
+        let forgotten = db.write(forget_thumbnails);
+        self.memory.forget_all();
+        forgotten
+    }
+
+    /// How much disk the cache is holding, so 830MB under `app_data` is a number
+    /// the curator can read rather than invisible (ADR 0012).
+    ///
+    /// One `read_dir` and one `metadata` per entry: 172 stats on the live library
+    /// and about 10,000 at ADR 0016's five-thousand-wallpaper ceiling. That is why
+    /// ADR 0020 reads it on mount, on `pregen-complete` and after a clear, and
+    /// never per progress event.
+    ///
+    /// Nothing is capped and nothing is evicted, so this answers a question rather
+    /// than feeding a policy: the cache is bounded by the library at two files per
+    /// wallpaper, which is not the shape an LRU has, and an eviction rule would
+    /// fight the pre-generation pass directly (ADR 0012).
+    pub fn size(&self) -> Result<CacheSize, AppError> {
+        cache_size(&self.dir)
+    }
+}
+
+/// What image work is answered with when it panicked rather than finished.
+///
+/// One sentence in one place, because three places can hear it: a follower in
+/// `serving` gets it when the request it waited on panicked, [`ThumbnailCache::warm`]
+/// notes it against the source, and the pre-generation pass hears it when the
+/// pool came back with nothing.
+pub fn panicked() -> AppError {
+    AppError::Image("generating the thumbnail panicked".to_string())
+}
+
 #[derive(Debug)]
-pub struct Thumbnail {
-    pub bytes: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
+struct Thumbnail {
+    bytes: Vec<u8>,
+    width: u32,
+    height: u32,
 }
 
 /// Everything the resolver needs from the database before it can do any work.
 ///
-/// Splitting this out lets the caller release the connection lock before
-/// [`fulfill`] decodes and re-encodes the image, which for a 4K source is
-/// hundreds of milliseconds of CPU that would otherwise block every other
-/// command and every other image request.
-pub struct Plan {
+/// Splitting this out lets the connection be released before [`fulfill`]
+/// decodes and re-encodes the image, which for a 4K source is hundreds of
+/// milliseconds of CPU that would otherwise block every other command and every
+/// other image request.
+struct Plan {
     wallpaper_id: i64,
     size: Size,
     source: PathBuf,
@@ -90,10 +452,23 @@ pub struct Plan {
 }
 
 /// A resolved thumbnail, plus the mtime to [`record`] when it was regenerated.
-pub struct Resolved {
-    pub thumbnail: Thumbnail,
+struct Resolved {
+    thumbnail: Thumbnail,
     /// `Some` only when freshly generated, meaning the row needs upserting.
-    pub record_mtime: Option<i64>,
+    record_mtime: Option<i64>,
+}
+
+/// Where a wallpaper's row says its file is, and its Status — the one read of
+/// the `wallpapers` table this module makes.
+///
+/// Three callers used to carry a copy of this query each, and one of them its
+/// own `QueryReturnedNoRows` closure. It goes through [`db::get_wallpaper`]
+/// instead, which is the crate's one answer for a missing row (ADR 0025): a
+/// request for a wallpaper that is not there is a `NotFound`, and a caller that
+/// has something better to do with one — skip it — matches on that.
+fn wallpaper_row(conn: &Connection, wallpaper_id: i64) -> Result<(Status, PathBuf), AppError> {
+    let row = db::get_wallpaper(conn, wallpaper_id)?;
+    Ok((row.status, PathBuf::from(row.path)))
 }
 
 /// Phase 1 — the only part that touches the database before the image work.
@@ -105,17 +480,15 @@ pub struct Resolved {
 /// three or four statements per request was time no other request could use
 /// (ADR 0039). The cache is per connection and there is one connection, so the
 /// compiles happen once for the life of the process.
-pub fn plan(conn: &Connection, wallpaper_id: i64, size: Size) -> Result<Plan, AppError> {
-    let source: String = conn
-        .prepare_cached("SELECT path FROM wallpapers WHERE id = ?1")?
-        .query_row([wallpaper_id], |row| row.get::<_, String>(0))
-        .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                AppError::NotFound(format!("no wallpaper with id {wallpaper_id}"))
-            }
-            other => other.into(),
-        })?;
-
+///
+/// The source is handed in rather than read here, because both callers have
+/// just read the row for reasons of their own.
+fn plan(
+    conn: &Connection,
+    wallpaper_id: i64,
+    size: Size,
+    source: PathBuf,
+) -> Result<Plan, AppError> {
     let cached = match conn
         .prepare_cached(
             "SELECT width, height, source_mtime FROM thumbnails
@@ -142,7 +515,7 @@ pub fn plan(conn: &Connection, wallpaper_id: i64, size: Size) -> Result<Plan, Ap
     Ok(Plan {
         wallpaper_id,
         size,
-        source: PathBuf::from(source),
+        source,
         cached,
         donor,
     })
@@ -183,7 +556,7 @@ fn find_donor(
 
 /// Phase 2 — no database access. Serves the cache file when it is still fresh,
 /// otherwise decodes, downscales and re-encodes the source.
-pub fn fulfill(plan: &Plan, cache_dir: &Path) -> Result<Resolved, AppError> {
+fn fulfill(plan: &Plan, cache_dir: &Path) -> Result<Resolved, AppError> {
     let source_mtime = source_mtime(&plan.source)?;
     let cache_path = cache_path(cache_dir, plan.wallpaper_id, plan.size);
 
@@ -241,7 +614,7 @@ fn decode_donor(plan: &Plan, cache_dir: &Path, source_mtime: i64) -> Option<Dyna
 }
 
 /// Phase 3 — records a freshly generated thumbnail. A no-op for a cache hit.
-pub fn record(conn: &Connection, plan: &Plan, resolved: &Resolved) -> Result<(), AppError> {
+fn record(conn: &Connection, plan: &Plan, resolved: &Resolved) -> Result<(), AppError> {
     let Some(source_mtime) = resolved.record_mtime else {
         return Ok(());
     };
@@ -262,7 +635,7 @@ pub fn record(conn: &Connection, plan: &Plan, resolved: &Resolved) -> Result<(),
 /// missing, and it never holds a `Resolved` because it returns no JPEG bytes.
 /// Both paths write the row the same way, so the write lives here rather than
 /// twice.
-pub fn record_one(
+fn record_one(
     conn: &Connection,
     wallpaper_id: i64,
     size: Size,
@@ -289,11 +662,11 @@ pub fn record_one(
 /// would mean carrying a megabyte per wallpaper through a loop over the whole
 /// library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Recorded {
-    pub size: Size,
-    pub width: u32,
-    pub height: u32,
-    pub source_mtime: i64,
+struct Recorded {
+    size: Size,
+    width: u32,
+    height: u32,
+    source_mtime: i64,
 }
 
 /// Writes both pre-generated sizes off a single decode of the source, medium
@@ -308,7 +681,7 @@ pub struct Recorded {
 ///
 /// The returned pair is in generation order, medium then small. Recording is
 /// the caller's, so the connection is never held across the decode (ADR 0004).
-pub fn generate_both(
+fn generate_both(
     wallpaper_id: i64,
     source: &Path,
     cache_dir: &Path,
@@ -353,71 +726,68 @@ fn write_size(
     })
 }
 
-/// The three phases back to back, for callers that already hold the connection
-/// for the whole operation. Production goes through the phases directly so the
-/// lock is released across the decode; this exists for the unit tests.
-#[cfg(test)]
-pub fn resolve(
-    conn: &Connection,
-    cache_dir: &Path,
-    wallpaper_id: i64,
-    size: Size,
-) -> Result<Thumbnail, AppError> {
-    let plan = plan(conn, wallpaper_id, size)?;
-    let resolved = fulfill(&plan, cache_dir)?;
-    record(conn, &plan, &resolved)?;
-    Ok(resolved.thumbnail)
-}
-
-/// Throws away one wallpaper's cache files — the single-wallpaper half of
-/// [`clear_cache_files`], and the first of the three a purge is made of.
+/// Reads one source's pixel dimensions and writes them to its row (ADR 0044).
 ///
-/// Nothing in production calls a purge, which is why the `dead_code` allows are
-/// here: the soft reject used to, and stopped, because a Rejected wallpaper is
-/// now shown in the library page and can be restored, so its cache is worth
-/// keeping (ADR 0012). Both halves stay because the single-wallpaper case of
-/// what Settings clears is worth having spelled out.
+/// The read is a file open outside the connection and the write is one
+/// statement inside it, which is ADR 0039's split — the same shape [`remember`]
+/// keeps for its `stat`.
 ///
-/// This was one function doing rows and then files under one connection until
-/// [#228](https://github.com/QuantumFF/walltare/issues/228), and ADR 0039
-/// recorded that whoever gave it a caller owed it two halves. It got a caller in
-/// a test rather than in production, which is enough: a test that has to hold
-/// the connection across three `remove_file`s to say what a purge does is a test
-/// that teaches the shape ADR 0039 forbids.
+/// A source that will not give up its dimensions is left as it was: the row
+/// keeps whatever it held, which is NULL for a wallpaper nothing has measured
+/// and the last known pair for one that has been. Overwriting a known pair with
+/// NULL would turn a file that went missing for a moment into a wallpaper the
+/// app has forgotten the size of, and a badge drawn off no dimensions is a badge
+/// nothing draws.
 ///
-/// The order across the three is [`clear_cache_files`]'s, for its reasons: files
-/// first, then the rows, and the bytes the serving module holds in memory last —
-/// a pass or a request that is mid-flight can still write a file or record a row
-/// after this returns, and each residue is one the app already reads as missing.
-#[allow(dead_code)]
-pub fn purge_cache_files(cache_dir: &Path, wallpaper_id: i64) -> Result<(), AppError> {
-    for size in [Size::Small, Size::Medium, Size::Full] {
-        match std::fs::remove_file(cache_path(cache_dir, wallpaper_id, size)) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+/// A write that fails is logged for the reason [`remember`]'s is: the pass has
+/// already done the work the curator is waiting on.
+fn measure_and_record(db: &Db, wallpaper_id: i64, source: &Path) {
+    let Some((width, height)) = crate::scanner::dimensions(source) else {
+        return;
+    };
+    db.write(|conn| {
+        if let Err(e) = db::record_dimensions(conn, wallpaper_id, width, height) {
+            eprintln!("could not record pixel dimensions: {e}");
         }
-    }
-    Ok(())
+    });
 }
 
-/// Forgets one wallpaper's thumbnail rows — the database half of a purge, and
-/// the single-wallpaper case of [`forget_thumbnails`].
+/// Writes down a source that was read and would not decode, so the work list
+/// leaves it out until the file changes (ADR 0034).
 ///
-/// Runs after [`purge_cache_files`]. The failure note goes with the rows for the
-/// reason [`forget_thumbnails`] gives: a purge asks for this wallpaper's cache to
-/// be rebuilt, and an undecodable source gets another go at it (ADR 0034).
-#[allow(dead_code)]
-pub fn purge_thumbnails(conn: &Connection, wallpaper_id: i64) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM thumbnails WHERE wallpaper_id = ?1",
-        [wallpaper_id],
-    )?;
-    conn.execute(
-        "DELETE FROM thumbnail_failures WHERE wallpaper_id = ?1",
-        [wallpaper_id],
-    )?;
-    Ok(())
+/// Only [`AppError::Image`], which is the one variant that means the bytes were
+/// there and are not an image this build can decode: a zero-byte file, a
+/// download that stopped halfway, a `.jpg` that is really something else. Every
+/// other variant is either about the file being absent — ADR 0032's subject, and
+/// cheap, because it costs a `stat` rather than a decode — or about the machine,
+/// and a full disk must not permanently retire a wallpaper that is perfectly
+/// fine.
+///
+/// Three steps rather than one, with the `stat` in the middle and outside both
+/// closures (ADR 0039): where the row points now, what that file's mtime is,
+/// then the note. The path comes from the row rather than from the work list's
+/// snapshot, for [`still_due`]'s reason: a reject or a Restore moves the file
+/// while the pass is running. A source that cannot be `stat`ed at all is not
+/// noted, because there is nothing to say the note is about.
+///
+/// A note that cannot be written is logged and dropped. It is a cache
+/// optimisation, and the pass has already counted the failure the curator reads.
+fn remember(db: &Db, wallpaper_id: i64, error: &AppError) {
+    if !matches!(error, AppError::Image(_)) {
+        return;
+    }
+    let Ok((_, source)) = db.read(|conn| wallpaper_row(conn, wallpaper_id)) else {
+        return;
+    };
+    let Ok(source_mtime) = source_mtime(&source) else {
+        return;
+    };
+    let message = error.to_string();
+    db.write(|conn| {
+        if let Err(e) = note_failure(conn, wallpaper_id, source_mtime, &message) {
+            eprintln!("could not record an undecodable source: {e}");
+        }
+    });
 }
 
 /// How much disk the thumbnail cache is holding.
@@ -430,19 +800,7 @@ pub struct CacheSize {
     pub files: u64,
 }
 
-/// Counts the cache directory, so 830MB under `app_data` is a number the
-/// curator can read rather than invisible (ADR 0012).
-///
-/// One `read_dir` and one `metadata` per entry: 172 stats on the live library
-/// and about 10,000 at ADR 0016's five-thousand-wallpaper ceiling. That is why
-/// ADR 0020 reads it on mount, on `pregen-complete` and after a clear, and
-/// never per progress event.
-///
-/// Nothing is capped and nothing is evicted, so this answers a question rather
-/// than feeding a policy: the cache is bounded by the library at two files per
-/// wallpaper, which is not the shape an LRU has, and an eviction rule would
-/// fight the pre-generation pass directly (ADR 0012).
-pub fn cache_size(cache_dir: &Path) -> Result<CacheSize, AppError> {
+fn cache_size(cache_dir: &Path) -> Result<CacheSize, AppError> {
     let entries = match std::fs::read_dir(cache_dir) {
         Ok(entries) => entries,
         // Nothing cached yet, which is a size rather than a failure.
@@ -462,35 +820,12 @@ pub fn cache_size(cache_dir: &Path) -> Result<CacheSize, AppError> {
     Ok(size)
 }
 
-/// Empties the cache directory — the first half of throwing the whole cache
-/// away, and the half that touches the disk.
+/// Empties the cache directory — the half of [`ThumbnailCache::clear`] that
+/// touches the disk, and the first.
 ///
-/// Runs before [`forget_thumbnails`], and the order is the whole reason these
-/// are two functions rather than one. The caller cancels any running pass
-/// first. It does not wait for it, because the flag is read between wallpapers
-/// and joining would block the IPC thread for up to one decode (ADR 0012), so a
-/// pass can still finish the wallpaper it is on while this runs. The pass writes
-/// a wallpaper's files and only then records its rows, so removing them in the
-/// same order leaves the row delete last, and every row the pass manages to
-/// write before that instant goes with it. Reversed, a pass recording a row
-/// after the `DELETE` and having its files swept a moment later would leave a
-/// dangling row for almost every way the two can interleave.
-///
-/// Two residues survive the narrow windows that remain, and the app already
-/// handles both: a file with no row is regenerated on demand and relisted by
-/// [`work_list`], and a row with no file is exactly what [`fulfill`] and
-/// [`work_list`] both read as missing. What cannot happen is a row promising
-/// bytes that differ from the file beside it, because the pass never records a
-/// row for a file it did not just write.
-///
-/// The directory itself stays, and nothing restarts. Clearing is a rebuild the
-/// next launch pays for rather than a way to reclaim disk (ADR 0012).
-///
-/// It takes no `Connection`, which is what lets `clear_cache` hold the
-/// connection for the `DELETE`s alone: this is up to 10,000 unlinks at
-/// ADR 0016's ceiling, and the curator is free to keep scrolling while they
-/// happen (ADR 0039).
-pub fn clear_cache_files(cache_dir: &Path) -> Result<(), AppError> {
+/// It takes no `Connection`, which is what lets the clear hold the connection
+/// for the `DELETE`s alone (ADR 0039).
+fn clear_cache_files(cache_dir: &Path) -> Result<(), AppError> {
     match std::fs::read_dir(cache_dir) {
         Ok(entries) => {
             for entry in entries {
@@ -513,16 +848,9 @@ pub fn clear_cache_files(cache_dir: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Forgets every cached thumbnail — the second half, and the database one.
-///
-/// Runs after [`clear_cache_files`], for the ordering that function's doc sets
-/// out, and it is the caller's job to keep them in that order: `clear_cache` in
-/// `lib.rs` is the only one, and says so.
-///
-/// The failure notes go with the rows, which makes Clear thumbnail cache the one
-/// control that gives an undecodable source another go — the curator asking for
-/// the whole cache to be rebuilt is asking for that too (ADR 0034).
-pub fn forget_thumbnails(conn: &Connection) -> Result<(), AppError> {
+/// Forgets every cached thumbnail and every failure note — the database half of
+/// [`ThumbnailCache::clear`], and the second.
+fn forget_thumbnails(conn: &Connection) -> Result<(), AppError> {
     conn.execute("DELETE FROM thumbnails", [])?;
     conn.execute("DELETE FROM thumbnail_failures", [])?;
     Ok(())
@@ -535,11 +863,7 @@ pub fn forget_thumbnails(conn: &Connection) -> Result<(), AppError> {
 /// `thumbnails` rows already keep: a file the curator has since re-exported has
 /// a new mtime, the note stops applying, and the wallpaper rejoins the work
 /// list. So this suppresses a decode rather than a wallpaper (ADR 0034).
-///
-/// Only a source that was *there and unreadable as an image* is noted. A source
-/// that is not on disk has no mtime to key on, costs a `stat` rather than a
-/// decode, and is ADR 0032's subject rather than this one's.
-pub fn note_failure(
+fn note_failure(
     conn: &Connection,
     wallpaper_id: i64,
     source_mtime: i64,
@@ -555,24 +879,6 @@ pub fn note_failure(
         rusqlite::params![wallpaper_id, source_mtime, message],
     )?;
     Ok(())
-}
-
-/// Where a wallpaper's file sits now, or `None` when the row is gone.
-///
-/// [`note_failure`]'s caller keys its note on this file's mtime, and reads the
-/// path from the row rather than from the work list's snapshot for
-/// [`still_due`]'s reason: a reject or a Restore moves the file while the pass
-/// is running. The `stat` is [`source_mtime`]'s and happens outside, so the
-/// note costs two short queries rather than one query with a filesystem call in
-/// the middle of it (ADR 0039).
-pub fn current_source_path(conn: &Connection, wallpaper_id: i64) -> Option<PathBuf> {
-    conn.query_row(
-        "SELECT path FROM wallpapers WHERE id = ?1",
-        [wallpaper_id],
-        |row| row.get::<_, String>(0),
-    )
-    .ok()
-    .map(PathBuf::from)
 }
 
 /// Which of the two pre-generated sizes a wallpaper is short of.
@@ -595,9 +901,9 @@ pub enum Missing {
 pub struct Pending {
     pub wallpaper_id: i64,
     /// Where the file sat when the list was built, which is what the freshness
-    /// check `stat`ed. A reject or a Restore rewrites `path`, so the pass
-    /// re-reads the row under its own lock and generates from what it finds
-    /// there rather than from this copy.
+    /// check `stat`ed. A reject or a Restore rewrites `path`, so
+    /// [`ThumbnailCache::warm`] re-reads the row under its own lock and
+    /// generates from what it finds there rather than from this copy.
     pub source: PathBuf,
     /// The Status the list saw, for the pass to compare the row against.
     ///
@@ -624,19 +930,19 @@ pub struct Pending {
 /// [`candidates`] hand the whole library over and be finished with the
 /// connection before the first `stat` (ADR 0039).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Candidate {
-    pub wallpaper_id: i64,
+struct Candidate {
+    wallpaper_id: i64,
     /// Where the row says the file is.
-    pub source: PathBuf,
-    pub status: Status,
+    source: PathBuf,
+    status: Status,
     /// The `source_mtime` the `small` was recorded at, if it has a row.
-    pub small_mtime: Option<i64>,
+    small_mtime: Option<i64>,
     /// The same for the `medium`.
-    pub medium_mtime: Option<i64>,
+    medium_mtime: Option<i64>,
     /// The mtime an undecodable source was noted at, if one was (ADR 0034).
-    pub failed_mtime: Option<i64>,
+    failed_mtime: Option<i64>,
     /// Whether the row already carries the source's pixel dimensions (ADR 0044).
-    pub dimensions_known: bool,
+    dimensions_known: bool,
 }
 
 /// Every wallpaper the pass might owe something to, in the order it would reach
@@ -659,7 +965,7 @@ pub struct Candidate {
 /// ADR 0016's 5,000-wallpaper ceiling the second half is 5,000 `stat` calls, and
 /// making them under the connection mutex queues every command and every
 /// `wallpaper://` request behind a walk of somebody's external drive (ADR 0039).
-pub fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
+fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime,
                 w.width IS NOT NULL AND w.height IS NOT NULL
@@ -706,7 +1012,7 @@ pub fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
 /// whose pixel dimensions are unknown is listed for those alone, however warm
 /// its cache is, and comes off the list for good once they are written
 /// (ADR 0044).
-pub fn work_list(candidates: &[Candidate], cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
+fn work_list(candidates: &[Candidate], cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
     let cached = cache_filenames(cache_dir)?;
 
     let mut pending = Vec::new();
@@ -772,18 +1078,15 @@ pub fn work_list(candidates: &[Candidate], cache_dir: &Path) -> Result<Vec<Pendi
 /// longer there is skipped too, rather than failed.
 ///
 /// The path comes from this read as well, so a file that moved between the list
-/// and its turn is generated where it landed. [`plan`] already re-reads it for
-/// the one-size case.
-pub fn still_due(conn: &Connection, pending: &Pending) -> Option<PathBuf> {
-    let (status, path) = conn
-        .query_row(
-            "SELECT status, path FROM wallpapers WHERE id = ?1",
-            [pending.wallpaper_id],
-            |row| Ok((row.get::<_, Status>(0)?, row.get::<_, String>(1)?)),
-        )
-        .ok()?;
+/// and its turn is generated where it landed.
+fn still_due(conn: &Connection, pending: &Pending) -> Result<Option<PathBuf>, AppError> {
+    let (status, path) = match wallpaper_row(conn, pending.wallpaper_id) {
+        Ok(row) => row,
+        Err(AppError::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
     let rejected_since = status == Status::Rejected && pending.status != Status::Rejected;
-    (!rejected_since).then(|| PathBuf::from(path))
+    Ok((!rejected_since).then_some(path))
 }
 
 /// The cache directory's filenames as a set, so freshness costs one directory
@@ -882,9 +1185,8 @@ fn encode_jpeg(img: &RgbImage) -> Result<Vec<u8>, AppError> {
 }
 
 /// One `stat` of a source file, as the nanosecond mtime every freshness rule
-/// here compares against. `pub` for [`current_source_path`]'s caller, which
-/// makes this call with the connection released (ADR 0039).
-pub fn source_mtime(path: &Path) -> Result<i64, AppError> {
+/// here compares against.
+fn source_mtime(path: &Path) -> Result<i64, AppError> {
     let md = std::fs::metadata(path)
         .map_err(|_| AppError::NotFound(format!("missing source file {}", path.display())))?;
     modified_nanos(&md)
@@ -902,280 +1204,294 @@ fn modified_nanos(md: &std::fs::Metadata) -> Result<i64, AppError> {
         .as_nanos() as i64)
 }
 
+/// The JPEG bytes of the thumbnails asked for most recently, bounded by
+/// [`IMAGE_CACHE_ENTRIES`] and evicting whichever has gone unasked-for longest.
+///
+/// This is where ADR 0016's parked `Map<id, blob>` landed. It sits behind the
+/// thumbnail cache, on the side that already holds the bytes, so it serves all
+/// three callers that ADR named — the library card, the review card and the
+/// lightbox's two sizes — without any of them knowing it exists.
+///
+/// What it is worth is the six costs a warm request paid: a channel hop, two
+/// mutex acquisitions, a `stat`, an `exists` and a full file read, for bytes the
+/// process was already holding a moment ago. A hit is a hash lookup and a copy.
+///
+/// Private to this module, and that is the point of #280: bytes go in from
+/// [`ThumbnailCache::answer`], and what takes them back out is the things that
+/// invalidate a thumbnail, each of which is an operation here —
+/// [`ThumbnailCache::clear`] forgets everything, and a regenerate through either
+/// [`ThumbnailCache::answer`] or [`ThumbnailCache::warm`] forgets its wallpaper.
+/// Nothing expires on a clock — see ADR 0040 for what that costs.
+struct ImageCache {
+    entries: Mutex<Entries>,
+    capacity: usize,
+}
+
+/// One wallpaper at one size, which is everything a `wallpaper://` URL says and
+/// so the key the bytes in memory are held under.
+type Key = (i64, Size);
+
+#[derive(Default)]
+struct Entries {
+    held: HashMap<Key, Held>,
+    /// Ticks on every read and every insert, so the smallest stamp in the map is
+    /// the least recently used entry. A `u64` of request counter overflows after
+    /// more requests than a hundred lifetimes of scrolling.
+    clock: u64,
+}
+
+struct Held {
+    bytes: Arc<Vec<u8>>,
+    used: u64,
+}
+
+impl ImageCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: Mutex::new(Entries::default()),
+            capacity,
+        }
+    }
+
+    /// The bytes for one wallpaper at one size, if they are still held, and a
+    /// note that they were wanted.
+    fn get(&self, wallpaper_id: i64, size: Size) -> Option<Arc<Vec<u8>>> {
+        let mut entries = self.entries();
+        entries.clock += 1;
+        let used = entries.clock;
+        let held = entries.held.get_mut(&(wallpaper_id, size))?;
+        held.used = used;
+        Some(Arc::clone(&held.bytes))
+    }
+
+    /// Holds one thumbnail's bytes, evicting the coldest entries if that puts
+    /// the map over its bound.
+    fn store(&self, wallpaper_id: i64, size: Size, bytes: Arc<Vec<u8>>) {
+        // `full` is never held. The bound is an entry count, and an entry count
+        // bounds memory only while an entry's size is bounded: a `small` is at
+        // most 400px wide and a `medium` at most 1920, while `full` re-encodes
+        // the source at whatever resolution it has, so one entry could be tens
+        // of megabytes and 256 of them could be gigabytes. Nothing in the app
+        // asks for `full` — the card and the filmstrip ask for `small`, Rank and
+        // the lightbox for `medium` — so this costs nothing and keeps the
+        // constant's arithmetic closed.
+        if size == Size::Full {
+            return;
+        }
+        let mut entries = self.entries();
+        entries.clock += 1;
+        let used = entries.clock;
+        entries
+            .held
+            .insert((wallpaper_id, size), Held { bytes, used });
+
+        while entries.held.len() > self.capacity {
+            // A scan of at most `capacity` stamps rather than an intrusive list,
+            // and it runs only on the insert after a miss — which has just paid
+            // a cache-file read or a whole decode, either of which is orders of
+            // magnitude more than 256 integer comparisons (ADR 0040).
+            let coldest = entries
+                .held
+                .iter()
+                .min_by_key(|(_, held)| held.used)
+                .map(|(key, _)| *key);
+            match coldest {
+                Some(key) => entries.held.remove(&key),
+                None => break,
+            };
+        }
+    }
+
+    /// Forgets every size of one wallpaper.
+    ///
+    /// A regenerate is about a source file, and every size came off that one
+    /// file, so it does not invalidate a size at a time.
+    fn forget(&self, wallpaper_id: i64) {
+        self.entries().held.retain(|(id, _), _| *id != wallpaper_id);
+    }
+
+    /// Forgets everything, for [`ThumbnailCache::clear`].
+    fn forget_all(&self) {
+        self.entries().held.clear();
+    }
+
+    /// Recovers from poisoning rather than bricking every later request, the way
+    /// `Db::connection` does and for the same reason: nothing under this guard
+    /// leaves the map inconsistent, so reusing it is strictly better than
+    /// refusing to serve an image for the rest of the process.
+    fn entries(&self) -> MutexGuard<'_, Entries> {
+        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether one thumbnail's bytes are held, without counting as a use.
+    ///
+    /// Tests only, and eviction is why: asking the question through
+    /// [`ImageCache::get`] would move the entry to the most recently used end
+    /// and change the answer to the next question.
+    #[cfg(test)]
+    fn holds(&self, wallpaper_id: i64, size: Size) -> bool {
+        self.entries().held.contains_key(&(wallpaper_id, size))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
     use image::{Rgba, RgbaImage};
-    fn setup() -> (Connection, tempfile::TempDir) {
-        let conn = Connection::open_in_memory().unwrap();
-        db::init_schema(&conn).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        (conn, dir)
+
+    /// A library behind a [`ThumbnailCache`]: a `Db` over an in-memory database,
+    /// a folder of sources and a cache directory of its own. No Tauri app, which
+    /// is the whole seam — every operation takes a `Db` and a directory.
+    ///
+    /// The two directories are separate, the way they are in production — the
+    /// cache lives under `app_data` and the Library root is wherever the curator
+    /// keeps their wallpapers. Sharing one would make emptying the cache delete
+    /// the library, which is the difference between a test that clears a cache
+    /// and one that only looks like it.
+    struct Library {
+        db: Db,
+        cache: ThumbnailCache,
+        sources: tempfile::TempDir,
+        cache_dir: tempfile::TempDir,
+    }
+
+    impl Library {
+        fn new() -> Self {
+            let conn = Connection::open_in_memory().unwrap();
+            db::init_schema(&conn).unwrap();
+            let cache_dir = tempfile::tempdir().unwrap();
+            Self {
+                db: Db::new(conn),
+                cache: ThumbnailCache::new(cache_dir.path().to_path_buf()),
+                sources: tempfile::tempdir().unwrap(),
+                cache_dir,
+            }
+        }
+
+        /// A wallpaper as a scan leaves it: the file written, the row inserted,
+        /// and its pixel dimensions recorded, which is what a scan does now
+        /// (ADR 0044). So "warm" in these tests means what it means in a library
+        /// the current build scanned, and the one cohort that is not — a row from
+        /// before the columns existed — is seeded by [`Self::seed_unmeasured`].
+        fn seed(&self, name: &str, img: &DynamicImage) -> i64 {
+            let id = self.seed_unmeasured(name, img);
+            self.db
+                .write(|conn| db::record_dimensions(conn, id, img.width(), img.height()))
+                .unwrap();
+            id
+        }
+
+        /// A wallpaper with NULL dimensions: what a database written before the
+        /// columns existed holds, and the cohort the pre-generation pass
+        /// backfills.
+        fn seed_unmeasured(&self, name: &str, img: &DynamicImage) -> i64 {
+            let path = self.source(name);
+            img.save_with_format(&path, image::ImageFormat::Png)
+                .unwrap();
+            self.db.write(|conn| {
+                conn.execute(
+                    "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
+                    rusqlite::params![name, path.to_str().unwrap()],
+                )
+                .unwrap();
+                conn.last_insert_rowid()
+            })
+        }
+
+        fn source(&self, name: &str) -> PathBuf {
+            self.sources.path().join(name)
+        }
+
+        fn cache_file(&self, id: i64, size: Size) -> PathBuf {
+            cache_path(self.cache_dir.path(), id, size)
+        }
+
+        fn answer(&self, id: i64, size: Size) -> Result<Arc<Vec<u8>>, AppError> {
+            self.cache.answer(&self.db, id, size)
+        }
+
+        /// A cache over the same directory with nothing in memory, which is what
+        /// a second launch is. Nothing in memory revalidates (ADR 0040), so the
+        /// tier below it is where the freshness rule lives, and this is how a
+        /// test reaches it.
+        fn relaunch(&mut self) {
+            self.cache = ThumbnailCache::new(self.cache_dir.path().to_path_buf());
+        }
+
+        /// Warms a wallpaper the way the pass does for one it has never
+        /// generated, which is what "fully warm" means to the work list.
+        fn warm(&self, id: i64, name: &str) -> Warmed {
+            self.cache
+                .warm(
+                    &self.db,
+                    &Pending {
+                        wallpaper_id: id,
+                        source: self.source(name),
+                        status: Status::Active,
+                        missing: Some(Missing::Both),
+                    },
+                )
+                .unwrap()
+        }
+
+        fn thumbnail_row(&self, id: i64, size: &str) -> Option<(i64, i64, i64)> {
+            self.db.read(|conn| {
+                conn.query_row(
+                    "SELECT width, height, source_mtime FROM thumbnails
+                     WHERE wallpaper_id = ?1 AND size = ?2",
+                    rusqlite::params![id, size],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .ok()
+            })
+        }
+
+        fn rank(&self, id: i64, status: &str, comparisons: i64) {
+            self.db.write(|conn| {
+                conn.execute(
+                    "UPDATE wallpapers SET status = ?2, comparisons_count = ?3 WHERE id = ?1",
+                    rusqlite::params![id, status, comparisons],
+                )
+                .unwrap()
+            });
+        }
+
+        /// Writes a failure note against a source's current bytes, as the pass
+        /// would after failing to decode it.
+        fn note(&self, id: i64, name: &str, message: &str) {
+            let mtime = source_mtime(&self.source(name)).unwrap();
+            self.db
+                .write(|conn| note_failure(conn, id, mtime, message))
+                .unwrap();
+        }
+
+        fn work_list(&self) -> Vec<Pending> {
+            self.cache.work_list(&self.db).unwrap()
+        }
+
+        fn listed(&self) -> Vec<(i64, Option<Missing>)> {
+            self.work_list()
+                .into_iter()
+                .map(|p| (p.wallpaper_id, p.missing))
+                .collect()
+        }
     }
 
     fn solid(width: u32, height: u32, color: [u8; 4]) -> DynamicImage {
         DynamicImage::ImageRgba8(RgbaImage::from_pixel(width, height, Rgba(color)))
     }
 
-    /// A wallpaper as a scan leaves it: the file written, the row inserted, and
-    /// its pixel dimensions recorded, which is what a scan does now (ADR 0044).
-    /// So "warm" in these tests means what it means in a library the current
-    /// build scanned, and the one cohort that is not — a row from before the
-    /// columns existed — is seeded by [`seed_unmeasured_wallpaper`].
-    fn seed_wallpaper(conn: &Connection, dir: &Path, name: &str, img: &DynamicImage) -> i64 {
-        let id = seed_unmeasured_wallpaper(conn, dir, name, img);
-        crate::db::record_dimensions(conn, id, img.width(), img.height()).unwrap();
-        id
+    fn dimensions_of(bytes: &[u8]) -> (u32, u32) {
+        let img = image::load_from_memory(bytes).expect("the bytes are a JPEG");
+        (img.width(), img.height())
     }
 
-    /// A wallpaper with NULL dimensions: what a database written before the
-    /// columns existed holds, and the cohort the pre-generation pass backfills.
-    fn seed_unmeasured_wallpaper(
-        conn: &Connection,
-        dir: &Path,
-        name: &str,
-        img: &DynamicImage,
-    ) -> i64 {
-        let path = dir.join(name);
-        img.save_with_format(&path, image::ImageFormat::Png)
-            .unwrap();
-        conn.execute(
-            "INSERT INTO wallpapers (filename, path) VALUES (?1, ?2)",
-            rusqlite::params![name, path.to_str().unwrap()],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
-    }
-
-    fn thumbnail_row(conn: &Connection, id: i64, size: &str) -> Option<(i64, i64, i64)> {
-        conn.query_row(
-            "SELECT width, height, source_mtime FROM thumbnails WHERE wallpaper_id = ?1 AND size = ?2",
-            rusqlite::params![id, size],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .ok()
-    }
-
-    #[test]
-    fn first_request_generates_cache_file_and_upserts_row() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "a.png",
-            &solid(800, 600, [10, 20, 30, 255]),
-        );
-        let expected_mtime = source_mtime(&tmp.path().join("a.png")).unwrap();
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-
-        assert_eq!((thumb.width, thumb.height), (400, 300));
-        assert!(image::load_from_memory(&thumb.bytes).is_ok());
-        let cache_file = tmp.path().join(format!("{id}_small.jpg"));
-        assert!(cache_file.exists());
-        assert_eq!(
-            thumbnail_row(&conn, id, "small"),
-            Some((400, 300, expected_mtime))
-        );
-    }
-
-    #[test]
-    fn narrower_source_reuses_source_dimensions() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "n.png", &solid(200, 100, [1, 2, 3, 255]));
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-
-        assert_eq!((thumb.width, thumb.height), (200, 100));
-        assert_eq!(
-            thumbnail_row(&conn, id, "small"),
-            Some((200, 100, source_mtime(&tmp.path().join("n.png")).unwrap()))
-        );
-    }
-
-    #[test]
-    fn wider_source_downscales_preserving_aspect_ratio() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "w.png",
-            &solid(3840, 2160, [9, 9, 9, 255]),
-        );
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
-
-        assert_eq!((thumb.width, thumb.height), (1920, 1080));
-    }
-
-    #[test]
-    fn a_source_far_wider_than_the_target_still_lands_on_the_exact_size() {
-        // Past 2x the target, `downscale_if_wider` box-reduces before running
-        // Lanczos3, because Lanczos3's radius scales with the ratio and a
-        // 17280-wide source cost seconds of CPU in one step. The two-step
-        // route has to produce the same dimensions as the one-step route did.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "huge.png",
-            &solid(9600, 2700, [40, 80, 120, 255]),
-        );
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
-
-        assert_eq!((thumb.width, thumb.height), (1920, 540));
-        // A flat source must survive both filters flat: a pre-reduction that
-        // sampled off the edge of the image would show up as banding here.
-        let decoded = image::load_from_memory(&thumb.bytes).unwrap().to_rgb8();
-        for (x, y) in [(0, 0), (960, 270), (1919, 539)] {
-            let px = decoded.get_pixel(x, y).0;
-            assert!(
-                px.iter()
-                    .zip([40, 80, 120])
-                    .all(|(a, b)| a.abs_diff(b) <= 6),
-                "pixel at ({x}, {y}) came out {px:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn full_size_never_downscales_and_is_invalidated_like_the_others() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "f.png", &solid(800, 600, [4, 5, 6, 255]));
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Full).unwrap();
-
-        assert_eq!((thumb.width, thumb.height), (800, 600));
-        assert!(tmp.path().join(format!("{id}_full.jpg")).exists());
-        assert_eq!(
-            thumbnail_row(&conn, id, "full"),
-            Some((800, 600, source_mtime(&tmp.path().join("f.png")).unwrap()))
-        );
-    }
-
-    #[test]
-    fn an_edit_within_the_same_second_still_invalidates() {
-        // Whole-second mtimes made this case permanently stale: the recorded
-        // mtime matched, so the old thumbnail was served forever.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "s.png", &solid(300, 150, [1, 1, 1, 255]));
-        let first = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-
-        // Both sizes stay under SMALL_MAX_WIDTH so a changed dimension can only
-        // mean the thumbnail was regenerated, never that it was downscaled.
-        solid(350, 120, [2, 2, 2, 255])
-            .save_with_format(tmp.path().join("s.png"), image::ImageFormat::Png)
-            .unwrap();
-
-        let second = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-
-        assert_eq!((first.width, first.height), (300, 150));
-        assert_eq!((second.width, second.height), (350, 120));
-    }
-
-    #[test]
-    fn rgba_sources_flatten_onto_white_without_artifacts() {
-        let (conn, tmp) = setup();
-        let mut img = RgbaImage::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
-        for (x, _y, p) in img.enumerate_pixels_mut() {
-            if x < 50 {
-                *p = Rgba([0, 0, 0, 0]);
-            }
-        }
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "alpha.png",
-            &DynamicImage::ImageRgba8(img),
-        );
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-
-        let decoded = image::load_from_memory(&thumb.bytes).unwrap().to_rgb8();
-        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 4);
-        assert!(near(decoded.get_pixel(25, 50).0, [255, 255, 255]));
-        assert!(near(decoded.get_pixel(75, 50).0, [255, 0, 0]));
-    }
-
-    #[test]
-    fn unknown_wallpaper_id_resolves_to_not_found_kind() {
-        let (conn, tmp) = setup();
-
-        let err = resolve(&conn, tmp.path(), 999, Size::Small).unwrap_err();
-
-        assert!(matches!(err, AppError::NotFound(_)));
-        let json = serde_json::to_value(&err).unwrap();
-        assert_eq!(json["kind"], "not_found");
-    }
-
-    #[test]
-    fn missing_source_file_resolves_to_not_found() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "gone.png",
-            &solid(10, 10, [0, 0, 0, 255]),
-        );
-        std::fs::remove_file(tmp.path().join("gone.png")).unwrap();
-
-        let err = resolve(&conn, tmp.path(), id, Size::Small).unwrap_err();
-
-        assert!(matches!(err, AppError::NotFound(_)));
-        let json = serde_json::to_value(&err).unwrap();
-        assert_eq!(json["kind"], "not_found");
-    }
-
-    #[test]
-    fn repeat_request_serves_cached_file_without_regeneration() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "c.png", &solid(300, 150, [7, 7, 7, 255]));
-        resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-        let cache_file = tmp.path().join(format!("{id}_small.jpg"));
-        let mtime_before = std::fs::metadata(&cache_file).unwrap().modified().unwrap();
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-
-        assert_eq!((thumb.width, thumb.height), (300, 150));
-        let mtime_after = std::fs::metadata(&cache_file).unwrap().modified().unwrap();
-        assert_eq!(mtime_before, mtime_after);
-    }
-
-    #[test]
-    fn changed_source_mtime_regenerates_and_upserts_row() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "r.png", &solid(300, 150, [7, 7, 7, 255]));
-        resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-        let cache_file = tmp.path().join(format!("{id}_small.jpg"));
-        let old_bytes = std::fs::read(&cache_file).unwrap();
-        solid(600, 450, [8, 8, 8, 255])
-            .save_with_format(tmp.path().join("r.png"), image::ImageFormat::Png)
-            .unwrap();
-        let file = std::fs::File::options()
-            .append(true)
-            .open(tmp.path().join("r.png"))
-            .unwrap();
-        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
-            .unwrap();
-        drop(file);
-
-        let thumb = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-
-        assert_eq!((thumb.width, thumb.height), (400, 300));
-        assert_eq!(
-            thumbnail_row(&conn, id, "small").map(|(w, h, _)| (w, h)),
-            Some((400, 300))
-        );
-        assert_eq!(
-            thumbnail_row(&conn, id, "small").unwrap().2,
-            source_mtime(&tmp.path().join("r.png")).unwrap()
-        );
-        let new_bytes = std::fs::read(&cache_file).unwrap();
-        assert_ne!(old_bytes, new_bytes);
-        let cached_img = image::load_from_memory(&new_bytes).unwrap();
-        assert_eq!((cached_img.width(), cached_img.height()), (400, 300));
+    fn only_colour(bytes: &[u8]) -> [u8; 3] {
+        image::load_from_memory(bytes)
+            .unwrap()
+            .to_rgb8()
+            .get_pixel(5, 5)
+            .0
     }
 
     /// Rewrites a file's bytes while restoring its original mtime, so the
@@ -1191,38 +1507,227 @@ mod tests {
             .unwrap();
     }
 
-    fn only_colour(bytes: &[u8]) -> [u8; 3] {
-        image::load_from_memory(bytes)
+    /// Moves a file's mtime forward without touching its bytes, so freshness
+    /// says "changed" for a file the test does not have to rewrite.
+    fn touch_later(path: &Path) {
+        std::fs::File::options()
+            .append(true)
+            .open(path)
             .unwrap()
-            .to_rgb8()
-            .get_pixel(5, 5)
-            .0
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_first_answer_generates_the_cache_file_and_records_it() {
+        let library = Library::new();
+        let id = library.seed("a.png", &solid(800, 600, [10, 20, 30, 255]));
+        let expected_mtime = source_mtime(&library.source("a.png")).unwrap();
+
+        let bytes = library.answer(id, Size::Small).unwrap();
+
+        assert_eq!(dimensions_of(&bytes), (400, 300));
+        assert!(library.cache_file(id, Size::Small).exists());
+        assert_eq!(
+            library.thumbnail_row(id, "small"),
+            Some((400, 300, expected_mtime))
+        );
+    }
+
+    #[test]
+    fn a_narrower_source_keeps_its_own_dimensions() {
+        let library = Library::new();
+        let id = library.seed("n.png", &solid(200, 100, [1, 2, 3, 255]));
+
+        let bytes = library.answer(id, Size::Small).unwrap();
+
+        assert_eq!(dimensions_of(&bytes), (200, 100));
+        assert_eq!(
+            library.thumbnail_row(id, "small"),
+            Some((200, 100, source_mtime(&library.source("n.png")).unwrap()))
+        );
+    }
+
+    #[test]
+    fn a_wider_source_downscales_preserving_aspect_ratio() {
+        let library = Library::new();
+        let id = library.seed("w.png", &solid(3840, 2160, [9, 9, 9, 255]));
+
+        let bytes = library.answer(id, Size::Medium).unwrap();
+
+        assert_eq!(dimensions_of(&bytes), (1920, 1080));
+    }
+
+    #[test]
+    fn a_source_far_wider_than_the_target_still_lands_on_the_exact_size() {
+        // Past 2x the target, `downscale_if_wider` box-reduces before running
+        // Lanczos3, because Lanczos3's radius scales with the ratio and a
+        // 17280-wide source cost seconds of CPU in one step. The two-step
+        // route has to produce the same dimensions as the one-step route did.
+        let library = Library::new();
+        let id = library.seed("huge.png", &solid(9600, 2700, [40, 80, 120, 255]));
+
+        let bytes = library.answer(id, Size::Medium).unwrap();
+
+        assert_eq!(dimensions_of(&bytes), (1920, 540));
+        // A flat source must survive both filters flat: a pre-reduction that
+        // sampled off the edge of the image would show up as banding here.
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        for (x, y) in [(0, 0), (960, 270), (1919, 539)] {
+            let px = decoded.get_pixel(x, y).0;
+            assert!(
+                px.iter()
+                    .zip([40, 80, 120])
+                    .all(|(a, b)| a.abs_diff(b) <= 6),
+                "pixel at ({x}, {y}) came out {px:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn full_size_never_downscales_and_is_recorded_like_the_others() {
+        let library = Library::new();
+        let id = library.seed("f.png", &solid(800, 600, [4, 5, 6, 255]));
+
+        let bytes = library.answer(id, Size::Full).unwrap();
+
+        assert_eq!(dimensions_of(&bytes), (800, 600));
+        assert!(library.cache_file(id, Size::Full).exists());
+        assert_eq!(
+            library.thumbnail_row(id, "full"),
+            Some((800, 600, source_mtime(&library.source("f.png")).unwrap()))
+        );
+    }
+
+    #[test]
+    fn an_edit_within_the_same_second_still_invalidates() {
+        // Whole-second mtimes made this case permanently stale: the recorded
+        // mtime matched, so the old thumbnail was served forever.
+        let mut library = Library::new();
+        let id = library.seed("s.png", &solid(300, 150, [1, 1, 1, 255]));
+        let first = library.answer(id, Size::Small).unwrap();
+
+        // Both sizes stay under SMALL_MAX_WIDTH so a changed dimension can only
+        // mean the thumbnail was regenerated, never that it was downscaled.
+        solid(350, 120, [2, 2, 2, 255])
+            .save_with_format(library.source("s.png"), image::ImageFormat::Png)
+            .unwrap();
+        library.relaunch();
+
+        let second = library.answer(id, Size::Small).unwrap();
+
+        assert_eq!(dimensions_of(&first), (300, 150));
+        assert_eq!(dimensions_of(&second), (350, 120));
+    }
+
+    #[test]
+    fn rgba_sources_flatten_onto_white_without_artifacts() {
+        let library = Library::new();
+        let mut img = RgbaImage::from_pixel(100, 100, Rgba([255, 0, 0, 255]));
+        for (x, _y, p) in img.enumerate_pixels_mut() {
+            if x < 50 {
+                *p = Rgba([0, 0, 0, 0]);
+            }
+        }
+        let id = library.seed("alpha.png", &DynamicImage::ImageRgba8(img));
+
+        let bytes = library.answer(id, Size::Small).unwrap();
+
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 4);
+        assert!(near(decoded.get_pixel(25, 50).0, [255, 255, 255]));
+        assert!(near(decoded.get_pixel(75, 50).0, [255, 0, 0]));
+    }
+
+    #[test]
+    fn an_unknown_wallpaper_is_answered_with_the_not_found_kind() {
+        // The crate's one answer for a missing row (ADR 0025), which the
+        // protocol maps to a 404 the card can read.
+        let library = Library::new();
+
+        let err = library.answer(999, Size::Small).unwrap_err();
+
+        assert!(matches!(err, AppError::NotFound(_)));
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["kind"], "not_found");
+    }
+
+    #[test]
+    fn a_missing_source_file_is_answered_with_not_found() {
+        let library = Library::new();
+        let id = library.seed("gone.png", &solid(10, 10, [0, 0, 0, 255]));
+        std::fs::remove_file(library.source("gone.png")).unwrap();
+
+        let err = library.answer(id, Size::Small).unwrap_err();
+
+        assert!(matches!(err, AppError::NotFound(_)));
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["kind"], "not_found");
+    }
+
+    #[test]
+    fn a_cache_hit_reads_the_file_rather_than_decoding_the_source_again() {
+        // The cache file is tampered with between the two answers, so what
+        // comes back says which path ran: the bytes on disk mean the recorded
+        // row and the source mtime agreed and nothing was decoded, and a fresh
+        // JPEG would mean the hit was missed.
+        let mut library = Library::new();
+        let id = library.seed("c.png", &solid(300, 150, [7, 7, 7, 255]));
+        library.answer(id, Size::Small).unwrap();
+
+        std::fs::write(library.cache_file(id, Size::Small), b"the cache said so").unwrap();
+        library.relaunch();
+        let bytes = library.answer(id, Size::Small).unwrap();
+
+        assert_eq!(bytes.as_slice(), b"the cache said so");
+    }
+
+    #[test]
+    fn a_thumbnail_recorded_against_an_older_source_is_regenerated() {
+        // A wallpaper edited in place: the row and the file are both there, and
+        // the source's mtime has moved on from the one they were recorded at.
+        let mut library = Library::new();
+        let id = library.seed("r.png", &solid(300, 150, [7, 7, 7, 255]));
+        library.answer(id, Size::Small).unwrap();
+        let old_bytes = std::fs::read(library.cache_file(id, Size::Small)).unwrap();
+        solid(600, 450, [8, 8, 8, 255])
+            .save_with_format(library.source("r.png"), image::ImageFormat::Png)
+            .unwrap();
+        touch_later(&library.source("r.png"));
+        library.relaunch();
+
+        let bytes = library.answer(id, Size::Small).unwrap();
+
+        assert_eq!(dimensions_of(&bytes), (400, 300));
+        assert_eq!(
+            library.thumbnail_row(id, "small"),
+            Some((400, 300, source_mtime(&library.source("r.png")).unwrap())),
+            "the regenerated thumbnail was recorded against the source it was made from"
+        );
+        let new_bytes = std::fs::read(library.cache_file(id, Size::Small)).unwrap();
+        assert_ne!(old_bytes, new_bytes);
+        assert_eq!(dimensions_of(&new_bytes), (400, 300));
     }
 
     #[test]
     fn a_small_is_downscaled_from_a_cached_medium_rather_than_the_source() {
         // Decoding a 152MB PNG to make a 400px thumbnail is the review grid's
         // whole cost. The medium beside it is already a 1920px JPEG.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "d.png",
-            &solid(3000, 1000, [200, 30, 30, 255]),
-        );
-        resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
+        let library = Library::new();
+        let id = library.seed("d.png", &solid(3000, 1000, [200, 30, 30, 255]));
+        library.answer(id, Size::Medium).unwrap();
 
         // Same mtime, different pixels: whichever one it decodes shows up in
         // the output. The medium still holds red.
         rewrite_keeping_mtime(
-            &tmp.path().join("d.png"),
+            &library.source("d.png"),
             &solid(3000, 1000, [30, 30, 200, 255]),
         );
 
-        let small = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        let small = library.answer(id, Size::Small).unwrap();
 
-        assert_eq!((small.width, small.height), (400, 133));
-        let px = only_colour(&small.bytes);
+        assert_eq!(dimensions_of(&small), (400, 133));
+        let px = only_colour(&small);
         assert!(
             px[0] > px[2],
             "expected the medium's red, got {px:?} — the source was decoded"
@@ -1235,27 +1740,23 @@ mod tests {
         // row survives, and only `fulfill` looks. Consulting the donor only
         // when this size had no row left it unavailable in exactly the case
         // that has to regenerate, so the review grid stayed slow.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "r.png",
-            &solid(3000, 1000, [200, 30, 30, 255]),
-        );
-        resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
-        resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        let mut library = Library::new();
+        let id = library.seed("r.png", &solid(3000, 1000, [200, 30, 30, 255]));
+        library.answer(id, Size::Medium).unwrap();
+        library.answer(id, Size::Small).unwrap();
 
         // The small's row survives, its file does not, and the medium beside
         // it is untouched and still fresh.
-        std::fs::remove_file(tmp.path().join(format!("{id}_small.jpg"))).unwrap();
+        std::fs::remove_file(library.cache_file(id, Size::Small)).unwrap();
         rewrite_keeping_mtime(
-            &tmp.path().join("r.png"),
+            &library.source("r.png"),
             &solid(3000, 1000, [30, 30, 200, 255]),
         );
+        library.relaunch();
 
-        let small = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        let small = library.answer(id, Size::Small).unwrap();
 
-        let px = only_colour(&small.bytes);
+        let px = only_colour(&small);
         assert!(
             px[0] > px[2],
             "expected the medium's red, got {px:?} — the source was decoded"
@@ -1264,51 +1765,36 @@ mod tests {
 
     #[test]
     fn a_donor_whose_cache_file_is_gone_falls_back_to_the_source() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "g.png",
-            &solid(3000, 1000, [10, 200, 10, 255]),
-        );
-        resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
+        let library = Library::new();
+        let id = library.seed("g.png", &solid(3000, 1000, [10, 200, 10, 255]));
+        library.answer(id, Size::Medium).unwrap();
 
         // The medium's row promises a file that is not there.
-        std::fs::remove_file(tmp.path().join(format!("{id}_medium.jpg"))).unwrap();
+        std::fs::remove_file(library.cache_file(id, Size::Medium)).unwrap();
 
-        let small = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        let small = library.answer(id, Size::Small).unwrap();
 
-        assert_eq!((small.width, small.height), (400, 133));
-        let px = only_colour(&small.bytes);
+        assert_eq!(dimensions_of(&small), (400, 133));
+        let px = only_colour(&small);
         assert!(px[1] > px[0] && px[1] > px[2], "got {px:?}");
     }
 
     #[test]
     fn a_donor_recorded_against_a_different_source_is_not_trusted() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "s.png",
-            &solid(3000, 1000, [200, 30, 30, 255]),
-        );
-        resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
+        let library = Library::new();
+        let id = library.seed("s.png", &solid(3000, 1000, [200, 30, 30, 255]));
+        library.answer(id, Size::Medium).unwrap();
 
         // A genuine edit: new pixels AND a new mtime. The medium is stale, so
         // the small has to come off the source.
         solid(3000, 1000, [30, 30, 200, 255])
-            .save_with_format(tmp.path().join("s.png"), image::ImageFormat::Png)
+            .save_with_format(library.source("s.png"), image::ImageFormat::Png)
             .unwrap();
-        std::fs::File::options()
-            .append(true)
-            .open(tmp.path().join("s.png"))
-            .unwrap()
-            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
-            .unwrap();
+        touch_later(&library.source("s.png"));
 
-        let small = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        let small = library.answer(id, Size::Small).unwrap();
 
-        let px = only_colour(&small.bytes);
+        let px = only_colour(&small);
         assert!(px[2] > px[0], "expected the source's blue, got {px:?}");
     }
 
@@ -1317,219 +1803,176 @@ mod tests {
         // The source is 300px, so its medium is 300px too — narrower than a
         // small. Deriving would be correct but pointless, and the rule stays
         // easy to reason about if it simply does not apply.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "n.png",
-            &solid(300, 200, [200, 30, 30, 255]),
-        );
-        let medium = resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
-        assert_eq!(medium.width, 300);
+        let library = Library::new();
+        let id = library.seed("n.png", &solid(300, 200, [200, 30, 30, 255]));
+        let medium = library.answer(id, Size::Medium).unwrap();
+        assert_eq!(dimensions_of(&medium).0, 300);
 
         rewrite_keeping_mtime(
-            &tmp.path().join("n.png"),
+            &library.source("n.png"),
             &solid(300, 200, [30, 30, 200, 255]),
         );
-        let small = resolve(&conn, tmp.path(), id, Size::Small).unwrap();
+        let small = library.answer(id, Size::Small).unwrap();
 
-        assert_eq!((small.width, small.height), (300, 200));
-        let px = only_colour(&small.bytes);
+        assert_eq!(dimensions_of(&small), (300, 200));
+        let px = only_colour(&small);
         assert!(px[2] > px[0], "expected the source's blue, got {px:?}");
     }
 
     #[test]
-    fn purge_removes_rows_and_cache_files_across_sizes() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "p.png",
-            &solid(2400, 1200, [3, 3, 3, 255]),
-        );
-        resolve(&conn, tmp.path(), id, Size::Small).unwrap();
-        resolve(&conn, tmp.path(), id, Size::Medium).unwrap();
+    fn the_connection_is_free_while_the_image_work_happens() {
+        // ADR 0004's split, pinned. Phase two runs here with the connection
+        // released, and `Db::is_free` is a `try_lock` on the thread that would
+        // be holding it, so a phase one whose guard leaked into a temporary
+        // fails this and nothing else — it would still answer the right bytes.
+        let library = Library::new();
+        let id = library.seed("a.png", &solid(800, 600, [10, 20, 30, 255]));
 
-        // The two halves in the order a caller owes them, files first, which is
-        // `clear_cache_files`' order and its reasons (ADR 0039).
-        purge_cache_files(tmp.path(), id).unwrap();
-        purge_thumbnails(&conn, id).unwrap();
-
-        assert_eq!(thumbnail_row(&conn, id, "small"), None);
-        assert_eq!(thumbnail_row(&conn, id, "medium"), None);
-        assert!(!tmp.path().join(format!("{id}_small.jpg")).exists());
-        assert!(!tmp.path().join(format!("{id}_medium.jpg")).exists());
-        assert!(!tmp.path().join(format!("{id}_full.jpg")).exists());
-    }
-
-    #[test]
-    fn purge_is_idempotent_for_unknown_wallpaper() {
-        let (conn, tmp) = setup();
-
-        purge_cache_files(tmp.path(), 12345).unwrap();
-        purge_thumbnails(&conn, 12345).unwrap();
-    }
-
-    /// Generates and records both pre-generated sizes the way the pass will,
-    /// which is what "fully warm" means to [`work_list`].
-    fn warm(conn: &Connection, cache_dir: &Path, id: i64, source: &Path) {
-        for r in generate_both(id, source, cache_dir).unwrap() {
-            record_one(conn, id, r.size, r.width, r.height, r.source_mtime).unwrap();
-        }
-    }
-
-    /// Moves a file's mtime forward without touching its bytes, so freshness
-    /// says "changed" for a file the test does not have to rewrite.
-    fn touch_later(path: &Path) {
-        std::fs::File::options()
-            .append(true)
-            .open(path)
-            .unwrap()
-            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+        let bytes = library
+            .cache
+            .answer_with(&library.db, id, Size::Small, |plan, cache_dir| {
+                assert!(
+                    library.db.is_free(),
+                    "the connection is held across the decode"
+                );
+                fulfill(plan, cache_dir)
+            })
             .unwrap();
-    }
 
-    fn rank(conn: &Connection, id: i64, status: &str, comparisons: i64) {
-        conn.execute(
-            "UPDATE wallpapers SET status = ?2, comparisons_count = ?3 WHERE id = ?1",
-            rusqlite::params![id, status, comparisons],
-        )
-        .unwrap();
-    }
-
-    /// Both halves of the work list back to back, for the tests that hold a
-    /// connection anyway — [`super::resolve`]'s arrangement, one seam along.
-    /// Production runs them through two calls so the lock is released between
-    /// them (ADR 0039), which is exactly what
-    /// `the_filesystem_half_decides_the_list_from_rows_and_no_connection_at_all`
-    /// exercises on its own.
-    fn work_list(conn: &Connection, cache_dir: &Path) -> Result<Vec<Pending>, AppError> {
-        super::work_list(&candidates(conn)?, cache_dir)
-    }
-
-    /// Both halves of a clear, in the order `clear_cache` calls them: the
-    /// directory, then the rows.
-    fn clear(conn: &Connection, cache_dir: &Path) -> Result<(), AppError> {
-        clear_cache_files(cache_dir)?;
-        forget_thumbnails(conn)
-    }
-
-    fn listed(conn: &Connection, cache_dir: &Path) -> Vec<(i64, Option<Missing>)> {
-        work_list(conn, cache_dir)
-            .unwrap()
-            .into_iter()
-            .map(|p| (p.wallpaper_id, p.missing))
-            .collect()
+        assert_eq!(dimensions_of(&bytes), (400, 300));
     }
 
     #[test]
-    fn generate_both_writes_both_sizes_and_records_them_against_the_source() {
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "b.png",
-            &solid(3000, 1000, [10, 200, 10, 255]),
-        );
-        let expected_mtime = source_mtime(&tmp.path().join("b.png")).unwrap();
+    fn a_repeat_answer_needs_neither_the_connection_nor_the_disk() {
+        // Everything a miss would need is taken away first: the row the plan
+        // reads, the source phase two stats, and the cache file it reads. An
+        // answer that reached the connection is a `NotFound` and one that
+        // reached the filesystem is another, so the same bytes back is the
+        // memory tier and can be nothing else (ADR 0040).
+        let library = Library::new();
+        let id = library.seed("a.png", &solid(800, 600, [10, 20, 30, 255]));
+        let first = library.answer(id, Size::Small).unwrap();
 
-        let recorded = generate_both(id, &tmp.path().join("b.png"), cache.path()).unwrap();
+        library.db.write(|conn| {
+            conn.execute("DELETE FROM wallpapers", []).unwrap();
+            conn.execute("DELETE FROM thumbnails", []).unwrap();
+        });
+        std::fs::remove_file(library.source("a.png")).unwrap();
+        std::fs::remove_file(library.cache_file(id, Size::Small)).unwrap();
 
-        // Generation order, medium first, so the caller can record them in the
-        // order the files were written.
-        assert_eq!(
-            recorded,
-            [
-                Recorded {
-                    size: Size::Medium,
-                    width: 1920,
-                    height: 640,
-                    source_mtime: expected_mtime,
-                },
-                Recorded {
-                    size: Size::Small,
-                    width: 400,
-                    height: 133,
-                    source_mtime: expected_mtime,
-                },
-            ]
+        assert_eq!(library.answer(id, Size::Small).unwrap(), first);
+        // And the UI thread's way in finds the same bytes, which is what lets a
+        // hit skip the pool entirely.
+        assert_eq!(library.cache.remembered(id, Size::Small), Some(first));
+    }
+
+    #[test]
+    fn regenerating_a_stale_thumbnail_forgets_the_wallpapers_bytes_in_memory() {
+        // A wallpaper edited in place, discovered by a request for one size
+        // while another size of it is held in memory. The source moved, so both
+        // are stale, and only the size that missed can find that out.
+        let library = Library::new();
+        let id = library.seed("a.png", &solid(800, 600, [10, 20, 30, 255]));
+        // The medium first and the small off it, so the medium reaches the disk
+        // and the row while memory ends up holding only the small: the small's
+        // first generation drops its sibling.
+        library.answer(id, Size::Medium).unwrap();
+        library.answer(id, Size::Small).unwrap();
+        assert!(library.cache.memory.holds(id, Size::Small));
+        assert!(!library.cache.memory.holds(id, Size::Medium));
+        library.db.write(|conn| {
+            conn.execute("UPDATE thumbnails SET source_mtime = 1", [])
+                .unwrap();
+        });
+
+        library
+            .answer(id, Size::Medium)
+            .expect("the medium regenerated");
+
+        // With the source gone, an answer for the small can only come from
+        // memory, and the regenerate above is what should have taken it out.
+        std::fs::remove_file(library.source("a.png")).unwrap();
+        assert!(
+            library.answer(id, Size::Small).is_err(),
+            "a stale small was still served from memory after its wallpaper regenerated"
         );
-        for r in recorded {
-            let file = cache.path().join(format!("{id}_{}.jpg", r.size.label()));
-            let written = image::load_from_memory(&std::fs::read(&file).unwrap()).unwrap();
-            assert_eq!((written.width(), written.height()), (r.width, r.height));
-            record_one(&conn, id, r.size, r.width, r.height, r.source_mtime).unwrap();
-        }
+    }
+
+    #[test]
+    fn warming_a_cold_wallpaper_writes_both_sizes_and_records_them_against_the_source() {
+        let library = Library::new();
+        let id = library.seed("b.png", &solid(3000, 1000, [10, 200, 10, 255]));
+        let expected_mtime = source_mtime(&library.source("b.png")).unwrap();
+
+        assert_eq!(library.warm(id, "b.png"), Warmed::Generated);
+
         assert_eq!(
-            thumbnail_row(&conn, id, "medium"),
+            library.thumbnail_row(id, "medium"),
             Some((1920, 640, expected_mtime))
         );
         assert_eq!(
-            thumbnail_row(&conn, id, "small"),
+            library.thumbnail_row(id, "small"),
             Some((400, 133, expected_mtime))
         );
+        for (size, dimensions) in [(Size::Medium, (1920, 640)), (Size::Small, (400, 133))] {
+            let written = std::fs::read(library.cache_file(id, size)).unwrap();
+            assert_eq!(dimensions_of(&written), dimensions);
+        }
     }
 
     #[test]
-    fn the_small_comes_off_the_medium_rather_than_off_the_source_again() {
+    fn warming_takes_the_small_off_the_medium_rather_than_off_the_source_again() {
         // One decode, two sizes, is the whole point of `generate_both`, and the
         // only place the chain shows from outside is the rounding. A 3000x1001
         // source gives a medium of 1920x641, and 641 rows scaled to 400px wide
         // round up to 134. Off the source directly the same small would be 133.
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "chain.png",
-            &solid(3000, 1001, [30, 30, 200, 255]),
-        );
+        let library = Library::new();
+        let id = library.seed("chain.png", &solid(3000, 1001, [30, 30, 200, 255]));
 
-        let [medium, small] =
-            generate_both(id, &tmp.path().join("chain.png"), cache.path()).unwrap();
+        library.warm(id, "chain.png");
 
-        assert_eq!((medium.width, medium.height), (1920, 641));
-        assert_eq!((small.width, small.height), (400, 134));
+        let medium = library.thumbnail_row(id, "medium").unwrap();
+        let small = library.thumbnail_row(id, "small").unwrap();
+        assert_eq!((medium.0, medium.1), (1920, 641));
+        assert_eq!((small.0, small.1), (400, 134));
     }
 
     #[test]
-    fn record_one_upserts_the_row_it_already_wrote() {
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(&conn, tmp.path(), "u.png", &solid(10, 10, [0, 0, 0, 255]));
+    fn warming_a_wallpaper_again_replaces_its_rows_rather_than_adding_to_them() {
+        // The pass warms a wallpaper again whenever its source moves, and the
+        // upsert is what keeps one row per size rather than an error on the key.
+        let library = Library::new();
+        let id = library.seed("u.png", &solid(20, 10, [0, 0, 0, 255]));
+        library.warm(id, "u.png");
 
-        record_one(&conn, id, Size::Small, 400, 300, 111).unwrap();
-        record_one(&conn, id, Size::Small, 200, 150, 222).unwrap();
+        touch_later(&library.source("u.png"));
+        library.warm(id, "u.png");
 
-        assert_eq!(thumbnail_row(&conn, id, "small"), Some((200, 150, 222)));
-        let rows: i64 = conn
-            .query_row(
+        let rows: i64 = library.db.read(|conn| {
+            conn.query_row(
                 "SELECT COUNT(*) FROM thumbnails WHERE wallpaper_id = ?1",
                 [id],
                 |row| row.get(0),
             )
-            .unwrap();
-        assert_eq!(rows, 1);
+            .unwrap()
+        });
+        assert_eq!(rows, 2);
+        assert_eq!(
+            library.thumbnail_row(id, "small").unwrap().2,
+            source_mtime(&library.source("u.png")).unwrap()
+        );
     }
 
     #[test]
     fn a_wallpaper_with_neither_size_joins_the_work_list() {
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "cold.png",
-            &solid(20, 10, [1, 1, 1, 255]),
-        );
-
-        let list = work_list(&conn, cache.path()).unwrap();
+        let library = Library::new();
+        let id = library.seed("cold.png", &solid(20, 10, [1, 1, 1, 255]));
 
         assert_eq!(
-            list,
+            library.work_list(),
             vec![Pending {
                 wallpaper_id: id,
-                source: tmp.path().join("cold.png"),
+                source: library.source("cold.png"),
                 status: Status::Active,
                 missing: Some(Missing::Both),
             }]
@@ -1538,16 +1981,12 @@ mod tests {
 
     #[test]
     fn a_wallpaper_with_both_sizes_fresh_stays_out_of_the_work_list() {
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let warmed = seed_wallpaper(&conn, tmp.path(), "w.png", &solid(20, 10, [1, 1, 1, 255]));
-        let cold = seed_wallpaper(&conn, tmp.path(), "c.png", &solid(20, 10, [2, 2, 2, 255]));
-        warm(&conn, cache.path(), warmed, &tmp.path().join("w.png"));
+        let library = Library::new();
+        let warmed = library.seed("w.png", &solid(20, 10, [1, 1, 1, 255]));
+        let cold = library.seed("c.png", &solid(20, 10, [2, 2, 2, 255]));
+        library.warm(warmed, "w.png");
 
-        assert_eq!(
-            listed(&conn, cache.path()),
-            vec![(cold, Some(Missing::Both))]
-        );
+        assert_eq!(library.listed(), vec![(cold, Some(Missing::Both))]);
     }
 
     #[test]
@@ -1555,18 +1994,19 @@ mod tests {
         // "Small is missing, medium is fresh" is what `Size::donors` was built
         // for, so the pass has to be told which size rather than just that
         // something is due.
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(&conn, tmp.path(), "one.png", &solid(20, 10, [3, 3, 3, 255]));
-        warm(&conn, cache.path(), id, &tmp.path().join("one.png"));
-        conn.execute(
-            "DELETE FROM thumbnails WHERE wallpaper_id = ?1 AND size = 'small'",
-            [id],
-        )
-        .unwrap();
+        let library = Library::new();
+        let id = library.seed("one.png", &solid(20, 10, [3, 3, 3, 255]));
+        library.warm(id, "one.png");
+        library.db.write(|conn| {
+            conn.execute(
+                "DELETE FROM thumbnails WHERE wallpaper_id = ?1 AND size = 'small'",
+                [id],
+            )
+            .unwrap()
+        });
 
         assert_eq!(
-            listed(&conn, cache.path()),
+            library.listed(),
             vec![(id, Some(Missing::Only(Size::Small)))]
         );
     }
@@ -1577,20 +2017,30 @@ mod tests {
         // reason the backfill cannot ride on the thumbnails: every one of these
         // wallpapers is warm, so the freshness rule on its own drops all of them
         // and the dimensions never arrive (ADR 0044).
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id =
-            seed_unmeasured_wallpaper(&conn, tmp.path(), "old.png", &solid(20, 10, [5, 5, 5, 255]));
-        warm(&conn, cache.path(), id, &tmp.path().join("old.png"));
+        let library = Library::new();
+        let id = library.seed_unmeasured("old.png", &solid(20, 10, [5, 5, 5, 255]));
+        library.warm(id, "old.png");
+        // Warming measures as it goes, so the column is put back to what a
+        // database from before it existed holds.
+        library.db.write(|conn| {
+            conn.execute(
+                "UPDATE wallpapers SET width = NULL, height = NULL WHERE id = ?1",
+                [id],
+            )
+            .unwrap()
+        });
 
         // Listed, and owing no thumbnail, which is the only thing that puts a
         // warm wallpaper here.
-        assert_eq!(listed(&conn, cache.path()), vec![(id, None)]);
+        assert_eq!(library.listed(), vec![(id, None)]);
 
         // And it comes off the list for good once they are written, so the
         // backfill is one pass and not one per launch.
-        crate::db::record_dimensions(&conn, id, 20, 10).unwrap();
-        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
+        library
+            .db
+            .write(|conn| db::record_dimensions(conn, id, 20, 10))
+            .unwrap();
+        assert!(library.work_list().is_empty());
     }
 
     #[test]
@@ -1598,22 +2048,14 @@ mod tests {
         // A wallpaper short of both is listed as owing thumbnails and nothing
         // else, because the pass measures every wallpaper it reaches: the entry
         // records only what is not implied (ADR 0044).
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_unmeasured_wallpaper(
-            &conn,
-            tmp.path(),
-            "cold.png",
-            &solid(20, 10, [6, 6, 6, 255]),
-        );
-
-        let list = work_list(&conn, cache.path()).unwrap();
+        let library = Library::new();
+        let id = library.seed_unmeasured("cold.png", &solid(20, 10, [6, 6, 6, 255]));
 
         assert_eq!(
-            list,
+            library.work_list(),
             vec![Pending {
                 wallpaper_id: id,
-                source: tmp.path().join("cold.png"),
+                source: library.source("cold.png"),
                 status: Status::Active,
                 missing: Some(Missing::Both),
             }]
@@ -1622,30 +2064,28 @@ mod tests {
 
     #[test]
     fn a_recorded_mtime_that_no_longer_matches_the_source_rejoins_the_work_list() {
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(&conn, tmp.path(), "e.png", &solid(20, 10, [4, 4, 4, 255]));
-        warm(&conn, cache.path(), id, &tmp.path().join("e.png"));
-        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
+        let library = Library::new();
+        let id = library.seed("e.png", &solid(20, 10, [4, 4, 4, 255]));
+        library.warm(id, "e.png");
+        assert!(library.work_list().is_empty());
 
-        touch_later(&tmp.path().join("e.png"));
+        touch_later(&library.source("e.png"));
 
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
+        assert_eq!(library.listed(), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
     fn a_row_whose_cache_file_is_gone_rejoins_the_work_list() {
         // A row is not a cache hit. The work list reads the directory rather
         // than trusting the table, because a row can outlive its file.
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(&conn, tmp.path(), "f.png", &solid(20, 10, [5, 5, 5, 255]));
-        warm(&conn, cache.path(), id, &tmp.path().join("f.png"));
+        let library = Library::new();
+        let id = library.seed("f.png", &solid(20, 10, [5, 5, 5, 255]));
+        library.warm(id, "f.png");
 
-        std::fs::remove_file(cache.path().join(format!("{id}_medium.jpg"))).unwrap();
+        std::fs::remove_file(library.cache_file(id, Size::Medium)).unwrap();
 
         assert_eq!(
-            listed(&conn, cache.path()),
+            library.listed(),
             vec![(id, Some(Missing::Only(Size::Medium)))]
         );
     }
@@ -1655,38 +2095,31 @@ mod tests {
         // Nothing can be said about the freshness of a file that is not there,
         // and a wallpaper the pass never lists is a wallpaper it never reports
         // as failed.
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "gone.png",
-            &solid(20, 10, [6, 6, 6, 255]),
-        );
-        warm(&conn, cache.path(), id, &tmp.path().join("gone.png"));
-        std::fs::remove_file(tmp.path().join("gone.png")).unwrap();
+        let library = Library::new();
+        let id = library.seed("gone.png", &solid(20, 10, [6, 6, 6, 255]));
+        library.warm(id, "gone.png");
+        std::fs::remove_file(library.source("gone.png")).unwrap();
 
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
+        assert_eq!(library.listed(), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
     fn the_work_list_puts_rejected_last_and_least_compared_first() {
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
+        let library = Library::new();
         let img = solid(20, 10, [7, 7, 7, 255]);
-        let voted = seed_wallpaper(&conn, tmp.path(), "voted.png", &img);
-        let rejected_fresh = seed_wallpaper(&conn, tmp.path(), "rej-new.png", &img);
-        let scanned = seed_wallpaper(&conn, tmp.path(), "scanned.png", &img);
-        let rejected_voted = seed_wallpaper(&conn, tmp.path(), "rej-old.png", &img);
-        let kept = seed_wallpaper(&conn, tmp.path(), "kept.png", &img);
-        rank(&conn, voted, "active", 9);
-        rank(&conn, rejected_fresh, "rejected", 0);
-        rank(&conn, scanned, "active", 0);
-        rank(&conn, rejected_voted, "rejected", 9);
-        rank(&conn, kept, "kept", 3);
+        let voted = library.seed("voted.png", &img);
+        let rejected_fresh = library.seed("rej-new.png", &img);
+        let scanned = library.seed("scanned.png", &img);
+        let rejected_voted = library.seed("rej-old.png", &img);
+        let kept = library.seed("kept.png", &img);
+        library.rank(voted, "active", 9);
+        library.rank(rejected_fresh, "rejected", 0);
+        library.rank(scanned, "active", 0);
+        library.rank(rejected_voted, "rejected", 9);
+        library.rank(kept, "kept", 3);
 
-        let order: Vec<(i64, Status)> = work_list(&conn, cache.path())
-            .unwrap()
+        let order: Vec<(i64, Status)> = library
+            .work_list()
             .into_iter()
             .map(|p| (p.wallpaper_id, p.status))
             .collect();
@@ -1713,51 +2146,44 @@ mod tests {
         // each is owed, which Status it was listed under, and the order. The
         // split into a query and a filesystem pass (ADR 0039) is meant to change
         // none of that, and this is the test that says so.
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
+        let library = Library::new();
         let img = solid(20, 10, [1, 2, 3, 255]);
-        let cold = seed_wallpaper(&conn, tmp.path(), "cold.png", &img);
-        let warm_one = seed_wallpaper(&conn, tmp.path(), "warm.png", &img);
-        let half = seed_wallpaper(&conn, tmp.path(), "half.png", &img);
-        let rejected = seed_wallpaper(&conn, tmp.path(), "rejected.png", &img);
-        let noted = seed_wallpaper(&conn, tmp.path(), "noted.png", &img);
-        warm(&conn, cache.path(), warm_one, &tmp.path().join("warm.png"));
-        warm(&conn, cache.path(), half, &tmp.path().join("half.png"));
-        std::fs::remove_file(cache.path().join(format!("{half}_small.jpg"))).unwrap();
-        rank(&conn, cold, "active", 0);
-        rank(&conn, half, "kept", 2);
-        rank(&conn, rejected, "rejected", 0);
-        note_failure(
-            &conn,
-            noted,
-            source_mtime(&tmp.path().join("noted.png")).unwrap(),
-            "image: nope",
-        )
-        .unwrap();
+        let cold = library.seed("cold.png", &img);
+        let warm_one = library.seed("warm.png", &img);
+        let half = library.seed("half.png", &img);
+        let rejected = library.seed("rejected.png", &img);
+        let noted = library.seed("noted.png", &img);
+        library.warm(warm_one, "warm.png");
+        library.warm(half, "half.png");
+        std::fs::remove_file(library.cache_file(half, Size::Small)).unwrap();
+        library.rank(cold, "active", 0);
+        library.rank(half, "kept", 2);
+        library.rank(rejected, "rejected", 0);
+        library.note(noted, "noted.png", "image: nope");
 
         // The order the two halves are called in production: the query, then
         // the `read_dir` and the `stat`s, with nothing borrowed in between.
-        let rows = candidates(&conn).unwrap();
-        let list = super::work_list(&rows, cache.path()).unwrap();
+        let rows = library.db.read(candidates).unwrap();
+        let list = work_list(&rows, library.cache_dir.path()).unwrap();
 
         assert_eq!(
             list,
             vec![
                 Pending {
                     wallpaper_id: cold,
-                    source: tmp.path().join("cold.png"),
+                    source: library.source("cold.png"),
                     status: Status::Active,
                     missing: Some(Missing::Both),
                 },
                 Pending {
                     wallpaper_id: half,
-                    source: tmp.path().join("half.png"),
+                    source: library.source("half.png"),
                     status: Status::Kept,
                     missing: Some(Missing::Only(Size::Small)),
                 },
                 Pending {
                     wallpaper_id: rejected,
-                    source: tmp.path().join("rejected.png"),
+                    source: library.source("rejected.png"),
                     status: Status::Rejected,
                     missing: Some(Missing::Both),
                 },
@@ -1767,6 +2193,8 @@ mod tests {
         // fully warm and one has a note against the bytes it still has.
         assert!(rows.iter().any(|c| c.wallpaper_id == warm_one));
         assert!(rows.iter().any(|c| c.wallpaper_id == noted));
+        // And the operation is the same two halves.
+        assert_eq!(library.work_list(), list);
     }
 
     #[test]
@@ -1850,7 +2278,7 @@ mod tests {
             },
         ];
 
-        let list = super::work_list(&rows, cache.path()).unwrap();
+        let list = work_list(&rows, cache.path()).unwrap();
 
         assert_eq!(
             list,
@@ -1883,44 +2311,23 @@ mod tests {
         // once, writes down which version of it broke, and every launch after
         // that costs a `stat` instead of a decode. A re-exported file has a new
         // mtime, so the note stops applying and it gets another go (ADR 0034).
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let broken = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "broken.png",
-            &solid(20, 10, [1, 1, 1, 255]),
-        );
-        let fine = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "fine.png",
-            &solid(20, 10, [2, 2, 2, 255]),
-        );
+        let library = Library::new();
+        let broken = library.seed("broken.png", &solid(20, 10, [1, 1, 1, 255]));
+        let fine = library.seed("fine.png", &solid(20, 10, [2, 2, 2, 255]));
         assert_eq!(
-            listed(&conn, cache.path()),
+            library.listed(),
             vec![(broken, Some(Missing::Both)), (fine, Some(Missing::Both))]
         );
 
-        let broken_path = tmp.path().join("broken.png");
-        note_failure(
-            &conn,
-            broken,
-            source_mtime(&broken_path).unwrap(),
-            "image: not an image",
-        )
-        .unwrap();
+        library.note(broken, "broken.png", "image: not an image");
 
         // The note only takes the wallpaper it is about out of the list.
-        assert_eq!(
-            listed(&conn, cache.path()),
-            vec![(fine, Some(Missing::Both))]
-        );
+        assert_eq!(library.listed(), vec![(fine, Some(Missing::Both))]);
 
-        touch_later(&broken_path);
+        touch_later(&library.source("broken.png"));
 
         assert_eq!(
-            listed(&conn, cache.path()),
+            library.listed(),
             vec![(broken, Some(Missing::Both)), (fine, Some(Missing::Both))]
         );
     }
@@ -1931,48 +2338,14 @@ mod tests {
         // and a note against an mtime nothing can be compared to is not a reason
         // to stop reporting the wallpaper. The pass fails it, counts it, and
         // does not decode anything to find out (ADR 0032, ADR 0034).
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "gone.png",
-            &solid(20, 10, [3, 3, 3, 255]),
-        );
-        let path = tmp.path().join("gone.png");
-        note_failure(&conn, id, source_mtime(&path).unwrap(), "image: nope").unwrap();
-        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
+        let library = Library::new();
+        let id = library.seed("gone.png", &solid(20, 10, [3, 3, 3, 255]));
+        library.note(id, "gone.png", "image: nope");
+        assert!(library.work_list().is_empty());
 
-        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(library.source("gone.png")).unwrap();
 
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
-    }
-
-    #[test]
-    fn clearing_the_cache_forgets_the_failures_with_the_rows() {
-        // Clear thumbnail cache is the one control that gives an undecodable
-        // source another go: a curator asking for the whole cache to be rebuilt
-        // is asking for that too (ADR 0034).
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "again.png",
-            &solid(20, 10, [4, 4, 4, 255]),
-        );
-        note_failure(
-            &conn,
-            id,
-            source_mtime(&tmp.path().join("again.png")).unwrap(),
-            "image: nope",
-        )
-        .unwrap();
-        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
-
-        clear(&conn, cache.path()).unwrap();
-
-        assert_eq!(listed(&conn, cache.path()), vec![(id, Some(Missing::Both))]);
+        assert_eq!(library.listed(), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
@@ -1980,24 +2353,22 @@ mod tests {
         // The pass writes the note from inside a loop it will run again, so the
         // upsert is what keeps a second failure from erroring on the primary
         // key and leaving the row pinned to a version of the file that is gone.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "twice.png",
-            &solid(20, 10, [5, 5, 5, 255]),
-        );
+        let library = Library::new();
+        let id = library.seed("twice.png", &solid(20, 10, [5, 5, 5, 255]));
 
-        note_failure(&conn, id, 111, "image: first").unwrap();
-        note_failure(&conn, id, 222, "image: second").unwrap();
+        library.db.write(|conn| {
+            note_failure(conn, id, 111, "image: first").unwrap();
+            note_failure(conn, id, 222, "image: second").unwrap();
+        });
 
-        let noted: (i64, String) = conn
-            .query_row(
+        let noted: (i64, String) = library.db.read(|conn| {
+            conn.query_row(
                 "SELECT source_mtime, message FROM thumbnail_failures WHERE wallpaper_id = ?1",
                 [id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .unwrap();
+            .unwrap()
+        });
         assert_eq!(noted, (222, "image: second".to_string()));
     }
 
@@ -2005,56 +2376,39 @@ mod tests {
     fn the_work_list_is_empty_on_a_fully_warm_library() {
         // Every launch after the first. An empty list is what makes the pass
         // emit nothing rather than flash a finished bar.
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
+        let library = Library::new();
         for name in ["a.png", "b.png", "c.png"] {
-            let id = seed_wallpaper(&conn, tmp.path(), name, &solid(20, 10, [8, 8, 8, 255]));
-            warm(&conn, cache.path(), id, &tmp.path().join(name));
+            let id = library.seed(name, &solid(20, 10, [8, 8, 8, 255]));
+            library.warm(id, name);
         }
 
-        assert!(work_list(&conn, cache.path()).unwrap().is_empty());
+        assert!(library.work_list().is_empty());
     }
 
     #[test]
     fn the_work_list_survives_a_cache_directory_that_does_not_exist_yet() {
         // First launch: nothing has written a thumbnail, so nothing has created
         // the directory either, and the whole library is due.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "first.png",
-            &solid(20, 10, [9, 9, 9, 255]),
-        );
+        let mut library = Library::new();
+        let id = library.seed("first.png", &solid(20, 10, [9, 9, 9, 255]));
+        library.cache = ThumbnailCache::new(library.cache_dir.path().join("no-such-cache"));
 
-        let cache = tmp.path().join("no-such-cache");
-
-        assert_eq!(listed(&conn, &cache), vec![(id, Some(Missing::Both))]);
+        assert_eq!(library.listed(), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
     fn the_cache_size_counts_every_file_and_the_bytes_they_take() {
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "sized.png",
-            &solid(3000, 1000, [10, 200, 10, 255]),
-        );
-        warm(&conn, cache.path(), id, &tmp.path().join("sized.png"));
+        let library = Library::new();
+        let id = library.seed("sized.png", &solid(3000, 1000, [10, 200, 10, 255]));
+        library.warm(id, "sized.png");
 
-        let size = cache_size(cache.path()).unwrap();
+        let size = library.cache.size().unwrap();
 
         // Two files per warm wallpaper, and the bytes are the files' own, not an
         // estimate: the readout's whole job is to be the number on disk.
         let on_disk: u64 = [Size::Medium, Size::Small]
             .into_iter()
-            .map(|s| {
-                std::fs::metadata(cache_path(cache.path(), id, s))
-                    .unwrap()
-                    .len()
-            })
+            .map(|s| std::fs::metadata(library.cache_file(id, s)).unwrap().len())
             .sum();
         assert_eq!(
             size,
@@ -2072,61 +2426,150 @@ mod tests {
         let cache = tempfile::tempdir().unwrap();
 
         assert_eq!(
-            cache_size(cache.path()).unwrap(),
+            ThumbnailCache::new(cache.path().to_path_buf())
+                .size()
+                .unwrap(),
             CacheSize { bytes: 0, files: 0 }
         );
         assert_eq!(
-            cache_size(&cache.path().join("no-such-cache")).unwrap(),
+            ThumbnailCache::new(cache.path().join("no-such-cache"))
+                .size()
+                .unwrap(),
             CacheSize { bytes: 0, files: 0 }
         );
     }
 
     #[test]
-    fn clearing_empties_the_directory_and_the_table_and_reports_zero_after() {
-        let (conn, tmp) = setup();
-        let cache = tempfile::tempdir().unwrap();
+    fn clearing_empties_the_directory_the_rows_and_memory_and_reports_zero_after() {
+        let library = Library::new();
         let ids: Vec<i64> = ["one.png", "two.png"]
             .into_iter()
             .map(|name| {
-                let id = seed_wallpaper(&conn, tmp.path(), name, &solid(600, 300, [1, 2, 3, 255]));
-                warm(&conn, cache.path(), id, &tmp.path().join(name));
+                let id = library.seed(name, &solid(600, 300, [1, 2, 3, 255]));
+                library.warm(id, name);
+                library.answer(id, Size::Small).unwrap();
                 id
             })
             .collect();
-        assert_eq!(cache_size(cache.path()).unwrap().files, 4);
+        assert_eq!(library.cache.size().unwrap().files, 4);
 
-        clear(&conn, cache.path()).unwrap();
+        library.cache.clear(&library.db).unwrap();
 
-        for id in ids {
-            assert_eq!(thumbnail_row(&conn, id, "medium"), None);
-            assert_eq!(thumbnail_row(&conn, id, "small"), None);
+        for &id in &ids {
+            assert_eq!(library.thumbnail_row(id, "medium"), None);
+            assert_eq!(library.thumbnail_row(id, "small"), None);
+            assert_eq!(library.cache.remembered(id, Size::Small), None);
         }
         assert_eq!(
-            cache_size(cache.path()).unwrap(),
+            library.cache.size().unwrap(),
             CacheSize { bytes: 0, files: 0 }
         );
         // The directory stays, so the next pass writes into it rather than
         // recreating it, and the library is due in full again.
-        assert!(cache.path().is_dir());
-        assert_eq!(work_list(&conn, cache.path()).unwrap().len(), 2);
+        assert!(library.cache_dir.path().is_dir());
+        assert_eq!(library.work_list().len(), 2);
+    }
+
+    #[test]
+    fn clearing_the_cache_forgets_the_bytes_in_memory() {
+        // With the source gone as well, only the memory tier could still answer
+        // with a picture, so an error is the proof that it did not (ADR 0040).
+        // A clear that stopped at the rows would pass every other test here.
+        let library = Library::new();
+        let id = library.seed("a.png", &solid(800, 600, [10, 20, 30, 255]));
+        library.answer(id, Size::Small).unwrap();
+
+        library.cache.clear(&library.db).unwrap();
+        std::fs::remove_file(library.source("a.png")).unwrap();
+
+        assert!(
+            library.answer(id, Size::Small).is_err(),
+            "a cleared thumbnail was still served from memory"
+        );
+    }
+
+    #[test]
+    fn a_clear_that_cannot_empty_the_directory_leaves_the_rows_alone() {
+        // Files first, rows second, for the reason `clear` gives: a pass still
+        // finishing its wallpaper writes files before rows, so the row delete
+        // has to be the last thing that can happen. That order is only visible
+        // from outside when the first half fails — reversed, the rows would
+        // already be gone by the time the directory refused.
+        let mut library = Library::new();
+        let id = library.seed("kept.png", &solid(20, 10, [4, 4, 4, 255]));
+        library.warm(id, "kept.png");
+        // A file where the directory should be: `read_dir` refuses it, which is
+        // the first half failing without needing a permission this test might
+        // not be able to take away.
+        let not_a_directory = library.cache_dir.path().join("a-file");
+        std::fs::write(&not_a_directory, b"").unwrap();
+        library.cache = ThumbnailCache::new(not_a_directory);
+
+        assert!(library.cache.clear(&library.db).is_err());
+
+        assert!(library.thumbnail_row(id, "small").is_some());
+        assert!(library.thumbnail_row(id, "medium").is_some());
+    }
+
+    #[test]
+    fn clearing_the_cache_forgets_the_failures_with_the_rows() {
+        // Clear thumbnail cache is the one control that gives an undecodable
+        // source another go: a curator asking for the whole cache to be rebuilt
+        // is asking for that too (ADR 0034).
+        let library = Library::new();
+        let id = library.seed("again.png", &solid(20, 10, [4, 4, 4, 255]));
+        library.note(id, "again.png", "image: nope");
+        assert!(library.work_list().is_empty());
+
+        library.cache.clear(&library.db).unwrap();
+
+        assert_eq!(library.listed(), vec![(id, Some(Missing::Both))]);
     }
 
     #[test]
     fn clearing_a_cache_that_is_not_there_yet_still_empties_the_table() {
         // Nothing has written a thumbnail, so nothing has created the directory,
         // and a row without a file is a row the curator asked to be rid of.
-        let (conn, tmp) = setup();
-        let id = seed_wallpaper(
-            &conn,
-            tmp.path(),
-            "rowonly.png",
-            &solid(20, 10, [4, 4, 4, 255]),
-        );
-        record_one(&conn, id, Size::Small, 20, 10, 111).unwrap();
+        let mut library = Library::new();
+        let id = library.seed("rowonly.png", &solid(20, 10, [4, 4, 4, 255]));
+        library
+            .db
+            .write(|conn| record_one(conn, id, Size::Small, 20, 10, 111))
+            .unwrap();
+        library.cache = ThumbnailCache::new(library.cache_dir.path().join("no-such-cache"));
 
-        clear(&conn, &tmp.path().join("no-such-cache")).unwrap();
+        library.cache.clear(&library.db).unwrap();
 
-        assert_eq!(thumbnail_row(&conn, id, "small"), None);
+        assert_eq!(library.thumbnail_row(id, "small"), None);
+    }
+
+    #[test]
+    fn the_bytes_in_memory_are_bounded_and_the_coldest_goes_first() {
+        // The bound is an entry count and eviction is least-recently-used, so a
+        // wallpaper asked for again outlives one that was stored later and never
+        // asked for. Two entries rather than 256 so the eviction is the test's
+        // subject rather than its setup.
+        let cache = ImageCache::new(2);
+        cache.store(1, Size::Small, Arc::new(vec![1]));
+        cache.store(2, Size::Small, Arc::new(vec![2]));
+
+        assert!(cache.get(1, Size::Small).is_some(), "still held");
+        cache.store(3, Size::Small, Arc::new(vec![3]));
+
+        assert!(cache.holds(1, Size::Small), "asked for most recently");
+        assert!(!cache.holds(2, Size::Small), "the coldest went");
+        assert!(cache.holds(3, Size::Small), "just stored");
+    }
+
+    #[test]
+    fn a_full_size_image_is_never_held_in_memory() {
+        // What keeps `IMAGE_CACHE_ENTRIES` an honest bound: `small` and `medium`
+        // are capped by a maximum width, `full` is capped by nothing.
+        let cache = ImageCache::new(2);
+
+        cache.store(1, Size::Full, Arc::new(vec![0; 4096]));
+
+        assert!(!cache.holds(1, Size::Full));
     }
 
     #[test]
