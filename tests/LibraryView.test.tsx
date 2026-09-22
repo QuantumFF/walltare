@@ -299,17 +299,17 @@ test("the density gesture reaches this page, and stops at the browse surface's b
   await zoom(-100);
   expect(await cardsInARow()).toBe(3);
 
-  // Eight is where Library stops, which is wider than Review goes: this is the
+  // Ten is where Library stops, which is wider than Review goes: this is the
   // browse surface, and going wide over five thousand wallpapers is the point.
   for (let at = 0; at < 8; at++) await zoom(100);
-  expect(await cardsInARow()).toBe(8);
+  expect(await cardsInARow()).toBe(10);
 
   // The keys are the same gesture, and the same wall.
   await press("+");
-  expect(await cardsInARow()).toBe(7);
+  expect(await cardsInARow()).toBe(9);
   await press("-");
   await press("-");
-  expect(await cardsInARow()).toBe(8);
+  expect(await cardsInARow()).toBe(10);
 });
 
 test("a density change under a window leaves the selection on the same wallpaper", async () => {

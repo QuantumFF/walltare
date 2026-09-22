@@ -193,16 +193,17 @@ test("the density gesture reaches this page too, and stops shorter than Library'
   // The same gesture on the other tab, which is the whole of user story 11:
   // two tabs behaving the same way under the same gesture. What differs is
   // where it stops — a worklist of fifty has no scale to buy at the far end,
-  // so Review stops at six where Library goes to eight (#264).
+  // so Review stops at six where Library goes to ten, and it starts on three
+  // (#254, #264).
   //
   // `ArrowDown` is what says how many cards share a row without a layout, since
   // happy-dom reports every card as the same zero-sized box at any density.
   await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
   await enterGrid();
-  expect(await cardsInARow()).toBe(4);
+  expect(await cardsInARow()).toBe(3);
 
   await zoom(-100);
-  expect(await cardsInARow()).toBe(3);
+  expect(await cardsInARow()).toBe(2);
 
   for (let at = 0; at < 8; at++) await zoom(100);
   expect(await cardsInARow()).toBe(6);

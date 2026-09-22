@@ -94,7 +94,7 @@ function expectHeroBox(ratio: number): void {
 }
 
 /** The Score on the hero row, which is where the strip says Evaluated. */
-const heroScoreBadge = () =>
+const heroScore = () =>
   reviewView().querySelector(
     '[data-slot="review-hero-row"] [title$="Evaluated"]',
   );
@@ -241,17 +241,17 @@ test("the hero's Score badge reads against the curator's Evaluated threshold (#2
     wallpaper(2, { filename: "unsure.jpg", rating_sigma: 5.5 }),
   ]);
 
-  expect(heroScoreBadge()?.getAttribute("title")).toBe("Evaluated");
+  expect(heroScore()?.getAttribute("title")).toBe("Evaluated");
 
   await click(inReview().getByRole("option", { name: "unsure.jpg" }));
-  expect(heroScoreBadge()?.getAttribute("title")).toBe("Not yet Evaluated");
+  expect(heroScore()?.getAttribute("title")).toBe("Not yet Evaluated");
 
   // And the same row at Balanced, which is what an untouched table reads as: the
   // wallpaper has not changed, the threshold has.
   cleanup();
   stored = settings({ review_layout: "strip" });
   await openStrip([wallpaper(1, { filename: "sure.jpg", rating_sigma: 4.5 })]);
-  expect(heroScoreBadge()?.getAttribute("title")).toBe("Not yet Evaluated");
+  expect(heroScore()?.getAttribute("title")).toBe("Not yet Evaluated");
 });
 
 /** How tall the filmstrip draws its entries, in pixels, off the one it marks. */

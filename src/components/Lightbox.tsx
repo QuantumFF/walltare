@@ -610,15 +610,15 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
             // ask for; all this owes is refusing the wrong one.
             onCloseAutoFocus={(event) => event.preventDefault()}
             // Translucent, at the curator's request: the page stays faintly
-            // visible behind the picture. It used to be opaque because the
-            // chrome's tabs ghosting through read as clickable, and the blur is
-            // what keeps them from reading that way now: they come through as
-            // colour, not as controls. The pages behind are inert either way.
-            // ADR 0006 measured backdrop blurs as free on WebKitGTK. No z-index
-            // of its own — the shell's portal node is a `z-50` stacking context,
-            // so this paints over the pages and under the toast by sitting in
-            // it.
-            className="fixed inset-0 flex flex-col bg-neutral-950/80 outline-none backdrop-blur-md"
+            // visible behind the picture. #44 had it opaque because at 97% the
+            // chrome's tabs ghosted through and read as clickable; the curator
+            // asked for the page behind anyway, and it is inert either way
+            // (ADR 0022, amended). No blur, because a translucent backdrop was
+            // what was asked for and a full-window blur is a cost nobody has
+            // measured. No z-index of its own — the shell's portal node is a
+            // `z-50` stacking context, so this paints over the pages and under
+            // the toast by sitting in it.
+            className="fixed inset-0 flex flex-col bg-neutral-950/80 outline-none"
           >
             <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
               {/* Both renderings of the wallpaper sit in one grid cell, each
@@ -950,8 +950,9 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                           // event with one outcome (ADR 0023).
                           onClick={() => onAction(action, wallpaper)}
                           // The Review strip's pair as the dark theme draws
-                          // it: a solid near-white primary, and the destructive
-                          // variant's red tint with red text. Spelled out here
+                          // it: the dark `--primary` (neutral-200) with its dark
+                          // foreground, and the destructive variant's red tint
+                          // with the dark `--destructive` as the text. Spelled out here
                           // rather than taken from the variants, because the
                           // theme tokens follow the page and this ground is dark
                           // in both themes, so in Light the primary would be a
@@ -962,9 +963,9 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                           className={cn(
                             destructive
                               ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                              : "bg-neutral-100 text-neutral-900 hover:bg-neutral-100/80",
+                              : "bg-neutral-200 text-neutral-900 hover:bg-neutral-200/80",
                             unavailable &&
-                              "cursor-not-allowed opacity-40 hover:bg-neutral-100",
+                              "cursor-not-allowed opacity-40 hover:bg-neutral-200",
                           )}
                         >
                           <Icon />

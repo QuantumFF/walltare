@@ -5,6 +5,7 @@ import {
   type CardAction,
 } from "@/components/WallpaperCard";
 import { CropPreview, useCropPreview } from "@/components/CropPreview";
+import { densityKeyStep, useDensityWheel } from "@/components/density";
 import {
   usePublishedSelection,
   type SelectionHandle,
@@ -32,7 +33,6 @@ import { ImageOff } from "lucide-react";
 import {
   memo,
   useCallback,
-  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -40,24 +40,6 @@ import {
   type Ref,
 } from "react";
 
-/**
- * What the hero's area is taken to be while nothing has measured it.
- *
- * The default 1280x800 window, less what is above and below the hero: 1280 wide
- * less the page's own `p-4` at both ends is 1248, and 800 tall less the chrome's
- * 48, the page bar's 44, that same 32 of padding, the filmstrip's 132, the row
- * under the picture at about 32, and the two 12px gaps between the three is
- * about 488. Rounded to 1216x488, because the number it feeds is a fallback and
- * not a measurement — the moment a browser lays the box out, the observer below
- * replaces it.
- *
- * Not an edge case. happy-dom reports every rect as zero, and ADR 0015 keeps
- * this view mounted under `display: none` while another one is showing, which
- * zeroes the box in a real browser too — so a hero with no fallback is a hero
- * that paints nothing on the way back. The same pair the grid's window carries,
- * for the same two reasons (ADR 0027).
- */
-const UNMEASURED_AREA: Box = { width: 1216, height: 488 };
 
 /**
  * How tall a filmstrip entry is at each density step, in pixels, and the step it
@@ -93,21 +75,42 @@ const FILMSTRIP_START = 1;
 const FILMSTRIP_ENTRY_RATIO = 96 / 56;
 
 /**
- * The room around the entries, so the current one's ring is not clipped. A
- * scroll container clips on both axes once it scrolls on one, and a 2px ring
- * sits outside the entry's box.
+ * The current entry's ring, as the number and the class it restates, and the
+ * room the filmstrip leaves around its entries so that ring is not clipped: a
+ * scroll container clips on both axes once it scrolls on one, and a ring sits
+ * outside the entry's box. The same number-and-class pair ADR 0027 keeps for the
+ * grid's geometry, so the inset cannot drift from the ring it makes room for.
  */
-const FILMSTRIP_INSET = 2;
+const ENTRY_RING = { px: 2, className: "ring-2" };
 
 /**
- * Which way each key moves the filmstrip's size: the grid's four keys, for the
- * grid's reasons.
+ * What the hero's area is taken to be while nothing has measured it: the
+ * default 1280x800 window less what is above, below and beside the hero.
+ *
+ * 1280 wide less the page's own `p-4` at both ends is 1248, less another 32 for
+ * luck is 1216. 800 tall less the chrome's 48, the page bar's 44, that same 32
+ * of padding, the row under the picture at about 32 and the two 12px gaps
+ * between the three, less the filmstrip at its starting step. The filmstrip is
+ * read off its own constants rather than written in as a number, so changing
+ * the zoom range moves this with it. It is a fallback and not a measurement: the
+ * moment a browser lays the box out, the observer below replaces it.
+ *
+ * Not an edge case. happy-dom reports every rect as zero, and ADR 0015 keeps
+ * this view mounted under `display: none` while another one is showing, which
+ * zeroes the box in a real browser too — so a hero with no fallback is a hero
+ * that paints nothing on the way back. The same pair the grid's window carries,
+ * for the same two reasons (ADR 0027).
  */
-const DENSITY_KEYS: Record<string, number> = {
-  "+": 1,
-  "=": 1,
-  "-": -1,
-  _: -1,
+const UNMEASURED_AREA: Box = {
+  width: 1216,
+  height:
+    800 -
+    48 -
+    44 -
+    32 -
+    32 -
+    2 * 12 -
+    (FILMSTRIP_HEIGHTS[FILMSTRIP_START] + 2 * ENTRY_RING.px),
 };
 
 export interface ReviewStripProps {
@@ -301,32 +304,20 @@ export function ReviewStrip({
   // (#266).
   const crop = useCropPreview();
 
-  // The filmstrip's density step. In is larger, the same direction the grid's
-  // zoom runs.
-  const [size, setSize] = useState(FILMSTRIP_START);
-  const stepSize = useCallback(
+  // Which of `FILMSTRIP_HEIGHTS` the filmstrip is drawn at. In is larger, the
+  // same direction the grid's zoom runs.
+  const [step, setStep] = useState(FILMSTRIP_START);
+  const moveStep = useCallback(
     (by: number) =>
-      setSize((was) =>
+      setStep((was) =>
         Math.max(0, Math.min(FILMSTRIP_HEIGHTS.length - 1, was + by)),
       ),
     [],
   );
-  const entryHeight = FILMSTRIP_HEIGHTS[size];
+  const entryHeight = FILMSTRIP_HEIGHTS[step];
 
-  // Ctrl and the wheel, off a non-passive listener so the webview's own zoom is
-  // refused. React's `onWheel` is passive and cannot, which is the grid's reason
-  // for the same effect.
-  useEffect(() => {
-    const strip = stripRef.current;
-    if (!strip) return;
-    const onWheel = (event: WheelEvent) => {
-      if (!event.ctrlKey || event.deltaY === 0) return;
-      event.preventDefault();
-      stepSize(event.deltaY < 0 ? 1 : -1);
-    };
-    strip.addEventListener("wheel", onWheel, { passive: false });
-    return () => strip.removeEventListener("wheel", onWheel);
-  }, [stepSize]);
+  // Ctrl and the wheel anywhere over the strip, read the way the grid reads it.
+  useDensityWheel(stripRef, moveStep);
 
   // In a layout effect and not a passive one: the `<img>`'s `src` changes in the
   // same commit, and a reset that lands a frame later paints "File is gone" over
@@ -343,11 +334,13 @@ export function ReviewStrip({
   // since Review's grid is the other layout and would answer the same keys.
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // The density keys, ahead of the `Shift` guard: `+` arrives with `Shift`
-    // held on most layouts.
-    const by = DENSITY_KEYS[event.key];
-    if (by !== undefined && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    // held on most layouts. On this element rather than on `window`, like the
+    // grid's: a strip on a view the shell is only hiding must not answer keys
+    // meant for the view in front of it (ADR 0019).
+    const by = densityKeyStep(event);
+    if (by !== undefined) {
       event.preventDefault();
-      stepSize(by);
+      moveStep(by);
       return;
     }
 
@@ -533,7 +526,14 @@ export function ReviewStrip({
           the filename and Score in one muted line, the crop preview's key, then
           the decision. It sits between the hero and the filmstrip rather than
           over the picture, because the picture is the thing being judged and an
-          overlay on it is a judgement made through something. */}
+          overlay on it is a judgement made through something.
+
+          This is the opposite trade to the lightbox's, on purpose. ADR 0022
+          prints each key on its button and keeps the position because the
+          arrows clamp; the strip carries neither, and names only `C`, because
+          that is the row the curator agreed on in the prototype. The filmstrip
+          under it already shows where the current wallpaper is in the queue,
+          and K, Delete and the arrows are in the `?` dialog. */}
       {selected && (
         <div
           data-slot="review-hero-row"
@@ -544,20 +544,16 @@ export function ReviewStrip({
             title={selected.path}
           >
             {selected.filename} ·{" "}
-            {/* The Score, reading against the curator's Evaluated threshold
-                (#260): the title says which side of it this wallpaper is on, and
-                an Evaluated Score is set in the foreground colour rather than
-                the muted one around it. */}
+            {/* The Score, in the same muted line as the prototype had it. Its
+                title still reads against the curator's Evaluated threshold, so
+                the hero says which side of it this wallpaper is on (#260). */}
             <span
               title={
                 isEvaluated(selected, evaluatedThreshold)
                   ? "Evaluated"
                   : "Not yet Evaluated"
               }
-              className={cn(
-                "tabular-nums",
-                isEvaluated(selected, evaluatedThreshold) && "text-foreground",
-              )}
+              className="tabular-nums"
             >
               {score(selected)}
             </span>
@@ -619,8 +615,8 @@ export function ReviewStrip({
         tabIndex={-1}
         className="flex shrink-0 items-center gap-1.5 overflow-x-auto overflow-y-hidden"
         style={{
-          height: entryHeight + 2 * FILMSTRIP_INSET,
-          padding: FILMSTRIP_INSET,
+          height: entryHeight + 2 * ENTRY_RING.px,
+          padding: ENTRY_RING.px,
         }}
       >
         {wallpapers.map((entry, at) => (
@@ -696,7 +692,9 @@ const FilmstripEntry = memo(function FilmstripEntry({
       // half opacity, so the eye finds the current one by what is lit.
       className={cn(
         "relative shrink-0 cursor-pointer overflow-hidden rounded-md bg-muted outline-none",
-        current ? "ring-2 ring-primary" : "opacity-50 hover:opacity-100",
+        current
+          ? cn(ENTRY_RING.className, "ring-primary")
+          : "opacity-50 hover:opacity-100",
       )}
       // One shape for every entry, the prototype's `w-24` by `h-14` scaled to
       // the density step. The hero shows the wallpaper's own shape; this only

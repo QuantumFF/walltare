@@ -164,6 +164,20 @@ export function cropToFill(image: number, screen: number): CropPlan {
     : { side: 0, band: half, lost };
 }
 
+/**
+ * Which of the picture's two axes the Screen cuts, or `null` when it cuts
+ * neither: the axis the caption names, read off the bars the plan draws.
+ *
+ * Here beside `CropPlan` rather than in the caption, because "the bars are on
+ * the sides, so the width goes" is a fact about the plan and the caption is only
+ * one reader of it.
+ */
+export function croppedAxis(plan: CropPlan): "width" | "height" | null {
+  if (plan.side > 0) return "width";
+  if (plan.band > 0) return "height";
+  return null;
+}
+
 /** One row of a plan, and the whole of what a window needs about it. */
 export interface PlannedRow {
   /**

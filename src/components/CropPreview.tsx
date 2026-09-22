@@ -140,11 +140,7 @@ export function CropPreview({ wallpaper }: CropPreviewProps) {
           data-slot="crop-caption"
           className="max-w-full rounded-md bg-neutral-950/80 px-2 py-1 text-center text-[11px] wrap-anywhere text-white tabular-nums"
         >
-          {cropCaption(
-            screen,
-            plan?.lost ?? null,
-            plan && plan.band > 0 ? "height" : "width",
-          )}
+          {cropCaption(screen, plan)}
         </p>
       </div>
     </div>

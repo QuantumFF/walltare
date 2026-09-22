@@ -321,7 +321,7 @@ export interface WallpaperCardProps {
  * and the actions in a bottom overlay revealed by `group-hover` and
  * `group-focus-within`. #254's prototype is what the two uncropped layouts wear
  * on top of that: no border and no rounding once the card is handed a box, and a
- * ring on the selected card in every layout.
+ * ring on the selected one.
  *
  * It carries no hover shadow, deliberately. A wheel scroll holds the pointer
  * still while cards stream underneath, so every card that passes fires
@@ -450,20 +450,22 @@ export const WallpaperCard = memo(function WallpaperCard({
       // so a border and a rounded corner on every picture would put back the
       // boxes that layout exists to take away. The uniform grid keeps both.
       //
-      // The selection is a ring, drawn whether or not the grid has focus, which
-      // is what every layout in the prototype did. A cursor the curator can only
-      // see while the grid holds focus is a cursor lost the moment they click the
-      // page bar. It is a `box-shadow`, and ADR 0006 is why that is safe here and
-      // not on `:hover`: it changes on two cards per arrow key, never on every
-      // card a wheel pass slides under the pointer. The browser's own focus
-      // outline goes, because the ring is already on the one cell that can hold
-      // focus.
+      // Those two layouts also ring the selected card, drawn whether or not the
+      // grid has focus, as the prototype's did. The uniform grid is the one the
+      // verdict kept as it was, so it keeps the browser's focus outline and no
+      // ring. The ring is a `box-shadow`, and ADR 0006 is why that is safe here
+      // and not on `:hover`: it changes on two cards per arrow key, never on
+      // every card a wheel pass slides under the pointer. The focus outline goes
+      // where the ring is, because the ring is already on the one cell that can
+      // hold focus.
       className={cn(
-        "group overflow-hidden bg-card outline-none",
+        "group overflow-hidden bg-card",
         box
-          ? "absolute"
+          ? "absolute outline-none"
           : "relative aspect-video rounded-lg border border-border",
-        selected && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+        box &&
+          selected &&
+          "ring-2 ring-primary ring-offset-2 ring-offset-background",
       )}
       style={box}
     >
@@ -503,7 +505,7 @@ export const WallpaperCard = memo(function WallpaperCard({
       />
 
       {/*
-        The rank, set as large as the card is tall.
+        The rank, set large across the card.
 
         Over the picture rather than under it, which is the only place it can be:
         a justified card is filled edge to edge by a wallpaper drawn at its own
@@ -512,12 +514,11 @@ export const WallpaperCard = memo(function WallpaperCard({
         blended into whatever it is lying on, so it belongs to the picture rather
         than sitting on top of it as a label would.
 
-        Sized from the box the layout gave the card, because that is the only
-        number here that knows how big the card is: a fixed size would be a
-        watermark taller than the card at eight columns and a footnote at two,
-        and the density gesture is exactly the thing that moves between them.
+        A fixed 6rem, which is #254's prototype and what the curator agreed on.
+        The card clips it, so at a high density a numeral taller than the row is
+        cropped by the picture it lies on rather than shrunk to fit.
         `leading-none` is what makes the height the glyph's own rather than a
-        line box's, so the number stays centred as it grows.
+        line box's, so the number stays centred.
 
         Before the badge, the pill and the reveal layer in the DOM and none of
         those is in a stacking context of its own, so all three still paint over
@@ -528,8 +529,7 @@ export const WallpaperCard = memo(function WallpaperCard({
         <span
           data-slot="wallpaper-rank"
           aria-hidden
-          className="pointer-events-none absolute inset-0 flex items-center justify-center font-bold text-white/15 tabular-nums mix-blend-overlay leading-none"
-          style={{ fontSize: rankSize(box) }}
+          className="pointer-events-none absolute inset-0 flex items-center justify-center text-[6rem] font-bold text-white/15 tabular-nums mix-blend-overlay leading-none"
         >
           {rank}
         </span>
@@ -767,23 +767,6 @@ export const WallpaperCard = memo(function WallpaperCard({
     </div>
   );
 });
-
-/**
- * How big the rank numeral is drawn, from the box the layout gave the card.
- *
- * Seven tenths of the card's height, which leaves a two-digit rank inside a
- * wallpaper of ordinary shape and lets a three-digit one run past the edges —
- * deliberately, because the card clips it and a number cropped by the picture it
- * is lying under is still legible while a number shrunk to fit is not.
- *
- * A card with no box has no height to take a fraction of, so it takes none: the
- * `undefined` leaves the element at its inherited size. No layout produces that
- * pair — the one layout that ranks is the one that places every card — so it is
- * a guard rather than a case the app reaches.
- */
-function rankSize(box: PlannedBox | undefined): number | undefined {
-  return box ? box.height * 0.7 : undefined;
-}
 
 /**
  * The name of the folder a path sits in, for the `now in rejected/` clause.
