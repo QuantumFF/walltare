@@ -409,6 +409,10 @@ export function ToastSurface({
   // one arrives as a run of its own — which a curator who closed the old one
   // hears about, because it is a different run. Adjusted during render rather
   // than from an effect, so no frame paints the stale pass back.
+  //
+  // A scan that has started, and not one that has been asked for: a Scan the
+  // backend refuses never gets a run, so it has no ending to restart the pass
+  // with, and the pass it would have dropped is still the curator's.
   const scanRun = scan.running ? scan.run : null;
   const [coveredBy, setCoveredBy] = useState<number | null>(null);
   if (scanRun !== coveredBy) {
@@ -562,7 +566,7 @@ export function ToastSurface({
       // The report of a running scan is what is on the slot, and the pass it
       // covers is about to be restarted by the scan's ending, so its progress
       // is dropped rather than kept for a run that will not come back.
-      if (scan.running) return;
+      if (scanRun !== null) return;
       // The run is spent outside the updater, which has to stay pure. A
       // counter's only job is to differ, so one burnt on a run that turns out
       // to be already open costs nothing.
@@ -632,9 +636,10 @@ export function ToastSurface({
    * its Thumbnails line, and three copies of one number on one screen is not
    * emphasis (ADR 0020, ADR 0021).
    */
-  const background: Background | null = scan.running
-    ? { run: `scan-${scan.run}`, kind: "scan", progress: scan.progress }
-    : pass;
+  const background: Background | null =
+    scan.running && scan.run !== null
+      ? { run: `scan-${scan.run}`, kind: "scan", progress: scan.progress }
+      : pass;
   const report =
     background &&
     background.run !== dismissed &&

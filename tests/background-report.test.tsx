@@ -12,6 +12,7 @@ import {
   stats,
   wallpaper,
 } from "./fixtures";
+import { expectConsoleError } from "./console-guard";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // ADR 0021's lower slot. The report is shell-level and outlives every page, so
@@ -160,6 +161,26 @@ async function scanFrom(path: string) {
   });
   await click(screen.getByRole("button", { name: /^rescan$/i }));
   expect(scannedPaths).toEqual([path]);
+}
+
+/**
+ * Press Scan on a folder the backend refuses before any walk starts, and go
+ * back to Rank. What refuses it is the field's to say (ADR 0020), so the
+ * sentence is expected on the console and nowhere near this surface.
+ */
+async function refusedScanFrom(path: string) {
+  expectConsoleError(/Failed to start a scan/);
+  mockCommand("start_scan", () =>
+    Promise.reject({ kind: "invalid_path", message: path }),
+  );
+  await click(gear());
+  await act(async () => {
+    fireEvent.change(screen.getByPlaceholderText("/home/user/wallpapers"), {
+      target: { value: path },
+    });
+  });
+  await click(screen.getByRole("button", { name: /^rescan$/i }));
+  await click(tab("Rank"));
 }
 
 /** Land on Review and keep wall-7, which is the transition that covers a report. */
@@ -328,6 +349,31 @@ test("the report is suppressed on Settings rather than dismissed by it", async (
 
   await click(tab("Rank"));
   expect(toast()?.title).toBe("Preparing thumbnails… 5 of 10");
+});
+
+// A scan drops the pass it covers, because its ending restarts the pass as a
+// run of its own. A scan the backend refused never started, so it has no
+// ending to restart anything with: the pass underneath is the same run it was,
+// and has to come back exactly as the curator left it.
+test("a refused scan keeps the pass progress", async () => {
+  await openApp();
+  await emit("pregen-progress", { done: 5, total: 10 });
+
+  await refusedScanFrom("/definitely/not/a/dir");
+
+  expect(toast()?.title).toBe("Preparing thumbnails… 5 of 10");
+});
+
+test("a refused scan leaves a closed pass closed", async () => {
+  await openApp();
+  await emit("pregen-progress", { done: 5, total: 10 });
+  await click(closeButton()!);
+
+  await refusedScanFrom("/definitely/not/a/dir");
+  await emit("pregen-progress", { done: 6, total: 10 });
+
+  // Still the run the curator said "stop telling me" about.
+  expect(toast()).toBeNull();
 });
 
 test("the report's action opens Settings from where the curator was, and stays up", async () => {

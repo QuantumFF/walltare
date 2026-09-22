@@ -52,13 +52,19 @@ export type ScanOutcome =
  *
  * `run` counts runs and nothing else: it differs between two scans, which is
  * what lets a surface tell a later scan from this one, and holds still for the
- * length of one. `progress` is `null` for the walk, which is silent —
- * `collect_images` runs to completion before the first `scan-progress`, so on a
- * large or networked tree the only thing the frontend knows for minutes is that
- * it asked for a scan.
+ * length of one. It is `null` while the scan has been asked for and not yet
+ * started — the store and `start_scan` are still in flight — because a scan
+ * the backend refuses never was a run. It holds the button disabled and
+ * nothing else: a report that dropped the thumbnail pass for it would have
+ * thrown that run away for a scan that never happened.
+ *
+ * `progress` is `null` for the walk, which is silent — `collect_images` runs to
+ * completion before the first `scan-progress`, so on a large or networked tree
+ * the only thing the frontend knows for minutes is that it asked for a scan.
  */
 export type ScanState =
   | { running: false }
+  | { running: true; run: null; progress: null }
   | { running: true; run: number; progress: ScanProgress | null };
 
 const IDLE: ScanState = { running: false };
@@ -129,9 +135,14 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
 
   // Refs rather than state for everything the events read, because the
   // handlers are registered once for the life of the shell and a scan's events
-  // arrive faster than a render: `running` is read by the next event, not by
-  // the next paint.
-  const running = useRef(false);
+  // arrive faster than a render: `phase` is read by the next event, not by the
+  // next paint.
+  //
+  // Three phases rather than a flag, because the backend's events and its
+  // reply to `start_scan` race. On an empty folder `scan-complete` can arrive
+  // before the reply does, and a run that has already ended must not be opened
+  // again by the reply that started it.
+  const phase = useRef<"idle" | "starting" | "started">("idle");
   const runs = useRef(0);
   /** The folder the running scan was asked for, as the curator wrote it. */
   const folder = useRef("");
@@ -150,25 +161,37 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
     for (const listener of [...listeners.current]) listener(outcome);
   }, []);
 
-  /** Open a run, knowing nothing yet about where it is or what it started from. */
-  const begin = useCallback((progress: ScanProgress | null) => {
-    running.current = true;
+  /**
+   * Give the scan its run: from the reply to `start_scan`, or from the first
+   * event if that beats the reply. A scan this frontend did not start opens
+   * here too, with no folder and no Round to compare against.
+   */
+  const open = useCallback((progress: ScanProgress | null) => {
+    if (phase.current === "idle") {
+      folder.current = "";
+      roundBefore.current = null;
+    }
+    phase.current = "started";
     runs.current += 1;
-    folder.current = "";
-    roundBefore.current = null;
     setState({ running: true, run: runs.current, progress });
   }, []);
 
   const end = useCallback(() => {
-    running.current = false;
+    phase.current = "idle";
     setState(IDLE);
   }, []);
 
   const start = useCallback<ScanRun["start"]>(
     async (next, store) => {
-      if (running.current) return;
-      begin(null);
-      const run = runs.current;
+      if (phase.current !== "idle") return;
+      phase.current = "starting";
+      // `scan-complete` names no folder, so the ending that reports an empty one
+      // has to have been handed the path as the curator wrote it — and this call
+      // is the only place that knows it. Recorded before the walk is asked for,
+      // because on an empty folder the ending can arrive before the reply.
+      folder.current = next;
+      roundBefore.current = null;
+      setState({ running: true, run: null, progress: null });
       try {
         await store(next);
         await client.startScan(next);
@@ -176,10 +199,10 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
         end();
         throw error;
       }
-      // `scan-complete` names no folder, so the ending that reports an empty one
-      // has to have been handed the path as the curator wrote it — and this call
-      // is the only place that knows it.
-      folder.current = next;
+      // Already opened by an event that beat the reply, or already over.
+      if (phase.current !== "starting") return;
+      open(null);
+      const run = runs.current;
       // Read now rather than held from boot, because "now" is the only moment
       // this number is knowable: the walk takes minutes, the inserts that follow
       // move the Round, and by the time `scan-complete` arrives the answer has
@@ -194,15 +217,13 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
           console.error("Failed to read the Round before a scan:", error);
         });
     },
-    [begin, end],
+    [open, end],
   );
 
   useBackendEvents({
     scanProgress: (progress) => {
-      // A scan this frontend did not start still reports; it opens its own run
-      // on the first event, with no folder and no Round to compare against.
-      if (!running.current) {
-        begin(progress);
+      if (phase.current !== "started") {
+        open(progress);
         return;
       }
       setState({ running: true, run: runs.current, progress });

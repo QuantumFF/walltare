@@ -13,7 +13,8 @@ import {
 import type { Stats } from "@/lib/client";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { flush, stats } from "./fixtures";
+import { expectConsoleError } from "./console-guard";
+import { deferred, flush, stats } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // One scan, from the click to how it ended, against the module that owns it and
@@ -245,4 +246,47 @@ test("every finished scan tells the views which rows exist, and one that added t
     { type: "stats-changed", stats: stats({ total_wallpapers: 15, round: 1 }) },
     { type: "library-scanned", added: 0 },
   ]);
+});
+
+test("an ending that beats the reply to start_scan still names the folder, and is not reopened", async () => {
+  const reply = deferred<null>();
+  mockCommand("start_scan", () => reply.promise);
+  await mount();
+
+  let started: Promise<void> = Promise.resolve();
+  await act(async () => {
+    started = run.start("~/Pictures/empty", store);
+  });
+  await flush();
+  // Asked for and not yet a run: the button holds, and nothing else has a run
+  // to act on.
+  expect(run.state).toEqual({ running: true, run: null, progress: null });
+
+  // An empty folder walks in no time, so the backend can finish before its
+  // reply to the call that started it has crossed IPC.
+  await emit("scan-complete", { added_count: 0, scanned_count: 0 });
+  await act(async () => {
+    reply.resolve(null);
+    await started;
+  });
+  await flush();
+
+  expect(outcomes).toEqual([{ kind: "empty", folder: "~/Pictures/empty" }]);
+  expect(run.state).toEqual({ running: false });
+});
+
+test("a Round that cannot be read after the scan still ends it, without an explanation", async () => {
+  expectConsoleError(/Failed to read the Round a scan left behind/);
+  await mount();
+  await start("/library");
+
+  mockCommand("get_stats", () =>
+    Promise.reject({ kind: "db", message: "database is locked" }),
+  );
+  await emit("scan-complete", { added_count: 3, scanned_count: 40 });
+
+  // The count is still news, and the headline is told nothing it was not
+  // measured to say.
+  expect(outcomes).toEqual([{ kind: "added", added: 3, backToRound: null }]);
+  expect(published).toEqual([{ type: "library-scanned", added: 3 }]);
 });
