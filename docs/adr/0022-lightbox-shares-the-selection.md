@@ -261,6 +261,29 @@ so only the forward edge ever pays, and speculative image requests go into the
 one pipeline [ADR 0012](0012-thumbnail-pre-generation.md) built a dedicated
 thread to keep clear.
 
+> **Amended by [#279](https://github.com/QuantumFF/walltare/issues/279),
+> 2026-09-23.** The picture is one module now, `HeroPicture.tsx`, and the Review
+> strip's hero is the other surface drawing it. The rule is unchanged and stated
+> once: the `small` paints behind the `medium` until a `medium` has painted since
+> the picture was mounted, and a step never brings it back. The lightbox's own
+> reset on close went, because its content unmounts with the dialog and a
+> re-opened lightbox mounts a new picture, which is all that reset stood in for.
+>
+> Two things changed underneath. The picture is drawn in a box of the
+> wallpaper's own ratio fitted to the measured area, the strip's `fittedBox`,
+> rather than as an `<img>` with a maximum in each axis. So the row and the crop
+> bars read the box the picture is drawn in rather than a measurement of it, and
+> the `small` does scale up as this section says: under `max-h-full max-w-full`
+> a 400px `small` sat at its natural size in the middle of the window, and the
+> `medium` stopped at 1920. A wallpaper whose Dimensions nothing has read is
+> drawn in ADR 0044's 16:9 guess, letterboxed rather than cropped. And the gone
+> panel's reset per wallpaper, from ADR 0032's amendment under Consequences, is
+> keyed on the wallpaper's id instead of an effect. The lightbox's passive effect
+> painted **File is gone** for a frame over a wallpaper that was fine; keyed on
+> the id, the render that steps is the render that drops the panel. The panel
+> sits in the picture's box after the two images rather than in a grid cell,
+> which keeps everything that amendment says about it.
+
 ### A Rejected wallpaper shows its Origin, and keeps its colour
 
 No dimming and no desaturation. ADR 0019 dims a Rejected card's `<img>` so it
