@@ -5,7 +5,8 @@ import {
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
-import { CropPreview, useCropPreview } from "@/components/CropPreview";
+import { useCropPreview } from "@/components/CropPreview";
+import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
 import {
   useSelection,
   type SelectionHandle,
@@ -16,26 +17,24 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useLightboxHost } from "@/context/LightboxHostContext";
-import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
+import type { Wallpaper } from "@/lib/client";
 import {
   counted,
-  FILE_IS_GONE,
-  FILE_IS_GONE_DETAIL,
   grouped,
   isEvaluated,
   score,
   STATUS_LABEL,
 } from "@/lib/copy";
-import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
+import type { Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * How narrow the row under the picture is allowed to get, in pixels.
  *
- * The row is measured off the painted picture (#44), so a portrait wallpaper
+ * The row is as wide as the picture (#44), so a portrait wallpaper
  * paints one narrower than its own controls need: at the default 1280x800
  * window the image box is about 1216x680, and a 9:16 phone wallpaper fills the
  * height and paints 382px wide. Below this the row overhangs the picture
@@ -50,30 +49,28 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * position (40) and the two gaps of 16 around it, and `Make Active K` beside
  * `Reject Del` (227 with the gap between them). That is 499, so 500.
  *
- * **It has no test and cannot have one.** happy-dom does no layout, so the
- * measurement below is `null` under a test runner and the row falls back to the
- * full width; ADR 0022 records this as untested by construction, since the live
- * library holds no portrait wallpaper — 120 rows, the narrowest a square — and
- * says the arithmetic wants checking against a real 9:16 file once one exists.
- * A test standing a fake measurement in front of the component would pin the
- * arithmetic to itself rather than to a laid-out row.
+ * **It has no test, on purpose.** happy-dom does no layout, so under a test
+ * runner the box is `UNMEASURED_PICTURE` fitted to the wallpaper's ratio, and a
+ * test of the floor would be a test of that fallback's arithmetic rather than of
+ * a laid-out row. ADR 0022 records the floor as untested by construction, since
+ * the live library holds no portrait wallpaper — 120 rows, the narrowest a
+ * square — and says the arithmetic wants checking against a real 9:16 file once
+ * one exists.
  */
 const ROW_FLOOR = 500;
 
 /**
- * What the picture's cell is taken to be while nothing has measured the painted
- * image, in pixels.
+ * What the picture's area is taken to be while nothing has measured it, in
+ * pixels.
  *
  * The default 1280x800 window less what this surface puts around the picture:
  * 1280 wide less the content's `p-8` at both ends is 1216, and 800 tall less
  * that same 64 and less the `pb-14` the row is given is about 680. The pair the
  * `ROW_FLOOR` arithmetic above is already written against.
  *
- * It exists for the crop preview and for nothing else. The row has its own
- * fallback — the full width — because the row is laid out in the flow; the bars
- * need a box of the wallpaper's own ratio, and a box of nothing is no box at
- * all. The moment a browser lays the picture out, the measurement replaces this
- * (ADR 0022, #266).
+ * The picture, the crop bars and the row all take their box from this until a
+ * browser lays the area out, and then from the measurement. Under a test runner
+ * that lays nothing out it is the only answer there is (ADR 0022, #266, #279).
  */
 const UNMEASURED_PICTURE: Box = { width: 1216, height: 680 };
 
@@ -313,7 +310,7 @@ export interface LightboxProps {
  *
  * #44 settled the housing and ADR 0022 the behaviour. The layout is the
  * prototype's `inline` variant — the row belongs to the picture rather than to
- * the window, so it is measured off the painted image below — with that
+ * the window, so it is as wide as the picture's box below — with that
  * prototype's `← → navigate · Esc close` hint dropped, because the keys move
  * onto the controls they fire and the rest live in the `?` dialog.
  *
@@ -367,10 +364,10 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   const atFirst = index <= 0;
   const atLast = index >= length - 1;
 
-  // The bars, and the press that raises them. The same stored toggle the Review
-  // strip reads, so a curator who turned them on there opens this surface with
-  // them still up (#266).
-  const { on: cropOn, toggle: toggleCrop } = useCropPreview();
+  // The press that raises the bars, off the same stored toggle the Review strip
+  // reads, so a curator who turned them on there opens this surface with them
+  // still up. The picture reads the toggle to draw them (#266).
+  const { toggle: toggleCrop } = useCropPreview();
 
   // The five keys, bound on `window` rather than on the content below.
   //
@@ -436,114 +433,20 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, wallpaper, step, onAction, toggleCrop]);
 
-  // Whether a `medium` has painted since this was opened, which is the whole
-  // question the placeholder below answers: a step has the outgoing picture to
-  // hold, and a first open has nothing.
+  // The picture's box: what the picture is drawn in, what the crop bars are
+  // percentages of, and what the row shrink-wraps to.
   //
-  // Not reset per wallpaper, deliberately. Once one has painted there is always
-  // an outgoing frame for the next step to hold, and re-mounting the `small`
-  // would put the *arriving* wallpaper's thumbnail behind the outgoing picture
-  // — visible around the edges wherever two aspect ratios differ, and this
-  // library holds no two the same — and spend a request per step on it. The
-  // close is what resets it, because the element goes with the content and a
-  // re-opened lightbox has nothing painted again.
-  const [arrived, setArrived] = useState(false);
-
-  useEffect(() => {
-    if (!open) setArrived(false);
-  }, [open]);
-
-  /**
-   * Whether the picture failed to arrive, which is how this surface learns the
-   * file is gone.
-   *
-   * The same answer the card reads, off the same request, so the two surfaces
-   * cannot disagree about one wallpaper: a card that says the file is gone opens
-   * onto a lightbox that says so too (ADR 0032).
-   *
-   * Reset per wallpaper, unlike `arrived`. A step is a different file, and the
-   * `<img>` has no `key` — it keeps painting the outgoing picture while the next
-   * one decodes — so without this the message would sit over a picture that is
-   * still there, and stay there for a wallpaper that loads fine.
-   */
-  const [gone, setGone] = useState(false);
-
-  useEffect(() => {
-    setGone(false);
-  }, [wallpaper?.id]);
-
-  // The painted picture's box: what the row shrink-wraps to, and what the crop
-  // preview's bars are percentages of.
-  //
-  // Measured rather than expressed in CSS, and that is not a shortcut: during
+  // Fitted rather than expressed in CSS, and that is not a shortcut: during
   // intrinsic sizing a letterboxed image contributes its *natural* width, so a
   // column wrapped around one goes full width and takes the row with it. The
-  // image's own `max-w`/`max-h` box is exactly the painted picture, so the box
-  // is the measurement. `null` until a layout answers, which happens to be
-  // every render under a test runner that lays nothing out — the row falls back
-  // to the full width there, and the fall back is what keeps the identity and
-  // the position assertable without a layout engine.
-  //
-  // Both axes rather than the width alone, because the crop preview needs a box
-  // of exactly the wallpaper's ratio to draw its bars against, and half a box is
-  // not one. The row still reads only the width.
-  const image = useRef<HTMLImageElement | null>(null);
-  const [painted, setPainted] = useState<Box | null>(null);
-
-  useEffect(() => {
-    const node = image.current;
-    if (!node) return;
-    const measure = () => {
-      const { width, height } = node.getBoundingClientRect();
-      // The width is what decides whether there is a measurement at all, which
-      // is the rule the row was written against and is left alone. A height of
-      // nothing beside a width is not a box, and the crop preview below falls
-      // back rather than drawing its bars against one.
-      //
-      // Compared before it is held, unlike the bare number this used to be:
-      // React bails out of a state write that is the same primitive, and a fresh
-      // object per `ResizeObserver` callback is a re-render per callback.
-      setPainted((held) => {
-        if (width <= 0) return null;
-        return held?.width === width && held.height === height
-          ? held
-          : { width, height };
-      });
-    };
-    measure();
-    // The observer covers the two things that change the box after the first
-    // measurement and announce themselves nowhere else: the window resizing,
-    // and the `medium` arriving, which is when a letterboxed image first has a
-    // natural aspect ratio to be fitted against.
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [open, wallpaper?.id]);
+  // measuring and the arithmetic are the picture module's, the same rule the
+  // Review strip's hero is fitted by; what this surface supplies is the area,
+  // which is the cell less the room reserved for the row (#279).
+  const { area, box } = usePictureBox(wallpaper, UNMEASURED_PICTURE);
 
   // Whether the picture is narrower than the row's floor, which is the one
-  // thing that drops the read-out. An unmeasured box is not floored: the row
-  // falls back to the full width there, and the full width holds everything.
-  const floored = painted !== null && painted.width < ROW_FLOOR;
-
-  /**
-   * The box the crop bars are drawn in: the painted picture, or where it will
-   * be painted while nothing has measured it.
-   *
-   * The measurement is the answer whenever there is one, because it is the
-   * picture itself. The fallback is the same box `object-contain` will land on
-   * — the wallpaper's own ratio fitted into the cell — so the two agree by
-   * construction rather than by luck, and a first frame does not put the bars
-   * somewhere the picture is not. Under a test runner that lays nothing out it
-   * is the only answer there is, which is what makes the preview assertable
-   * without a layout engine (ADR 0015, ADR 0022).
-   */
-  const cropBox =
-    painted && painted.height > 0
-      ? painted
-      : fittedBox(
-          UNMEASURED_PICTURE,
-          ratioOf(wallpaper?.width ?? null, wallpaper?.height ?? null),
-        );
+  // thing that drops the read-out.
+  const floored = box.width < ROW_FLOOR;
 
   // Where the open lands, which is this surface and not a control on it.
   //
@@ -621,154 +524,33 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
             className="fixed inset-0 flex flex-col bg-neutral-950/80 outline-none"
           >
             <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
-              {/* Both renderings of the wallpaper sit in one grid cell, each
-                  fitted against it with `object-contain`, so the `medium`
-                  arrives exactly where the `small` was and reads as a
-                  sharpening rather than a jump. A cell rather than an overlay
-                  positioned over the picture, because the cell already is the
-                  rectangle they have to share: it is this container less the
-                  height reserved for the row, and an overlay would have to be
-                  handed that height a second time to land on the same box.
-                  Their order in the DOM is the order they paint, and neither is
-                  positioned, so the `medium` covers the `small` with no z-index
-                  in it. */}
-              <div className="relative grid h-full w-full grid-cols-1 grid-rows-1 place-items-center pb-14">
-                {/*
-                  The first frame, and the reason opening this never shows an
-                  empty box. There is nothing painted to hold on a first open,
-                  so the `small` the card the curator just pressed is already
-                  showing paints scaled up while the `medium` arrives: one
-                  element and no request, because under ADR 0016's `max-age=300`
-                  that `small` is in the memory cache. The alternative shows the
-                  curator a spinner instead of their wallpaper on the one path
-                  where the cache is cold, and ADR 0006 measured that path at
-                  386ms mean and 1962ms worst (ADR 0022).
+              {/* The cell the picture and the row share. The bottom padding is
+                  the room the row is given, so the area inside it is what the
+                  picture is fitted into, and the picture is centred in an
+                  absolutely positioned layer so its pixel size cannot feed back
+                  into the area it was measured from. */}
+              <div className="relative h-full w-full pb-14">
+                <div ref={area} className="relative h-full w-full">
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    {/* The picture, its placeholder, its crop preview and the
+                        panel that says its file is gone, all of which the
+                        picture module owns and the Review strip shares. Nothing
+                        here resets on a close: the content goes with the
+                        dialog, so a re-opened lightbox mounts a picture with
+                        nothing painted, and the placeholder comes back with it
+                        (ADR 0022, ADR 0032, #279).
 
-                  Nothing announces it: an empty `alt` keeps it out of the
-                  accessibility tree, because it is the same picture as the
-                  `medium` over it and that one is already named.
-                */}
-                {!arrived && (
-                  <img
-                    data-slot="lightbox-placeholder"
-                    src={wallpaperImageUrl(wallpaper.id, "small")}
-                    alt=""
-                    className="col-start-1 row-start-1 max-h-full max-w-full object-contain"
-                  />
-                )}
-
-                <img
-                  ref={image}
-                  data-slot="lightbox-picture"
-                  src={wallpaperImageUrl(wallpaper.id, "medium")}
-                  alt={wallpaper.filename}
-                  // No `key`, deliberately, and this is what it buys: an `<img>`
-                  // whose `src` changes keeps painting the image it has until
-                  // the new one decodes, so the outgoing wallpaper holds the
-                  // frame for the whole of a step. A fresh element per wallpaper
-                  // remounts with nothing painted, which is the prototype's bug
-                  // — a held arrow key strobing to black at a median 376KB a
-                  // frame (ADR 0022).
-                  //
-                  // `load` is what retires the placeholder above, and `error`
-                  // counts as arrival too, for the reason ADR 0006's rank panes
-                  // count it: a thumbnail held up in front of a picture that is
-                  // never coming would be the spinner that never resolves.
-                  //
-                  // What the failure leaves is no longer ADR 0022's visibly
-                  // broken picture. It is the panel below, which says the file
-                  // is gone — the one thing a broken image did not say, and the
-                  // reading that keeps a library changing underneath the app
-                  // from looking like the app breaking (ADR 0032).
-                  onLoad={() => {
-                    setArrived(true);
-                    setGone(false);
-                  }}
-                  onError={() => {
-                    setArrived(true);
-                    setGone(true);
-                  }}
-                  // Not dimmed and not desaturated, whatever the card does. The
-                  // card fades a Rejected `<img>` so it recedes in a mixed
-                  // grid; this surface exists to show one picture at full size,
-                  // which is the opposite job, and the Status pill below
-                  // carries the signal instead (ADR 0019, ADR 0022).
-                  //
-                  // Hidden once it has failed, rather than covered by an opaque
-                  // panel: what a failed `<img>` paints is its `alt`, and over a
-                  // translucent backdrop a solid box would stand out. `invisible`
-                  // keeps it mounted, so a later `load` can still clear `gone`.
-                  className={cn(
-                    "col-start-1 row-start-1 max-h-full max-w-full object-contain",
-                    gone && "invisible",
-                  )}
-                />
-
-                {/*
-                  The file is gone, said where the picture would have been.
-
-                  In the same grid cell as the two images and after them in the
-                  DOM, so it covers whatever the failed request left behind
-                  without a z-index and without the row below moving: the row is
-                  absolutely positioned and comes later still, so every control
-                  stays where it was and stays pressable. Rejecting or restoring
-                  a wallpaper whose file is gone is exactly what the curator
-                  might want to do about it, and the read-out under the picture
-                  is already naming the path (ADR 0022).
-
-                  Two lines, where the card has room for one. The second names
-                  the cause, which is the half the curator cannot see and the
-                  whole point: a file that vanished from under the app reads as
-                  their own library changing rather than as the app breaking
-                  (ADR 0032).
-
-                  No fill of its own: the failed `<img>` is hidden, so there is
-                  no `alt` text left to cover, and the backdrop shows through as
-                  it does around the picture.
-
-                  `pointer-events-none` so the arrows and the Close behind the
-                  edges of the box keep taking their own clicks.
-                */}
-                {/*
-                  What the Screen would cut off, over the picture it would cut
-                  it off.
-
-                  Its own box in the same grid cell rather than an overlay
-                  positioned over the `<img>`: the cell centres what is in it, so
-                  a box the size of the painted picture lands exactly on the
-                  painted picture with no offsets to keep in step. The bars are
-                  percentages, so that box has to be the picture and not the cell
-                  around it — a box with letterboxing in it would measure the
-                  letterboxing (`fittedBox`, #266).
-
-                  Before the gone panel in the DOM and not drawn at all when it
-                  is up: the panel says there is no picture, and bars over it
-                  would be a claim about one.
-                */}
-                {cropOn && !gone && (
-                  <div
-                    data-slot="lightbox-crop"
-                    style={{ width: cropBox.width, height: cropBox.height }}
-                    className="pointer-events-none relative col-start-1 row-start-1"
-                  >
-                    <CropPreview wallpaper={wallpaper} />
+                        White text for the panel because this ground is dark in
+                        both themes. The row below stays where it is whatever
+                        the picture says, so rejecting or restoring a wallpaper
+                        whose file is gone is still one press away. */}
+                    <HeroPicture
+                      wallpaper={wallpaper}
+                      box={box}
+                      className="text-white"
+                    />
                   </div>
-                )}
-
-                {gone && (
-                  <div
-                    data-slot="lightbox-gone"
-                    className="pointer-events-none col-start-1 row-start-1 flex h-full w-full flex-col items-center justify-center gap-2 px-8 text-center"
-                  >
-                    <ImageOff className="h-10 w-10 text-white/40" aria-hidden />
-                    <p className="text-sm font-medium text-white">
-                      {FILE_IS_GONE}
-                    </p>
-                    <p className="max-w-sm text-xs text-white/60">
-                      {FILE_IS_GONE_DETAIL}
-                    </p>
-                  </div>
-                )}
+                </div>
 
                 {/* The row, at the picture's width and absolutely positioned so
                     it cannot affect the layout it is measured against — in flow
@@ -783,7 +565,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                   data-slot="lightbox-row"
                   className="absolute bottom-0 left-1/2 flex h-11 -translate-x-1/2 items-center gap-4 overflow-hidden"
                   style={{
-                    width: painted?.width ?? "100%",
+                    width: box.width,
                     minWidth: ROW_FLOOR,
                   }}
                 >
