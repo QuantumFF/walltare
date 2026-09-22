@@ -289,8 +289,10 @@ thread to keep clear.
 > the `small` does scale up as this section says: under `max-h-full max-w-full`
 > a 400px `small` sat at its natural size in the middle of the window, and the
 > `medium` stopped at 1920. A wallpaper whose Dimensions nothing has read is
-> drawn in ADR 0044's 16:9 guess, letterboxed rather than cropped. And the gone
-> panel's reset per wallpaper, from ADR 0032's amendment under Consequences, is
+> drawn in ADR 0044's 16:9 guess only until its `medium` loads, and then at the
+> decoded picture's own shape, so a portrait of unknown shape still gets a row
+> the picture's width. The Review strip keeps the guess and crops to it, as it
+> always has. And the gone panel's reset per wallpaper, from ADR 0032's amendment under Consequences, is
 > keyed on the wallpaper's id instead of an effect. The lightbox's passive effect
 > painted **File is gone** for a frame over a wallpaper that was fine; keyed on
 > the id, the render that steps is the render that drops the panel. The panel

@@ -1,4 +1,5 @@
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
+import { fittedBox } from "@/lib/layout-plan";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
@@ -1040,6 +1041,29 @@ test("closing after a sweep focuses the card the selection ended on", async () =
   );
 });
 
+test("a portrait whose Dimensions nothing has read gets a row the picture's width once it loads", async () => {
+  await enterReview([
+    wallpaper(7, { filename: "unread.jpg", width: null, height: null }),
+  ]);
+  await press("Enter");
+
+  // The decoded `medium` is the one thing that knows the shape, and happy-dom
+  // decodes nothing, so the test says what it would have decoded to.
+  const element = picture();
+  Object.defineProperty(element, "naturalWidth", { value: 1080 });
+  Object.defineProperty(element, "naturalHeight", { value: 1920 });
+  await loaded(element);
+
+  // The row shrink-wraps the picture rather than the 16:9 guess, which is what
+  // the lightbox did before the picture was shared and what #44 asked for. At
+  // this width it is under the floor, so the read-out is what drops
+  // (ADR 0022, ADR 0044).
+  expect(Number.parseFloat(row().style.width)).toBeCloseTo(
+    fittedBox({ width: 1216, height: 680 }, 1080 / 1920).width,
+  );
+  expect(readOut()).toBeNull();
+});
+
 // A file that has gone. The lightbox is where a missing file is most visible,
 // and ADR 0022 left it as a broken image on the grounds that Restore's own
 // `FileMissing` sentence was the actionable part. It is not: a stranger's
@@ -1056,7 +1080,15 @@ test("a gone picture keeps the row, its read-out and its actions", async () => {
   await press("Enter");
 
   await failed(picture());
-  expect(gonePanel()?.textContent).toContain("File is gone");
+
+  // Two lines, where the card and the strip have one. The second names the
+  // cause, because that is the half the curator cannot see: nothing in the app
+  // moved the file (ADR 0032).
+  const panel = gonePanel() as HTMLElement;
+  expect(panel.textContent).toContain("File is gone");
+  expect(panel.textContent).toContain(
+    "It was moved or deleted outside walltare. Nothing here has changed.",
+  );
 
   // Everything the curator could act on stays where it was: the row is
   // positioned over the picture rather than after it, so the panel covers the

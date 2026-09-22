@@ -620,9 +620,11 @@ test("a filmstrip entry whose file is gone says so, and the hero agrees", async 
   expect(
     inReview().getByRole("option", { name: "vanished.jpg, File is gone" }),
   ).toBeTruthy();
+  // One line on the hero, as on the card: the cause is the lightbox's second
+  // line, where there is room for it.
   expect(
-    reviewView().querySelector('[data-slot="hero-gone"]'),
-  ).not.toBeNull();
+    reviewView().querySelector('[data-slot="hero-gone"]')?.textContent,
+  ).toBe("File is gone");
 });
 
 test("closing the lightbox puts focus back on the strip", async () => {

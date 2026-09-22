@@ -1,6 +1,6 @@
 import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
-import type { Box } from "@/lib/layout-plan";
+import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
 import { act, cleanup, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useState } from "react";
@@ -39,25 +39,39 @@ const AREA: Box = { width: 1216, height: 680 };
 /** Put the stage on another wallpaper, or on none, from outside it. */
 let show: (next: Wallpaper | null) => void = () => {};
 
+/** What the stage's gone panel says, which is the surface's to word. */
+const NOTICE = "the stage's own notice";
+
 /**
  * A surface with nothing but the picture on it: an area for the hook to
  * measure, and the picture fitted into it for whichever wallpaper is shown.
  * Showing none unmounts the picture, which is how a surface loses it — the
  * strip's worklist emptying, or the lightbox closing.
+ *
+ * `learns` is whether it hands the decoded size back to the hook, which is the
+ * lightbox's arrangement; the strip's is not to.
  */
-function Stage({ first }: { first: Wallpaper }) {
+function Stage({ first, learns }: { first: Wallpaper; learns: boolean }) {
   const [shown, setShown] = useState<Wallpaper | null>(first);
   show = setShown;
-  const { area, box } = usePictureBox(shown, AREA);
+  const { area, box, learnNaturalSize } = usePictureBox(shown, AREA);
   return (
     <div ref={area}>
-      {shown && <HeroPicture wallpaper={shown} box={box} />}
+      {shown && (
+        <HeroPicture
+          wallpaper={shown}
+          box={box}
+          fit="contain"
+          gone={<span>{NOTICE}</span>}
+          onNaturalSize={learns ? learnNaturalSize : undefined}
+        />
+      )}
     </div>
   );
 }
 
-async function mount(first: Wallpaper) {
-  await renderInApp(<Stage first={first} />);
+async function mount(first: Wallpaper, learns = false) {
+  await renderInApp(<Stage first={first} learns={learns} />);
 }
 
 /** A step: the same picture, handed another wallpaper. */
@@ -97,13 +111,36 @@ const requests = () =>
 /**
  * An image arriving. happy-dom loads nothing, so it fires no `load` of its own
  * — a test that needs a picture to have arrived has to say so, which is also
- * the only way to reach the frame where one has not.
+ * the only way to reach the frame where one has not. It decodes nothing
+ * either, so a test that needs the decoded size says what it was.
  */
-async function loaded(element: Element) {
+async function loaded(element: Element, natural?: Box) {
+  if (natural) {
+    Object.defineProperty(element, "naturalWidth", {
+      configurable: true,
+      value: natural.width,
+    });
+    Object.defineProperty(element, "naturalHeight", {
+      configurable: true,
+      value: natural.height,
+    });
+  }
   await act(async () => {
     fireEvent.load(element);
   });
   await flush();
+}
+
+/** The box the picture is drawn in, as the component sized it. */
+const drawn = () => ({
+  width: Number.parseFloat(hero()!.style.width),
+  height: Number.parseFloat(hero()!.style.height),
+});
+
+function expectBox(ratio: number) {
+  const want = fittedBox(AREA, ratio);
+  expect(drawn().width).toBeCloseTo(want.width);
+  expect(drawn().height).toBeCloseTo(want.height);
 }
 
 /**
@@ -174,19 +211,15 @@ test("a picture mounted again paints its placeholder again", async () => {
   ]);
 });
 
-test("a picture that will not load says the file is gone, and why", async () => {
+test("a picture that will not load puts up the surface's gone panel", async () => {
   await mount(first);
   expect(gonePanel()).toBeNull();
 
   await failed(picture());
 
-  const panel = gonePanel() as HTMLElement;
-  expect(panel.textContent).toContain("File is gone");
-  // The second line names the cause, because that is the half the curator
-  // cannot see: nothing in the app moved the file (ADR 0032).
-  expect(panel.textContent).toContain(
-    "It was moved or deleted outside walltare. Nothing here has changed.",
-  );
+  // In the surface's own words: the strip says one line and the lightbox two,
+  // and each file asserts its own (ADR 0032).
+  expect(gonePanel()?.textContent).toBe(NOTICE);
   // The thumbnail is not held up in front of a picture that is never coming,
   // which would be the spinner that never resolves (ADR 0006).
   expect(placeholder()).toBeNull();
@@ -219,7 +252,14 @@ test("stepping off a gone wallpaper never draws the message over the next one", 
   expect(gonePanel()).not.toBeNull();
 
   // Whether the panel was in the document at the moment the picture took the
-  // next wallpaper's `src`. The `<img>` has no `key`, so it keeps painting the
+  // next wallpaper's `src`.
+  //
+  // This leans on how React commits, and says so: the panel and the picture
+  // are siblings, and within one commit React removes a deleted child before it
+  // updates the attributes of the siblings that stay. So "the panel was gone
+  // when the `src` changed" is what one commit dropping the panel looks like,
+  // and a reset in any later commit is caught. Were React to reorder that, this
+  // would fail on a correct implementation rather than pass on a broken one. The `<img>` has no `key`, so it keeps painting the
   // outgoing picture through the step, and a panel that outlives that moment by
   // even one commit is "File is gone" over a wallpaper that is fine. A reset in
   // a passive effect lands a frame late, which is the lightbox's bug this
@@ -241,10 +281,14 @@ test("stepping off a gone wallpaper never draws the message over the next one", 
 
   expect(goneAtSwitch as boolean | null).toBe(false);
   expect(gonePanel()).toBeNull();
-  expect(picture().className).not.toContain("invisible");
+  // The element is still holding the failed request, though, so it stays
+  // hidden until the next one lands: shown, it would flash the next
+  // wallpaper's `alt` and the broken-image glyph for the length of the decode.
+  expect(picture().className).toContain("invisible");
 
   await loaded(picture());
   expect(gonePanel()).toBeNull();
+  expect(picture().className).not.toContain("invisible");
 });
 
 test("stepping onto a second gone wallpaper says so again", async () => {
@@ -254,5 +298,40 @@ test("stepping onto a second gone wallpaper says so again", async () => {
   await step(second);
   await failed(picture());
 
-  expect(gonePanel()?.textContent).toContain("File is gone");
+  expect(gonePanel()?.textContent).toBe(NOTICE);
+});
+
+// The shape. A wallpaper with Dimensions is drawn at them; one without is the
+// 16:9 guess every layout makes (ADR 0044), and a surface that hands the
+// decoded size back gets the picture's own shape once the `medium` has loaded.
+
+test("a wallpaper whose Dimensions nothing has read takes the decoded shape, if the surface asks", async () => {
+  await mount(wallpaper(7, { width: null, height: null }), true);
+
+  // Nothing is known yet, so the guess.
+  expectBox(16 / 9);
+
+  // A portrait, which is the case the guess gets most wrong.
+  await loaded(picture(), { width: 1080, height: 1920 });
+
+  expectBox(1080 / 1920);
+
+  // Keyed on the wallpaper it was decoded for, so the next unknown wallpaper
+  // is the guess again rather than the last one's shape.
+  await step(wallpaper(8, { width: null, height: null }));
+  expectBox(16 / 9);
+});
+
+test("the guess stands for a surface that does not ask, and Dimensions always win", async () => {
+  await mount(wallpaper(7, { width: null, height: null }));
+  await loaded(picture(), { width: 1080, height: 1920 });
+
+  // The strip's arrangement: its hero is a frame the picture fills.
+  expectBox(ratioOf(null, null));
+
+  cleanup();
+  await mount(wallpaper(7, { width: 2560, height: 1080 }), true);
+  await loaded(picture(), { width: 1080, height: 1920 });
+
+  expectBox(2560 / 1080);
 });
