@@ -93,7 +93,10 @@ export type StatusFilter = "all" | "active" | "kept" | "rejected";
  * and stays off the DTO.
  */
 export type ListOrdering =
-  "score_desc" | "score_asc" | "filename_asc" | "recently_added";
+  | "score_desc"
+  | "score_asc"
+  | "filename_asc"
+  | "recently_added";
 
 /** Mirrors settings::Theme; each string is what `set_setting` accepts back. */
 export type Theme = "system" | "light" | "dark";
