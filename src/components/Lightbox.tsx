@@ -20,6 +20,8 @@ import { useLightboxHost } from "@/context/LightboxHostContext";
 import type { Wallpaper } from "@/lib/client";
 import {
   counted,
+  FILE_IS_GONE,
+  FILE_IS_GONE_DETAIL,
   grouped,
   isEvaluated,
   score,
@@ -27,7 +29,7 @@ import {
 } from "@/lib/copy";
 import type { Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -442,7 +444,15 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   // measuring and the arithmetic are the picture module's, the same rule the
   // Review strip's hero is fitted by; what this surface supplies is the area,
   // which is the cell less the room reserved for the row (#279).
-  const { area, box } = usePictureBox(wallpaper, UNMEASURED_PICTURE);
+  //
+  // A wallpaper whose Dimensions nothing has read takes its shape from the
+  // decoded `medium` once it has loaded, so a portrait of unknown shape still
+  // gets a row the width of the picture rather than of the 16:9 guess
+  // (ADR 0044). The guess stands only until something is known.
+  const { area, box, learnNaturalSize } = usePictureBox(
+    wallpaper,
+    UNMEASURED_PICTURE,
+  );
 
   // Whether the picture is narrower than the row's floor, which is the one
   // thing that drops the read-out.
@@ -540,14 +550,32 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                         nothing painted, and the placeholder comes back with it
                         (ADR 0022, ADR 0032, #279).
 
-                        White text for the panel because this ground is dark in
-                        both themes. The row below stays where it is whatever
+                        `contain`, because this surface exists to show all of
+                        the picture. The gone panel is two lines in white,
+                        because this ground is dark in both themes and there is
+                        room for the cause the card and the strip do without
+                        (ADR 0032). The row below stays where it is whatever
                         the picture says, so rejecting or restoring a wallpaper
                         whose file is gone is still one press away. */}
                     <HeroPicture
                       wallpaper={wallpaper}
                       box={box}
-                      className="text-white"
+                      fit="contain"
+                      onNaturalSize={learnNaturalSize}
+                      gone={
+                        <>
+                          <ImageOff
+                            className="h-10 w-10 text-white/40"
+                            aria-hidden
+                          />
+                          <p className="text-sm font-medium text-white">
+                            {FILE_IS_GONE}
+                          </p>
+                          <p className="max-w-sm text-xs text-white/60">
+                            {FILE_IS_GONE_DETAIL}
+                          </p>
+                        </>
+                      }
                     />
                   </div>
                 </div>
@@ -690,7 +718,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                     agreement with ADR 0009's transition table.
 
                     Nothing is greyed to hold its space. The row's width changes
-                    on every step, because it is measured off a picture and no
+                    on every step, because it is the picture's width and no
                     two wallpapers in this library share an aspect ratio, so
                     reserving button space stabilises the wrong axis. The one
                     control that renders while unavailable is the Restore on an

@@ -405,9 +405,24 @@ export function ReviewStrip({
             <HeroPicture
               wallpaper={selected}
               box={hero}
-              // The page's own muted ground, which is also what a gone file
-              // leaves showing, and a click on the picture opens the lightbox.
-              className="cursor-zoom-in rounded-lg bg-muted text-muted-foreground"
+              // A frame the picture fills, the same as the filmstrip under it:
+              // only the 16:9 guess for a wallpaper whose Dimensions nothing has
+              // read is ever cropped by it (ADR 0044).
+              fit="cover"
+              // One line, on the page's own muted ground, which is also what a
+              // gone file leaves showing (ADR 0032).
+              gone={
+                <>
+                  <ImageOff
+                    className="h-8 w-8 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <span className="text-sm font-medium text-muted-foreground">
+                    {FILE_IS_GONE}
+                  </span>
+                </>
+              }
+              className="cursor-zoom-in rounded-lg bg-muted"
               onClick={() => onOpen?.(selected)}
             />
           )}
