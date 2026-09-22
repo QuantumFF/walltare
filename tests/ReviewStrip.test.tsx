@@ -646,6 +646,33 @@ test("closing the lightbox puts focus back on the strip", async () => {
   expect(focusedEntry()).toBe("next.jpg");
 });
 
+test("Refresh keeps the hero on the same wallpaper and the filmstrip at its size", async () => {
+  // The strip's cursor and its filmstrip size are its own state, so a refetch
+  // that remounted it would put the curator back at the top of the worklist at
+  // 128px. A refetch replaces the rows and leaves the surface alone (#285).
+  const worklist = [
+    wallpaper(3, { filename: "first.jpg" }),
+    wallpaper(1, { filename: "second.png" }),
+    wallpaper(7, { filename: "third.webp" }),
+  ];
+  await openStrip(worklist);
+  mockCommand("list_wallpapers", () => worklist.map((row) => ({ ...row })));
+
+  await enterStrip();
+  await press("+");
+  await press("ArrowRight");
+  expect(heroPicture()?.alt).toBe("second.png");
+  expect(entryHeight()).toBe(160);
+
+  await click(inReview().getByRole("button", { name: /refresh/i }));
+
+  expect(heroPicture()?.alt).toBe("second.png");
+  expect(marked().map((entry) => entry.getAttribute("aria-label"))).toEqual([
+    "second.png",
+  ]);
+  expect(entryHeight()).toBe(160);
+});
+
 test("switching layout keeps the curator where they were in the queue", async () => {
   // A fifty-row sweep that lands back at the top is losing your place, which is
   // what the epic means by wanting the selection preserved across a layout
