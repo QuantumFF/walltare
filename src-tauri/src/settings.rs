@@ -53,53 +53,128 @@ pub const FALLBACK_SCREEN: Resolution = Resolution {
     height: 1080,
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Theme {
-    System,
-    Light,
-    Dark,
-}
+/// A key whose legal values are a closed list, and the one place that list is
+/// written down.
+///
+/// Both halves of a strict write come out of it: [`Vocabulary::parse`] takes
+/// exactly the spellings of [`Vocabulary::values`], and the refusal
+/// [`Vocabulary::written`] returns names exactly those spellings. They used to
+/// be two lists per key — a hand-written parse, and a sentence beside it naming
+/// the values again — with nothing checking one against the other.
+///
+/// The spelling is the only text a value has, in the column and on the way in
+/// alike: exactly what `String(value)` in `client.ts` produces for the value a
+/// read handed it. Anything else is a row someone edited by hand, and a
+/// forgiving parse would have to decide what `TRUE`, `+10` and `4.0` were each
+/// meant to be.
+trait Vocabulary: Copy {
+    /// What a refusal calls a value of this key, article included.
+    const NOUN: &'static str;
 
-impl Theme {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "system" => Some(Self::System),
-            "light" => Some(Self::Light),
-            "dark" => Some(Self::Dark),
-            _ => None,
-        }
+    /// Every value the key can hold, in the order a refusal names them.
+    fn values() -> impl Iterator<Item = Self>;
+
+    /// The text `self` is stored as.
+    fn spelling(self) -> String;
+
+    /// The value `text` spells, or nothing when it spells none of them.
+    fn parse(text: &str) -> Option<Self> {
+        Self::values().find(|value| value.spelling() == text)
+    }
+
+    /// A value on its way into the table, or the refusal naming every value it
+    /// could have been.
+    fn written(text: &str) -> Result<Self, AppError> {
+        Self::parse(text).ok_or_else(|| {
+            let spellings: Vec<String> = Self::values().map(Self::spelling).collect();
+            AppError::BadRequest(format!(
+                "{text:?} is not {}; expected {}",
+                Self::NOUN,
+                listed(&spellings)
+            ))
+        })
     }
 }
 
-/// Which layout Review draws its worklist in.
-///
-/// Stored per tab rather than once for the app: browsing a library and judging a
-/// queue are different jobs, so a choice made on one page must not decide the
-/// other. Library's own key arrives with the layouts it chooses between
-/// ([#262](https://github.com/QuantumFF/walltare/issues/262)); the two never
-/// share a row.
-///
-/// `Grid` is the default, so a curator who never touches the control sees the
-/// page they already had. The strip is one press away on Review's own bar and
-/// the choice is remembered, so saying it once is the whole cost.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReviewLayout {
-    /// One wallpaper at the size it would be hung, with the worklist beneath it.
-    Strip,
-    /// The uniform grid of cards Review has always drawn.
-    #[default]
-    Grid,
+/// `a`, `a or b`, `a, b or c`: a list the way the refusals say one.
+fn listed(words: &[String]) -> String {
+    match words.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
-impl ReviewLayout {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "strip" => Some(Self::Strip),
-            "grid" => Some(Self::Grid),
-            _ => None,
+/// Declares an enum-valued key's type and its [`Vocabulary`] together, each
+/// variant written once beside the spelling it is stored as.
+///
+/// `Serialize` comes from the same spellings rather than from a derive with
+/// `rename_all`. The frontend hands a value it read straight back to
+/// `set_setting`, so the spelling a read sends has to be one the parse takes,
+/// and a second declaration of it is a second place for the two to part.
+macro_rules! vocabulary {
+    (
+        $(#[$attr:meta])*
+        pub enum $name:ident: $noun:literal {
+            $( $(#[$variant_attr:meta])* $variant:ident => $spelling:literal, )+
         }
+    ) => {
+        $(#[$attr])*
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum $name {
+            $( $(#[$variant_attr])* $variant, )+
+        }
+
+        impl Vocabulary for $name {
+            const NOUN: &'static str = $noun;
+
+            fn values() -> impl Iterator<Item = Self> {
+                [$(Self::$variant),+].into_iter()
+            }
+
+            fn spelling(self) -> String {
+                match self {
+                    $(Self::$variant => $spelling,)+
+                }
+                .to_string()
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&self.spelling())
+            }
+        }
+    };
+}
+
+vocabulary! {
+    pub enum Theme: "a theme" {
+        System => "system",
+        Light => "light",
+        Dark => "dark",
+    }
+}
+
+vocabulary! {
+    /// Which layout Review draws its worklist in.
+    ///
+    /// Stored per tab rather than once for the app: browsing a library and judging a
+    /// queue are different jobs, so a choice made on one page must not decide the
+    /// other. Library's own key arrives with the layouts it chooses between
+    /// ([#262](https://github.com/QuantumFF/walltare/issues/262)); the two never
+    /// share a row.
+    ///
+    /// `Grid` is the default, so a curator who never touches the control sees the
+    /// page they already had. The strip is one press away on Review's own bar and
+    /// the choice is remembered, so saying it once is the whole cost.
+    #[derive(Default)]
+    pub enum ReviewLayout: "a Review layout" {
+        /// One wallpaper at the size it would be hung, with the worklist beneath it.
+        Strip => "strip",
+        /// The uniform grid of cards Review has always drawn.
+        #[default]
+        Grid => "grid",
     }
 }
 
@@ -183,34 +258,23 @@ impl Default for Detected {
     }
 }
 
-/// How the Library draws its wallpapers: cropped to one shape, or each at its
-/// own — packed into columns, or lined up in rows.
-///
-/// A choice per tab rather than one for the app, so a browse surface and a
-/// decision queue are not obliged to look alike. This key is the Library tab's;
-/// Review's is its own, and neither is offered in the Settings view — the
-/// control sits on the page bar of the tab it changes, because a control in two
-/// places is two places to look.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LibraryLayout {
-    /// The uniform grid: every wallpaper cropped to fill a box of one shape.
-    Grid,
-    /// Columns packed shortest-first, every wallpaper at its own aspect ratio.
-    Masonry,
-    /// Rows scaled to a shared height, uncropped, with the rank drawn large
-    /// behind each image.
-    Justified,
-}
-
-impl LibraryLayout {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "grid" => Some(Self::Grid),
-            "masonry" => Some(Self::Masonry),
-            "justified" => Some(Self::Justified),
-            _ => None,
-        }
+vocabulary! {
+    /// How the Library draws its wallpapers: cropped to one shape, or each at its
+    /// own — packed into columns, or lined up in rows.
+    ///
+    /// A choice per tab rather than one for the app, so a browse surface and a
+    /// decision queue are not obliged to look alike. This key is the Library tab's;
+    /// Review's is its own, and neither is offered in the Settings view — the
+    /// control sits on the page bar of the tab it changes, because a control in two
+    /// places is two places to look.
+    pub enum LibraryLayout: "a layout" {
+        /// The uniform grid: every wallpaper cropped to fill a box of one shape.
+        Grid => "grid",
+        /// Columns packed shortest-first, every wallpaper at its own aspect ratio.
+        Masonry => "masonry",
+        /// Rows scaled to a shared height, uncropped, with the rank drawn large
+        /// behind each image.
+        Justified => "justified",
     }
 }
 
@@ -234,12 +298,24 @@ pub struct WorklistSize(u32);
 
 impl WorklistSize {
     /// A worklist size, or nothing when `count` is not one of the presets.
+    ///
+    /// Only the tests build one from a bare count. The app gets its sizes from
+    /// the stored spelling, through the same [`Vocabulary`] the refusal names.
+    #[cfg(test)]
     pub fn new(count: u32) -> Option<Self> {
         WORKLIST_SIZES.contains(&count).then_some(Self(count))
     }
+}
 
-    fn parse(value: &str) -> Option<Self> {
-        Self::new(value.parse().ok()?)
+impl Vocabulary for WorklistSize {
+    const NOUN: &'static str = "a worklist size";
+
+    fn values() -> impl Iterator<Item = Self> {
+        WORKLIST_SIZES.into_iter().map(Self)
+    }
+
+    fn spelling(self) -> String {
+        self.to_string()
     }
 }
 
@@ -253,76 +329,81 @@ impl fmt::Display for WorklistSize {
 /// never opens the section sees the worklist they already had (ADR 0028).
 pub const DEFAULT_WORKLIST_SIZE: WorklistSize = WorklistSize(50);
 
-/// Which view the app opens on.
-///
-/// A fixed choice and not wherever the curator was last, because an app that
-/// opens somewhere different every launch is disorienting — which is also
-/// [ADR 0015](../../docs/adr/0015-navigation-shell.md)'s reason for persisting
-/// nothing about navigation, and this is the stated preference that decision
-/// left room for rather than the session memory it refused.
-///
-/// Settings is not one of them. The other three are where a curator works; the
-/// Settings page is where they go to stop working, and boot still opens it on
-/// its own when there is nothing else to show.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StartupView {
-    Rank,
-    Review,
-    Library,
-}
-
-impl StartupView {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "rank" => Some(Self::Rank),
-            "review" => Some(Self::Review),
-            "library" => Some(Self::Library),
-            _ => None,
-        }
+vocabulary! {
+    /// Which view the app opens on.
+    ///
+    /// A fixed choice and not wherever the curator was last, because an app that
+    /// opens somewhere different every launch is disorienting — which is also
+    /// [ADR 0015](../../docs/adr/0015-navigation-shell.md)'s reason for persisting
+    /// nothing about navigation, and this is the stated preference that decision
+    /// left room for rather than the session memory it refused.
+    ///
+    /// Settings is not one of them. The other three are where a curator works; the
+    /// Settings page is where they go to stop working, and boot still opens it on
+    /// its own when there is nothing else to show.
+    pub enum StartupView: "a startup view" {
+        Rank => "rank",
+        Review => "review",
+        Library => "library",
     }
 }
 
-/// Which end of the ranking Review works from.
-///
-/// Two orderings and not the library page's four: Review is a decision queue,
-/// and filename order in one means nothing. They are spelled as the two
-/// [`crate::db::ListOrdering`] variants they stand for rather than as a second
-/// vocabulary for the same fact, so the value the frontend reads is the value it
-/// hands back to `list_wallpapers` (ADR 0028).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReviewOrdering {
-    /// Lowest Scores first: culling the worst, which is what Review has always
-    /// done (ADR 0013).
-    ScoreAsc,
-    /// Highest Scores first: confirming favourites.
-    ScoreDesc,
-}
-
-impl ReviewOrdering {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "score_asc" => Some(Self::ScoreAsc),
-            "score_desc" => Some(Self::ScoreDesc),
-            _ => None,
-        }
+vocabulary! {
+    /// Which end of the ranking Review works from.
+    ///
+    /// Two orderings and not the library page's four: Review is a decision queue,
+    /// and filename order in one means nothing. They are spelled as the two
+    /// [`crate::db::ListOrdering`] variants they stand for rather than as a second
+    /// vocabulary for the same fact, so the value the frontend reads is the value it
+    /// hands back to `list_wallpapers` (ADR 0028).
+    pub enum ReviewOrdering: "a review ordering" {
+        /// Lowest Scores first: culling the worst, which is what Review has always
+        /// done (ADR 0013).
+        ScoreAsc => "score_asc",
+        /// Highest Scores first: confirming favourites.
+        ScoreDesc => "score_desc",
     }
 }
 
-/// The stored Evaluated threshold, or nothing when it is not one of the three
-/// the page offers.
+/// A flag: the two spellings `String(boolean)` produces, and no others.
+impl Vocabulary for bool {
+    const NOUN: &'static str = "a flag";
+
+    fn values() -> impl Iterator<Item = Self> {
+        [true, false].into_iter()
+    }
+
+    fn spelling(self) -> String {
+        self.to_string()
+    }
+}
+
+/// One of the [`EVALUATED_THRESHOLDS`], on its way in or out of the table.
+///
+/// Private and unwrapped at every edge, because [`Settings`] carries the bare σ
+/// and so does [`evaluated_threshold`] (ADR 0046). It exists so the vocabulary
+/// hangs on something narrower than every float.
 ///
 /// Strict for the same reason [`Resolution::parse`] is: a row holding `4.2` is
 /// one someone edited by hand, and honouring it would put the curator on a
 /// confidence no control can show them or change back. Reading it as the default
 /// is the rule the whole module already follows.
-fn parse_threshold(value: &str) -> Option<f64> {
-    let parsed: f64 = value.parse().ok()?;
-    // Exact equality over a parsed float, which is safe because every offered
-    // threshold is a short decimal that binary floating point holds exactly, and
-    // `f64::to_string` writes each of them back as the same short decimal.
-    EVALUATED_THRESHOLDS.contains(&parsed).then_some(parsed)
+#[derive(Clone, Copy)]
+struct Threshold(f64);
+
+impl Vocabulary for Threshold {
+    const NOUN: &'static str = "an Evaluated threshold";
+
+    fn values() -> impl Iterator<Item = Self> {
+        EVALUATED_THRESHOLDS.into_iter().map(Self)
+    }
+
+    fn spelling(self) -> String {
+        // Every offered threshold is a short decimal that binary floating point
+        // holds exactly, and `f64::to_string` writes each one the way
+        // `String(number)` does: `4`, never `4.0`.
+        self.0.to_string()
+    }
 }
 
 /// Every setting, with the gaps filled from the defaults.
@@ -441,8 +522,8 @@ impl Settings {
 /// [`resolve`], so the count and the struct the card reads cannot disagree about
 /// what the row says.
 pub fn evaluated_threshold(conn: &Connection) -> Result<f64, AppError> {
-    Ok(read(&stored(conn)?, EVALUATED_THRESHOLD, parse_threshold)
-        .unwrap_or(DEFAULT_EVALUATED_THRESHOLD))
+    Ok(read(&stored(conn)?, EVALUATED_THRESHOLD, Threshold::parse)
+        .map_or(DEFAULT_EVALUATED_THRESHOLD, |threshold| threshold.0))
 }
 
 /// Every setting, with the gaps filled from the defaults, so a caller always
@@ -532,9 +613,9 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         minimum_resolution: read(stored, MINIMUM_RESOLUTION, Resolution::parse).unwrap_or(screen),
         review_layout: read(stored, REVIEW_LAYOUT, ReviewLayout::parse)
             .unwrap_or(defaults.review_layout),
-        crop_preview: read(stored, CROP_PREVIEW, parse_flag).unwrap_or(defaults.crop_preview),
-        evaluated_threshold: read(stored, EVALUATED_THRESHOLD, parse_threshold)
-            .unwrap_or(defaults.evaluated_threshold),
+        crop_preview: read(stored, CROP_PREVIEW, bool::parse).unwrap_or(defaults.crop_preview),
+        evaluated_threshold: read(stored, EVALUATED_THRESHOLD, Threshold::parse)
+            .map_or(defaults.evaluated_threshold, |threshold| threshold.0),
         // Never read off the table: it is what the monitor said, and the table
         // holds what the curator said.
         detected_screen: detected.screen,
@@ -563,91 +644,29 @@ fn read<T>(
 ///
 /// The comparison runs against a resolved `Settings` rather than a second table
 /// of default strings, so the defaults are stated once.
+///
+/// An enumerated key is refused by its own [`Vocabulary`], so its arm is the one
+/// line saying which field it is compared against. The arms stay a `match`
+/// rather than a walk over the vocabularies because each key holds a different
+/// type, and a list able to hold all of them would read worse than the lines it
+/// replaced.
 fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppError> {
     match key {
-        THEME => {
-            let theme = Theme::parse(value).ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "{value:?} is not a theme; expected system, light or dark"
-                ))
-            })?;
-            Ok(theme == without.theme)
-        }
+        THEME => Ok(Theme::written(value)? == without.theme),
         // A Written path is stored as written and never checked against the
         // filesystem: an unmounted drive is not a bad setting.
         LIBRARY_ROOT => Ok(value == without.library_root),
         REJECT_DESTINATION => Ok(value == without.reject_destination),
-        LIBRARY_LAYOUT => {
-            let layout = LibraryLayout::parse(value).ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "{value:?} is not a layout; expected grid, masonry or justified"
-                ))
-            })?;
-            Ok(layout == without.library_layout)
-        }
-        REVIEW_WORKLIST_SIZE => {
-            let size = WorklistSize::parse(value).ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "{value:?} is not a worklist size; expected one of {WORKLIST_SIZES:?}"
-                ))
-            })?;
-            Ok(size == without.review_worklist_size)
-        }
-        STARTUP_VIEW => {
-            let view = StartupView::parse(value).ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "{value:?} is not a startup view; expected rank, review or library"
-                ))
-            })?;
-            Ok(view == without.startup_view)
-        }
-        REVIEW_ORDERING => {
-            let ordering = ReviewOrdering::parse(value).ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "{value:?} is not a review ordering; expected score_asc or score_desc"
-                ))
-            })?;
-            Ok(ordering == without.review_ordering)
-        }
+        LIBRARY_LAYOUT => Ok(LibraryLayout::written(value)? == without.library_layout),
+        REVIEW_WORKLIST_SIZE => Ok(WorklistSize::written(value)? == without.review_worklist_size),
+        STARTUP_VIEW => Ok(StartupView::written(value)? == without.startup_view),
+        REVIEW_ORDERING => Ok(ReviewOrdering::written(value)? == without.review_ordering),
         SCREEN => Ok(resolution(value)? == without.screen),
         MINIMUM_RESOLUTION => Ok(resolution(value)? == without.minimum_resolution),
-        REVIEW_LAYOUT => {
-            let layout = ReviewLayout::parse(value).ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "{value:?} is not a Review layout; expected strip or grid"
-                ))
-            })?;
-            Ok(layout == without.review_layout)
-        }
-        CROP_PREVIEW => {
-            let on = parse_flag(value).ok_or_else(|| {
-                AppError::BadRequest(format!("{value:?} is not a flag; expected true or false"))
-            })?;
-            Ok(on == without.crop_preview)
-        }
-        EVALUATED_THRESHOLD => {
-            let threshold = parse_threshold(value).ok_or_else(|| {
-                AppError::BadRequest(format!(
-                    "{value:?} is not an Evaluated threshold; expected one of {EVALUATED_THRESHOLDS:?}"
-                ))
-            })?;
-            Ok(threshold == without.evaluated_threshold)
-        }
+        REVIEW_LAYOUT => Ok(ReviewLayout::written(value)? == without.review_layout),
+        CROP_PREVIEW => Ok(bool::written(value)? == without.crop_preview),
+        EVALUATED_THRESHOLD => Ok(Threshold::written(value)?.0 == without.evaluated_threshold),
         _ => Err(AppError::BadRequest(format!("unknown setting {key:?}"))),
-    }
-}
-
-/// A stored flag, as strictly as `client.ts` writes one.
-///
-/// Exactly the two spellings `String(boolean)` produces, so a value read out of
-/// the table can be handed straight back to a write. Anything else is a row
-/// someone edited by hand, and a forgiving parse would have to decide what `0`,
-/// `yes` and `TRUE` were each meant to be.
-fn parse_flag(value: &str) -> Option<bool> {
-    match value {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
     }
 }
 
@@ -702,6 +721,33 @@ mod tests {
     fn stored_rows(conn: &Connection) -> i64 {
         conn.query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
             .unwrap()
+    }
+
+    /// The spellings a refusal names after its `expected`, in the order it
+    /// names them.
+    fn named_in(refusal: &str) -> Vec<String> {
+        let (_, list) = refusal
+            .split_once("; expected ")
+            .unwrap_or_else(|| panic!("{refusal:?} names no values"));
+        list.replace(" or ", ", ")
+            .split(", ")
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A setting as it crossed the IPC, spelled the way `encodeSetting` in
+    /// `client.ts` hands it back: `String(value)`, which writes a whole number
+    /// with no decimal point.
+    fn as_client_writes_it(json: &serde_json::Value) -> String {
+        match json {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Bool(flag) => flag.to_string(),
+            serde_json::Value::Number(number) => match number.as_u64() {
+                Some(whole) => whole.to_string(),
+                None => number.as_f64().expect("a number").to_string(),
+            },
+            other => panic!("{other} is not an enumerated setting"),
+        }
     }
 
     #[test]
@@ -1456,6 +1502,66 @@ mod tests {
 
         assert_eq!(settings.startup_view, StartupView::Rank);
         assert_eq!(settings.review_ordering, ReviewOrdering::ScoreAsc);
+    }
+
+    #[test]
+    fn every_enumerated_key_refuses_by_naming_exactly_the_values_it_accepts() {
+        // Each key beside spellings near enough to a legal one that a forgiving
+        // parse would take them, which is the other half of "exactly": the
+        // refusal may not name a value the parse refuses, and the parse may not
+        // take a spelling the refusal did not name.
+        let table: [(&str, &[&str]); 8] = [
+            ("theme", &["System", " dark", "solarized"]),
+            ("library_layout", &["Grid", "masonry ", "mosaic"]),
+            ("review_layout", &["Strip", "grid\n", "masonry"]),
+            ("startup_view", &["Rank", "settings", ""]),
+            (
+                "review_ordering",
+                &["score-asc", "SCORE_DESC", "filename_asc"],
+            ),
+            ("crop_preview", &["True", "1", "yes"]),
+            ("review_worklist_size", &["+10", "050", "37"]),
+            ("evaluated_threshold", &["4.0", "+3", "5e0"]),
+        ];
+
+        for (key, near_misses) in table {
+            let conn = store();
+            let default = serde_json::to_value(get(&conn, detected()).unwrap()).unwrap();
+
+            let err = set(&conn, key, "nothing like it", detected()).unwrap_err();
+            let AppError::BadRequest(refusal) = err else {
+                panic!("{key}: {err:?}");
+            };
+            assert!(refusal.contains("\"nothing like it\""), "{key}: {refusal}");
+            let named = named_in(&refusal);
+
+            // The value the key holds with no row at all is one the refusal
+            // names, so a curator told what to write is told the default too.
+            assert!(
+                named.contains(&as_client_writes_it(&default[key])),
+                "{key}: {refusal} leaves out the default"
+            );
+
+            // Every value named is one the key takes, and it comes back over
+            // the IPC as the spelling that was written, so the frontend can hand
+            // a read value straight back to `set_setting`. Distinct spellings
+            // reading back as themselves are distinct values, so the refusal
+            // names no value twice.
+            for spelling in &named {
+                let written = set(&conn, key, spelling, detected())
+                    .unwrap_or_else(|err| panic!("{key}: {refusal} names {spelling:?}: {err:?}"));
+                let json = serde_json::to_value(written).unwrap();
+                assert_eq!(&as_client_writes_it(&json[key]), spelling, "{key}");
+            }
+
+            for near_miss in near_misses {
+                let err = set(&conn, key, near_miss, detected()).unwrap_err();
+                assert!(
+                    matches!(err, AppError::BadRequest(_)),
+                    "{key}: {near_miss:?}: {err:?}"
+                );
+            }
+        }
     }
 
     #[test]
