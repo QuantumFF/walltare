@@ -440,61 +440,71 @@ export function ReviewStrip({
       {/* The area the hero is fitted into, and the element that is measured.
           `min-h-0` is what lets it actually shrink inside the flex column —
           without it the row below can be pushed off the page by a picture that
-          refuses to give up its height. */}
+          refuses to give up its height.
+
+          The hero is centred inside an absolutely positioned layer rather than
+          being a flex child of this box. Its size is in pixels, taken from the
+          last measurement of this box, and as an in-flow child that size fed back
+          into the page's minimum height: when the filmstrip grew, or the window
+          shrank, this box could not give up the height its own picture was
+          holding, and the filmstrip was pushed out of the bottom of the window.
+          Out of the flow, the picture takes no space, the box shrinks to what is
+          left, and the observer refits the picture to it. */}
       <div
         ref={heroRef}
         data-slot="review-hero-area"
-        className="flex min-h-0 flex-1 items-center justify-center"
+        className="relative min-h-0 flex-1"
       >
-        {selected && (
-          <div
-            data-slot="review-hero"
-            // The box, at exactly the wallpaper's own ratio. In pixels rather
-            // than as an `aspect-ratio` because the latter collapses here, and
-            // because #266's crop bars are percentages of this box — see
-            // `fittedBox`.
-            style={{ width: hero.width, height: hero.height }}
-            className="relative cursor-zoom-in overflow-hidden rounded-lg bg-muted"
-            onClick={() => onOpen?.(selected)}
-          >
-            {!arrived && (
-              // The first frame, and the reason arriving here never shows an
-              // empty box: the filmstrip's own `small` is already in the memory
-              // cache under ADR 0016's `max-age=300`, so this is one element and
-              // no request. Nothing announces it — the picture over it is named.
+        <div className="absolute inset-0 flex items-center justify-center">
+          {selected && (
+            <div
+              data-slot="review-hero"
+              // The box, at exactly the wallpaper's own ratio. In pixels rather
+              // than as an `aspect-ratio` because the latter collapses here, and
+              // because #266's crop bars are percentages of this box — see
+              // `fittedBox`.
+              style={{ width: hero.width, height: hero.height }}
+              className="relative cursor-zoom-in overflow-hidden rounded-lg bg-muted"
+              onClick={() => onOpen?.(selected)}
+            >
+              {!arrived && (
+                // The first frame, and the reason arriving here never shows an
+                // empty box: the filmstrip's own `small` is already in the memory
+                // cache under ADR 0016's `max-age=300`, so this is one element and
+                // no request. Nothing announces it — the picture over it is named.
+                <img
+                  data-slot="review-hero-placeholder"
+                  src={wallpaperImageUrl(selected.id, "small")}
+                  alt=""
+                  className="absolute inset-0 h-full w-full object-cover"
+                />
+              )}
               <img
-                data-slot="review-hero-placeholder"
-                src={wallpaperImageUrl(selected.id, "small")}
-                alt=""
+                data-slot="review-hero-picture"
+                src={wallpaperImageUrl(selected.id, "medium")}
+                alt={selected.filename}
+                // No `key`, deliberately: an `<img>` whose `src` changes keeps
+                // painting the image it has until the new one decodes, so the
+                // outgoing wallpaper holds the frame for the whole of a step. A
+                // fresh element per wallpaper remounts with nothing painted, which
+                // is a held arrow key strobing to black (ADR 0022).
+                onLoad={() => {
+                  setArrived(true);
+                  setGone(false);
+                }}
+                // `error` counts as arrival too, for ADR 0006's reason: a
+                // thumbnail held in front of a picture that is never coming is the
+                // spinner that never resolves.
+                onError={() => {
+                  setArrived(true);
+                  setGone(true);
+                }}
+                // `object-cover` inside a box of the picture's own ratio crops
+                // nothing: the box *is* the picture's shape, so there is no
+                // letterboxing for #266's bars to measure.
                 className="absolute inset-0 h-full w-full object-cover"
               />
-            )}
-            <img
-              data-slot="review-hero-picture"
-              src={wallpaperImageUrl(selected.id, "medium")}
-              alt={selected.filename}
-              // No `key`, deliberately: an `<img>` whose `src` changes keeps
-              // painting the image it has until the new one decodes, so the
-              // outgoing wallpaper holds the frame for the whole of a step. A
-              // fresh element per wallpaper remounts with nothing painted, which
-              // is a held arrow key strobing to black (ADR 0022).
-              onLoad={() => {
-                setArrived(true);
-                setGone(false);
-              }}
-              // `error` counts as arrival too, for ADR 0006's reason: a
-              // thumbnail held in front of a picture that is never coming is the
-              // spinner that never resolves.
-              onError={() => {
-                setArrived(true);
-                setGone(true);
-              }}
-              // `object-cover` inside a box of the picture's own ratio crops
-              // nothing: the box *is* the picture's shape, so there is no
-              // letterboxing for #266's bars to measure.
-              className="absolute inset-0 h-full w-full object-cover"
-            />
-            {/* What the Screen would cut off, over the picture it would cut it
+              {/* What the Screen would cut off, over the picture it would cut it
                 off. The hero's box is exactly the wallpaper's own ratio, which
                 is what makes the bars percentages of the picture rather than of
                 letterboxing around it — see `fittedBox`.
@@ -502,18 +512,19 @@ export function ReviewStrip({
                 Not drawn over a wallpaper whose file is gone: the panel below
                 says there is no picture, and bars over it would be a claim about
                 one. */}
-            {crop.on && !gone && <CropPreview wallpaper={selected} />}
-            {gone && (
-              <div
-                data-slot="review-hero-gone"
-                className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-muted text-muted-foreground"
-              >
-                <ImageOff className="h-8 w-8" aria-hidden />
-                <span className="text-sm font-medium">{FILE_IS_GONE}</span>
-              </div>
-            )}
-          </div>
-        )}
+              {crop.on && !gone && <CropPreview wallpaper={selected} />}
+              {gone && (
+                <div
+                  data-slot="review-hero-gone"
+                  className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-muted text-muted-foreground"
+                >
+                  <ImageOff className="h-8 w-8" aria-hidden />
+                  <span className="text-sm font-medium">{FILE_IS_GONE}</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* The row under the picture, as #254's prototype laid it out: centred,
