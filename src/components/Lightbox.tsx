@@ -926,8 +926,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                       return (
                         <Button
                           key={action}
-                          size="xs"
-                          variant={destructive ? "destructive" : undefined}
+                          size="sm"
                           // Not `disabled`, for ADR 0019's reason: a disabled
                           // button is not focusable, so the sentence explaining
                           // why a Rejected wallpaper cannot go back would be
@@ -950,16 +949,22 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                           // on the card, and pressing `R` on either are one
                           // event with one outcome (ADR 0023).
                           onClick={() => onAction(action, wallpaper)}
-                          // The card's own treatment, because these sit on the
-                          // same dark ground. Not `flex-1`: on a card the two
-                          // buttons split the overlay's width, and here they are
-                          // the part of the row that never shrinks.
+                          // The Review strip's pair as the dark theme draws
+                          // it: a solid near-white primary, and the destructive
+                          // variant's red tint with red text. Spelled out here
+                          // rather than taken from the variants, because the
+                          // theme tokens follow the page and this ground is dark
+                          // in both themes, so in Light the primary would be a
+                          // near-black button on a near-black backdrop. The base
+                          // variant is `default` because it carries no `dark:`
+                          // classes to outrank these. Not `flex-1`: here the
+                          // buttons are the part of the row that never shrinks.
                           className={cn(
                             destructive
-                              ? "bg-destructive/90 text-white hover:bg-destructive"
-                              : "bg-white/15 text-white hover:bg-white/25",
+                              ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
+                              : "bg-neutral-100 text-neutral-900 hover:bg-neutral-100/80",
                             unavailable &&
-                              "cursor-not-allowed opacity-40 hover:bg-white/15",
+                              "cursor-not-allowed opacity-40 hover:bg-neutral-100",
                           )}
                         >
                           <Icon />
@@ -969,8 +974,11 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                               drop, which is why the prototype's
                               `← → navigate · Esc close` hint went and the
                               arrows and Escape live in the `?` dialog instead
-                              (ADR 0022). */}
-                          <kbd className="rounded border border-white/25 px-1 py-0.5 font-mono text-[10px] leading-none text-white/70">
+                              (ADR 0022). A chip tinted from the button's own
+                              text colour rather than a bordered box, so it
+                              reads as part of the button on both the white one
+                              and the red one. */}
+                          <kbd className="ml-0.5 rounded bg-current/15 px-1 font-mono text-[10px] leading-4 font-normal">
                             {printedKey(action)}
                           </kbd>
                         </Button>
