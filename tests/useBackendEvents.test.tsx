@@ -97,9 +97,10 @@ test("a caller may start wanting an event it did not want before", async () => {
 });
 
 test("the handler an event reaches is the newest render's, on one subscription", () => {
-  // The ref is the point of the hook. `ToastSurface`'s handlers close over
-  // `publish` and `raise`; were the subscription rebuilt whenever one of those
-  // changed identity, a scan would drop progress events into the gap.
+  // The ref is the point of the hook. The scan run's handlers close over
+  // `publish`, and `ToastSurface`'s over the scan it is covering; were the
+  // subscription rebuilt whenever one of those changed identity, a scan would
+  // drop progress events into the gap.
   const seen: string[] = [];
   const view = render(
     <Listener handlers={{ scanProgress: () => seen.push("first") }} />,

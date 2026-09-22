@@ -8,10 +8,10 @@
  * of that guard were four chances to get the race wrong, and the race has no
  * symptom on a machine fast enough to resolve before the first unmount.
  *
- * Nothing here renders. What an event *means* stays with the caller: the shell
- * restarts pre-generation on a finished scan, `ToastSurface` writes the
- * sentence, and Settings moves a button's label. This only decides when a
- * handler is called.
+ * Nothing here renders. What an event *means* stays with the caller: the scan
+ * run turns a scan's events into whether one is running and how it ended, and
+ * `ToastSurface` reports the thumbnail pass. This only decides when a handler
+ * is called.
  */
 import { client } from "@/lib/client";
 import type {

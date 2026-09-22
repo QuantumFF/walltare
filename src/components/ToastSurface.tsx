@@ -9,12 +9,15 @@ import {
   ToastViewport,
 } from "@/components/ui/toast";
 import { useApp } from "@/context/AppContext";
-import { useAppEvents } from "@/context/AppEventsContext";
+import {
+  useScanOutcome,
+  useScanRun,
+  type ScanOutcome,
+} from "@/context/ScanRunContext";
 // The counts these toasts print are the counts ADR 0020's Thumbnails line
 // prints, so both read them out of one file (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
 import {
-  client,
   isAppError,
   isStaleRow,
   type PregenProgress,
@@ -196,7 +199,7 @@ interface Transient {
  * The lower slot: whatever background work is running, reported wherever the
  * curator is (ADR 0021).
  *
- * `run` is the toast's key, and it is the pass rather than the payload —
+ * `run` is the toast's key, and it is the run rather than the payload —
  * exactly the inverse of `Transient.key`'s rule, and it inverts for the reason
  * that rule exists. Radix restarts the close timer on `open` and `duration`, and
  * `duration={Infinity}` short-circuits `startTimer` outright, so this toast
@@ -209,9 +212,60 @@ type Background =
    * `progress` is `null` for the walk, which is silent: `collect_images` runs to
    * completion before the first `scan-progress`, so on a large or networked tree
    * the only thing the frontend knows for minutes is that it asked for a scan.
+   *
+   * Read off the scan run rather than held here, since that module owns the
+   * scan from the click to its ending. The run is prefixed so it can never
+   * share a key with a pass or a transient, which count on this file's own
+   * counter.
    */
   | { run: string; kind: "scan"; progress: ScanProgress | null }
   | { run: string; kind: "pregen"; progress: PregenProgress };
+
+type Pass = Extract<Background, { kind: "pregen" }>;
+
+/**
+ * What the toast says about how a scan ended: ADR 0021's four `scan-*` rows.
+ *
+ * Which row applies is the scan run's to decide, and it hands over the outcome
+ * already told apart; this is the words for each, and whether they pin. The
+ * empty folder and the failure pin because ADR 0017 pins errors, and a mistyped
+ * Library root or a root that is gone is something the curator has to see.
+ */
+function scanEnding(outcome: ScanOutcome): {
+  title: string;
+  description: string | undefined;
+  pinned: boolean;
+} {
+  switch (outcome.kind) {
+    case "empty":
+      return {
+        title: "No supported images found",
+        description: outcome.folder || undefined,
+        pinned: true,
+      };
+    case "nothing-new":
+      return {
+        title: "No new wallpapers",
+        description: `${counted(outcome.scanned, "file")} scanned, all already in your library.`,
+        pinned: false,
+      };
+    case "added":
+      return {
+        title: `${counted(outcome.added, "wallpaper")} added`,
+        description:
+          outcome.backToRound === null
+            ? undefined
+            : `Back to Round ${grouped(outcome.backToRound)}. The new wallpapers have no comparisons yet.`,
+        pinned: false,
+      };
+    case "failed":
+      return {
+        title: "Couldn't finish the scan",
+        description: outcome.message,
+        pinned: true,
+      };
+  }
+}
 
 /** The one line the report shows, which is the phase the work is in. */
 function backgroundLine(work: Background): string {
@@ -234,20 +288,6 @@ export interface Toaster {
    * nothing (ADR 0017).
    */
   pressUndo: () => void;
-  /**
-   * Say that a scan has just been started, and on what folder.
-   *
-   * The one thing about background work that no backend event can tell this
-   * surface. The walk emits nothing at all, so `Scanning…` can only come from
-   * the call that asked for it; and `scan-complete` names no folder, so the
-   * ending that reports an empty one has to have been handed the path as the
-   * curator wrote it. Reading the Round before the walk starts belongs here for
-   * the same reason: by the time the scan is over, the Round it moved is gone.
-   *
-   * Its one caller is the Scan button in Settings, which inherited both the call
-   * and the button from `ScanView` when that file was deleted (ADR 0020).
-   */
-  scanStarted: (folder: string) => void;
 }
 
 const ToasterContext = createContext<Toaster | undefined>(undefined);
@@ -340,12 +380,15 @@ export function ToastSurface({
   lightboxOpen?: boolean;
 }) {
   const { view, setView } = useApp();
-  // For ADR 0021's report alone: `scan-complete` reads the Round the scan left
-  // behind and publishes `stats-changed` with it. The transitions' own IPC and
-  // their `status-changed` patches left with the Undo closures (ADR 0023).
-  const { publish } = useAppEvents();
+  // The scan is read rather than followed. What it does — the IPC, the Rounds
+  // either side of it, the freshness events — is the scan run's, and this file
+  // turns its state into the report and its outcome into the ending, which is
+  // the part that is copy (ADR 0021). The transitions' own IPC left with the
+  // Undo closures (ADR 0023), so nothing here calls the backend at all.
+  const { state: scan } = useScanRun();
   const [transient, setTransient] = useState<Transient | null>(null);
-  const [background, setBackground] = useState<Background | null>(null);
+  /** The thumbnail pass, which is the half of the lower slot this file follows. */
+  const [pass, setPass] = useState<Pass | null>(null);
   /** The run the curator said "stop telling me" about; `null` for none. */
   const [dismissed, setDismissed] = useState<string | null>(null);
 
@@ -360,15 +403,18 @@ export function ToastSurface({
   // state, and its `onOpenChange` — to an eight-second message.
   const keys = useRef(0);
 
-  /** The folder the running scan was asked for, as the curator wrote it. */
-  const scanFolder = useRef("");
-  /**
-   * The Round as it stood when the running scan started, which is the only thing
-   * the "back to Round 1" sentence can be judged against: a scan that adds
-   * unseen files sends the Round backwards, and one that adds files to a library
-   * still on its first Round moves nothing (ADR 0008).
-   */
-  const roundBeforeScan = useRef<number | null>(null);
+  // A scan outranks the pass underneath it: it is the work the curator asked
+  // for, it is the shorter of the two, and a finished scan restarts the pass
+  // anyway. So a scan that starts drops the pass it covers, and the restarted
+  // one arrives as a run of its own — which a curator who closed the old one
+  // hears about, because it is a different run. Adjusted during render rather
+  // than from an effect, so no frame paints the stale pass back.
+  const scanRun = scan.running ? scan.run : null;
+  const [coveredBy, setCoveredBy] = useState<number | null>(null);
+  if (scanRun !== coveredBy) {
+    setCoveredBy(scanRun);
+    if (scanRun !== null) setPass(null);
+  }
 
   /**
    * Put a message with no filename in it into the upper slot.
@@ -496,135 +542,38 @@ export function ToastSurface({
     [],
   );
 
-  const scanStarted = useCallback(
-    (folder: string) => {
-      scanFolder.current = folder;
-      roundBeforeScan.current = null;
-      // Read now rather than held from boot, because "now" is the only moment
-      // this number is knowable: the walk takes minutes, the inserts that follow
-      // move the Round, and by the time `scan-complete` arrives the answer has
-      // already changed. A read that fails costs the sentence and nothing else.
-      void client
-        .getStats()
-        .then((stats) => {
-          roundBeforeScan.current = stats.round;
-        })
-        .catch((error: unknown) => {
-          console.error("Failed to read the Round before a scan:", error);
-        });
-      setBackground({
-        run: String(++keys.current),
-        kind: "scan",
-        progress: null,
-      });
-    },
-    [],
-  );
-
   /**
-   * ADR 0021's report, and the four endings that close it out.
+   * ADR 0021's report of the pass, and the endings of both kinds of work.
    *
-   * The subscriptions are here rather than in the shell for the reason the rest
-   * of this file exists: what a scan or a pass has to say is copy, and every
-   * word the app puts in a toast is written in one place. The shell keeps its
-   * own `scan-complete` listener for what a scan *does* — restart pre-generation,
-   * publish `library-scanned`, rerun the boot rule — and the two never overlap.
-   *
-   * `useBackendEvents` registers them once for the life of the shell, which is
-   * what a report of work that outlives any page needs: a pass is running
-   * before the first view mounts and a scan finishes wherever the curator has
-   * wandered to since. These handlers close over `publish` and `raise` and are
-   * re-read on each emission, so neither has to stay referentially stable to
-   * keep a running scan's events arriving.
+   * A scan's endings come from the scan run as outcomes, already told apart;
+   * the pass's come straight off the backend's events, since nothing but this
+   * report reads them. Both are registered once for the life of the shell,
+   * which is what a report of work that outlives any page needs: a pass is
+   * running before the first view mounts and a scan finishes wherever the
+   * curator has wandered to since.
    */
-  /** Empty the lower slot, but only if the work that filled it is the work that ended. */
-  const clear = (kind: Background["kind"]) => {
-    setBackground((prev) => (prev?.kind === kind ? null : prev));
-  };
+  useScanOutcome((outcome) => {
+    const { title, description, pinned } = scanEnding(outcome);
+    raise(title, description, pinned);
+  });
 
   useBackendEvents({
-    scanProgress: (progress) => {
+    pregenProgress: (progress) => {
+      // The report of a running scan is what is on the slot, and the pass it
+      // covers is about to be restarted by the scan's ending, so its progress
+      // is dropped rather than kept for a run that will not come back.
+      if (scan.running) return;
       // The run is spent outside the updater, which has to stay pure. A
       // counter's only job is to differ, so one burnt on a run that turns out
       // to be already open costs nothing.
       const run = String(++keys.current);
-      setBackground((prev) =>
-        prev?.kind === "scan"
-          ? { ...prev, progress }
-          : { run, kind: "scan", progress },
+      setPass((prev) =>
+        prev ? { ...prev, progress } : { run, kind: "pregen", progress },
       );
     },
 
-    scanComplete: ({ added_count, scanned_count }) => {
-      clear("scan");
-
-      // Only a walk that turned up nothing at all is an empty folder, and it
-      // pins with the folder named, because a mistyped Library root is
-      // something the curator has to see and fix. A rescan that adds nothing
-      // is the common case and is the row below.
-      if (scanned_count === 0) {
-        raise(
-          "No supported images found",
-          scanFolder.current || undefined,
-          true,
-        );
-        return;
-      }
-
-      if (added_count === 0) {
-        raise(
-          "No new wallpapers",
-          `${counted(scanned_count, "file")} scanned, all already in your library.`,
-          false,
-        );
-        return;
-      }
-
-      const before = roundBeforeScan.current;
-      roundBeforeScan.current = null;
-      // The message waits on the read rather than being amended by it. A
-      // number moving backwards on Rank's headline needs its explanation in
-      // the same sentence the curator reads once, and `get_stats` costs 0.3ms.
-      void client
-        .getStats()
-        .then((stats) => {
-          // The headline moves through the bus, so Rank hears about the Round
-          // a scan just sent it back to without knowing a scan happened.
-          publish({ type: "stats-changed", stats });
-          raise(
-            `${counted(added_count, "wallpaper")} added`,
-            before !== null && stats.round < before
-              ? `Back to Round ${grouped(stats.round)}. The new wallpapers have no comparisons yet.`
-              : undefined,
-            false,
-          );
-        })
-        .catch((error: unknown) => {
-          console.error("Failed to read the Round a scan left behind:", error);
-          raise(`${counted(added_count, "wallpaper")} added`, undefined, false);
-        });
-    },
-
-    scanFailed: ({ message }) => {
-      clear("scan");
-      raise("Couldn't finish the scan", message, true);
-    },
-
-    pregenProgress: (progress) => {
-      const run = String(++keys.current);
-      setBackground((prev) => {
-        // A scan outranks the pass underneath it: it is the work the curator
-        // asked for, it is the shorter of the two, and `scan-complete`
-        // restarts the pass anyway, so what is dropped here is a run that is
-        // about to be replaced.
-        if (prev?.kind === "scan") return prev;
-        if (prev?.kind === "pregen") return { ...prev, progress };
-        return { run, kind: "pregen", progress };
-      });
-    },
-
     pregenComplete: ({ generated, failed, cancelled: byRequest }) => {
-      clear("pregen");
+      setPass(null);
       // Two of the three endings say nothing at all, and that is the decision
       // rather than an omission. Nobody acts on "1,204 thumbnails ready", the
       // pass runs on essentially every launch, and a notification whose only
@@ -652,8 +601,8 @@ export function ToastSurface({
   }, []);
 
   const toaster = useMemo<Toaster>(
-    () => ({ show, pressUndo, scanStarted }),
-    [show, pressUndo, scanStarted],
+    () => ({ show, pressUndo }),
+    [show, pressUndo],
   );
 
   /**
@@ -683,6 +632,9 @@ export function ToastSurface({
    * its Thumbnails line, and three copies of one number on one screen is not
    * emphasis (ADR 0020, ADR 0021).
    */
+  const background: Background | null = scan.running
+    ? { run: `scan-${scan.run}`, kind: "scan", progress: scan.progress }
+    : pass;
   const report =
     background &&
     background.run !== dismissed &&

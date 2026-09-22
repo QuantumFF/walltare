@@ -5,10 +5,9 @@ import { SettingsView } from "@/components/SettingsView";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { ToastSurface, useToaster } from "@/components/ToastSurface";
 import { useApp, type View } from "@/context/AppContext";
-import { useAppEvents } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
+import { ScanRunProvider, useScanOutcome } from "@/context/ScanRunContext";
 import { client } from "@/lib/client";
-import { useBackendEvents } from "@/lib/useBackendEvents";
 import { cn } from "@/lib/utils";
 import { Images, Settings as SettingsIcon } from "lucide-react";
 import {
@@ -269,7 +268,6 @@ function Shell({
   setLightboxOpen: (open: boolean) => void;
 }) {
   const { view, setView, readLibraryAfterScan } = useApp();
-  const { publish } = useAppEvents();
   const { pressUndo } = useToaster();
 
   // Which destinations have ever been shown. A view enters the tree on its first
@@ -316,35 +314,27 @@ function Shell({
     startPregen();
   }, [startPregen]);
 
-  // The scan subscription, above the view swap.
+  // What a finished scan does to the shell, read off the scan run's outcome.
   //
-  // It cannot live in the page that starts the scan. A scan now starts from
-  // inside Settings, Settings is the one view the shell unmounts, and a walk of
-  // a large folder takes minutes — so by the time `scan-complete` arrives the
-  // component that asked for it is usually gone, and the curator is somewhere
-  // else entirely. That is also why the event no longer navigates: it used to
-  // pull them to Rank from whatever they were doing, on every rescan.
+  // The run itself lives above the view swap, in the provider this component
+  // sits under, because a scan starts from inside Settings and finishes minutes
+  // later on whatever page the curator wandered to (ADR 0015). That is also why
+  // an ending no longer navigates: it used to pull them to Rank from whatever
+  // they were doing, on every rescan. The freshness events are the run's own,
+  // and every word about the ending is `ToastSurface`'s.
   //
-  // Three things hang off it here, and they are what a scan *does* rather than
-  // what it says: the pre-generation restart, the freshness event, and the
-  // re-read of what the library now holds, which carries the boot rule's one
-  // rerun with it. ADR 0021's report of the same event — the progress line,
-  // the four endings, and the `Stats` refetch that says whether the Round moved
-  // backwards — is `ToastSurface`'s, so that every word the app puts in a toast
-  // is written in one file.
-  useBackendEvents({
-    scanComplete: (payload) => {
-      startPregen();
-      // A scan is the one mutation that changes which rows exist, so this is
-      // the one event of the four that a mounted view answers with a fetch
-      // rather than with a patch. The count rides along because zero of it is
-      // the answer "nothing changed": a scan inserts and never deletes.
-      publish({ type: "library-scanned", added: payload.added_count });
-      // The count the Library root section prints, and the boot rule's one
-      // exception — the only navigation left on this event. It decides for
-      // itself whether this scan is the one that filled an empty library.
-      readLibraryAfterScan();
-    },
+  // Two things are left here, and they are what the shell owns rather than
+  // what a scan says: the pre-generation restart, which is what gets freshly
+  // scanned files warmed first, and the re-read of what the library now holds,
+  // which carries the boot rule's one rerun with it. A scan that failed
+  // finished nothing, so it restarts nothing either.
+  useScanOutcome((outcome) => {
+    if (outcome.kind === "failed") return;
+    startPregen();
+    // The count the Library root section prints, and the boot rule's one
+    // exception — the only navigation left on a finished scan. It decides for
+    // itself whether this scan is the one that filled an empty library.
+    readLibraryAfterScan();
   });
 
   // One keyboard handler for the whole app, on `window` because the shell is
@@ -498,13 +488,19 @@ function Shell({
  * suppresses ADR 0021's report outright while one is, because a full-screen
  * picture is the one place the app asks for the whole window. So it is held here
  * — the component that wraps them both — rather than in either of them.
+ *
+ * The scan run is outermost for the same kind of reason. The toast reports it,
+ * the shell acts on how it ended, and Settings starts it and reads whether one
+ * is running, so it sits above all three and above the view swap (ADR 0015).
  */
 export function Layout() {
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
   return (
-    <ToastSurface lightboxOpen={lightboxOpen}>
-      <Shell lightboxOpen={lightboxOpen} setLightboxOpen={setLightboxOpen} />
-    </ToastSurface>
+    <ScanRunProvider>
+      <ToastSurface lightboxOpen={lightboxOpen}>
+        <Shell lightboxOpen={lightboxOpen} setLightboxOpen={setLightboxOpen} />
+      </ToastSurface>
+    </ScanRunProvider>
   );
 }
