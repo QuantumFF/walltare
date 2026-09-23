@@ -126,6 +126,13 @@ export interface WallpaperCardProps {
    */
   box?: PlannedBox;
   /**
+   * The thumbnail the card is drawn wide enough to need. A `medium` is laid
+   * over the `small` and shown once it has loaded, so a zoom in sharpens the
+   * card rather than blanking it, and a zoom out drops back to the `small`
+   * already in the memory cache. The grid decides from the card's width.
+   */
+  imageSize?: "small" | "medium";
+  /**
    * Whether this wallpaper's Dimensions fall below the curator's Minimum
    * resolution, in which case the card wears a badge saying so (#258).
    *
@@ -216,6 +223,7 @@ export const WallpaperCard = memo(function WallpaperCard({
   cellIndex,
   selected = false,
   box,
+  imageSize = "small",
   undersized = false,
   rank,
   evaluatedThreshold = DEFAULT_EVALUATED_THRESHOLD,
@@ -253,6 +261,10 @@ export const WallpaperCard = memo(function WallpaperCard({
    * wallpaper.
    */
   const [gone, setGone] = useState(false);
+  // Whether the `medium` over the `small` has loaded, and so is shown. Kept
+  // across a zoom out and back, because the element that loaded it is gone and
+  // the next one answers from the memory cache.
+  const [sharp, setSharp] = useState(false);
   // Inside a grid the buttons leave the tab order, and the cell is the only
   // stop. Leaving them in it is the alternative ADR 0019 rejected under "the
   // buttons in the tab order and the card out of it": Review's fifty cards
@@ -260,6 +272,25 @@ export const WallpaperCard = memo(function WallpaperCard({
   // wallpaper 3,000 behind the end of what is mounted. They stay focusable and
   // clickable, and #125's direct keys are how the keyboard fires them.
   const buttonTabIndex = inGrid ? -1 : undefined;
+  const imageClassName = cn(
+    "h-full w-full object-cover",
+    // The dimming of a Rejected card sits here and not on the wrapper,
+    // which is where the prototype had it. On the wrapper it drags the
+    // pill, the badge and the whole overlay to 60% with the image, and
+    // white text on a `black/70` gradient at 60% is not a contrast the
+    // overlay can afford. Restore lives in that overlay, so the one card
+    // whose buttons have to stay readable was the one the prototype
+    // faded. A solid frame around a faded image also reads less like a
+    // failed load than a faded frame around one (ADR 0019).
+    rejected && "opacity-60 grayscale",
+    // The scale, and the layer it needs. WebKit builds the composited
+    // layer an animated property needs the first time it is animated,
+    // which on a wheel pass is mid-gesture: one ~50-95ms stall per card
+    // until every card on screen has been passed over once. Declaring
+    // `will-change` moves the promotion to first paint (ADR 0007).
+    animated &&
+      "transition-transform duration-500 group-hover:scale-105 will-change-transform",
+  );
 
   return (
     <div
@@ -346,26 +377,22 @@ export const WallpaperCard = memo(function WallpaperCard({
         // leave nothing left to fire `load`.
         onLoad={() => setGone(false)}
         onError={() => setGone(true)}
-        className={cn(
-          "h-full w-full object-cover",
-          // The dimming of a Rejected card sits here and not on the wrapper,
-          // which is where the prototype had it. On the wrapper it drags the
-          // pill, the badge and the whole overlay to 60% with the image, and
-          // white text on a `black/70` gradient at 60% is not a contrast the
-          // overlay can afford. Restore lives in that overlay, so the one card
-          // whose buttons have to stay readable was the one the prototype
-          // faded. A solid frame around a faded image also reads less like a
-          // failed load than a faded frame around one (ADR 0019).
-          rejected && "opacity-60 grayscale",
-          // The scale, and the layer it needs. WebKit builds the composited
-          // layer an animated property needs the first time it is animated,
-          // which on a wheel pass is mid-gesture: one ~50-95ms stall per card
-          // until every card on screen has been passed over once. Declaring
-          // `will-change` moves the promotion to first paint (ADR 0007).
-          animated &&
-            "transition-transform duration-500 group-hover:scale-105 will-change-transform",
-        )}
+        className={imageClassName}
       />
+      {imageSize === "medium" && !gone && (
+        <img
+          src={wallpaperImageUrl(wallpaper.id, "medium")}
+          alt=""
+          aria-hidden
+          decoding="async"
+          onLoad={() => setSharp(true)}
+          className={cn(
+            imageClassName,
+            "pointer-events-none absolute inset-0",
+            !sharp && "opacity-0",
+          )}
+        />
+      )}
 
       {/*
         The rank, set large across the card.

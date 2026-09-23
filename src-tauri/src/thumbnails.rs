@@ -56,6 +56,8 @@ mod image_cache;
 
 use image_cache::{ImageCache, IMAGE_CACHE_ENTRIES};
 
+/// Mirrored by `SMALL_THUMBNAIL_WIDTH` in `client.ts`, which picks a `medium`
+/// for a card drawn wider than this.
 const SMALL_MAX_WIDTH: u32 = 400;
 const MEDIUM_MAX_WIDTH: u32 = 1920;
 const JPEG_QUALITY: u8 = 85;

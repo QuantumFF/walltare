@@ -12,6 +12,25 @@ import { open } from "@tauri-apps/plugin-dialog";
 export type ThumbnailSize = "small" | "medium" | "full";
 
 /**
+ * The width a `small` is capped at, mirroring `SMALL_MAX_WIDTH` in
+ * `thumbnails.rs`. A card drawn wider than this in device pixels is a `small`
+ * stretched, which is the blur a zoomed-in grid shows.
+ */
+export const SMALL_THUMBNAIL_WIDTH = 400;
+
+/**
+ * The smallest thumbnail that stays sharp at `cssWidth` CSS pixels on a screen
+ * of `pixelRatio`: a `small` until it would be upscaled, then a `medium`.
+ * Never `full` — a `medium` is 1920px wide, which no grid card outgrows.
+ */
+export function thumbnailSizeFor(
+  cssWidth: number,
+  pixelRatio: number,
+): "small" | "medium" {
+  return cssWidth * pixelRatio > SMALL_THUMBNAIL_WIDTH ? "medium" : "small";
+}
+
+/**
  * CONTEXT.md's Status, spelled the way the column holds it (the `db.rs` CHECK
  * constraint): Active, Kept, Rejected, lowercased. Named so that what a Status
  * travels in — a row, an event payload — says which of the three it is.
@@ -93,10 +112,7 @@ export type StatusFilter = "all" | "active" | "kept" | "rejected";
  * and stays off the DTO.
  */
 export type ListOrdering =
-  | "score_desc"
-  | "score_asc"
-  | "filename_asc"
-  | "recently_added";
+  "score_desc" | "score_asc" | "filename_asc" | "recently_added";
 
 /** Mirrors settings::Theme; each string is what `set_setting` accepts back. */
 export type Theme = "system" | "light" | "dark";
