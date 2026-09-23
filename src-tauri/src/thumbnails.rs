@@ -1002,7 +1002,7 @@ fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
 ///
 /// The path comes from this read as well, so a file that moved between the list
 /// and its turn is generated where it landed.
-pub fn still_due(conn: &Connection, pending: &Pending) -> Result<Option<PathBuf>, AppError> {
+fn still_due(conn: &Connection, pending: &Pending) -> Result<Option<PathBuf>, AppError> {
     let (status, path) = match wallpaper_row(conn, pending.wallpaper_id) {
         Ok(row) => row,
         Err(AppError::NotFound(_)) => return Ok(None),
@@ -1263,15 +1263,14 @@ mod tests {
                 .unwrap();
         }
 
-        fn work_list(&self) -> Vec<Pending> {
-            crate::pregen::work_list(&self.db, &self.cache).unwrap()
-        }
-
-        fn listed(&self) -> Vec<(i64, Option<Missing>)> {
-            self.work_list()
+        /// Whether the work list would find a failure note against this
+        /// wallpaper, read through the same query it reads.
+        fn failure_noted(&self, id: i64) -> bool {
+            self.cache
+                .candidates(&self.db)
+                .unwrap()
                 .into_iter()
-                .map(|p| (p.wallpaper_id, p.missing))
-                .collect()
+                .any(|c| c.wallpaper_id == id && c.failed_mtime.is_some())
         }
     }
 
@@ -1854,9 +1853,13 @@ mod tests {
             CacheSize { bytes: 0, files: 0 }
         );
         // The directory stays, so the next pass writes into it rather than
-        // recreating it, and the library is due in full again.
+        // recreating it, and no file is left to count as a fresh size.
         assert!(library.cache_dir.path().is_dir());
-        assert_eq!(library.work_list().len(), 2);
+        let cached = library.cache.cached().unwrap();
+        for &id in &ids {
+            assert!(!cached.holds(id, Size::Small));
+            assert!(!cached.holds(id, Size::Medium));
+        }
     }
 
     #[test]
@@ -1908,11 +1911,11 @@ mod tests {
         let library = Library::new();
         let id = library.seed("again.png", &solid(20, 10, [4, 4, 4, 255]));
         library.note(id, "again.png", "image: nope");
-        assert!(library.work_list().is_empty());
+        assert!(library.failure_noted(id));
 
         library.cache.clear(&library.db).unwrap();
 
-        assert_eq!(library.listed(), vec![(id, Some(Missing::Both))]);
+        assert!(!library.failure_noted(id));
     }
 
     #[test]

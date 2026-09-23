@@ -11,8 +11,8 @@
 //! The warming does not live here. How a wallpaper is generated, which failures
 //! are written down and what that does to the bytes in memory are all
 //! [`ThumbnailCache`]'s (#280), and this module hands it one wallpaper at a
-//! time. Every wallpaper goes through [`crate::serving`]'s worker pool, behind every `wallpaper://` request the
-//! curator is waiting for (#232, ADR 0012's amendment). The thread this module
+//! time. Every wallpaper goes through [`crate::serving`]'s worker pool, behind
+//! every `wallpaper://` request the curator is waiting for (#232, ADR 0012's amendment). The thread this module
 //! owns reads the list, waits, and counts.
 
 use std::sync::atomic::{AtomicBool, Ordering};
