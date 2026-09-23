@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:app": "bun scripts/dev-app.ts",
     "build": "tsc && vite build",
     "lint": "eslint .",
     "test": "bun test",

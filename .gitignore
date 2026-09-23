@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# `bun run dev:app`'s per-checkout database and thumbnails
+.dev-data/
+
 # makepkg's working directories and its output, from packaging/PKGBUILD
 packaging/src/
 packaging/pkg/

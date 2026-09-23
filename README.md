@@ -138,8 +138,16 @@ the authoritative list of what the build and the app need.
 ```sh
 bun install
 bun tauri dev      # dev run; needs a graphical session, an SSH shell has no display
+bun run dev:app    # the same, but side by side with other checkouts (below)
 bun tauri build    # the AppImage, under src-tauri/target/release/bundle/
 ```
+
+`bun tauri dev` holds port 1420 and opens the same `walltare.db` as the
+installed app, so only one checkout can run it at a time. `bun run dev:app`
+takes the first free port from 1420 and keeps its database and thumbnails in
+the checkout's `.dev-data/`, copied from your real database on its first run.
+Delete `.dev-data/` to take a fresh copy. It is still your real Library root and
+reject destination, so a Soft reject in a dev run moves the real file.
 
 The version number lives in `src-tauri/Cargo.toml` and everything else reads it
 from there.

@@ -550,6 +550,17 @@ fn detect_screen(app: &AppHandle) -> settings::Detected {
     settings::Detected::from_monitor(measured)
 }
 
+/// Where the database and the thumbnail cache live: the app data dir, unless
+/// `WALLTARE_DATA_DIR` names another. `bun run dev:app` sets it to a directory
+/// inside the checkout, so a worktree's build never migrates the database the
+/// installed app and every other checkout open (ADR 0048).
+fn data_dir(app: &AppHandle) -> tauri::Result<std::path::PathBuf> {
+    match std::env::var_os("WALLTARE_DATA_DIR").filter(|dir| !dir.is_empty()) {
+        Some(dir) => Ok(dir.into()),
+        None => app.path().app_data_dir(),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -561,7 +572,7 @@ pub fn run() {
         // grants exactly that one.
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            let dir = data_dir(app.handle())?;
             std::fs::create_dir_all(&dir)?;
             let conn = match db::open(&dir.join("walltare.db")) {
                 Ok(conn) => conn,
