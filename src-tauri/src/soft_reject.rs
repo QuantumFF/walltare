@@ -416,11 +416,17 @@ fn finish_move(source: &Path, dest: &Path, staged: Option<&Staged>) -> Result<()
         return move_file(source, dest);
     };
     std::fs::rename(&staged.temp, dest)?;
-    if let Err(e) = std::fs::remove_file(source) {
-        let _ = std::fs::remove_file(dest);
-        return Err(e.into());
+    match std::fs::remove_file(source) {
+        // The source went on its own after the guard saw it. The landed copy
+        // is then the only one, so it stays, and the row about to commit
+        // names it; removing it here would lose the wallpaper outright.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(dest);
+            Err(e.into())
+        }
+        Ok(()) => Ok(()),
     }
-    Ok(())
 }
 
 /// Moves a file, falling back to copy-then-delete across filesystems and
@@ -1414,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_source_unlink_removes_the_landed_copy() {
+    fn a_source_gone_before_the_unlink_keeps_the_landed_copy() {
         let tmp = tempfile::tempdir().unwrap();
         let src_dir = tmp.path().join("src");
         let dest_dir = tmp.path().join("dest");
@@ -1423,13 +1429,13 @@ mod tests {
         let source = src_dir.join("a.jpg");
         std::fs::write(&source, b"A").unwrap();
         let staged = Staged::copy(&source, &dest_dir).unwrap();
-        // The source goes before the move reaches it, so the unlink fails.
+        // The source goes before the move reaches it, so there is nothing to unlink.
         std::fs::remove_file(&source).unwrap();
 
-        assert!(finish_move(&source, &dest_dir.join("a.jpg"), Some(&staged)).is_err());
+        finish_move(&source, &dest_dir.join("a.jpg"), Some(&staged)).unwrap();
         drop(staged);
 
-        assert!(entries(&dest_dir).is_empty());
+        assert_eq!(entries(&dest_dir), vec!["a.jpg".to_string()]);
     }
 
     #[test]

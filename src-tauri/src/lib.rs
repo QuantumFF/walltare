@@ -449,7 +449,7 @@ async fn off_main_thread<T: Send + 'static>(
 ) -> Result<T, error::AppError> {
     tauri::async_runtime::spawn_blocking(move || work(&app))
         .await
-        .map_err(|e| error::AppError::Io(e.to_string()))?
+        .map_err(|e| error::AppError::Io(format!("the command's worker stopped: {e}")))?
 }
 
 /// What the curator reads when their database was written by a newer walltare.
