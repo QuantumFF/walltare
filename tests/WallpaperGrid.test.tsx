@@ -4,8 +4,8 @@ import type {
   SelectionHandle,
   WallpaperSelection,
 } from "@/components/selection";
+import { rowHeight } from "@/components/grid-geometry";
 import {
-  rowHeight,
   WallpaperGrid,
   type WallpaperGridProps,
 } from "@/components/WallpaperGrid";

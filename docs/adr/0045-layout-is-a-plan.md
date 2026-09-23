@@ -86,8 +86,8 @@ it; nothing about the window, the offsets or the reveal is written twice.
 `planUniformGrid` takes the row height already worked out rather than a width and
 a ratio, and the grid works it out — which is
 [ADR 0027](0027-the-grid-owns-its-geometry.md) held to exactly. `GAP`,
-`PADDING`, `CARD_ASPECT` and `UNMEASURED_ROW` stay private to
-`WallpaperGrid.tsx`, and `rowHeight(boxWidth, columns)` is still the one place
+`PADDING`, `CARD_ASPECT` and `UNMEASURED_ROW` stay private to the grid
+(`grid-geometry.ts` since #310), and `rowHeight(boxWidth, columns)` is still the one place
 they are bound to arithmetic over them. It now binds them to `uniformRowHeight`
 instead of spelling the division out, so the exported name, its signature and its
 test are untouched.
