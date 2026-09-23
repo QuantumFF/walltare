@@ -9,15 +9,20 @@ import { client } from "@/lib/client";
 // question, and the two fields here ask different ones (ADR 0035).
 import {
   useDestinationCheck,
+  useDownloadFolderCheck,
   useExpansion,
   type Destination,
+  type DownloadFolder,
   type Expansion,
 } from "@/lib/useExpansion";
 import { FolderOpen } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
-/** The two settings that hold a Written path, which is the two fields on Settings. */
-export type PathSetting = "library_root" | "reject_destination";
+/** The settings that hold a Written path, which is the path fields on Settings. */
+export type PathSetting =
+  | "library_root"
+  | "reject_destination"
+  | "download_folder";
 
 /**
  * What each setting is called in a sentence, which is the one thing about the
@@ -30,12 +35,14 @@ export type PathSetting = "library_root" | "reject_destination";
 const SETTING_NAME: Record<PathSetting, string> = {
   library_root: "library root",
   reject_destination: "reject destination",
+  download_folder: "download folder",
 };
 
 /** The `data-slot` on the line under each field, likewise off the key. */
 const STATUS_SLOT: Record<PathSetting, string> = {
   library_root: "library-root-status",
   reject_destination: "reject-destination-status",
+  download_folder: "download-folder-status",
 };
 
 /**
@@ -63,7 +70,7 @@ export type PathLineTone = "path" | "rule" | "error";
  * there — for a distinction each section's status line makes in the one `switch`
  * it already has.
  */
-export type PathResolution = Expansion | Destination;
+export type PathResolution = Expansion | Destination | DownloadFolder;
 
 const PATH_LINE_CLASS: Record<PathLineTone, string> = {
   // A place: where the string resolves to, in muted mono because that is what a
@@ -132,7 +139,14 @@ export interface PathField {
  */
 export function usePathField(
   key: PathSetting,
-  options?: { onEdit?: (next: string) => void },
+  options?: {
+    onEdit?: (next: string) => void;
+    /**
+     * The Library root as its own field has it typed, which the Download
+     * folder resolves against. Only that field reads it (ADR 0051).
+     */
+    libraryRoot?: string;
+  },
 ): PathField {
   const { settings, saveSetting, focus } = useApp();
   const onEdit = options?.onEdit;
@@ -154,7 +168,16 @@ export function usePathField(
   const destination = useDestinationCheck(
     key === "reject_destination" ? value : "",
   );
-  const resolution = key === "library_root" ? expansion : destination;
+  const download = useDownloadFolderCheck(
+    key === "download_folder" ? value : "",
+    options?.libraryRoot ?? "",
+  );
+  const resolution =
+    key === "library_root"
+      ? expansion
+      : key === "reject_destination"
+        ? destination
+        : download;
 
   // Focus, and the scroll that makes focusing mean anything on a page four
   // sections long. The text is deliberately not selected: these fields write on

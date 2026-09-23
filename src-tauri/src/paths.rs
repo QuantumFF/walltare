@@ -1,7 +1,7 @@
 //! Turning a Written path into a real one.
 //!
 //! A Written path is how the user writes a folder for the app to use: the
-//! Library root, and a soft reject's destination. It may use `~` for the home
+//! Library root, a soft reject's destination, and the Download folder. It may use `~` for the home
 //! folder and environment variables, and the app stores it as written, so it
 //! keeps meaning whatever those mean on the machine reading it.
 //!

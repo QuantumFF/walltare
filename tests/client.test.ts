@@ -9,6 +9,7 @@ const stored: Settings = {
   theme: "dark",
   library_root: "~/pics",
   reject_destination: "/bin/walls",
+  download_folder: "~/downloads/wallhaven",
   library_layout: "masonry",
   review_worklist_size: 25,
   startup_view: "library",
@@ -101,6 +102,22 @@ describe("client seam", () => {
       state: "refused",
       resolved: "/mnt/rejects",
       reason: "/mnt/rejects cannot be written to: Permission denied",
+    });
+  });
+
+  test("checkDownloadFolder forwards the folder and the root it resolves against", async () => {
+    // The root crosses as `libraryRoot`, which Tauri hands to the command's
+    // `library_root`: the field sends the root as typed, not as stored (ADR 0051).
+    let received: Record<string, unknown> | undefined;
+    mockCommand("check_download_folder", (args) => {
+      received = args;
+      return { state: "absent", resolved: "/home/me/pics/wallhaven" };
+    });
+    const check = await client.checkDownloadFolder("wallhaven", "~/pics");
+    expect(received).toEqual({ written: "wallhaven", libraryRoot: "~/pics" });
+    expect(check).toEqual({
+      state: "absent",
+      resolved: "/home/me/pics/wallhaven",
     });
   });
 

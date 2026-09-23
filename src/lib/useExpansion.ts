@@ -27,6 +27,7 @@ import {
   client,
   isAppError,
   type DestinationCheck,
+  type DownloadFolderCheck,
   type Expanded,
 } from "@/lib/client";
 import { useEffect, useState } from "react";
@@ -52,6 +53,18 @@ export type Expansion =
  */
 export type Destination =
   | { kind: "checked"; check: DestinationCheck }
+  | { kind: "invalid"; message: string };
+
+/**
+ * What `check_download_folder` says about the string in the Download folder
+ * field: whether a download could land there, or the same syntax error.
+ *
+ * Its own answer, under its own `kind`, because it asks about two strings. A relative Download folder
+ * means the Library root, so whether it can be used depends on the root as well
+ * as on the folder (ADR 0051).
+ */
+export type DownloadFolder =
+  | { kind: "download"; check: DownloadFolderCheck }
   | { kind: "invalid"; message: string };
 
 /**
@@ -120,22 +133,45 @@ export function useDestinationCheck(value: string): Destination | null {
   return { kind: "checked", check: answer.answer };
 }
 
+/**
+ * Resolve a Written path as the Download folder, against `libraryRoot`, once
+ * per pair of strings.
+ *
+ * `libraryRoot` is the Library root as its own field has it typed, not the
+ * stored one, so this field's line follows edits to that field live. It is the
+ * second key of the effect, so a keystroke in either field is a new question
+ * and an answer to an old pair is dropped (ADR 0051).
+ */
+export function useDownloadFolderCheck(
+  value: string,
+  libraryRoot: string,
+): DownloadFolder | null {
+  const answer = useResolution(value, client.checkDownloadFolder, libraryRoot);
+  if (answer === null || answer.kind === "invalid") return answer;
+  return { kind: "download", check: answer.answer };
+}
+
 /** One backend answer about one Written path, or the syntax error instead. */
 type Resolution<T> =
   { kind: "answered"; answer: T } | { kind: "invalid"; message: string };
 
 /**
- * The half the two hooks above share: ask `resolve` about `value`, once per
+ * The half the hooks above share: ask `resolve` about `value`, once per
  * string, and drop an answer the field has moved on from.
  *
  * `resolve` is read as a dependency rather than closed over, so it has to be a
- * stable function — the two callers pass a `client` method, which is one for the
+ * stable function — the callers pass a `client` method, which is one for the
  * life of the module. Anything built per render would ask the backend again on
  * every paint, which is exactly what keying the effect on the string is for.
+ *
+ * `context` is a second string the question depends on, which only the
+ * Download folder has: the Library root it resolves against. It keys the effect
+ * beside `value`, and an empty `value` still answers `null` whatever it holds.
  */
 function useResolution<T>(
   value: string,
-  resolve: (input: string) => Promise<T>,
+  resolve: (input: string, context: string) => Promise<T>,
+  context = "",
 ): Resolution<T> | null {
   const [resolution, setResolution] = useState<Resolution<T> | null>(null);
 
@@ -146,7 +182,7 @@ function useResolution<T>(
     }
 
     let current = true;
-    void resolve(value)
+    void resolve(value, context)
       .then((answer) => {
         if (current) setResolution({ kind: "answered", answer });
       })
@@ -167,7 +203,7 @@ function useResolution<T>(
     return () => {
       current = false;
     };
-  }, [value, resolve]);
+  }, [value, context, resolve]);
 
   return resolution;
 }

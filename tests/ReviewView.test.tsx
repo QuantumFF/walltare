@@ -136,6 +136,12 @@ beforeEach(() => {
       ? { state: "ready", resolved }
       : { state: "relative" };
   });
+  // The Download folder's field asks whether a download could land there; with
+  // no Library root the answer is that nothing can be (ADR 0051).
+  mockCommand("check_download_folder", () => ({
+    state: "no_root",
+    reason: "No library root is set, so nothing can be downloaded",
+  }));
   // Every transition answers with the row it wrote, off the worklist the test
   // arranged (ADR 0023). The tests below override the one they are about.
   mockTransitions(() => reviewed);

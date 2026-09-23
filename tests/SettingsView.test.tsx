@@ -76,6 +76,8 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
       return { library_root: value };
     case "reject_destination":
       return { reject_destination: value };
+    case "download_folder":
+      return { download_folder: value };
     case "review_layout":
       return { review_layout: value as ReviewLayout };
     // Not a section on this page — the control is on the Library bar (#262) —
@@ -209,6 +211,22 @@ beforeEach(() => {
       ? { state: "ready", resolved }
       : { state: "relative" };
   });
+  // The third field asks the third question: whether a download could land
+  // there, against the Library root as its field has it typed. A relative
+  // folder means the root, and with no root nothing can be downloaded
+  // (ADR 0051). The folder is not there yet, which is the first-run truth.
+  mockCommand("check_download_folder", (args) => {
+    if (!args.libraryRoot) {
+      return {
+        state: "no_root",
+        reason: "No library root is set, so nothing can be downloaded",
+      };
+    }
+    const written = args.written.replace(/^~/, HOME);
+    const root = args.libraryRoot.replace(/^~/, HOME);
+    const resolved = written.startsWith("/") ? written : `${root}/${written}`;
+    return { state: "absent", resolved };
+  });
   mockCommand("set_setting", (args) => {
     settingWrites.push({
       key: args.key,
@@ -246,6 +264,10 @@ const destinationLine = () =>
   document.querySelector(
     '[data-slot="reject-destination-status"]',
   ) as HTMLElement;
+const downloadInput = () =>
+  screen.getByLabelText("Download folder") as HTMLInputElement;
+const downloadLine = () =>
+  document.querySelector('[data-slot="download-folder-status"]') as HTMLElement;
 /**
  * One section, by the heading the curator reads on it.
  *
@@ -324,7 +346,7 @@ async function openSettingsFromLibrary() {
   expect(showingView()).toBe("settings");
 }
 
-test("the page is one column of eleven sections, in first-run order", async () => {
+test("the page is one column of twelve sections, in first-run order", async () => {
   await openSettingsFromLibrary();
 
   // Missing files is last for the rule that put Thumbnails next to last:
@@ -346,12 +368,13 @@ test("the page is one column of eleven sections, in first-run order", async () =
     "Startup view",
     "Review worklist",
     "Review ordering",
+    "Download folder",
     "Thumbnails",
     "Missing files",
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: eleven sections of one or two controls
+  // assert — and the width is the decision: twelve sections of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document
     .querySelector('[data-slot="settings-section"]')
@@ -359,7 +382,7 @@ test("the page is one column of eleven sections, in first-run order", async () =
   expect(column).not.toBeNull();
 });
 
-test("the sections sit in four groups, and the jump row scrolls to each", async () => {
+test("the sections sit in five groups, and the jump row scrolls to each", async () => {
   await openSettingsFromLibrary();
 
   const groups = Array.from(
@@ -385,6 +408,7 @@ test("the sections sit in four groups, and the jump row scrolls to each", async 
         "Review ordering",
       ],
     },
+    { title: "Wallhaven", sections: ["Download folder"] },
     { title: "Maintenance", sections: ["Thumbnails", "Missing files"] },
   ]);
 
@@ -653,6 +677,7 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
     "Startup view",
     "Review worklist",
     "Review ordering",
+    "Download folder",
     "Thumbnails",
     "Missing files",
   ]);
@@ -663,7 +688,7 @@ test("neither block is up when boot found a library it could read", async () => 
 
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(sectionHeadings().length).toBe(11);
+  expect(sectionHeadings().length).toBe(12);
 });
 
 // The Library root section. Most of what follows came from `tests/ScanView.test.tsx`
@@ -1316,6 +1341,164 @@ test("arriving from a read-out puts the caret in the field without selecting wha
   const { selectionStart, selectionEnd, value } = field;
   expect(value.slice(selectionStart ?? 0, selectionEnd ?? 0)).toBe("");
   expect(value).toBe("~/bin/rejects");
+});
+
+// The Download folder section, in the Wallhaven group: where Discover's
+// downloads will land, set before any download exists. Six lines, and the line
+// follows the Library root field above it while that field is still being typed
+// (ADR 0051).
+
+async function typeDownloadFolder(value: string) {
+  await act(async () => {
+    fireEvent.change(downloadInput(), { target: { value } });
+  });
+  await flush();
+}
+
+test("the Download folder sits in the Wallhaven group and defaults to wallhaven", async () => {
+  storedSettings = settings({ library_root: "~/pics" });
+  await openSettingsFromLibrary();
+
+  const section = sectionNamed("Download folder");
+  const group = section.closest('[data-slot="settings-group"]');
+  expect(group?.querySelector("h2")?.textContent).toBe("Wallhaven");
+  expect(section.contains(downloadInput())).toBe(true);
+  expect(section.contains(browseIn(section))).toBe(true);
+  expect(downloadInput().value).toBe("wallhaven");
+  // Relative, so under the Library root — and not there yet, which is not an
+  // error: the first download creates it.
+  expect(downloadLine().textContent).toBe(
+    `${HOME}/pics/wallhaven · created on the first download`,
+  );
+  expect(downloadLine().className).toContain("font-mono");
+  expect(downloadLine().className).not.toContain("text-destructive");
+});
+
+test("the Download folder saves as written, on blur", async () => {
+  storedSettings = settings({ library_root: "~/pics" });
+  await openSettingsFromLibrary();
+  await typeDownloadFolder("~/Downloads/walls");
+
+  expect(settingWrites).toEqual([]);
+  await act(async () => {
+    fireEvent.blur(downloadInput());
+  });
+  await flush();
+
+  expect(settingWrites).toEqual([
+    { key: "download_folder", value: "~/Downloads/walls" },
+  ]);
+  // Absolute, so it resolves as itself, outside the root.
+  expect(downloadLine().textContent).toBe(
+    `${HOME}/Downloads/walls · created on the first download`,
+  );
+});
+
+test("with no Library root the Download folder says nothing can be downloaded", async () => {
+  await openSettingsFromLibrary();
+
+  // The backend's sentence, and not in the error colour: nothing is wrong with
+  // this field, the root is simply not set yet.
+  expect(downloadLine().textContent).toBe(
+    "No library root is set, so nothing can be downloaded",
+  );
+  expect(downloadLine().className).not.toContain("text-destructive");
+  expect(downloadLine().className).not.toContain("font-mono");
+});
+
+test("a Library root that is not there leaves the Download folder unusable", async () => {
+  storedSettings = settings({ library_root: "/mnt/unplugged" });
+  mockCommand("check_download_folder", () => ({
+    state: "root_missing",
+    root: "/mnt/unplugged",
+    reason:
+      "The library root /mnt/unplugged is not there, so nothing can be downloaded",
+  }));
+  await openSettingsFromLibrary();
+
+  expect(downloadLine().textContent).toBe(
+    "The library root /mnt/unplugged is not there, so nothing can be downloaded",
+  );
+  expect(downloadLine().className).not.toContain("text-destructive");
+});
+
+test("a Download folder that is there and takes a file shows where it is", async () => {
+  storedSettings = settings({ library_root: "~/pics" });
+  mockCommand("check_download_folder", () => ({
+    state: "ready",
+    resolved: `${HOME}/pics/wallhaven`,
+  }));
+  await openSettingsFromLibrary();
+
+  expect(downloadLine().textContent).toBe(`${HOME}/pics/wallhaven`);
+  expect(downloadLine().className).toContain("font-mono");
+});
+
+test("a Download folder that will not take a file is an error in the backend's own words", async () => {
+  storedSettings = settings({ library_root: "~/pics" });
+  mockCommand("check_download_folder", () => ({
+    state: "refused",
+    resolved: "/mnt/ro/wallhaven",
+    reason:
+      "/mnt/ro/wallhaven cannot be written to: Permission denied (os error 13)",
+  }));
+  await openSettingsFromLibrary();
+
+  expect(downloadLine().textContent).toBe(
+    "/mnt/ro/wallhaven cannot be written to: Permission denied (os error 13)",
+  );
+  expect(downloadLine().className).toContain("text-destructive");
+});
+
+test("a mistyped variable in the Download folder replaces its line", async () => {
+  storedSettings = settings({ library_root: "~/pics" });
+  mockCommand("check_download_folder", () =>
+    Promise.reject({
+      kind: "invalid_path_syntax",
+      message: "unknown environment variable HOEM",
+    }),
+  );
+  await openSettingsFromLibrary();
+  await typeDownloadFolder("$HOEM/wallhaven");
+
+  expect(downloadLine().textContent).toBe("unknown environment variable HOEM");
+  expect(downloadLine().className).toContain("text-destructive");
+});
+
+test("the Download folder follows the Library root field as it is typed", async () => {
+  const asked: Array<{ written: string; libraryRoot: string }> = [];
+  mockCommand("check_download_folder", (args) => {
+    asked.push({ written: args.written, libraryRoot: args.libraryRoot });
+    return args.libraryRoot
+      ? { state: "absent", resolved: `${args.libraryRoot}/${args.written}` }
+      : {
+          state: "no_root",
+          reason: "No library root is set, so nothing can be downloaded",
+        };
+  });
+  await openSettingsFromLibrary();
+  expect(downloadLine().textContent).toBe(
+    "No library root is set, so nothing can be downloaded",
+  );
+
+  // Typed and not committed: the root field writes on blur, and this line
+  // does not wait for it.
+  await type("/srv/walls");
+
+  expect(settingWrites).toEqual([]);
+  expect(asked).toContainEqual({
+    written: "wallhaven",
+    libraryRoot: "/srv/walls",
+  });
+  expect(downloadLine().textContent).toBe(
+    "/srv/walls/wallhaven · created on the first download",
+  );
+
+  // And emptying the root takes it back.
+  await type("");
+  expect(downloadLine().textContent).toBe(
+    "No library root is set, so nothing can be downloaded",
+  );
 });
 
 // The Appearance section. What the curator can observe here is two things at
