@@ -2,16 +2,19 @@
 //! walk, the chunked insert with each new file measured, and how the scan ended.
 //!
 //! `start_scan` stays in the command surface and keeps what needs a running
-//! Tauri app: the thread, the guard that refuses a second scan, and the
-//! [`Report`] that turns this module's account into events. Everything the
-//! scan does to the library is here, where a test can drive it against a
-//! temporary directory and an in-memory database (#284).
+//! Tauri app: the thread, and the [`Report`] that turns this module's account
+//! into events. Everything the scan does to the library is here, where a test
+//! can drive it against a temporary directory and an in-memory database
+//! (#284), and so is the guard that refuses a second scan, which needs no app
+//! either (#287).
 //!
 //! [`crate::scanner`] is the half that reads the disk — which files are
 //! wallpapers, and how many pixels each one has. This module decides the order
 //! things happen in, which is where the bugs a scan can have actually live.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -75,6 +78,38 @@ pub trait Report {
     fn progress(&self, progress: Progress);
     fn complete(&self, complete: Complete);
     fn failed(&self, failed: Failed);
+}
+
+/// Set while a scan thread is running, so a second `start_scan` is refused
+/// rather than racing the first over the same connection.
+///
+/// The flag is shared with the [`Guard`] it hands out rather than reached
+/// through the app's state, so the guard can clear it from the scan's own
+/// thread with no `AppHandle` to hand, and two starts can be raced in a test.
+#[derive(Default)]
+pub struct Running(Arc<AtomicBool>);
+
+impl Running {
+    /// Claims the scan for the caller, or `None` when one is already running.
+    /// The scan counts as running for exactly as long as the [`Guard`] lives.
+    pub fn try_start(&self) -> Option<Guard> {
+        if self.0.swap(true, Ordering::SeqCst) {
+            return None;
+        }
+        Some(Guard(Arc::clone(&self.0)))
+    }
+}
+
+/// Clears [`Running`] however the scan thread ends, panic included —
+/// otherwise one panicked scan would refuse every later scan for the rest of
+/// the process.
+#[must_use = "the scan stops counting as running when the guard is dropped"]
+pub struct Guard(Arc<AtomicBool>);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// A Library root that has been expanded and not yet looked at.
@@ -657,6 +692,63 @@ mod tests {
         assert!(
             message.contains("every wallpaper already in your library is still in it"),
             "{message}"
+        );
+    }
+
+    #[test]
+    fn starts_that_race_let_exactly_one_scan_run() {
+        // Two scans would race each other over the same connection, inserting
+        // the same walk twice. Every start below waits at the barrier and then
+        // claims at once, and each holds what it got until all have tried.
+        let running = Running::default();
+        let barrier = std::sync::Barrier::new(8);
+
+        let claimed = std::thread::scope(|scope| {
+            let tries: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        running.try_start()
+                    })
+                })
+                .collect();
+            tries
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        assert_eq!(claimed.iter().filter(|guard| guard.is_some()).count(), 1);
+    }
+
+    #[test]
+    fn a_scan_that_has_finished_lets_the_next_one_start() {
+        let running = Running::default();
+
+        let first = running.try_start().expect("nothing was running");
+        assert!(running.try_start().is_none(), "a second scan started");
+        drop(first);
+
+        assert!(
+            running.try_start().is_some(),
+            "the finished scan still held it"
+        );
+    }
+
+    #[test]
+    fn a_scan_that_panics_does_not_refuse_every_later_scan() {
+        let running = Running::default();
+        let guard = running.try_start().expect("nothing was running");
+
+        let scan = std::thread::spawn(move || {
+            let _running = guard;
+            panic!("the scan panicked");
+        });
+
+        assert!(scan.join().is_err(), "the scan did not panic");
+        assert!(
+            running.try_start().is_some(),
+            "the panicked scan still held it"
         );
     }
 }

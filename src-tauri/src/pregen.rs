@@ -42,21 +42,36 @@ struct Complete {
     cancelled: bool,
 }
 
-/// A pre-generation pass in flight: its cancel flag and its thread.
+/// A pre-generation pass: its cancel flag and its thread.
 type Run = (Arc<AtomicBool>, std::thread::JoinHandle<()>);
 
-/// The pre-generation pass currently running, if any.
+/// The latest pre-generation pass, whether or not it is still going.
 ///
-/// `Some` is the running state, so there is no [`crate::ScanRunning`]-style bool
-/// beside it. The cancel flag is per run rather than global, so a cancel aimed
-/// at one pass cannot land on the pass that starts a moment later (ADR 0012).
+/// The cancel flag is per run rather than global, so a cancel aimed at one pass
+/// cannot land on the pass that starts a moment later (ADR 0012).
+///
+/// Nothing clears the entry when its pass ends, panic included, and nothing
+/// needs to. A finished pass's flag is one that nothing reads, so cancelling it
+/// does nothing; joining its thread returns at once; and nothing in the app asks
+/// whether a pass is running. An entry for a pass that has stopped behaves
+/// exactly as an empty slot would. Its `JoinHandle`, and the panic payload if the
+/// pass panicked, are held until the next start joins them rather than detached.
+/// That costs one finished thread's bookkeeping at most, because each start
+/// joins the entry before it replaces it, so finished passes never pile up.
+///
+/// The pass used to clear its own entry as its thread ended. That took a way
+/// back to this slot from the pass's thread, which was the `AppHandle`, and a
+/// `try_lock` there, because the successor joining that thread holds the mutex
+/// while it does. And it still left a stale entry whenever a pass finished
+/// before [`Pregen::start`] had installed it, since the `try_lock` lost to the
+/// very start that was about to (#287, ADR 0012's amendment).
 #[derive(Default)]
 pub struct Pregen(Mutex<Option<Run>>);
 
 impl Pregen {
-    /// The running pass, recovering from poisoning for [`Db`]'s reason.
+    /// The latest pass, recovering from poisoning for [`Db`]'s reason.
     ///
-    /// Held across the join in [`supervise`], which is what makes two
+    /// Held across the join in [`Pregen::start`], which is what makes two
     /// `start_pregen` calls queue up here instead of racing.
     fn current(&self) -> MutexGuard<'_, Option<Run>> {
         self.0.lock().unwrap_or_else(|poisoned| {
@@ -65,23 +80,37 @@ impl Pregen {
         })
     }
 
-    /// The running pass, or `None` when another thread holds the mutex.
+    /// Retires the previous pass and starts `run` as the next one, on a thread
+    /// of its own, handing it its cancel flag.
     ///
-    /// The pass's own thread clears its entry through this rather than through
-    /// [`Pregen::current`]: a second `start_pregen` holds the mutex while it
-    /// joins that very thread, so blocking there would deadlock the two.
-    fn try_current(&self) -> Option<MutexGuard<'_, Option<Run>>> {
-        match self.0.try_lock() {
-            Ok(current) => Some(current),
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                self.0.clear_poison();
-                Some(poisoned.into_inner())
-            }
-            Err(std::sync::TryLockError::WouldBlock) => None,
+    /// Blocks, which is why `start_pregen` calls this from a supervisor thread
+    /// rather than on the IPC thread: the join waits for up to one wallpaper's
+    /// decode, and the mutex is held across it, so two starts serialize here
+    /// instead of racing over the same state. Two passes never run at once, and
+    /// the one that started last is the one left running.
+    ///
+    /// What runs is a parameter, for [`Report`]'s reason: the retiring, the
+    /// join and the per-run flag are worth asserting on without a Tauri app.
+    /// Production's is [`supervise`]'s.
+    pub fn start(&self, run: impl FnOnce(Arc<AtomicBool>) + Send + 'static) {
+        let mut current = self.current();
+
+        if let Some((flag, handle)) = current.take() {
+            flag.store(true, Ordering::SeqCst);
+            // A pass that panicked is a pass that has stopped, which is all this
+            // join wants to know.
+            let _ = handle.join();
         }
+
+        let flag = Arc::new(AtomicBool::new(false));
+        let handle = {
+            let flag = Arc::clone(&flag);
+            std::thread::spawn(move || run(flag))
+        };
+        *current = Some((flag, handle));
     }
 
-    /// Sets the running pass's cancel flag and returns.
+    /// Sets the latest pass's cancel flag and returns.
     ///
     /// Never joins. The flag is read between wallpapers, and around the gap
     /// between handing one to the pool and a worker starting it, and the `image`
@@ -96,60 +125,12 @@ impl Pregen {
     }
 }
 
-/// Clears a pass's entry in [`Pregen`] however its thread ends, panic included
-/// — [`crate::ScanGuard`]'s reasoning, with an entry in place of a bool. An
-/// entry that outlived its thread would leave `cancel_pregen` setting a flag
-/// nothing reads and reporting a pass that has already stopped.
-struct PregenGuard {
-    app: AppHandle,
-    flag: Arc<AtomicBool>,
-}
-
-impl Drop for PregenGuard {
-    fn drop(&mut self) {
-        let pregen = self.app.state::<Pregen>();
-        let Some(mut current) = pregen.try_current() else {
-            // A successor is joining this thread and already took the entry as
-            // part of doing so, so there is nothing here to clear.
-            return;
-        };
-        // Only this run's own entry. A successor that installed itself while
-        // this thread was finishing owns the slot now.
-        if matches!(current.as_ref(), Some((flag, _)) if Arc::ptr_eq(flag, &self.flag)) {
-            *current = None;
-        }
-    }
-}
-
-/// Retires the previous pass and installs a new one.
-///
-/// On its own thread because both halves of that block: the join waits for up
-/// to one wallpaper's decode, and the [`Pregen`] mutex is held across it, so two
-/// `start_pregen` calls serialize here instead of racing over the same state.
+/// Retires the previous pass and runs a new one over the app's library:
+/// [`Pregen::start`] with the real pass.
 pub fn supervise(app: AppHandle) {
-    let pregen = app.state::<Pregen>();
-    let mut current = pregen.current();
-
-    if let Some((flag, handle)) = current.take() {
-        flag.store(true, Ordering::SeqCst);
-        // A pass that panicked is a pass that has stopped, which is all this
-        // join wants to know.
-        let _ = handle.join();
-    }
-
-    let flag = Arc::new(AtomicBool::new(false));
-    let handle = {
-        let app = app.clone();
-        let flag = Arc::clone(&flag);
-        std::thread::spawn(move || {
-            let _clear = PregenGuard {
-                app: app.clone(),
-                flag: Arc::clone(&flag),
-            };
-            run(&app, &flag);
-        })
-    };
-    *current = Some((flag, handle));
+    let runner = app.clone();
+    app.state::<Pregen>()
+        .start(move |cancel| run(&runner, &cancel));
 }
 
 /// Builds the work list, then runs it.
@@ -183,10 +164,10 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
 ///
 /// The cancel flag is read twice more, and both reads are about the same gap.
 /// Waiting stops when the pass has been stood down, so its exit stays bounded by
-/// a decode rather than by the interactive lane draining — `supervise` joins that
-/// exit while holding the [`Pregen`] mutex, and an IPC call to Cancel or to Clear
-/// thumbnail cache queues behind it. The wallpaper left in the lane reads the
-/// flag for itself where the work starts, which is
+/// a decode rather than by the interactive lane draining — [`Pregen::start`]
+/// joins that exit while holding the [`Pregen`] mutex, and an IPC call to Cancel
+/// or to Clear thumbnail cache queues behind it. The wallpaper left in the lane
+/// reads the flag for itself where the work starts, which is
 /// [`warm_unless_cancelled`]'s whole job.
 fn warm_on_the_pool(
     app: &AppHandle,
@@ -387,10 +368,10 @@ mod tests {
     /// behind the mutex the pass locks, a folder of source images, and the
     /// thumbnail cache the pass warms, over a directory of its own.
     ///
-    /// The supervisor thread, its join and the atomic flag are deliberately not
-    /// covered here. What is worth asserting is which wallpapers the pass
-    /// writes for and what it counts, and both of those are reachable without a
-    /// Tauri app.
+    /// What is worth asserting here is which wallpapers the pass writes for and
+    /// what it counts, and both of those are reachable without a Tauri app.
+    /// Which passes run, and when, is [`Pregen`]'s, and its tests at the end of
+    /// this module need no library at all.
     struct Library {
         db: Db,
         thumbnails: ThumbnailCache,
@@ -1271,5 +1252,116 @@ mod tests {
         assert_eq!(complete["generated"], 7);
         assert_eq!(complete["failed"], 2);
         assert_eq!(complete["cancelled"], true);
+    }
+
+    /// Passes that stay running until they are stood down, counting how many
+    /// run at once and how many have stopped. Stands in for the real pass
+    /// wherever what matters is which passes run and when, not what one writes.
+    #[derive(Default)]
+    struct Passes {
+        running: AtomicUsize,
+        most_at_once: AtomicUsize,
+        stood_down: AtomicUsize,
+    }
+
+    impl Passes {
+        fn until_cancelled(self: &Arc<Self>) -> impl FnOnce(Arc<AtomicBool>) + Send + 'static {
+            let passes = Arc::clone(self);
+            move |cancel| {
+                let now = passes.running.fetch_add(1, Ordering::SeqCst) + 1;
+                passes.most_at_once.fetch_max(now, Ordering::SeqCst);
+                while !cancel.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                passes.running.fetch_sub(1, Ordering::SeqCst);
+                passes.stood_down.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Long enough that a pass which was going to report has, on a loaded
+    /// machine, and short enough that one which never will fails the test
+    /// rather than hanging it.
+    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    #[test]
+    fn starts_that_race_leave_the_last_pass_running_and_never_two_at_once() {
+        // Launch and `scan-complete` can both call `start_pregen` at once, and
+        // Generate now can land on top of either. They serialize on the mutex:
+        // each start stands its predecessor down and joins it before its own
+        // pass begins, so there is never a second decode beside the first
+        // (ADR 0012).
+        let pregen = Pregen::default();
+        let passes = Arc::new(Passes::default());
+
+        // Every start waits at the barrier and then goes at once, so they really
+        // do contend for the mutex rather than arriving one after another.
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    pregen.start(passes.until_cancelled());
+                });
+            }
+        });
+
+        // Every start has returned, and every one of them but the first joined
+        // the pass before it, so exactly one pass is still going.
+        assert_eq!(passes.stood_down.load(Ordering::SeqCst), 7);
+
+        // A pass that does nothing retires it, the way the next start would.
+        pregen.start(|_| {});
+        assert_eq!(passes.stood_down.load(Ordering::SeqCst), 8);
+        assert_eq!(passes.most_at_once.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_cancel_stands_down_the_running_pass_and_not_the_next_one() {
+        let pregen = Pregen::default();
+        let (said, heard) = std::sync::mpsc::channel();
+
+        // With nothing running there is nothing to cancel, and nothing is left
+        // set for the pass that starts next.
+        pregen.cancel();
+        let first = said.clone();
+        pregen.start(move |cancel| {
+            first
+                .send(("first began", cancel.load(Ordering::SeqCst)))
+                .unwrap();
+            while !cancel.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            first.send(("first stood down", true)).unwrap();
+        });
+        assert_eq!(heard.recv_timeout(PATIENCE), Ok(("first began", false)));
+
+        // The cancel alone is what stops it: no start follows to do the joining.
+        pregen.cancel();
+        assert_eq!(heard.recv_timeout(PATIENCE), Ok(("first stood down", true)));
+
+        // The flag is per run, so the cancel aimed at the first pass does not
+        // land on the one that starts a moment later.
+        pregen.start(move |cancel| {
+            said.send(("second began", cancel.load(Ordering::SeqCst)))
+                .unwrap();
+        });
+        assert_eq!(heard.recv_timeout(PATIENCE), Ok(("second began", false)));
+    }
+
+    #[test]
+    fn a_pass_that_panics_leaves_nothing_in_the_way_of_the_next_one() {
+        // A panic ends the pass's thread and takes nothing else with it. The
+        // mutex is not poisoned, because the pass's thread never holds it; the
+        // next cancel sets a flag nothing reads; and the next start's join hands
+        // back the panic, which it drops, and starts its own pass as usual.
+        let pregen = Pregen::default();
+        pregen.start(|_| panic!("a pass panicked"));
+
+        pregen.cancel();
+        let (said, heard) = std::sync::mpsc::channel();
+        pregen.start(move |cancel| said.send(cancel.load(Ordering::SeqCst)).unwrap());
+
+        assert_eq!(heard.recv_timeout(PATIENCE), Ok(false));
     }
 }
