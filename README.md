@@ -118,7 +118,8 @@ A **Restore** moves the file back to its **Origin** and the Wallpaper becomes
 
 Library is the whole collection as a grid, filtered by Status, with a lightbox
 for looking closely. A Wallpaper whose file has gone missing outside the app
-says so on its card, and Settings will count them for you.
+says so on its card, and Settings will count them for you and soft-reject them
+in one press, which takes them out of voting and review without moving anything.
 
 [CONTEXT.md](CONTEXT.md) defines these words exactly. Read it before touching
 anything that deals in Wallpapers, Statuses or Comparisons.
@@ -208,7 +209,7 @@ src-tauri/src/
   thumbnails.rs       generate, cache, invalidate
   pregen.rs           the pre-generation pass: its thread, cancel and events
   scanner.rs          recursive image walk
-  missing.rs          the count of Wallpapers whose files have gone
+  missing.rs          which Wallpapers' files have gone, and how many
 tests/                frontend tests (bun + testing-library)
 docs/adr/             decisions and why they went that way
 docs/agents/          conventions for agents working in this repo

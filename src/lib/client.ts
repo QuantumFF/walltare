@@ -480,6 +480,7 @@ export type Command =
   | "get_cache_size"
   | "clear_cache"
   | "count_missing_files"
+  | "reject_missing_files"
   | "expand_path"
   | "check_reject_destination"
   | "get_pair"
@@ -497,7 +498,7 @@ export type Command =
  * What each command takes and what it answers with.
  *
  * `args` is the payload as it crosses, camelCase keys included, and it is
- * `undefined` for the six commands that take none. An answer of `null` is a
+ * `undefined` for the seven commands that take none. An answer of `null` is a
  * command that answers with nothing.
  *
  * This is the only declaration of either. `client`'s methods do not state a
@@ -514,6 +515,7 @@ export interface BackendCommands {
   get_cache_size: { args: undefined; answer: CacheSize };
   clear_cache: { args: undefined; answer: null };
   count_missing_files: { args: undefined; answer: MissingFiles };
+  reject_missing_files: { args: { ids: number[] }; answer: Wallpaper[] };
   expand_path: { args: { input: string }; answer: Expanded };
   check_reject_destination: {
     args: { written: string };
@@ -572,6 +574,8 @@ export interface CacheSize {
 export interface MissingFiles {
   missing: number;
   eligible: number;
+  /** Which wallpapers the `missing` are, for `rejectMissingFiles`. */
+  ids: number[];
 }
 
 /**
@@ -931,6 +935,18 @@ export const client = {
    * and is not in this number.
    */
   countMissingFiles: () => call("count_missing_files"),
+
+  /**
+   * Soft-rejects the wallpapers a `countMissingFiles` counted, by the `ids` it
+   * answered with, and resolves with the rows it wrote: Rejected, each `path`
+   * unchanged, and each `origin_path` equal to that `path`, because nothing
+   * moved (ADR 0050).
+   *
+   * The backend asks each file again and leaves alone one that came back or a
+   * wallpaper already rejected since, so the answer can be shorter than `ids`.
+   * The reject destination is not read.
+   */
+  rejectMissingFiles: (ids: number[]) => call("reject_missing_files", { ids }),
 
   /**
    * Hands `handler` every emission of one backend event, resolving with the

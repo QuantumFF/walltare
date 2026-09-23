@@ -41,6 +41,14 @@
 //! of the source. A staged copy the transition did not spend is removed when
 //! it drops, so a refusal or a failed move leaves nothing behind (ADR 0039).
 //!
+//! **A file that is already gone moves nothing.** A reject of a wallpaper with
+//! nothing at its path writes the row and stops: Rejected, the path unchanged,
+//! and the Origin recorded as that same path. A Restore of a wallpaper whose
+//! path is its Origin is the same thing backwards. Neither touches the disk, so
+//! the ordering above holds trivially, and neither resolves the reject
+//! destination, which beside an unplugged drive's mount point would create a
+//! folder on whatever filesystem is underneath (ADR 0050).
+//!
 //! Rows come from [`db::get_wallpaper`] and go back through it after the commit.
 //! `db.rs` still owns the row: its shape, its Status, its listings, and the two
 //! transitions that only write a Status.
@@ -51,13 +59,17 @@ use rusqlite::Connection;
 
 use crate::db::{self, Status, Wallpaper};
 use crate::error::AppError;
-use crate::reject_destination;
+use crate::{missing, reject_destination};
 
 /// How many ` (n)` variants to try before giving up on a colliding destination.
 const MAX_COLLISION_SUFFIXES: u32 = 1000;
 
 /// Soft-rejects a wallpaper: moves its file to `destination_folder`, marks the
 /// row Rejected, records the Origin, and answers with the row it wrote.
+///
+/// A wallpaper whose file is gone is rejected in place: nothing moves, the
+/// `path` stays, the Origin is that same path, and `destination_folder` is not
+/// looked at (ADR 0050).
 ///
 /// The row rather than the path, so the caller predicts nothing: a collision
 /// suffixes the basename, so `wall.jpg` can land as `wall (2).jpg`, and the
@@ -71,8 +83,8 @@ pub fn reject_in(
     destination_folder: &str,
 ) -> Result<Wallpaper, AppError> {
     let row = db.read(|conn| db::get_wallpaper(conn, wallpaper_id))?;
-    let staged = if row.status.may_become(Status::Rejected) {
-        let source = PathBuf::from(&row.path);
+    let source = PathBuf::from(&row.path);
+    let staged = if row.status.may_become(Status::Rejected) && !missing::is_missing(&source) {
         resolve_destination_dir(&source, destination_folder)
             .ok()
             .and_then(|dir| Staged::if_cross_device(&source, &dir))
@@ -112,6 +124,12 @@ fn reject_with(
     }
 
     let source = PathBuf::from(&row.path);
+    if missing::is_missing(&source) {
+        reject_in_place(&tx, wallpaper_id)?;
+        tx.commit()?;
+        return db::get_wallpaper(conn, wallpaper_id);
+    }
+
     let dest_dir = resolve_destination_dir(&source, destination_folder)?;
     if dest_dir.join(&row.filename) == source {
         return Err(AppError::InvalidPath(format!(
@@ -144,6 +162,47 @@ fn reject_with(
     db::get_wallpaper(conn, wallpaper_id)
 }
 
+/// Soft-rejects every wallpaper in `ids` whose file is still gone, in one
+/// transaction, and answers with the rows it wrote.
+///
+/// The ids are the ones a Settings check counted ([`missing::count_missing`]),
+/// so the button rejects what the line said and nothing that went missing
+/// since. That check ran a while ago with the connection released, so each one
+/// is asked again here under the lock: a file that came back in between (a
+/// drive plugged in again) is left alone rather than being rejected in place
+/// beside a file that is there, and so is a wallpaper some other transition
+/// already took out of the Eligible pool. Only the counted ids get a `stat`
+/// here, and a missing local path answers one at once.
+pub fn reject_missing(conn: &Connection, ids: &[i64]) -> Result<Vec<Wallpaper>, AppError> {
+    let tx = conn.unchecked_transaction()?;
+    let mut rejected = Vec::new();
+    for &id in ids {
+        let row = db::get_wallpaper(&tx, id)?;
+        if row.status.may_become(Status::Rejected) && missing::is_missing(Path::new(&row.path)) {
+            reject_in_place(&tx, id)?;
+            rejected.push(id);
+        }
+    }
+    tx.commit()?;
+    rejected
+        .into_iter()
+        .map(|id| db::get_wallpaper(conn, id))
+        .collect()
+}
+
+/// The reject of a gone file: the Status and the Origin, and nothing on disk.
+///
+/// `origin_path = path` for the reason the moving reject's `UPDATE` gives, and
+/// here the two end up equal, which is what tells a Restore it has nothing to
+/// move back.
+fn reject_in_place(tx: &Connection, wallpaper_id: i64) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE wallpapers SET status = ?1, origin_path = path WHERE id = ?2",
+        rusqlite::params![Status::Rejected, wallpaper_id],
+    )?;
+    Ok(())
+}
+
 /// Restores a soft-rejected wallpaper: moves its file back to the Origin the
 /// reject recorded, lands the row on Active with the Origin cleared, and answers
 /// with the row it wrote.
@@ -151,6 +210,10 @@ fn reject_with(
 /// A Restore always lands on Active, never on whatever Status the wallpaper held
 /// before the reject. Kept is the curator's judgement about a rating, and
 /// changing their mind about a reject is not that judgement (ADR 0009).
+///
+/// A wallpaper whose path is its Origin was rejected in place because its file
+/// was gone, so there is nothing to move back: the row lands on Active and the
+/// file, back or still missing, is left where it is (ADR 0050).
 ///
 /// A wallpaper that is not Rejected is refused rather than treated as a no-op:
 /// there is no file to move and no Origin to read, so succeeding quietly would
@@ -160,7 +223,7 @@ fn reject_with(
 pub fn restore_in(db: &crate::Db, wallpaper_id: i64) -> Result<Wallpaper, AppError> {
     let row = db.read(|conn| db::get_wallpaper(conn, wallpaper_id))?;
     let staged = match (row.status, &row.origin_path) {
-        (Status::Rejected, Some(origin)) => {
+        (Status::Rejected, Some(origin)) if *origin != row.path => {
             let source = PathBuf::from(&row.path);
             match Path::new(origin).parent() {
                 Some(dir) if source.is_file() && std::fs::create_dir_all(dir).is_ok() => {
@@ -204,6 +267,12 @@ fn restore_with(
             "wallpaper {wallpaper_id} was rejected before its Origin was recorded, so there is nowhere to put it back"
         )));
     };
+
+    if origin == row.path {
+        restore_in_place(&tx, wallpaper_id)?;
+        tx.commit()?;
+        return db::get_wallpaper(conn, wallpaper_id);
+    }
 
     let source = PathBuf::from(&row.path);
     if !source.is_file() {
@@ -253,6 +322,16 @@ fn restore_with(
     finish_move(&source, &dest_path, staged)?;
     tx.commit()?;
     db::get_wallpaper(conn, wallpaper_id)
+}
+
+/// The Restore of a wallpaper rejected in place: the Status and the Origin,
+/// and nothing on disk. The mirror of [`reject_in_place`].
+fn restore_in_place(tx: &Connection, wallpaper_id: i64) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE wallpapers SET status = ?1, origin_path = NULL WHERE id = ?2",
+        rusqlite::params![Status::Active, wallpaper_id],
+    )?;
+    Ok(())
 }
 
 /// Expands `destination_folder`, resolves it against the wallpaper's own folder
@@ -913,22 +992,44 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn failed_move_leaves_db_untouched_and_propagates_io_error() {
+        // The move fails with the row already written: the source sits in a
+        // folder the process cannot unlink from, so `rename` refuses after the
+        // `UPDATE`. This used to delete the source instead, which is now the
+        // reject in place of ADR 0050 and not a failure at all.
+        use std::os::unix::fs::PermissionsExt;
+
         let tmp = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
-        let id = seed_real_wallpaper(&conn, tmp.path(), "e.jpg");
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        let id = seed_real_wallpaper(&conn, &locked, "e.jpg");
         add_comparison(&conn, id, id);
 
-        std::fs::remove_file(tmp.path().join("e.jpg")).unwrap();
-        let err = reject(&conn, id, dest.path().to_str().unwrap()).unwrap_err();
-        assert!(matches!(err, crate::error::AppError::Io(_)));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root ignores the mode bits, so there the move succeeds and there is no
+        // failure to assert; see the destination test below for the same shape.
+        let probe = locked.join(".root-check");
+        let mode_bits_ignored = std::fs::File::create(&probe).is_ok();
+        let _ = std::fs::remove_file(&probe);
 
+        let result = reject(&conn, id, dest.path().to_str().unwrap());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if mode_bits_ignored {
+            assert_eq!(result.unwrap().status, Status::Rejected);
+            return;
+        }
+
+        let err = result.unwrap_err();
+        assert!(matches!(err, crate::error::AppError::Io(_)), "got {err:?}");
         assert_eq!(row_status_and_path(&conn, id).0, "active");
         // The rollback takes the Origin with it: a wallpaper that is not
         // Rejected must not read as one a Restore could move.
         assert_eq!(origin_path_of(&conn, id), None);
+        assert!(locked.join("e.jpg").is_file());
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM comparisons", [], |row| row.get(0))
             .unwrap();
@@ -940,9 +1041,8 @@ mod tests {
     fn a_destination_the_process_cannot_write_to_is_refused_before_the_move() {
         // The arm most likely to reach a real curator: a reject folder on a
         // read-only mount, or one owned by another user. Its neighbour above
-        // fails the move by deleting the source, so it only exercises `rename`'s
-        // missing-source arm; this one has the source right where it belongs and
-        // the destination refusing the write.
+        // fails the move from the source's side; this one has the source right
+        // where it belongs and the destination refusing the write.
         //
         // Refused rather than attempted: `reject_destination::prepare` proves
         // the folder before the `UPDATE`, so nothing is written and nothing is
@@ -1477,5 +1577,130 @@ mod tests {
         let back = restore_in(&db, id).unwrap();
         assert!(PathBuf::from(&back.path).is_file());
         assert!(entries(&tmp.path().join("rejected")).is_empty());
+    }
+
+    #[test]
+    fn a_reject_of_a_gone_file_moves_nothing_and_leaves_the_pool() {
+        // The case ADR 0050 exists for: the file went outside the app, and a
+        // reject is the one thing that takes the wallpaper out of voting and
+        // review. There is nothing to move, so the row changes and the disk
+        // does not.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "gone.jpg");
+        let other = seed_real_wallpaper(&conn, tmp.path(), "other.jpg");
+        add_comparison(&conn, other, id);
+        std::fs::remove_file(&origin).unwrap();
+        let path = origin.to_str().unwrap().to_string();
+
+        let wrote = reject(&conn, id, "rejected").unwrap();
+
+        assert_eq!(wrote.status, Status::Rejected);
+        assert_eq!(wrote.path, path);
+        assert_eq!(wrote.filename, "gone.jpg");
+        assert_eq!(wrote.origin_path, Some(path));
+        // No reject folder beside a file that is not there.
+        assert!(!tmp.path().join("library").join("rejected").exists());
+        assert_eq!(review_ids(&conn), vec![other]);
+        assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn a_gone_file_under_a_vanished_folder_creates_nothing_through_the_db_entry_point() {
+        // An unplugged drive: the file's folder is gone too, so a relative
+        // destination would resolve under a mount point that is no longer
+        // mounted, and creating it would write onto the filesystem underneath.
+        // `reject_in` stages before the lock, so it is the one to check.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let drive = tmp.path().join("drive");
+        let id = seed_wallpaper(
+            &conn,
+            drive.join("wall.jpg").to_str().unwrap(),
+            "kept",
+            25.0,
+        );
+        let db = crate::Db::new(conn);
+
+        let wrote = reject_in(&db, id, "rejected").unwrap();
+
+        assert_eq!(wrote.status, Status::Rejected);
+        assert!(!drive.exists());
+    }
+
+    #[test]
+    fn undoing_a_reject_of_a_gone_file_puts_it_back_as_it_was() {
+        // The toast's Undo is a Restore. The file is still missing, and the
+        // Restore must not answer `FileMissing` for a move it has no need to
+        // make: the path is already the Origin.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "gone.jpg");
+        std::fs::remove_file(&origin).unwrap();
+        reject(&conn, id, "rejected").unwrap();
+
+        let wrote = restore(&conn, id).unwrap();
+
+        assert_eq!(wrote.status, Status::Active);
+        assert_eq!(wrote.path, origin.to_str().unwrap());
+        assert_eq!(wrote.origin_path, None);
+        assert!(!origin.exists());
+        assert_eq!(review_ids(&conn), vec![id]);
+    }
+
+    #[test]
+    fn a_file_that_came_back_is_restored_where_it_is() {
+        // A drive plugged in again. The file is at the Origin already, and a
+        // Restore that moved it would find its own file in the way and land it
+        // as `back (2).jpg`.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "back.jpg");
+        std::fs::remove_file(&origin).unwrap();
+        reject(&conn, id, "rejected").unwrap();
+        std::fs::write(&origin, b"BACK").unwrap();
+        let db = crate::Db::new(conn);
+
+        let wrote = restore_in(&db, id).unwrap();
+
+        assert_eq!(wrote.status, Status::Active);
+        assert_eq!(wrote.path, origin.to_str().unwrap());
+        assert_eq!(std::fs::read(&origin).unwrap(), b"BACK");
+        assert_eq!(
+            entries(&tmp.path().join("library")),
+            vec!["back.jpg".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejecting_the_gone_rejects_only_what_is_still_gone_and_still_eligible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let gone_active = seed_real_wallpaper(&conn, tmp.path(), "a.jpg");
+        let gone_kept = seed_real_wallpaper(&conn, tmp.path(), "k.jpg");
+        keep_wallpaper(&conn, gone_kept).unwrap();
+        // Gone when the check ran, back by the time of the press.
+        let came_back = seed_real_wallpaper(&conn, tmp.path(), "back.jpg");
+        // Rejected by something else in between.
+        let already = seed_wallpaper(&conn, "/elsewhere/r.jpg", "rejected", 25.0);
+        std::fs::remove_file(tmp.path().join("a.jpg")).unwrap();
+        std::fs::remove_file(tmp.path().join("k.jpg")).unwrap();
+
+        let wrote = reject_missing(&conn, &[gone_active, gone_kept, came_back, already]).unwrap();
+
+        let ids: Vec<i64> = wrote.iter().map(|w| w.id).collect();
+        assert_eq!(ids, vec![gone_active, gone_kept]);
+        assert!(wrote
+            .iter()
+            .all(|w| w.status == Status::Rejected && w.origin_path.as_deref() == Some(&w.path)));
+        assert_eq!(status_of(&conn, came_back), "active");
+        assert!(tmp.path().join("back.jpg").is_file());
+        assert_eq!(origin_path_of(&conn, already), None);
+        assert_eq!(review_ids(&conn), vec![came_back]);
     }
 }

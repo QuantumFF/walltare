@@ -80,6 +80,13 @@ export type ToastRequest =
        */
       renamed: boolean;
       /**
+       * Whether the file moved at all. A wallpaper whose file was already gone
+       * is rejected in place, with its `path` unchanged, and the path line then
+       * says that instead of printing a path the file is not at (ADR 0050).
+       * Handed over for `renamed`'s reason.
+       */
+      moved: boolean;
+      /**
        * Whether the destination resolved relative, taken from the same
        * `useRejectDestination` the caller's bar renders from rather than worked
        * out here.
@@ -293,6 +300,13 @@ export interface Toaster {
 const ToasterContext = createContext<Toaster | undefined>(undefined);
 
 /**
+ * The reject's path line for a file that was already gone. There is no path to
+ * name — the row kept the one it had — and the half worth reading is that the
+ * reject destination did not receive anything (ADR 0050).
+ */
+const NOTHING_MOVED = "The file was already gone, so nothing moved.";
+
+/**
  * The reject's path line: the final path when the file was renamed or when the
  * destination resolved relative, which is "name the path whenever the read-out
  * could not" (ADR 0017 as amended by ADR 0018).
@@ -310,10 +324,12 @@ const ToasterContext = createContext<Toaster | undefined>(undefined);
  * (ADR 0023).
  */
 function rejectPathLine(
+  moved: boolean,
   renamed: boolean,
   relativeDestination: boolean,
   finalPath: string,
 ): string | undefined {
+  if (!moved) return NOTHING_MOVED;
   if (renamed || relativeDestination) return finalPath;
   return undefined;
 }
@@ -465,6 +481,7 @@ export function ToastSurface({
             filename: request.filename,
             suffix: "",
             description: rejectPathLine(
+              request.moved,
               request.renamed,
               request.relativeDestination,
               request.finalPath,

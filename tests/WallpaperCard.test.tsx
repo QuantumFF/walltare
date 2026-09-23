@@ -221,6 +221,21 @@ test("the overlay reads the comparison count, and for a Rejected card the folder
   );
 });
 
+test("a card rejected in place names no folder, because its file went nowhere", async () => {
+  // A reject of a missing file keeps the path and records it as the Origin
+  // (ADR 0050). `now in photos/` would name the folder the file is missing from.
+  await mount(
+    rejected({
+      comparisons_count: 14,
+      path: "/library/photos/wall-1.jpg",
+      origin_path: "/library/photos/wall-1.jpg",
+    }),
+  );
+
+  const line = screen.getByText("14 comparisons");
+  expect(line.getAttribute("title")).toBeNull();
+});
+
 test("the dimming of a Rejected card sits on the image and not on the card", async () => {
   await mount(rejected());
 
@@ -410,8 +425,8 @@ test("a gone card keeps its Score, its Status and its transitions", async () => 
 
   // The panel covers the picture and nothing else. Rejecting or restoring a
   // wallpaper whose file is gone is exactly what the curator might want to do
-  // about it, and ADR 0009's `file_missing` is what answers if the move has
-  // nothing to move — so none of these leaves the card (ADR 0032).
+  // about it — a reject of a gone file moves nothing and takes it out of the
+  // pool (ADR 0050) — so none of these leaves the card (ADR 0032).
   expect(badge().textContent).toBe("22.4");
   expect(screen.queryByText("Rejected")).not.toBeNull();
   expect(buttonNames()).toEqual(["Restore wall-1.jpg"]);

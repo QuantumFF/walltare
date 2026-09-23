@@ -22,10 +22,11 @@ import {
 // No Reset control, which is ADR 0020's rule: pressing Balanced is what deletes
 // the row, and the line under the control says so.
 //
-// It is also the only section on this page that publishes. Every badge in the
-// app reads the threshold out of `AppContext`, so those move on the write; the
-// Evaluated count in the Rank headline is the backend's and is patched onto
-// Rank by `stats-changed`, which nothing else here has reason to raise. Without
+// It is one of the two sections on this page that publish (Missing files, whose
+// reject changes the Eligible pool, is the other). Every badge in the app reads
+// the threshold out of `AppContext`, so those move on the write; the Evaluated
+// count in the Rank headline is the backend's and is patched onto Rank by
+// `stats-changed`. Without
 // that the two halves of the same claim would be a change apart until the next
 // vote — which is exactly what "the count and the badges agree" forbids
 // (ADR 0046).

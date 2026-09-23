@@ -11,17 +11,20 @@
 //! true and false again without the curator doing anything, while every Status
 //! in `CONTEXT.md` moves only through a transition the curator asked for. So
 //! nothing here writes to the database, ADR 0001's three Statuses stand, and
-//! ADR 0025's transition guard is untouched.
+//! ADR 0025's transition guard is untouched. What the curator can do about a
+//! missing file is a Soft reject, which moves nothing when there is nothing to
+//! move (ADR 0050); `soft_reject.rs` owns that write.
 //!
-//! **Nothing here runs on a listing.** The count is what the Settings page asks
-//! for when the curator presses a button, and it is the only filesystem pass in
-//! the app that is about missing files at all. The card's own answer costs
+//! **Nothing here runs on a listing.** The count, and the soft reject of what
+//! it counted, are what the Settings page asks for when the curator presses a
+//! button, and they are the only filesystem passes in the app that are about
+//! missing files at all. The card's own answer costs
 //! nothing and is not here: the `wallpaper://` request it already makes either
 //! paints or fails, and the card reads that (ADR 0032).
 //!
 //! ## Two halves, because one of them must not hold the lock
 //!
-//! [`eligible_paths`] is the database half and [`count_missing`] is the
+//! [`eligible_files`] is the database half and [`count_missing`] is the
 //! filesystem half, split for the reason ADR 0004 split thumbnail resolution:
 //! at ADR 0016's 5,000-wallpaper ceiling this is 5,000 `stat` calls, and doing
 //! them under the connection mutex would queue every command and every
@@ -52,12 +55,26 @@ use crate::error::AppError;
 /// because a bare count answers nothing: three missing out of five is a broken
 /// library and three out of five thousand is a Tuesday, and the two numbers have
 /// to come from one pass or the line can report a ratio that was never true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct MissingFiles {
     /// Eligible wallpapers whose file is not where their row says it is.
     pub missing: i64,
     /// The Eligible pool the check walked: Active plus Kept (`CONTEXT.md`).
     pub eligible: i64,
+    /// Which wallpapers those `missing` are, so the Settings button rejects
+    /// exactly what the line counted rather than walking the library again
+    /// and rejecting files that went missing after the check (ADR 0050).
+    pub ids: Vec<i64>,
+}
+
+/// One Eligible wallpaper and where its file is supposed to be.
+///
+/// The id rides along with the path so that [`count_missing`] can name the
+/// rows it counted, which are the ones the Settings button soft-rejects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EligibleFile {
+    pub id: i64,
+    pub path: String,
 }
 
 /// Where every Eligible wallpaper's file is supposed to be.
@@ -68,37 +85,57 @@ pub struct MissingFiles {
 /// is. A Rejected wallpaper whose file the curator has since emptied out of that
 /// folder is not missing either — `CONTEXT.md` calls the reject destination a
 /// folder the user owns, and ADR 0009 already answers a Restore of one with
-/// `FileMissing`.
+/// `FileMissing`. Nor is one soft-rejected after its file had gone (ADR 0050):
+/// taking it out of this pool is what that reject was for.
 ///
 /// The fragment naming the pool comes from [`db::Status::ELIGIBLE_SQL`] rather
 /// than being spelled here, so this count and `voting.rs`'s four aggregates
 /// cannot come to disagree about which wallpapers Eligible means (ADR 0024).
-pub fn eligible_paths(conn: &Connection) -> Result<Vec<String>, AppError> {
+pub fn eligible_files(conn: &Connection) -> Result<Vec<EligibleFile>, AppError> {
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT path FROM wallpapers WHERE {}",
+        "SELECT id, path FROM wallpapers WHERE {} ORDER BY id",
         db::Status::ELIGIBLE_SQL,
     ))?;
-    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(EligibleFile {
+            id: row.get(0)?,
+            path: row.get(1)?,
+        })
+    })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// How many of `paths` have nothing behind them.
+/// Whether nothing is at `path`: the one definition of a missing file.
 ///
-/// One `stat` per path and no reads, so this is the cheapest question that can
-/// be answered honestly. `exists()` follows symlinks and reads a broken one, an
+/// One `stat` and no reads, so this is the cheapest question that can be
+/// answered honestly. `exists()` follows symlinks and reads a broken one, an
 /// unreadable parent folder and a deleted file all as nothing there, which is
 /// the same answer the curator gets from the card: all three make the
 /// `wallpaper://` request fail.
+///
+/// The count below and the Soft reject of a missing file (ADR 0050) both ask
+/// it, so a reject in place happens only to a file the count would count.
+pub fn is_missing(path: &Path) -> bool {
+    !path.exists()
+}
+
+/// How many of `files` have nothing behind them.
 ///
 /// It says nothing about a file that is present and will not decode. That one
 /// paints as gone on the card, because the card reacts to the request failing
 /// rather than to a filesystem check, and it is not counted here. The line this
 /// feeds says `files missing` for that reason, rather than claiming to count
 /// every wallpaper the grid cannot paint.
-pub fn count_missing(paths: &[String]) -> MissingFiles {
+pub fn count_missing(files: &[EligibleFile]) -> MissingFiles {
+    let ids: Vec<i64> = files
+        .iter()
+        .filter(|f| is_missing(Path::new(&f.path)))
+        .map(|f| f.id)
+        .collect();
     MissingFiles {
-        missing: paths.iter().filter(|p| !Path::new(p).exists()).count() as i64,
-        eligible: paths.len() as i64,
+        missing: ids.len() as i64,
+        eligible: files.len() as i64,
+        ids,
     }
 }
 
@@ -111,6 +148,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         db::init_schema(&conn).unwrap();
         conn
+    }
+
+    fn file(id: i64, path: String) -> EligibleFile {
+        EligibleFile { id, path }
     }
 
     /// A path that names a file which is really there.
@@ -130,7 +171,11 @@ mod tests {
         // ever made as a problem.
         seed_wallpaper(&conn, "/library/rejected/c.jpg", "rejected", 25.0);
 
-        let paths = eligible_paths(&conn).unwrap();
+        let paths: Vec<String> = eligible_files(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
 
         assert_eq!(
             paths,
@@ -146,13 +191,14 @@ mod tests {
         // both, which is true of both.
         seed_wallpaper(&conn, "/library/rejected/c.jpg", "rejected", 25.0);
 
-        let found = count_missing(&eligible_paths(&conn).unwrap());
+        let found = count_missing(&eligible_files(&conn).unwrap());
 
         assert_eq!(
             found,
             MissingFiles {
                 missing: 0,
-                eligible: 0
+                eligible: 0,
+                ids: vec![]
             }
         );
     }
@@ -164,10 +210,11 @@ mod tests {
         let gone = dir.path().join("gone.jpg").display().to_string();
 
         assert_eq!(
-            count_missing(&[there, gone]),
+            count_missing(&[file(1, there), file(2, gone)]),
             MissingFiles {
                 missing: 1,
-                eligible: 2
+                eligible: 2,
+                ids: vec![2]
             }
         );
     }
@@ -183,7 +230,7 @@ mod tests {
         std::os::unix::fs::symlink(dir.path().join("nowhere.jpg"), &link).unwrap();
 
         assert_eq!(
-            count_missing(&[link.display().to_string()]).missing,
+            count_missing(&[file(1, link.display().to_string())]).missing,
             1,
             "a link to nothing has nothing behind it"
         );
@@ -205,23 +252,42 @@ mod tests {
         std::fs::remove_file(&deleted).unwrap();
 
         assert_eq!(
-            count_missing(&eligible_paths(&conn).unwrap()),
+            count_missing(&eligible_files(&conn).unwrap()),
             MissingFiles {
                 missing: 1,
-                eligible: 3
+                eligible: 3,
+                ids: vec![3]
             }
         );
     }
 
     #[test]
+    fn the_count_names_the_rows_it_counted() {
+        // The Settings button rejects what the line counted, so the two must
+        // come off one definition of missing rather than two.
+        let dir = tempfile::tempdir().unwrap();
+        let files = [
+            file(4, real(dir.path(), "there.jpg")),
+            file(7, dir.path().join("gone.jpg").display().to_string()),
+            file(9, dir.path().join("also-gone.jpg").display().to_string()),
+        ];
+
+        let found = count_missing(&files);
+        assert_eq!(found.ids, vec![7, 9]);
+        assert_eq!(found.missing, 2);
+    }
+
+    #[test]
     fn the_count_crosses_the_ipc_with_the_fields_client_ts_expects() {
         let json = serde_json::to_value(MissingFiles {
-            missing: 3,
+            missing: 2,
             eligible: 120,
+            ids: vec![4, 9],
         })
         .unwrap();
 
-        assert_eq!(json["missing"], 3);
+        assert_eq!(json["missing"], 2);
         assert_eq!(json["eligible"], 120);
+        assert_eq!(json["ids"], serde_json::json!([4, 9]));
     }
 }

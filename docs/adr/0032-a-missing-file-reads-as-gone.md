@@ -178,6 +178,15 @@ file gets its own answer.
 their Comparisons with them, which the domain does not allow. The honest offer is
 a number, plus the library grid where each card says which wallpaper it was.
 
+> **Amended by [ADR 0050](0050-a-missing-file-is-rejected-in-place.md),
+> 2026-09-24.** There is now something to fix from here. A Soft reject of a
+> wallpaper whose file is missing moves nothing and takes it out of the Eligible
+> pool, and a check that found some offers **Reject missing** beside **Check
+> now**. Rows are still never dropped, and there is still no fourth Status.
+> `missing::eligible_paths` became `eligible_files`, which carries each row's
+> id, and `MissingFiles` answers with the `ids` it counted so the button
+> rejects exactly those.
+
 ### Two halves in Rust, because one of them must not hold the lock
 
 `missing::eligible_paths(&Connection)` is the database half and

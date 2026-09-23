@@ -148,7 +148,7 @@ beforeEach(() => {
   cacheSizeCalls = 0;
   pregenCommands = [];
   clearCalls = 0;
-  missingReading = { missing: 0, eligible: 0 };
+  missingReading = { missing: 0, eligible: 0, ids: [] };
   missingChecks = 0;
 
   mockBootedApp();
@@ -2352,7 +2352,7 @@ test("nothing walks the library until the curator asks", async () => {
 });
 
 test("the line says how many files are missing, and out of what", async () => {
-  missingReading = { missing: 3, eligible: 120 };
+  missingReading = { missing: 3, eligible: 120, ids: [3, 4, 5] };
   await openSettingsFromLibrary();
 
   await click(checkButton());
@@ -2367,7 +2367,7 @@ test("the line says how many files are missing, and out of what", async () => {
 });
 
 test("a library with nothing missing says so rather than printing a zero", async () => {
-  missingReading = { missing: 0, eligible: 120 };
+  missingReading = { missing: 0, eligible: 120, ids: [] };
   await openSettingsFromLibrary();
 
   await click(checkButton());
@@ -2381,7 +2381,7 @@ test("a library with nothing missing says so rather than printing a zero", async
 });
 
 test("one missing file out of one wallpaper reads in the singular", async () => {
-  missingReading = { missing: 1, eligible: 1 };
+  missingReading = { missing: 1, eligible: 1, ids: [3] };
   await openSettingsFromLibrary();
 
   await click(checkButton());
@@ -2392,7 +2392,7 @@ test("one missing file out of one wallpaper reads in the singular", async () => 
 });
 
 test("the count refreshes on demand, and reads what the library says now", async () => {
-  missingReading = { missing: 3, eligible: 120 };
+  missingReading = { missing: 3, eligible: 120, ids: [3, 4, 5] };
   await openSettingsFromLibrary();
   await click(checkButton());
   expect(missingLine()?.textContent).toBe(
@@ -2401,7 +2401,7 @@ test("the count refreshes on demand, and reads what the library says now", async
 
   // The curator plugged the drive back in. Nothing tells the app that, which is
   // why the button is the refresh: a count is about the moment it was taken.
-  missingReading = { missing: 0, eligible: 120 };
+  missingReading = { missing: 0, eligible: 120, ids: [] };
   await click(checkButton());
 
   expect(missingChecks).toBe(2);
@@ -2411,7 +2411,7 @@ test("the count refreshes on demand, and reads what the library says now", async
 });
 
 test("a check that is running says so on the button and holds the line empty", async () => {
-  missingReading = { missing: 3, eligible: 120 };
+  missingReading = { missing: 3, eligible: 120, ids: [3, 4, 5] };
   await openSettingsFromLibrary();
   await click(checkButton());
   expect(missingLine()?.textContent).toBe(
@@ -2433,7 +2433,7 @@ test("a check that is running says so on the button and holds the line empty", a
   expect(missingLine()).toBeNull();
 
   await act(async () => {
-    walk.resolve({ missing: 0, eligible: 120 });
+    walk.resolve({ missing: 0, eligible: 120, ids: [] });
   });
   await flush();
 
@@ -2444,7 +2444,7 @@ test("a check that is running says so on the button and holds the line empty", a
 });
 
 test("a check that would not run says so instead of leaving a count up", async () => {
-  missingReading = { missing: 3, eligible: 120 };
+  missingReading = { missing: 3, eligible: 120, ids: [3, 4, 5] };
   expectConsoleError(/Failed to check the library for missing files/);
   await openSettingsFromLibrary();
   await click(checkButton());
@@ -2465,4 +2465,117 @@ test("a check that would not run says so instead of leaving a count up", async (
   // And the button is pressable again, because the fault is usually outside the
   // app and pressing it is the whole of the retry.
   expect(checkButton().disabled).toBe(false);
+});
+
+// The second button: once a check has found missing files, a soft reject of
+// every one of them. Nothing moves, the rows keep their Comparisons, and they
+// leave the Eligible pool, so Review and Rank stop serving them (ADR 0050).
+
+const rejectButton = () =>
+  within(missingSection()).queryByRole("button", {
+    name: /^(reject missing|rejecting)/i,
+  }) as HTMLButtonElement | null;
+
+/** A row the backend wrote: Rejected in place, the Origin its own path. */
+const rejectedInPlace = (id: number) =>
+  wallpaper(id, {
+    status: "rejected",
+    origin_path: `/library/wall-${id}.jpg`,
+  });
+
+test("only a check that found missing files offers to reject them", async () => {
+  missingReading = { missing: 0, eligible: 120, ids: [] };
+  await openSettingsFromLibrary();
+  await click(checkButton());
+  // A button beside `No files missing` would act on nothing.
+  expect(rejectButton()).toBeNull();
+
+  missingReading = { missing: 2, eligible: 120, ids: [3, 4] };
+  await click(checkButton());
+  expect(rejectButton()?.textContent).toBe("Reject missing");
+});
+
+test("rejecting the missing files says how many, and re-reads Rank's counts", async () => {
+  missingReading = { missing: 2, eligible: 120, ids: [3, 4] };
+  const rejects: number[][] = [];
+  mockCommand("reject_missing_files", (args) => {
+    rejects.push(args.ids);
+    return [rejectedInPlace(3), rejectedInPlace(4)];
+  });
+  await openSettingsFromLibrary();
+  await click(checkButton());
+  const statsBefore = statsCalls;
+
+  await click(rejectButton()!);
+
+  // Exactly the rows the check counted, by id, so a file that went missing
+  // since is not rejected behind the number on the line (ADR 0050).
+  expect(rejects).toEqual([[3, 4]]);
+  // The count comes off the line: the rows it counted are not Eligible now.
+  expect(missingLine()?.textContent).toBe(
+    "2 wallpapers rejected · nothing moved",
+  );
+  expect(rejectButton()).toBeNull();
+  // The Eligible pool shrank, so the Round headline is read again.
+  expect(statsCalls).toBe(statsBefore + 1);
+  // And no second walk of the library.
+  expect(missingChecks).toBe(1);
+});
+
+test("a reject that found nothing left says so without guessing why", async () => {
+  missingReading = { missing: 2, eligible: 120, ids: [3, 4] };
+  mockCommand("reject_missing_files", () => []);
+  await openSettingsFromLibrary();
+  await click(checkButton());
+
+  await click(rejectButton()!);
+
+  expect(missingLine()?.textContent).toBe(
+    "Nothing left to reject",
+  );
+});
+
+test("a reject in flight says so on its button and holds both buttons", async () => {
+  missingReading = { missing: 2, eligible: 120, ids: [3, 4] };
+  const run = deferred<ReturnType<typeof wallpaper>[]>();
+  mockCommand("reject_missing_files", () => run.promise);
+  await openSettingsFromLibrary();
+  await click(checkButton());
+
+  await click(rejectButton()!);
+  expect(rejectButton()?.textContent).toBe("Rejecting…");
+  expect(rejectButton()?.disabled).toBe(true);
+  expect(checkButton().disabled).toBe(true);
+  // The count it is acting on stays up until it lands.
+  expect(missingLine()?.textContent).toBe(
+    "2 files missing · 120 wallpapers checked",
+  );
+
+  await act(async () => {
+    run.resolve([rejectedInPlace(3), rejectedInPlace(4)]);
+  });
+  await flush();
+
+  expect(checkButton().disabled).toBe(false);
+  expect(missingLine()?.textContent).toBe(
+    "2 wallpapers rejected · nothing moved",
+  );
+});
+
+test("a reject that would not run says so and can be pressed again", async () => {
+  missingReading = { missing: 2, eligible: 120, ids: [3, 4] };
+  expectConsoleError(/Failed to reject the missing files/);
+  mockCommand("reject_missing_files", () =>
+    Promise.reject({ kind: "db", message: "database is locked" }),
+  );
+  await openSettingsFromLibrary();
+  await click(checkButton());
+
+  await click(rejectButton()!);
+
+  expect(missingLine()?.textContent).toBe(
+    "Couldn't reject the wallpapers whose files are missing.",
+  );
+  expect(missingLine()?.className).toContain("text-destructive");
+  expect(rejectButton()?.disabled).toBe(false);
 });

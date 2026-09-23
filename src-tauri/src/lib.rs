@@ -264,8 +264,28 @@ async fn clear_cache(app: AppHandle) -> Result<(), error::AppError> {
 #[tauri::command]
 async fn count_missing_files(app: AppHandle) -> Result<missing::MissingFiles, error::AppError> {
     off_main_thread(app, |app| {
-        let paths = app.state::<Db>().read(missing::eligible_paths)?;
-        Ok(missing::count_missing(&paths))
+        let files = app.state::<Db>().read(missing::eligible_files)?;
+        Ok(missing::count_missing(&files))
+    })
+    .await
+}
+
+/// Soft-rejects the wallpapers a Settings check counted as missing, and
+/// answers with the rows it wrote.
+///
+/// `ids` is the `ids` of the [`missing::MissingFiles`] that
+/// [`count_missing_files`] answered with, so the button rejects what the line
+/// said rather than walking the library a second time.
+/// [`soft_reject::reject_missing`] asks each one again under the lock. Nothing
+/// moves on disk, so the reject destination is not read (ADR 0050).
+#[tauri::command]
+async fn reject_missing_files(
+    ids: Vec<i64>,
+    app: AppHandle,
+) -> Result<Vec<db::Wallpaper>, error::AppError> {
+    off_main_thread(app, move |app| {
+        app.state::<Db>()
+            .write(|conn| soft_reject::reject_missing(conn, &ids))
     })
     .await
 }
@@ -615,6 +635,7 @@ pub fn run() {
             get_cache_size,
             clear_cache,
             count_missing_files,
+            reject_missing_files,
             expand_path,
             check_reject_destination,
             get_pair,

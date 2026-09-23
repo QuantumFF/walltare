@@ -132,6 +132,11 @@ as often as the user changes their mind. See
 [ADR 0003](docs/adr/0003-soft-reject-write-ordering.md) and
 [ADR 0009](docs/adr/0009-reject-is-reversible.md).
 
+A wallpaper whose file is already missing is soft-rejected without a move:
+there is nothing to move, so it stays where it was, and its Origin is that same
+place. This is how a wallpaper whose file left outside the app leaves voting and
+review. See [ADR 0050](docs/adr/0050-a-missing-file-is-rejected-in-place.md).
+
 ## Restore
 
 Undoing a soft reject: the file moves back to its Origin and the wallpaper
@@ -142,12 +147,24 @@ A Restore lands on Active rather than on the previous status because Kept is a
 judgement about a rating, and changing your mind about a reject is not that
 judgement. A wallpaper with no Origin cannot be restored.
 
+A wallpaper that was soft-rejected because its file was missing never left its
+Origin, so its Restore moves nothing: it becomes Active whether the file has
+come back or not.
+
 ## Origin
 
 Where a wallpaper's file sat before its current soft reject. Recorded by the
 reject and cleared by the Restore, so only a currently-rejected wallpaper has
 one. A wallpaper rejected before Restore existed has none either, because
 nothing recorded it at the time.
+
+## Missing file
+
+A wallpaper whose file is not where the app says it is: deleted, moved, or on a
+drive that is not plugged in. A fact about the filesystem at the moment somebody
+looks, not a Status, because it becomes true and false again without the user
+doing anything. The app shows such a wallpaper as gone. See
+[ADR 0032](docs/adr/0032-a-missing-file-reads-as-gone.md).
 
 ## Comparison
 
