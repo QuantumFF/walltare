@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -449,8 +449,9 @@ export interface BackendEvents {
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
  * `BackendEvents` does above for the five event names: the one place in the
  * frontend where these 18 strings are written down. `client`'s methods below
- * are the only callers in the app; the test suite's `mockCommand` is the other
- * reader, which is why the names are exported rather than inlined (ADR 0031).
+ * reach them through `call`, the only caller in the app; the test suite's
+ * `mockCommand` is the other reader, which is why the names are exported rather
+ * than inlined (ADR 0031).
  *
  * A Rust rename is still not a compilation failure — nothing short of generated
  * bindings makes it one, and ADR 0031 refused those. What this buys is that
@@ -479,14 +480,16 @@ export type Command =
 /**
  * What each command takes and what it answers with.
  *
- * `args` is the payload as it crosses, so it is spelled the way the `invoke`
- * calls in `client` spell it — camelCase keys included — and it is `undefined`
- * for the six commands that take none. An answer of `null` is a command that
- * answers with nothing.
+ * `args` is the payload as it crosses, camelCase keys included, and it is
+ * `undefined` for the six commands that take none. An answer of `null` is a
+ * command that answers with nothing.
  *
- * This restates what `client`'s methods already say for callers, because the
- * one caller that cannot read a method signature is a generic over the names.
- * That is the same redundancy `BackendEvents` carries next to `subscribe`.
+ * This is the only declaration of either. `client`'s methods do not state a
+ * payload or an answer of their own: they hand `call` a name and an object, and
+ * their types are read off this table. So the table is the port, with Tauri's
+ * `invoke` and the test suite's `mockCommand` as its two adapters, and an entry
+ * here that drifts from the method using it is a type error there rather than a
+ * second opinion nobody compares (ADR 0031 as amended by #282).
  */
 export interface BackendCommands {
   start_scan: { args: { path: string }; answer: null };
@@ -668,8 +671,48 @@ export function wallpaperImageUrl(
   return `wallpaper://localhost/image/${id}?size=${size}`;
 }
 
-async function invokeVoid(name: string, args?: Record<string, unknown>) {
-  await invoke<null>(name, args);
+/** What `C` takes and what it answers with, read off `BackendCommands`. */
+type ArgsOf<C extends Command> = BackendCommands[C]["args"];
+type AnswerOf<C extends Command> = BackendCommands[C]["answer"];
+
+/**
+ * The arguments after the name: none for a command whose `args` is
+ * `undefined`, so `call("get_stats")` does not have to spell one out.
+ */
+type Payload<C extends Command> =
+  ArgsOf<C> extends undefined ? [] : [args: ArgsOf<C>];
+
+/** The commands that answer with nothing. */
+type SilentCommand = {
+  [C in Command]: AnswerOf<C> extends null ? C : never;
+}[Command];
+
+/**
+ * The one `invoke` in the app, typed against `BackendCommands`. Every method on
+ * `client` goes through here, which is what makes that table the only
+ * declaration of a payload or an answer.
+ *
+ * The cast is one the table vouches for: every `args` it lists is an object or
+ * `undefined`, which is what `invoke` takes.
+ */
+function call<C extends Command>(
+  name: C,
+  ...payload: Payload<C>
+): Promise<AnswerOf<C>> {
+  return invoke<AnswerOf<C>>(name, payload[0] as InvokeArgs | undefined);
+}
+
+/**
+ * `call` for a command that answers with nothing, resolving with nothing so a
+ * caller never holds the `null` the wire carries. Only a command whose answer
+ * the table says is `null` fits, so giving one an answer there is a type error
+ * here.
+ */
+async function callSilent<C extends SilentCommand>(
+  name: C,
+  ...payload: Payload<C>
+): Promise<void> {
+  await call(name, ...payload);
 }
 
 /**
@@ -683,14 +726,14 @@ async function invokeVoid(name: string, args?: Record<string, unknown>) {
  */
 export const client = {
   /** `path` is a Written path; the backend expands it. */
-  startScan: (path: string) => invokeVoid("start_scan", { path }),
+  startScan: (path: string) => callSilent("start_scan", { path }),
 
   /**
    * Resolves a Written path without touching it: no folder is created, and
    * nothing is stored. Rejects with `invalid_path_syntax` when the input is
    * malformed, so there is no resolved path to show.
    */
-  expandPath: (input: string) => invoke<Expanded>("expand_path", { input }),
+  expandPath: (input: string) => call("expand_path", { input }),
 
   /**
    * Answers whether a Written path can serve as the Soft reject destination:
@@ -707,7 +750,7 @@ export const client = {
    * until the string resolves.
    */
   checkRejectDestination: (written: string) =>
-    invoke<DestinationCheck>("check_reject_destination", { written }),
+    call("check_reject_destination", { written }),
 
   /**
    * Opens the desktop's folder picker and resolves with the folder the curator
@@ -733,16 +776,15 @@ export const client = {
    * already on screen or queued in the prefetch slot. Honoured only while at
    * least two candidates remain, so a small library still ranks.
    */
-  getPair: (exclude?: number[]) =>
-    invoke<[Wallpaper, Wallpaper]>("get_pair", { exclude }),
+  getPair: (exclude?: number[]) => call("get_pair", { exclude }),
 
   /** `exclude` applies to the returned `next_pair`; the two voted on are always excluded. */
   vote: (winnerId: number, loserId: number, exclude?: number[]) =>
-    invoke<VoteOutcome>("vote", { winnerId, loserId, exclude }),
+    call("vote", { winnerId, loserId, exclude }),
 
-  getStats: () => invoke<Stats>("get_stats"),
+  getStats: () => call("get_stats"),
 
-  getSettings: () => invoke<Settings>("get_settings"),
+  getSettings: () => call("get_settings"),
 
   /**
    * Writes one setting and answers with all of them, so a stale read cannot
@@ -755,7 +797,7 @@ export const client = {
    * over a typed value and never build the IPC payload themselves.
    */
   setSetting<K extends SettingKey>(key: K, value: Settings[K]) {
-    return invoke<Settings>("set_setting", {
+    return call("set_setting", {
       key,
       value: encodeSetting(key, value),
     });
@@ -777,7 +819,7 @@ export const client = {
     filter: StatusFilter = "all",
     ordering: ListOrdering = "score_desc",
     limit?: number,
-  ) => invoke<Wallpaper[]>("list_wallpapers", { filter, ordering, limit }),
+  ) => call("list_wallpapers", { filter, ordering, limit }),
 
   /**
    * Keeps a wallpaper and resolves with the row it wrote.
@@ -788,7 +830,7 @@ export const client = {
    * them here would be a prediction however few copies of it there were
    * (ADR 0023).
    */
-  keepWallpaper: (id: number) => invoke<Wallpaper>("keep_wallpaper", { id }),
+  keepWallpaper: (id: number) => call("keep_wallpaper", { id }),
 
   /**
    * Undoes a Keep: the wallpaper lands on Active and comes back into review.
@@ -800,8 +842,7 @@ export const client = {
    * Rejects with `invalid_transition` for a Rejected wallpaper: its file is in
    * the reject folder, and `restoreWallpaper` is what moves it back.
    */
-  unkeepWallpaper: (id: number) =>
-    invoke<Wallpaper>("unkeep_wallpaper", { id }),
+  unkeepWallpaper: (id: number) => call("unkeep_wallpaper", { id }),
 
   /**
    * Soft-rejects a wallpaper into `destinationFolder`, a Written path the
@@ -812,7 +853,7 @@ export const client = {
    * holding is how it tells a rename from a plain move.
    */
   moveWallpaper: (id: number, destinationFolder: string) =>
-    invoke<Wallpaper>("move_wallpaper", { id, destinationFolder }),
+    call("move_wallpaper", { id, destinationFolder }),
 
   /**
    * Undoes a soft reject: the file goes back to its Origin and the wallpaper
@@ -826,8 +867,7 @@ export const client = {
    * on the row, so a caller can tell that second case before it asks — and with
    * `file_missing` when the file has left the reject folder.
    */
-  restoreWallpaper: (id: number) =>
-    invoke<Wallpaper>("restore_wallpaper", { id }),
+  restoreWallpaper: (id: number) => call("restore_wallpaper", { id }),
 
   /**
    * Starts the thumbnail pre-generation pass and resolves as soon as it is
@@ -837,21 +877,21 @@ export const client = {
    * A warm library is silent: the work list comes back empty and neither
    * pregen event is ever emitted (ADR 0012).
    */
-  startPregen: () => invokeVoid("start_pregen"),
+  startPregen: () => callSilent("start_pregen"),
 
   /**
    * Stands the running pass down and resolves without waiting for it, so a
    * cancel lands up to one wallpaper's decode late. Everything already
    * generated stays; the pass runs again next launch.
    */
-  cancelPregen: () => invokeVoid("cancel_pregen"),
+  cancelPregen: () => callSilent("cancel_pregen"),
 
   /**
    * Counts the thumbnail cache: one directory read and a `metadata` per entry,
    * about 10,000 stats on the largest library. So read it on mount, on
    * `pregen-complete` and after a clear, never per progress event (ADR 0020).
    */
-  getCacheSize: () => invoke<CacheSize>("get_cache_size"),
+  getCacheSize: () => call("get_cache_size"),
 
   /**
    * Cancels any running pass, empties the cache directory and forgets every
@@ -859,7 +899,7 @@ export const client = {
    * for rather than a way to reclaim disk, so a caller wanting the cache back
    * calls `startPregen` itself (ADR 0012).
    */
-  clearCache: () => invokeVoid("clear_cache"),
+  clearCache: () => callSilent("clear_cache"),
 
   /**
    * Walks the Eligible pool and answers how many of those wallpapers have no
@@ -874,7 +914,7 @@ export const client = {
    * paint: a file that is present and will not decode reads as gone on its card
    * and is not in this number.
    */
-  countMissingFiles: () => invoke<MissingFiles>("count_missing_files"),
+  countMissingFiles: () => call("count_missing_files"),
 
   /**
    * Hands `handler` every emission of one backend event, resolving with the

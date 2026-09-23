@@ -312,6 +312,18 @@ generic caller that cannot read a method signature. That is redundancy, and it i
 the same redundancy `BackendEvents` carries next to `subscribe`. The alternative
 was leaving the mocks untyped, which is what this decision is about.
 
+> **Amended by [#282](https://github.com/QuantumFF/walltare/issues/282),
+> 2026-09-23.** There is one spelling now, not two. Every `client` method goes
+> through a private `call(name, args)` typed against `BackendCommands`, which is
+> the only `invoke` left in `client.ts`, and the methods state no payload or
+> answer of their own: their types are read off the table. So the table is the
+> port, and `invoke` and `mockCommand` are its two adapters. A change to an
+> entry's `args` that the call does not follow fails at the call, and a change to
+> its `answer` reaches every caller and every mock. Commands answering `null` go
+> through `callSilent`, which only accepts those, so each still resolves with
+> nothing. `client`'s public methods are unchanged, and nothing outside
+> `client.ts` moved.
+
 **A rename of a wire command is now a three-file edit** rather than a
 find-and-replace: `lib.rs`, `Command`, `BackendCommands`. The compiler and the
 type checker between them name every remaining site.
