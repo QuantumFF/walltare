@@ -78,6 +78,8 @@ function selection(): WallpaperSelection {
   return gridHandle.selection();
 }
 
+async function noFetch() {}
+
 /**
  * The library page's shape, reduced to what the identities this is about hang
  * off — the rows-and-transitions module, and the grid holding the cursor —
@@ -97,8 +99,9 @@ function Page({ list }: { list: Wallpaper[] }) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const { perform } = useWallpaperRows({
     belongs: (status) => status === "active",
+    view: "library",
+    fetch: noFetch,
     destination: DESTINATION,
-    owe: () => {},
   });
   const [handle, setHandle] = useState<SelectionHandle | null>(null);
   gridHandle = handle;
