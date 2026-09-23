@@ -17,8 +17,8 @@ stay in the library regardless of where it points now. It is a Written path.
 
 ## Written path
 
-How the user writes a folder for the app to use: the Library root, and a soft
-reject's destination. It may use `~` for the home folder and environment
+How the user writes a folder for the app to use: the Library root, a soft
+reject's destination, and the Download folder. It may use `~` for the home folder and environment
 variables, and the app stores it as written, so it keeps meaning whatever those
 mean on the machine reading it. Naming a variable that is not set is an error,
 not an empty string.
@@ -26,8 +26,27 @@ not an empty string.
 A Written path that is not absolute is relative to different things depending on
 where it is used. A soft reject destination is relative to the wallpaper's own
 folder, so a nested library gets one reject folder per source folder. A Library
-root is relative to wherever the app was launched from. See
+root is relative to wherever the app was launched from. A Download folder is
+relative to the Library root. See
 [ADR 0011](docs/adr/0011-written-paths.md).
+
+## Download folder
+
+Where a wallpaper downloaded from Wallhaven lands. It is a Written path, and by
+default it is a folder named `wallhaven` inside the Library root.
+
+A relative Download folder means the Library root as it stands at each
+download. So it follows the root when the root moves, and wallpapers that were
+downloaded earlier stay where they landed. It needs the root to exist. With no
+Library root, or one that is not there, nothing can be downloaded, rather than
+the app creating the root itself. An absolute Download folder may sit outside
+the Library root.
+
+A file that lands there is a wallpaper at once, and it is Active, exactly as if
+a scan had found it. See
+[ADR 0051](docs/adr/0051-a-download-lands-as-a-scan-of-one-file.md).
+
+_Avoid_: landing folder
 
 ## Dimensions
 
