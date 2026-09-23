@@ -5,7 +5,7 @@
  * Dimensions are, whether it is undersized and what shape it is. They lived in
  * `copy.ts` beside the words that print their answers, but a badge, a filter
  * and a layout all ask them, and none of those is writing anything down. The
- * words stay in `copy.ts`; the questions they answer live here (CONTEXT.md).
+ * words stay in `copy.ts`; the questions they answer live here.
  *
  * Nothing here is a component and nothing here reaches the backend: each is a
  * pure function of a row and whatever setting the caller holds.
