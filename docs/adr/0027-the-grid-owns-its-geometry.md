@@ -55,6 +55,15 @@ the class string it restates, and none of them is exported.
 > 2026-09-23.** The geometry moved verbatim into `src/components/grid-geometry.ts`,
 > which exports it to `WallpaperGrid.tsx` and its test and to nothing else. It is
 > still private to the grid: no page imports a number or a class from it.
+>
+> **Amended by [#336](https://github.com/QuantumFF/walltare/issues/336),
+> 2026-09-24.** `CARD_ASPECT` is no longer the grid's. The grid became
+> `ItemGrid`, generic over what it lists, and the card it draws is the host's,
+> so the card's shape is too: the host hands the grid a `CardSpec` (picture
+> ratio, its class, and a fixed caption height), and `WALLPAPER_CARD` is Library's
+> and Review's. The row height stays a layout-plan function of that spec, with a
+> caption term added (ADR 0045), not a second grid. `GAP`, `PADDING` and the
+> unmeasured fallbacks remain the grid's own.
 
 ```ts
 const GAP = { px: 24, className: "gap-6" };

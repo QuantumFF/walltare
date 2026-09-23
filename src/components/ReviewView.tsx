@@ -288,7 +288,7 @@ export function ReviewView() {
                   // Read once, here, rather than subscribed to: a
                   // subscription would put every arrow key through this page,
                   // which is what #230 took the cursor out of it to prevent.
-                  handOver.current = grid?.selection().wallpaper?.id ?? null;
+                  handOver.current = grid?.selection().item?.id ?? null;
                   void saveSetting("review_layout", value).catch(
                     (error: unknown) => {
                       console.error(

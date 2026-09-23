@@ -338,11 +338,11 @@ export const WallpaperCard = memo(function WallpaperCard({
       // for the gesture simply does not fire it.
       onClick={() => onOpen?.(wallpaper)}
       // `aspect-video` is the uniform grid's crop, worn by the element that
-      // crops (ADR 0027's `CARD_ASPECT.className`). A card handed a box wears
-      // that box instead: the shape came from the wallpaper's own Dimensions, so
-      // declaring a second one here would be the layout and the card disagreeing
-      // about how tall the card is — and the window is positioned against the
-      // layout's answer.
+      // crops (`WALLPAPER_CARD.className` in `grid-geometry`). A card handed a
+      // box wears that box instead: the shape came from the wallpaper's own
+      // Dimensions, so declaring a second one here would be the layout and the
+      // card disagreeing about how tall the card is — and the window is
+      // positioned against the layout's answer.
       //
       // A card handed a box also drops the frame. Masonry and justified rows
       // are #254's wall: true ratios, a 4px gutter and no chrome until a hover,

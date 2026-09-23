@@ -182,6 +182,31 @@ test("a row is as tall as the cards sharing its width, at every column count", (
   ).toBeLessThan(uniformRowHeight({ ...UNIFORM, width: 1200, columns: 4 }));
 });
 
+test("a caption adds its own height to every row, whatever the width", () => {
+  // Discover's card: a picture that scales with the width and a caption under
+  // it that does not (#336). A caption of nothing is the card Library and Review
+  // draw, to the pixel.
+  for (const [width, columns] of [
+    [700, 2],
+    [1200, 4],
+    [1500, 5],
+  ]) {
+    const picture = uniformRowHeight({ ...UNIFORM, width, columns });
+    expect(
+      uniformRowHeight({ ...UNIFORM, width, columns, captionHeight: 0 }),
+    ).toBe(picture);
+    expect(
+      uniformRowHeight({ ...UNIFORM, width, columns, captionHeight: 72 }),
+    ).toBe(picture + 72);
+  }
+
+  // And a box that measures nothing estimates the caption along with the
+  // picture, since the rows it stands in for have one.
+  expect(
+    uniformRowHeight({ ...UNIFORM, width: 0, columns: 4, captionHeight: 72 }),
+  ).toBe(130 + 72);
+});
+
 test("a box that measures nothing gives rows about a card tall rather than none", () => {
   // The branch every happy-dom run takes, and the one a real browser takes for a
   // view the shell is hiding under `display: none` (ADR 0015). Rows of zero

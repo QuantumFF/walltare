@@ -1,4 +1,4 @@
-import { keyShortcut, printedKey } from "@/components/keymap";
+import { STATUS_KEYS, keyShortcut, printedKey } from "@/components/keymap";
 import {
   ACTION_CONTROLS,
   type TransitionAction,
@@ -53,7 +53,7 @@ export function ActionButton({
       data-action={action}
       aria-label={subject ? `${label} ${subject}` : label}
       aria-disabled={unavailable ? true : undefined}
-      aria-keyshortcuts={keyShortcut(action)}
+      aria-keyshortcuts={keyShortcut(action, STATUS_KEYS)}
       className={cn(
         "aria-disabled:cursor-not-allowed aria-disabled:opacity-40",
         // The variant's hover, pinned to its resting fill: a control drawn as
@@ -74,7 +74,7 @@ export function ActionButton({
       <span data-slot="action-label" className="min-w-0 truncate">
         {label}
       </span>
-      <Kbd aria-hidden>{printedKey(action)}</Kbd>
+      <Kbd aria-hidden>{printedKey(action, STATUS_KEYS)}</Kbd>
     </Button>
   );
 }

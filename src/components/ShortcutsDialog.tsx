@@ -1,4 +1,8 @@
-import { shortcutLines, type ShortcutLine } from "@/components/keymap";
+import {
+  shortcutLines,
+  type AnyActionTable,
+  type ShortcutLine,
+} from "@/components/keymap";
 import { buttonVariants } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
@@ -32,53 +36,64 @@ import { Dialog } from "radix-ui";
  * outside one. Review mounts that grid and the library page mounts the same one
  * (#79), so the heading names the grid rather than either page — and Review's
  * strip beside it, which answers the same keys off the same table (#265).
+ *
+ * What those surfaces do to the selected item is the page's since #336, so the
+ * listing groups are built with the action table of the page the dialog opened
+ * over: `K`, `Delete` and `R` over Library and Review, and Discover's own keys
+ * over Discover. The listing heading still names wallpapers; #339 rewords it
+ * when Discover's rows join the list.
  */
-const GROUPS: readonly {
+function groupsFor(actions: AnyActionTable): readonly {
   heading: string;
   bindings: readonly ShortcutLine[];
-}[] = [
-  {
-    heading: "Go to",
-    bindings: [
-      { keys: ["Ctrl", "1"], action: "Rank" },
-      { keys: ["Ctrl", "2"], action: "Review" },
-      { keys: ["Ctrl", "3"], action: "Library" },
-      { keys: ["Ctrl", ","], action: "Settings" },
-      { keys: ["Ctrl", "Tab"], action: "Next tab" },
-      { keys: ["Ctrl", "Shift", "Tab"], action: "Previous tab" },
-    ],
-  },
-  {
-    heading: "Rank",
-    bindings: [
-      { keys: ["←"], action: "Pick the wallpaper on the left" },
-      { keys: ["→"], action: "Pick the wallpaper on the right" },
-    ],
-  },
-  { heading: "Wallpaper grid and strip", bindings: shortcutLines("listing") },
-  {
-    heading: "Lightbox",
-    bindings: [
-      ...shortcutLines("lightbox"),
-      { keys: ["Esc"], action: "Close, back to the grid" },
-    ],
-  },
-  {
-    heading: "Settings",
-    bindings: [{ keys: ["Esc"], action: "Close, back to where you were" }],
-  },
-  {
-    heading: "Notifications",
-    bindings: [
-      { keys: ["Ctrl", "Z"], action: "Undo, on the toast offering it" },
-      { keys: ["F8"], action: "Move focus to the notifications" },
-    ],
-  },
-  {
-    heading: "Help",
-    bindings: [{ keys: ["?"], action: "This list" }],
-  },
-];
+}[] {
+  return [
+    {
+      heading: "Go to",
+      bindings: [
+        { keys: ["Ctrl", "1"], action: "Rank" },
+        { keys: ["Ctrl", "2"], action: "Review" },
+        { keys: ["Ctrl", "3"], action: "Library" },
+        { keys: ["Ctrl", ","], action: "Settings" },
+        { keys: ["Ctrl", "Tab"], action: "Next tab" },
+        { keys: ["Ctrl", "Shift", "Tab"], action: "Previous tab" },
+      ],
+    },
+    {
+      heading: "Rank",
+      bindings: [
+        { keys: ["←"], action: "Pick the wallpaper on the left" },
+        { keys: ["→"], action: "Pick the wallpaper on the right" },
+      ],
+    },
+    {
+      heading: "Wallpaper grid and strip",
+      bindings: shortcutLines("listing", actions),
+    },
+    {
+      heading: "Lightbox",
+      bindings: [
+        ...shortcutLines("lightbox", actions),
+        { keys: ["Esc"], action: "Close, back to the grid" },
+      ],
+    },
+    {
+      heading: "Settings",
+      bindings: [{ keys: ["Esc"], action: "Close, back to where you were" }],
+    },
+    {
+      heading: "Notifications",
+      bindings: [
+        { keys: ["Ctrl", "Z"], action: "Undo, on the toast offering it" },
+        { keys: ["F8"], action: "Move focus to the notifications" },
+      ],
+    },
+    {
+      heading: "Help",
+      bindings: [{ keys: ["?"], action: "This list" }],
+    },
+  ];
+}
 
 /**
  * The shortcut list, opened by `?` and mounted in the shell.
@@ -101,9 +116,12 @@ const GROUPS: readonly {
 export function ShortcutsDialog({
   open,
   onOpenChange,
+  actions,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The action table of the page the dialog opened over. */
+  actions: AnyActionTable;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -134,7 +152,7 @@ export function ShortcutsDialog({
           </Dialog.Description>
 
           <div className="mt-5 space-y-5">
-            {GROUPS.map((group) => (
+            {groupsFor(actions).map((group) => (
               <div key={group.heading}>
                 <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                   {group.heading}

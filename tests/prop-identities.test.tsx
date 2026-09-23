@@ -5,10 +5,7 @@ import {
 } from "@/components/useWallpaperRows";
 import { WallpaperCard } from "@/components/WallpaperCard";
 import { WallpaperGrid } from "@/components/WallpaperGrid";
-import type {
-  SelectionHandle,
-  WallpaperSelection,
-} from "@/components/selection";
+import type { SelectionHandle, Selection } from "@/components/selection";
 import type { Wallpaper } from "@/lib/client";
 import { act, cleanup, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -73,7 +70,7 @@ let gridHandle: SelectionHandle | null;
 let rerender: () => void;
 
 /** The selection as the grid last published it. */
-function selection(): WallpaperSelection {
+function selection(): Selection {
   if (gridHandle === null) throw new Error("the grid has not mounted");
   return gridHandle.selection();
 }

@@ -1,9 +1,6 @@
 import type { TransitionAction } from "@/components/transitions";
 import { client, type Wallpaper } from "@/lib/client";
-import type {
-  SelectionHandle,
-  WallpaperSelection,
-} from "@/components/selection";
+import type { SelectionHandle, Selection } from "@/components/selection";
 import { rowHeight } from "@/components/grid-geometry";
 import {
   WallpaperGrid,
@@ -137,7 +134,7 @@ let gridHandle: SelectionHandle | null = null;
  * sits in the list, a move, and a set to a named id (#137). The lightbox is the
  * caller; these tests read it off the handle the way it does.
  */
-function selection(): WallpaperSelection {
+function selection(): Selection {
   if (gridHandle === null) throw new Error("the grid has not mounted");
   return gridHandle.selection();
 }
@@ -521,13 +518,13 @@ test("neither gesture disturbs the selection", async () => {
   // The same wallpaper, still selected and still holding the focus. The count
   // the arrows move by changed under it, which is the whole gesture; where the
   // cursor is did not (ADR 0042).
-  expect(selection().wallpaper?.id).toBe(3);
+  expect(selection().item?.id).toBe(3);
   expect(selection().index).toBe(2);
   expect(document.activeElement).toBe(cell(3));
 
   await press("+");
   await press("-");
-  expect(selection().wallpaper?.id).toBe(3);
+  expect(selection().item?.id).toBe(3);
   expect(document.activeElement).toBe(cell(3));
 });
 

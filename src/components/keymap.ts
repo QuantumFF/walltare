@@ -16,6 +16,15 @@
  * surface tells this module about itself: how far Up and Down go, and where
  * `Enter` may open from. The shortcuts dialog renders from the same table, so a
  * listed key is a key something answers.
+ *
+ * **Two tables since #336, one shared and one per page.** Moving, opening and
+ * the density mean the same on every listing whatever it lists, so they are
+ * `BINDINGS` below and every surface reads them. What a key *does to* the
+ * selected item is the page's: Library and Review act on a Wallpaper's Status
+ * through `STATUS_KEYS`, and Discover acts on Results through a table of its
+ * own. A surface is handed the page's table beside the event, and the shortcuts
+ * dialog prints the shared lines with whichever table the page it opened over
+ * uses.
  */
 import {
   STATUS_ACTIONS,
@@ -45,13 +54,13 @@ export type ListingSurface =
 type SurfaceKind = ListingSurface["kind"];
 
 /** Where a key lands: the surface, and the selection it holds right now. */
-export interface KeyContext<S extends ListingSurface = ListingSurface> {
+export interface KeyContext<T, S extends ListingSurface = ListingSurface> {
   surface: S;
-  /** The selected wallpaper, or `null` when there is none. */
-  selected: Wallpaper | null;
+  /** The selected item, or `null` when there is none. */
+  selected: T | null;
   /** The selection's position in the list, or -1 when there is none. */
   index: number;
-  /** How many wallpapers the list holds. */
+  /** How many items the list holds. */
   length: number;
 }
 
@@ -78,17 +87,16 @@ export interface KeyPress {
  * doing nothing, because a toggle that flipped at the key repeat rate would
  * strobe (#266).
  */
-export type Intent =
+export type Intent<T, A extends string> =
   | { kind: "move"; to: number }
-  | { kind: "act"; action: TransitionAction; wallpaper: Wallpaper }
-  | { kind: "open"; wallpaper: Wallpaper }
+  | { kind: "act"; action: A; item: T }
+  | { kind: "open"; item: T }
   | { kind: "density"; by: number }
   | { kind: "crop" }
   | { kind: "held" };
 
 type Does =
   | { move: "previous" | "next" | "up" | "down" | "first" | "last" }
-  | { act: readonly TransitionAction[] }
   | { density: number }
   | "open"
   | "crop";
@@ -99,26 +107,63 @@ type Does =
  */
 export type ShortcutGroup = "listing" | "lightbox";
 
-interface Binding {
+/** What a key is bound to and how it is written down, in either table. */
+interface BoundKey {
   /** The `event.key` values it answers to, compared without case. */
   keys: readonly string[];
   /** How the shortcuts dialog prints it. */
   printed: string;
   /** How a button firing it prints it, where that differs from `printed`. */
   button?: string;
-  does: Does;
   /** The surfaces that answer it. */
   on: readonly SurfaceKind[];
   /** Its line in the shortcuts dialog, per group it is listed under. */
   listed: Partial<Record<ShortcutGroup, string>>;
 }
 
+interface Binding extends BoundKey {
+  does: Does;
+}
+
+/**
+ * One key of a page's action table: the actions it names, of which the first
+ * the selected item offers is the one it fires.
+ */
+export interface ActionBinding<A extends string> extends BoundKey {
+  act: readonly A[];
+}
+
+/**
+ * What a key does to the selected item on one page: the keys, and which of
+ * their actions a given item offers.
+ *
+ * `offers` is the page's own rule, and it is what makes a key that names an
+ * action the item does not offer a key left alone rather than a wrong action.
+ * For Library and Review it is `STATUS_ACTIONS`, the table every card's buttons
+ * render from.
+ *
+ * No key here may be one `BINDINGS` answers on the same surface: the shared
+ * table is read first, so the page's binding would never be reached.
+ */
+export interface ActionTable<T, A extends string> {
+  bindings: readonly ActionBinding<A>[];
+  offers: (item: T) => readonly A[];
+}
+
+/**
+ * A table read for its keys alone, which is every reader but the one that
+ * resolves a keypress against an item: the shortcuts dialog and a button's
+ * printed key. Any page's table is one.
+ */
+export type AnyActionTable = ActionTable<never, string>;
+
 const ALL = ["grid", "strip", "lightbox"] as const;
 const LISTINGS = ["grid", "strip"] as const;
 
 /**
- * Every key a listing surface answers, in the order the shortcuts dialog lists
- * them.
+ * Every key a listing surface answers whatever it lists, in the order the
+ * shortcuts dialog lists them — with the page's action table between `Enter`
+ * and the density, which is where the transitions always sat.
  *
  * No two entries share a key on the same surface, so the order says nothing
  * about which wins. The one ordering that does matter — the density keys ahead
@@ -142,21 +187,6 @@ const LISTINGS = ["grid", "strip"] as const;
  * another in masonry (#255). The strip has one column, so there they walk the
  * queue like Left and Right, and a curator sweeping a worklist does not have to
  * notice which pair of keys that surface chose.
- *
- * **`K` names two actions**, because the keep slot has two ends: keeping an
- * Active wallpaper and making a Kept one Active again. One finger, one meaning —
- * "the keep decision" — and the Status picks which end of it applies, so `K` is
- * never a keep on one card and something unrelated on the card beside it.
- *
- * **`Delete` rather than a letter for reject** is what keeps `R` unambiguous. A
- * Rejected card offers only Restore and a non-Rejected card only Reject, so one
- * `R` for both is technically unambiguous and would still be the same finger
- * producing opposite outcomes on cards sitting next to each other in a mixed
- * grid. `Delete` also carries the right shape for the one action here that moves
- * a file (ADR 0019). It prints as `Del` on a button, because the key's own name
- * is wider than the verb in front of it on a row that has a floor to fit inside,
- * and because that is how it is printed on the keyboard the curator is looking
- * at (#140).
  *
  * **Four density keys for two directions**, because both of the obvious ones need
  * their unshifted twin. `+` is `Shift` and `=` on most layouts, so a curator
@@ -215,37 +245,15 @@ const BINDINGS = [
     on: LISTINGS,
     listed: { listing: "Select the last wallpaper" },
   },
-  // Not the lightbox's: `Enter` is the key that opened it (ADR 0022).
+  // Not the lightbox's: `Enter` is the key that opened it (ADR 0022). Its line
+  // and the dialog's heading still say "wallpaper" above rows that are now the
+  // page's own; #339 rewords them when Discover's rows join the list.
   {
     keys: ["Enter"],
     printed: "Enter",
     does: "open",
     on: LISTINGS,
     listed: { listing: "Open the selected wallpaper" },
-  },
-  {
-    keys: ["k"],
-    printed: "K",
-    does: { act: ["keep", "make-active"] },
-    on: ALL,
-    listed: {
-      listing: "Keep the selected wallpaper, or make a Kept one Active",
-    },
-  },
-  {
-    keys: ["Delete"],
-    printed: "Delete",
-    button: "Del",
-    does: { act: ["reject"] },
-    on: ALL,
-    listed: { listing: "Reject the selected wallpaper" },
-  },
-  {
-    keys: ["r"],
-    printed: "R",
-    does: { act: ["restore"] },
-    on: ALL,
-    listed: { listing: "Restore the selected wallpaper" },
   },
   {
     keys: ["+", "="],
@@ -273,6 +281,59 @@ const BINDINGS = [
   },
 ] as const satisfies readonly Binding[];
 
+/**
+ * The keys Library and Review act on a Wallpaper with, resolved against its
+ * Status.
+ *
+ * **`K` names two actions**, because the keep slot has two ends: keeping an
+ * Active wallpaper and making a Kept one Active again. One finger, one meaning —
+ * "the keep decision" — and the Status picks which end of it applies, so `K` is
+ * never a keep on one card and something unrelated on the card beside it.
+ *
+ * **`Delete` rather than a letter for reject** is what keeps `R` unambiguous. A
+ * Rejected card offers only Restore and a non-Rejected card only Reject, so one
+ * `R` for both is technically unambiguous and would still be the same finger
+ * producing opposite outcomes on cards sitting next to each other in a mixed
+ * grid. `Delete` also carries the right shape for the one action here that moves
+ * a file (ADR 0019). It prints as `Del` on a button, because the key's own name
+ * is wider than the verb in front of it on a row that has a floor to fit inside,
+ * and because that is how it is printed on the keyboard the curator is looking
+ * at (#140).
+ *
+ * The shared table is the keymap's and this one is the Status's, but both pages
+ * that act on a Status read it, so it lives beside the rule it feeds rather than
+ * in either page.
+ */
+export const STATUS_KEYS: ActionTable<Wallpaper, TransitionAction> = {
+  bindings: [
+    {
+      keys: ["k"],
+      printed: "K",
+      act: ["keep", "make-active"],
+      on: ALL,
+      listed: {
+        listing: "Keep the selected wallpaper, or make a Kept one Active",
+      },
+    },
+    {
+      keys: ["Delete"],
+      printed: "Delete",
+      button: "Del",
+      act: ["reject"],
+      on: ALL,
+      listed: { listing: "Reject the selected wallpaper" },
+    },
+    {
+      keys: ["r"],
+      printed: "R",
+      act: ["restore"],
+      on: ALL,
+      listed: { listing: "Restore the selected wallpaper" },
+    },
+  ],
+  offers: (wallpaper) => STATUS_ACTIONS[wallpaper.status],
+};
+
 /** The table read at run time, where one entry's literal types are no help. */
 const TABLE: readonly Binding[] = BINDINGS;
 
@@ -284,10 +345,14 @@ const TABLE: readonly Binding[] = BINDINGS;
  * that only `undefined` reaches: add a surface to a binding's `on` and every
  * handler that does not yet act on what it means stops compiling, rather than
  * the key being prevented and then doing nothing.
+ *
+ * `act` is every surface's, because every surface is handed a page's action
+ * table: which surfaces a page's key reaches is that table's `on`, read at run
+ * time.
  */
-export type IntentOn<K extends SurfaceKind> = Extract<
-  Intent,
-  { kind: KindOf<BoundOn<(typeof BINDINGS)[number], K>["does"]> }
+export type IntentOn<K extends SurfaceKind, T, A extends string> = Extract<
+  Intent<T, A>,
+  { kind: KindOf<BoundOn<(typeof BINDINGS)[number], K>["does"]> | "act" }
 >;
 
 type BoundOn<B, K> = B extends { on: readonly (infer O)[] }
@@ -298,15 +363,13 @@ type BoundOn<B, K> = B extends { on: readonly (infer O)[] }
 
 type KindOf<D> = D extends { move: unknown }
   ? "move"
-  : D extends { act: unknown }
-    ? "act"
-    : D extends { density: unknown }
-      ? "density"
-      : D extends "open"
-        ? "open"
-        : D extends "crop"
-          ? "crop" | "held"
-          : never;
+  : D extends { density: unknown }
+    ? "density"
+    : D extends "open"
+      ? "open"
+      : D extends "crop"
+        ? "crop" | "held"
+        : never;
 
 /**
  * What a keypress means on this surface, with the key prevented whenever it
@@ -324,20 +387,22 @@ type KindOf<D> = D extends { move: unknown }
  * Status offers nothing for, and `Enter` on a button, whose own activation is
  * the default this would otherwise cancel.
  */
-export function answerKey<S extends ListingSurface>(
+export function answerKey<S extends ListingSurface, T, A extends string>(
   event: KeyPress,
-  context: KeyContext<S>,
-): IntentOn<S["kind"]> | undefined {
-  const intent = intentOf(event, context);
+  context: KeyContext<T, S>,
+  actions: ActionTable<T, A>,
+): IntentOn<S["kind"], T, A> | undefined {
+  const intent = intentOf(event, context, actions);
   if (intent) event.preventDefault();
   // Narrowed by the table's own `on` lists, which `intentOf` is what reads.
-  return intent as IntentOn<S["kind"]> | undefined;
+  return intent as IntentOn<S["kind"], T, A> | undefined;
 }
 
-function intentOf(
+function intentOf<T, A extends string>(
   event: KeyPress,
-  { surface, selected, index, length }: KeyContext,
-): Intent | undefined {
+  { surface, selected, index, length }: KeyContext<T>,
+  actions: ActionTable<T, A>,
+): Intent<T, A> | undefined {
   // Every chord the shell answers is a `Ctrl` one and nothing here may eat
   // those: `Ctrl+Z` presses the visible toast's Undo and `Ctrl+2` changes the
   // view from any of these surfaces, because the shell's handler is running and
@@ -348,19 +413,19 @@ function intentOf(
   // Compared without case, so a curator with Caps Lock on still keeps and still
   // restores.
   const key = event.key.toLowerCase();
-  const binding = TABLE.find(
-    (entry) =>
-      entry.on.includes(surface.kind) &&
-      entry.keys.some((bound) => bound.toLowerCase() === key),
-  );
-  if (!binding) return undefined;
-  const { does } = binding;
+  const answers = (entry: BoundKey) =>
+    entry.on.includes(surface.kind) &&
+    entry.keys.some((bound) => bound.toLowerCase() === key);
+  const binding = TABLE.find(answers);
+  const acting = binding ? undefined : actions.bindings.find(answers);
+  if (!binding && !acting) return undefined;
 
   // The density keys, ahead of the `Shift` half of the guard rather than behind
   // it. `+` is `Shift` and `=` on most layouts, so a curator pressing the key
   // the gesture is named for arrives holding a modifier, and a guard written for
   // the app's chords would send them away. Nor does a density need a selection:
   // an empty grid still has a size.
+  const does = binding?.does;
   if (typeof does === "object" && "density" in does) {
     return { kind: "density", by: does.density };
   }
@@ -368,23 +433,24 @@ function intentOf(
   if (event.shiftKey) return undefined;
   if (index === -1 || !selected) return undefined;
 
-  // The direct keys. The key names candidates, and `STATUS_ACTIONS` — the same
-  // table every surface's buttons render from — says which of them this
-  // wallpaper actually offers. So a key the Status has no action for does
-  // nothing, which is what makes a wrong key a wrong key rather than a wrong
-  // action, and what keeps the keyboard from ever asking for a transition
-  // CONTEXT.md calls an error.
+  // The direct keys. The key names candidates, and the page's `offers` — for
+  // Library and Review `STATUS_ACTIONS`, the same table every surface's buttons
+  // render from — says which of them this item actually offers. So a key the
+  // Status has no action for does nothing, which is what makes a wrong key a
+  // wrong key rather than a wrong action, and what keeps the keyboard from ever
+  // asking for a transition CONTEXT.md calls an error.
   //
   // A single keypress rejects, with no confirm and no modifier. ADR 0009 deleted
   // the confirm dialog and put act-then-undo in its place, so the safety is ADR
   // 0017's toast and the `Ctrl+Z` that presses its Undo. It does mean a stray
   // `Delete` moves a file, which ADR 0019 wrote down as the cost rather than as
   // an oversight.
-  if (typeof does === "object" && "act" in does) {
-    const offered = STATUS_ACTIONS[selected.status];
-    const action = does.act.find((candidate) => offered.includes(candidate));
-    return action ? { kind: "act", action, wallpaper: selected } : undefined;
+  if (acting) {
+    const offered = actions.offers(selected);
+    const action = acting.act.find((candidate) => offered.includes(candidate));
+    return action ? { kind: "act", action, item: selected } : undefined;
   }
+  if (does === undefined) return undefined;
 
   // A toggle rather than a hold, so the bars stay up while the curator arrows
   // through the worklist, and once per press rather than per repeat (#266).
@@ -393,7 +459,7 @@ function intentOf(
 
   if (does === "open") {
     return opensFrom(event.target, surface)
-      ? { kind: "open", wallpaper: selected }
+      ? { kind: "open", item: selected }
       : undefined;
   }
 
@@ -440,17 +506,23 @@ function opensFrom(target: EventTarget | null, surface: ListingSurface) {
  * The key that fires an action, spelled as the control firing it prints it:
  * `Keep K`, `Reject Del`, `Restore R`, and `Make Active K` for the other end of
  * the keep slot (#140) — and `C` on the crop preview's toggle, a button that
- * fires one of the table's plain intents rather than a transition.
+ * fires one of the shared table's plain intents rather than a page's action.
  *
- * Read out of the table rather than written a second time beside the labels, so
- * a rebinding takes the print with it: a button carrying a key that no longer
+ * Read out of the tables rather than written a second time beside the labels,
+ * so a rebinding takes the print with it: a button carrying a key that no longer
  * works is worse than a button carrying no key at all, and #140 puts the key on
  * the button precisely because that is the copy that survives the row
- * narrowing. Every action is bound, so the empty string is what a future unbound
- * one would print rather than a case the app reaches.
+ * narrowing. A page's action is looked up in that page's table, which the
+ * caller names. Every action is bound, so the empty string is what a future
+ * unbound one would print rather than a case the app reaches.
  */
-export function printedKey(action: ButtonBinding): string {
-  const bound = bindingOf(action);
+export function printedKey(action: PlainButton): string;
+export function printedKey<A extends string>(
+  action: A,
+  actions: ActionTable<never, A>,
+): string;
+export function printedKey(action: string, actions?: AnyActionTable): string {
+  const bound = bindingOf(action, actions);
   return bound ? (bound.button ?? bound.printed) : "";
 }
 
@@ -460,19 +532,25 @@ export function printedKey(action: ButtonBinding): string {
  * `Delete` where the button prints `Del`. The chip is hidden from a screen
  * reader, so this is where the binding reaches one.
  */
-export function keyShortcut(action: ButtonBinding): string {
-  return bindingOf(action)?.printed ?? "";
+export function keyShortcut(action: PlainButton): string;
+export function keyShortcut<A extends string>(
+  action: A,
+  actions: ActionTable<never, A>,
+): string;
+export function keyShortcut(action: string, actions?: AnyActionTable): string {
+  return bindingOf(action, actions)?.printed ?? "";
 }
 
-/** What a button can fire: a transition, or one of the table's plain intents. */
-type ButtonBinding = TransitionAction | Extract<Does, string>;
+/** What a button can fire off the shared table: one of its plain intents. */
+type PlainButton = Extract<Does, string>;
 
-function bindingOf(action: ButtonBinding): Binding | undefined {
-  return TABLE.find(({ does }) =>
-    typeof does === "object"
-      ? "act" in does && does.act.some((acts) => acts === action)
-      : does === action,
-  );
+function bindingOf(
+  action: string,
+  actions: AnyActionTable | undefined,
+): BoundKey | undefined {
+  return actions
+    ? actions.bindings.find(({ act }) => act.includes(action))
+    : TABLE.find(({ does }) => does === action);
 }
 
 /** One line of the shortcuts dialog. */
@@ -482,15 +560,25 @@ export interface ShortcutLine {
 }
 
 /**
- * The lines the shortcuts dialog prints under one group, in the table's order.
+ * The lines the shortcuts dialog prints under one group: the shared table's, with
+ * the page's action table after `Enter`.
  *
  * Read from the bindings rather than written beside them, so the list cannot
  * name a key nothing answers or leave out one something does: the dialog is the
  * one place the whole set is written down, and copy that drifts from what the
  * app binds is the failure it exists to prevent (ADR 0015).
  */
-export function shortcutLines(group: ShortcutGroup): ShortcutLine[] {
-  return TABLE.flatMap((binding) => {
+export function shortcutLines(
+  group: ShortcutGroup,
+  actions: AnyActionTable,
+): ShortcutLine[] {
+  const opens = TABLE.findIndex(({ does }) => does === "open") + 1;
+  const ordered: readonly BoundKey[] = [
+    ...TABLE.slice(0, opens),
+    ...actions.bindings,
+    ...TABLE.slice(opens),
+  ];
+  return ordered.flatMap((binding) => {
     const action = binding.listed[group];
     return action ? [{ keys: [binding.printed], action }] : [];
   });

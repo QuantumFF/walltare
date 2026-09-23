@@ -343,6 +343,16 @@ export interface UniformRow extends PlanSpacing {
    */
   cardRatio: number;
   /**
+   * A fixed height under every card's picture, in pixels: Discover's caption,
+   * which holds a Result's facts and its buttons (#336). Zero is a card that is
+   * all picture, which is every card Library and Review draw.
+   *
+   * Added to the picture rather than folded into the ratio, because a caption is
+   * as tall at two columns as at five while the picture scales with the width.
+   * Absent is zero, so a caller that has no caption says nothing.
+   */
+  captionHeight?: number;
+  /**
    * What a row is taken to be while the box has no width to divide.
    *
    * Not an edge case: happy-dom reports every box as zero and ADR 0015 keeps a
@@ -358,7 +368,7 @@ export interface UniformRow extends PlanSpacing {
  *
  * The cards get the box less the padding at both ends and less a gap between
  * every pair; each takes an equal share of what is left and is as tall as
- * `cardRatio` makes it.
+ * `cardRatio` makes it, plus the caption under it.
  */
 export function uniformRowHeight({
   columns,
@@ -366,11 +376,15 @@ export function uniformRowHeight({
   gap,
   padding,
   cardRatio,
+  captionHeight = 0,
   unmeasuredHeight,
 }: UniformRow): number {
   const cards = width - 2 * padding - gap * (columns - 1);
-  if (cards <= 0) return unmeasuredHeight;
-  return (cards / columns) * cardRatio;
+  // The caption joins the fallback too: a hidden view's rows are estimated
+  // rather than absent (ADR 0015), and an estimate short by a caption per row is
+  // a window that mounts the wrong cards when the view is shown again.
+  if (cards <= 0) return unmeasuredHeight + captionHeight;
+  return (cards / columns) * cardRatio + captionHeight;
 }
 
 /** What the uniform grid is, once the row height above is known. */

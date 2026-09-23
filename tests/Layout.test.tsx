@@ -1,5 +1,9 @@
 import App from "@/App";
-import { shortcutLines, type ShortcutLine } from "@/components/keymap";
+import {
+  STATUS_KEYS,
+  shortcutLines,
+  type ShortcutLine,
+} from "@/components/keymap";
 import type { Settings, Wallpaper } from "@/lib/client";
 import {
   act,
@@ -904,10 +908,10 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   // answers (#286). The lightbox adds its Escape, which is Radix's and no key
   // of the keymap's.
   expect(rowsUnder(dialog, "Wallpaper grid and strip")).toEqual(
-    shortcutLines("listing"),
+    shortcutLines("listing", STATUS_KEYS),
   );
   expect(rowsUnder(dialog, "Lightbox")).toEqual([
-    ...shortcutLines("lightbox"),
+    ...shortcutLines("lightbox", STATUS_KEYS),
     { keys: ["Esc"], action: "Close, back to the grid" },
   ]);
 
