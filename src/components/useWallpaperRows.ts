@@ -1,7 +1,12 @@
 import type { RejectDestination } from "@/components/RejectDestination";
 import { NO_ORIGIN_REASON, useToaster } from "@/components/ToastSurface";
 import type { TransitionAction } from "@/components/transitions";
-import { useAppEvent, useAppEvents } from "@/context/AppEventsContext";
+import type { View } from "@/context/AppContext";
+import {
+  useAppEvent,
+  useAppEvents,
+  useRefetchWhenShown,
+} from "@/context/AppEventsContext";
 import { client, isStaleRow, type Status, type Wallpaper } from "@/lib/client";
 import {
   useCallback,
@@ -44,6 +49,9 @@ interface Vacancy {
   at: number;
 }
 
+/** What a page's fetch writes its rows through. */
+export type SetRows = Dispatch<SetStateAction<Wallpaper[] | null>>;
+
 export interface WallpaperRowsOptions {
   /**
    * Whether a row of this Status still belongs in the list this page is showing.
@@ -65,15 +73,19 @@ export interface WallpaperRowsOptions {
    * reads are one answer.
    */
   destination: RejectDestination;
+  /** The page these rows are shown on, which is what a refetch waits for. */
+  view: View;
   /**
-   * The page's own `owe`, from `useRefetchWhenShown`, for a row that turned out
-   * to be stale.
+   * The page's own fetch, handed the setter it writes through.
    *
-   * `owe` rather than a view name, because nothing left in here wants page
-   * identity: the toast requests no longer carry a view, and the refetch is the
-   * page's own fetch deferred until it is showing (ADR 0023).
+   * The fetch stays on the page because the two are not one fetch: Library's
+   * carries a filter, an ordering, a row-set comparison and a scroll reset, and
+   * Review's carries a loading flag and a limit. One module over both would be a
+   * parameter per difference (ADR 0023). What this module owns is when it runs
+   * again: after a scan that added rows, and after a transition the backend
+   * refused over a stale row, both deferred until the page is showing.
    */
-  owe: () => void;
+  fetch: (setRows: SetRows) => Promise<void>;
   /**
    * Review's optimistic removal, and how the selection comes back if the write
    * fails or is undone.
@@ -101,15 +113,8 @@ export interface WallpaperRows {
    * separates an empty library from one nobody has asked about yet.
    */
   rows: Wallpaper[] | null;
-  /**
-   * What the page's own fetch writes through.
-   *
-   * The fetch stays on the page because the two are not one fetch: Library's
-   * carries a filter, an ordering, a row-set comparison and a scroll reset, and
-   * Review's carries a loading flag and a limit. One module over both would be a
-   * parameter per difference (ADR 0023).
-   */
-  setRows: Dispatch<SetStateAction<Wallpaper[] | null>>;
+  /** What the page's own fetch writes through, for the fetches it runs itself. */
+  setRows: SetRows;
   /**
    * The four transitions a card can ask for, whole: the origin-less refusal, the
    * optional optimistic removal and its re-insert, the call, the published
@@ -129,6 +134,11 @@ export interface WallpaperRows {
    * `useBackendEvents` latches its handlers.
    */
   perform: (action: TransitionAction, wallpaper: Wallpaper) => void;
+  /**
+   * The page's fetch, run now if the page is showing and on its next showing if
+   * not (ADR 0015).
+   */
+  owe: () => void;
 }
 
 /**
@@ -141,16 +151,21 @@ export interface WallpaperRows {
  * once already, and the fix was a comment.
  *
  * Library and Review differ in one predicate and one optional field instead of
- * in two implementations. What is deliberately not in here is the fetch, which
- * is the one thing the two pages really do differently.
+ * in two implementations. What is deliberately not in here is the fetch itself,
+ * which is the one thing the two pages really do differently.
  */
 export function useWallpaperRows({
+  view,
+  fetch,
   belongs,
   destination,
-  owe,
   optimistic,
 }: WallpaperRowsOptions): WallpaperRows {
   const [rows, setRows] = useState<Wallpaper[] | null>(null);
+  const refetch = useCallback(() => {
+    void fetch(setRows);
+  }, [fetch]);
+  const owe = useRefetchWhenShown(view, refetch);
   const { publish } = useAppEvents();
   // Every transition reports itself on the shell's one slot, and neither page
   // holds an error surface of its own: two error surfaces in one view is what
@@ -377,11 +392,10 @@ export function useWallpaperRows({
    *
    * The same thing `useBackendEvents` does with a caller's handlers, and for the
    * same kind of reason: the closure is rebuilt every render because it reads
-   * this render's rows and this page's `owe` and `optimistic` — both of which
-   * are declarations the page rebuilds too — and the ref is what stops that
-   * churn from reaching the fifty cards holding the handler. What a press runs
-   * is the last committed render's transition, which is what a handler rebuilt
-   * per render was giving it anyway.
+   * this render's rows and this page's `optimistic` — a declaration the page
+   * rebuilds too — and the ref is what stops that churn from reaching the fifty
+   * cards holding the handler. What a press runs is the last committed render's
+   * transition, which is what a handler rebuilt per render was giving it anyway.
    */
   const latest = useRef(run);
   useEffect(() => {
@@ -395,5 +409,5 @@ export function useWallpaperRows({
     void latest.current(action, wallpaper);
   }, []);
 
-  return { rows, setRows, perform };
+  return { rows, setRows, perform, owe };
 }

@@ -1,10 +1,10 @@
 //! Everything the app knows about answering a `wallpaper://` request.
 //!
-//! One way in: [`serve`] takes the wallpaper id and the [`Size`] the protocol
-//! closure read off the URL, and answers the webview with a response. The
-//! worker pool, the flight table, the success headers and the mapping from an
-//! [`AppError`] to a status are all in here, and none of them is reachable from
-//! anywhere else.
+//! One way in: [`serve`] takes the URL the protocol closure was handed, reads
+//! the wallpaper id and the [`Size`] off it, and answers the webview with a
+//! response. The URL's grammar, the worker pool, the flight table, the success
+//! headers and the mapping from an [`AppError`] to a status are all in here, and
+//! none of them is reachable from anywhere else.
 //!
 //! Before this module they were four things in three places — a Tauri closure,
 //! an `mpsc` channel, and three free functions in `lib.rs` — and none of it was
@@ -47,7 +47,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-use tauri::http::{Response, StatusCode};
+use tauri::http::{Response, StatusCode, Uri};
 use tauri::{AppHandle, Manager, UriSchemeResponder};
 
 use crate::error::AppError;
@@ -114,23 +114,51 @@ pub fn start(app: &AppHandle) {
     app.manage(InFlight::default());
 }
 
-/// Answers one `wallpaper://` request: a wallpaper id and a size in, a response
-/// out.
+/// Parses `wallpaper://localhost/image/{id}?size={size}`.
 ///
-/// The parameter is the parse rather than the pair, because a URL that named no
-/// wallpaper still has to be answered, and the status it is answered with is
-/// this module's business. That keeps the protocol closure to reading the URL
-/// and calling this, and keeps every response the webview ever sees — the
-/// bytes, the statuses and both `Cache-Control`s — inside one file.
+/// The whole of the URL's grammar, and the result stays a `Result` inside
+/// [`serve`] rather than being unwrapped at the top: a URL that named no
+/// wallpaper still has to be answered, and what status it is answered with
+/// belongs beside every other response the webview gets.
+///
+/// The `image` segment has to sit in the *path*. A custom-scheme URL parses as
+/// `scheme://authority/path`, so `wallpaper://image/7` puts `image` in the
+/// authority and leaves `/7` as the path — see `wallpaperImageUrl` in
+/// `src/lib/client.ts`, which is the only place these URLs are built.
+fn parse_image_request(uri: &Uri) -> Result<(i64, Size), AppError> {
+    let segments: Vec<&str> = uri.path().trim_start_matches('/').split('/').collect();
+    let ["image", id] = segments.as_slice() else {
+        return Err(AppError::BadRequest(format!(
+            "unexpected path {:?}",
+            uri.path()
+        )));
+    };
+    let wallpaper_id: i64 = id
+        .parse()
+        .map_err(|_| AppError::BadRequest(format!("malformed wallpaper id {id:?}")))?;
+    let size = uri
+        .query()
+        .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("size=")))
+        .and_then(Size::parse)
+        .ok_or_else(|| {
+            AppError::BadRequest(format!("missing or unknown size in {:?}", uri.query()))
+        })?;
+    Ok((wallpaper_id, size))
+}
+
+/// Answers one `wallpaper://` request: its URL in, a response out.
+///
+/// The parameter is the URL rather than the pair, because what a URL means is
+/// this module's business, and so is the status a URL that named no wallpaper
+/// is answered with. That keeps the protocol closure to one call, and keeps the
+/// URL's grammar and every response the webview ever sees — the bytes, the
+/// statuses and both `Cache-Control`s — inside one file.
 ///
 /// Everything but a hit in memory happens on a pool thread, never on the thread
 /// Tauri calls the protocol handler on: that is the UI thread, and a cache miss
 /// there freezes the window for the length of a decode (ADR 0004).
-pub fn serve(
-    app: &AppHandle,
-    asked_for: Result<(i64, Size), AppError>,
-    responder: UriSchemeResponder,
-) {
+pub fn serve(app: &AppHandle, uri: &Uri, responder: UriSchemeResponder) {
+    let asked_for = parse_image_request(uri);
     // A hit answers here, on the UI thread, and that is deliberate. The channel
     // hop is one of the six costs #224 counted against a warm request, and this
     // is the one place it can be skipped. What the UI thread does is
@@ -1089,6 +1117,60 @@ mod tests {
         assert!(
             (IMAGE_WORKER_FLOOR..=IMAGE_WORKER_CEILING).contains(&count),
             "{count} workers"
+        );
+    }
+
+    fn parse(url: &str) -> Result<(i64, Size), AppError> {
+        parse_image_request(&url.parse::<Uri>().expect("test urls are well-formed"))
+    }
+
+    #[test]
+    fn the_url_the_frontend_builds_is_the_url_this_handler_accepts() {
+        // `wallpaperImageUrl` in src/lib/client.ts must keep producing this
+        // shape. Without the `localhost` authority the scheme parser reads
+        // `image` as the host and leaves `/7` as the whole path.
+        assert_eq!(
+            parse("wallpaper://localhost/image/7?size=medium").unwrap(),
+            (7, Size::Medium)
+        );
+        assert_eq!(
+            parse("wallpaper://localhost/image/42?size=small").unwrap(),
+            (42, Size::Small)
+        );
+        // Windows rewrites custom schemes to `http://<scheme>.localhost/...`.
+        assert_eq!(
+            parse("http://wallpaper.localhost/image/7?size=full").unwrap(),
+            (7, Size::Full)
+        );
+    }
+
+    #[test]
+    fn an_authority_shaped_url_is_rejected_rather_than_silently_mismatched() {
+        // The shape the port originally shipped: every request 400ed on Linux
+        // and macOS, so no wallpaper ever rendered.
+        let err = parse("wallpaper://image/7?size=medium").unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+    }
+
+    #[test]
+    fn malformed_requests_are_bad_requests() {
+        for url in [
+            "wallpaper://localhost/image/notanumber?size=small",
+            "wallpaper://localhost/image/7?size=enormous",
+            "wallpaper://localhost/image/7",
+            "wallpaper://localhost/thumb/7?size=small",
+            "wallpaper://localhost/image/7/extra?size=small",
+        ] {
+            let err = parse(url).unwrap_err();
+            assert!(matches!(err, AppError::BadRequest(_)), "{url} gave {err:?}");
+        }
+    }
+
+    #[test]
+    fn size_is_found_wherever_it_sits_in_the_query() {
+        assert_eq!(
+            parse("wallpaper://localhost/image/1?v=2&size=small").unwrap(),
+            (1, Size::Small)
         );
     }
 }

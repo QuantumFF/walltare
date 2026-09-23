@@ -7,7 +7,7 @@ import {
 } from "@/components/RejectDestination";
 import { WallpaperGrid } from "@/components/WallpaperGrid";
 import type { SelectionHandle } from "@/components/selection";
-import { useWallpaperRows } from "@/components/useWallpaperRows";
+import { useWallpaperRows, type SetRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { SegmentedGroup } from "@/components/ui/segmented";
 import {
@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useApp } from "@/context/AppContext";
-import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
+import { useAppEvent } from "@/context/AppEventsContext";
 import {
   useKeyboardHandoff,
   useKeyboardSurface,
@@ -226,31 +226,6 @@ export function LibraryView() {
   }, []);
 
   /**
-   * The rows, and the four transitions on them (ADR 0023).
-   *
-   * Nothing here is optimistic, which is the difference from Review and is what
-   * the absent `optimistic` says. This page keeps every row it fetched, so there
-   * is no removal to undo: the published patch is the only thing that edits a
-   * row, and a call that never lands leaves the card exactly where the curator
-   * left it.
-   *
-   * `belongs` is the Status filter, so a row the filter no longer matches leaves
-   * the grid — a wallpaper cannot stay in a list of Rejected ones after a
-   * Restore made it Active. Under the default filter of All nothing is ever
-   * dropped: a Rejected card greys and says what it now is.
-   *
-   * `owe` is a forward reference to `useRefetchWhenShown` below, and the two are
-   * a cycle this page breaks here: the module holds the rows the fetch writes,
-   * and the fetch is the one `useRefetchWhenShown` defers. Nothing reads it
-   * during render — it fires only from a transition the backend refused.
-   */
-  const { rows, setRows, perform } = useWallpaperRows({
-    belongs: (status) => matchesFilter(status, filter),
-    destination,
-    owe: oweRefetch,
-  });
-
-  /**
    * One call, every matching row, no paging: the row count is the size of the
    * library and nothing asks a second question to find that out (ADR 0016).
    *
@@ -260,7 +235,7 @@ export function LibraryView() {
    * for keeps their place unless the rows actually moved under it.
    */
   const fetchRows = useCallback(
-    async (resetScroll: boolean) => {
+    async (setRows: SetRows, resetScroll = false) => {
       try {
         const list = await client.listWallpapers(filter, ordering);
         const ids = list.map((w) => w.id).join(",");
@@ -278,27 +253,36 @@ export function LibraryView() {
         setError(LOAD_FAILED_ERROR);
       }
     },
-    [filter, ordering, setRows, toTop],
+    [filter, ordering, toTop],
   );
+
+  /**
+   * The rows, and the four transitions on them (ADR 0023).
+   *
+   * Nothing here is optimistic, which is the difference from Review and is what
+   * the absent `optimistic` says. This page keeps every row it fetched, so there
+   * is no removal to undo: the published patch is the only thing that edits a
+   * row, and a call that never lands leaves the card exactly where the curator
+   * left it.
+   *
+   * `belongs` is the Status filter, so a row the filter no longer matches leaves
+   * the grid — a wallpaper cannot stay in a list of Rejected ones after a
+   * Restore made it Active. Under the default filter of All nothing is ever
+   * dropped: a Rejected card greys and says what it now is.
+   */
+  const { rows, setRows, perform } = useWallpaperRows({
+    view: "library",
+    fetch: fetchRows,
+    belongs: (status) => matchesFilter(status, filter),
+    destination,
+  });
 
   // The first fetch is this view's first mount, which the shell defers to the
   // curator's first visit, and every later one is a filter or an ordering they
   // changed — `fetchRows` is keyed on both.
   useEffect(() => {
-    void fetchRows(true);
-  }, [fetchRows]);
-
-  const refetchAfterScan = useCallback(() => {
-    void fetchRows(false);
-  }, [fetchRows]);
-
-  const owe = useRefetchWhenShown("library", refetchAfterScan);
-
-  // See `owe` on the module above: a declaration, so it can be handed over
-  // before the hook that answers it has run.
-  function oweRefetch() {
-    owe();
-  }
+    void fetchRows(setRows, true);
+  }, [fetchRows, setRows]);
 
   // The one patch left on the page. A moved Score is not a transition, so it
   // stays here rather than folding into the module with `status-changed`.
