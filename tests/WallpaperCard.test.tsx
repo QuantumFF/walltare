@@ -171,7 +171,12 @@ test("a wallpaper in no Comparison is Evaluated at no threshold the page offers"
   // The starting σ is 8.333, above the loosest choice, so the dimmed badge and
   // `Unrated` agree without either checking the other.
   for (const threshold of [5, 4, 3]) {
-    await mount(card({ comparisons_count: 0, rating_mu: 25 }), false, false, threshold);
+    await mount(
+      card({ comparisons_count: 0, rating_mu: 25 }),
+      false,
+      false,
+      threshold,
+    );
     expect(badge().textContent).toBe("Unrated");
     expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
     cleanup();
@@ -211,7 +216,9 @@ test("the overlay reads the comparison count, and for a Rejected card the folder
   // them apart, which is the whole reason the card answers this and the bar's
   // read-out cannot (ADR 0018, ADR 0019).
   const line = screen.getByText("14 comparisons · now in rejected/");
-  expect(line.getAttribute("title")).toBe("/library/photos/rejected/wall-1.jpg");
+  expect(line.getAttribute("title")).toBe(
+    "/library/photos/rejected/wall-1.jpg",
+  );
 });
 
 test("the dimming of a Rejected card sits on the image and not on the card", async () => {
@@ -250,7 +257,10 @@ test("a Kept card offers Make Active and Reject", async () => {
 
   // Not "Un-keep" and not "Return to voting": a Kept wallpaper already votes,
   // and the label names the Status the press produces (ADR 0019).
-  expect(buttonNames()).toEqual(["Make Active wall-1.jpg", "Reject wall-1.jpg"]);
+  expect(buttonNames()).toEqual([
+    "Make Active wall-1.jpg",
+    "Reject wall-1.jpg",
+  ]);
   expect(
     screen.getByRole("button", { name: "Make Active wall-1.jpg" }).textContent,
   ).toBe("Make ActiveK");
@@ -347,9 +357,8 @@ test("hover and focus reveal the same overlay", async () => {
   // on a button inside it. Drawn focus only: `focus-within` also answered to
   // the focus a click leaves behind, which kept a card's overlay open after
   // the pointer had left it.
-  const overlay = cardElement("wall-1.jpg, Active").querySelector(
-    ".absolute.inset-0",
-  );
+  const overlay =
+    cardElement("wall-1.jpg, Active").querySelector(".absolute.inset-0");
   const classes = overlay?.className ?? "";
   expect(classes).toContain("group-hover:opacity-100");
   expect(classes).toContain("group-focus-visible:opacity-100");
@@ -525,4 +534,37 @@ test("a card the layout placed has no frame, and a grid card keeps its own (#254
   const framed = classes(cardElement("grid.jpg, Active"));
   expect(framed).toContain("border");
   expect(framed).toContain("rounded-lg");
+});
+
+/** Every `<img>` on the card, the `small` first. */
+const images = () => Array.from(document.querySelectorAll("img"));
+
+test("a card drawn at small asks for nothing sharper", async () => {
+  await mount(card());
+  expect(images().map((img) => img.getAttribute("src"))).toEqual([
+    "wallpaper://localhost/image/1?size=small",
+  ]);
+});
+
+test("a card drawn wide lays a medium over the small, shown once it loads", async () => {
+  await renderInApp(
+    <WallpaperCard wallpaper={card()} onAction={() => {}} imageSize="medium" />,
+  );
+  await flush();
+
+  const [small, medium] = images();
+  expect(small.getAttribute("src")).toBe(
+    "wallpaper://localhost/image/1?size=small",
+  );
+  expect(medium.getAttribute("src")).toBe(
+    "wallpaper://localhost/image/1?size=medium",
+  );
+  // Hidden until it has arrived, so the zoom sharpens the card and never
+  // blanks it.
+  expect(medium.className).toContain("opacity-0");
+
+  await act(async () => {
+    fireEvent.load(medium);
+  });
+  expect(medium.className).not.toContain("opacity-0");
 });
