@@ -103,6 +103,12 @@ split. A chunk is `SCAN_CHUNK_SIZE` files, so holding the lock across the reads
 would queue every command and every `wallpaper://` request behind that many file
 opens on whatever drive the Library root sits on.
 
+> **Amended by [#284](https://github.com/QuantumFF/walltare/issues/284),
+> 2026-09-23.** The chunk size is `scan::CHUNK_SIZE` now, not
+> `SCAN_CHUNK_SIZE` in `lib.rs`: the whole scan body moved into `scan.rs`, and
+> `start_scan` is the wiring around it. The three steps and the rule about
+> which rows are measured are unchanged.
+
 A scan measures new files and never re-measures old ones, so a wallpaper the
 curator has since re-exported at a different size keeps the numbers it was
 scanned with. That staleness is corrected by the pass rather than by the scan,
