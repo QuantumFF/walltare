@@ -1410,7 +1410,6 @@ test("a Library root that is not there leaves the Download folder unusable", asy
   storedSettings = settings({ library_root: "/mnt/unplugged" });
   mockCommand("check_download_folder", () => ({
     state: "root_missing",
-    root: "/mnt/unplugged",
     reason:
       "The library root /mnt/unplugged is not there, so nothing can be downloaded",
   }));
@@ -1498,6 +1497,40 @@ test("the Download folder follows the Library root field as it is typed", async 
   await type("");
   expect(downloadLine().textContent).toBe(
     "No library root is set, so nothing can be downloaded",
+  );
+});
+
+test("an emptied Download folder is refused, because empty would mean the root itself", async () => {
+  storedSettings = settings({ library_root: "~/pics" });
+  await openSettingsFromLibrary();
+  await typeDownloadFolder("");
+
+  // Not the silence the other two fields keep: downloads would land loose among
+  // the curator's wallpapers, and the backend refuses it in these words.
+  expect(downloadLine().textContent).toBe(
+    "The download folder is empty; name a folder, such as wallhaven",
+  );
+  expect(downloadLine().className).toContain("text-destructive");
+});
+
+test("a root committed on a landing is the root the Download folder resolves against after Retry", async () => {
+  mockCommand("get_stats", () =>
+    Promise.reject({ kind: "db", message: "database is locked" }),
+  );
+  expectConsoleError(/Failed to load library stats/);
+  await openApp();
+  expect(sectionHeadings()).toEqual(["Library root"]);
+
+  // The curator points the app at a library that reads, commits it, and
+  // retries: the landing becomes the ordinary page in place.
+  await type("/srv/walls");
+  await blurField();
+  mockCommand("get_stats", () => stats());
+  await click(screen.getByRole("button", { name: "Retry" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+
+  expect(downloadLine().textContent).toBe(
+    "/srv/walls/wallhaven · created on the first download",
   );
 });
 

@@ -38,7 +38,7 @@ pub enum Check {
     /// No Library root is set, so nothing can be downloaded.
     NoRoot { reason: String },
     /// The Library root is set and is not there, so nothing can be downloaded.
-    RootMissing { root: String, reason: String },
+    RootMissing { reason: String },
     /// There, and it takes a file.
     Ready { resolved: String },
     /// Nothing there yet. The first download creates it.
@@ -65,7 +65,7 @@ pub(crate) fn check_with(
 ) -> Result<Check, AppError> {
     Ok(match locate(written, library_root, lookup)? {
         Located::NoRoot => Check::NoRoot { reason: no_root() },
-        Located::RootMissing { root, reason } => Check::RootMissing { root, reason },
+        Located::RootMissing(reason) => Check::RootMissing { reason },
         Located::Folder(folder) => {
             let resolved = folder.display().to_string();
             // Creating nothing: the curator is still typing, and only a download
@@ -104,7 +104,7 @@ pub(crate) fn prepare_with(
 ) -> Result<PathBuf, AppError> {
     match locate(written, library_root, lookup)? {
         Located::NoRoot => Err(AppError::InvalidPath(no_root())),
-        Located::RootMissing { reason, .. } => Err(AppError::InvalidPath(reason)),
+        Located::RootMissing(reason) => Err(AppError::InvalidPath(reason)),
         Located::Folder(folder) => prepare_folder(&folder, DOWNLOADS),
     }
 }
@@ -113,14 +113,18 @@ pub(crate) fn prepare_with(
 /// anywhere.
 enum Located {
     NoRoot,
-    RootMissing { root: String, reason: String },
+    /// The root is set and unusable, with the sentence saying why.
+    RootMissing(String),
     Folder(PathBuf),
 }
 
 /// Resolve `written` by the third relativity rule.
 ///
 /// The folder's own syntax error comes first and propagates: it is the field's
-/// own mistake, and the message names the variable the curator mistyped.
+/// own mistake, and the message names the variable the curator mistyped. An
+/// empty folder is one of those, because it would mean the Library root
+/// itself, and downloads landing loose among the curator's wallpapers is not
+/// what anybody clearing the field meant.
 ///
 /// The root is required whatever the folder is. A download becomes a wallpaper
 /// in the library at once, so with no library there is nothing for it to join,
@@ -130,6 +134,9 @@ fn locate(
     library_root: &str,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Result<Located, AppError> {
+    if written.is_empty() {
+        return Err(AppError::InvalidPathSyntax(empty()));
+    }
     let folder = crate::paths::expand_with(written, &lookup)?;
 
     if library_root.is_empty() {
@@ -142,12 +149,9 @@ fn locate(
     let root = match crate::paths::expand_with(library_root, &lookup) {
         Ok(root) => root,
         Err(AppError::InvalidPathSyntax(message)) => {
-            return Ok(Located::RootMissing {
-                root: library_root.to_string(),
-                reason: format!(
-                    "The library root cannot be resolved ({message}), so nothing can be downloaded"
-                ),
-            });
+            return Ok(Located::RootMissing(format!(
+                "The library root cannot be resolved ({message}), so nothing can be downloaded"
+            )));
         }
         Err(other) => return Err(other),
     };
@@ -156,12 +160,7 @@ fn locate(
     // the root the way a scan spells its paths.
     let canonical = match root.canonicalize() {
         Ok(canonical) if canonical.is_dir() => canonical,
-        _ => {
-            return Ok(Located::RootMissing {
-                reason: root_missing(&root),
-                root: root.display().to_string(),
-            })
-        }
+        _ => return Ok(Located::RootMissing(root_missing(&root))),
     };
 
     Ok(Located::Folder(if folder.is_absolute() {
@@ -171,8 +170,14 @@ fn locate(
     }))
 }
 
-// The two root sentences. The folder ones are `reject_destination`'s, with
-// `downloads` as their noun.
+// The field's own sentence and the two root ones. The folder ones are
+// `reject_destination`'s, with `downloads` as their noun.
+
+/// Also written in `SettingsView.tsx`, which says it under an emptied field
+/// without asking, since the resolution hooks never ask about an empty string.
+fn empty() -> String {
+    "The download folder is empty; name a folder, such as wallhaven".to_string()
+}
 
 fn no_root() -> String {
     "No library root is set, so nothing can be downloaded".to_string()
@@ -318,13 +323,7 @@ mod tests {
             root.display()
         );
         match check {
-            Check::RootMissing {
-                root: named,
-                reason,
-            } => {
-                assert_eq!(named, root.display().to_string());
-                assert_eq!(reason, expected);
-            }
+            Check::RootMissing { reason } => assert_eq!(reason, expected),
             other => panic!("expected RootMissing, got {other:?}"),
         }
 
@@ -352,8 +351,7 @@ mod tests {
         let check = check_with("wallhaven", "$HOEM/pics", nothing_set).unwrap();
 
         match check {
-            Check::RootMissing { root, reason } => {
-                assert_eq!(root, "$HOEM/pics");
+            Check::RootMissing { reason } => {
                 assert!(
                     reason.contains("unknown environment variable HOEM"),
                     "{reason}"
@@ -378,6 +376,28 @@ mod tests {
             let err = prepare_with("$HOEM/wallhaven", library_root, nothing_set).unwrap_err();
             assert!(matches!(err, AppError::InvalidPathSyntax(_)), "got {err:?}");
         }
+    }
+
+    #[test]
+    fn an_empty_folder_is_refused_rather_than_meaning_the_library_root() {
+        // Empty would join to the root itself, so downloads would land loose
+        // among the curator's wallpapers. Refused at both moments, and nothing
+        // is created.
+        let (_dir, root) = library();
+        let before = std::fs::read_dir(&root).unwrap().count();
+
+        let expected = "The download folder is empty; name a folder, such as wallhaven";
+        let err = check_with("", text(&root), nothing_set).unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidPathSyntax(ref m) if m == expected),
+            "got {err:?}"
+        );
+        let err = prepare_with("", text(&root), nothing_set).unwrap_err();
+        assert!(
+            matches!(err, AppError::InvalidPathSyntax(ref m) if m == expected),
+            "got {err:?}"
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), before);
     }
 
     #[test]
@@ -475,7 +495,6 @@ mod tests {
         let missing =
             serde_json::to_value(check("wallhaven", text(&root.join("gone"))).unwrap()).unwrap();
         assert_eq!(missing["state"], "root_missing");
-        assert!(missing["root"].is_string());
         assert!(missing["reason"].is_string());
 
         std::fs::create_dir(root.join("wallhaven")).unwrap();

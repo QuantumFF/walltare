@@ -633,7 +633,7 @@ export type DestinationCheck =
  */
 export type DownloadFolderCheck =
   | { state: "no_root"; reason: string }
-  | { state: "root_missing"; root: string; reason: string }
+  | { state: "root_missing"; reason: string }
   | { state: "ready"; resolved: string }
   | { state: "absent"; resolved: string }
   | { state: "refused"; resolved: string; reason: string };

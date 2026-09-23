@@ -447,6 +447,13 @@ function RejectDestinationSection() {
 const DOWNLOAD_FOLDER_ABSENT = "created on the first download";
 
 /**
+ * Why an empty Download folder is refused. The same sentence as
+ * `download_folder::empty` in the backend, which a download refuses with.
+ */
+const EMPTY_DOWNLOAD_FOLDER =
+  "The download folder is empty; name a folder, such as wallhaven";
+
+/**
  * The Download folder section: the field, Browse, and one status line that
  * follows the Library root field above it as that field is typed.
  *
@@ -461,12 +468,19 @@ const DOWNLOAD_FOLDER_ABSENT = "created on the first download";
  * will not take a file is the backend's sentence as an error, as the reject
  * destination's is (ADR 0035).
  *
- * An emptied field says nothing, like the other two.
+ * An emptied field is refused, unlike the other two, because empty would mean
+ * the Library root itself.
  */
 function DownloadFolderSection({ libraryRoot }: { libraryRoot: string }) {
   const path = usePathField("download_folder", { libraryRoot });
 
   const status = ((): { tone: PathLineTone; text: string } | null => {
+    // Unlike the other two fields, an emptied one is not silence: an empty
+    // Download folder would mean the Library root itself, so downloads would
+    // land loose among the curator's wallpapers, and the backend refuses it.
+    // An empty string is also the one value the resolution hooks never ask
+    // about, so the refusal is said here, in the backend's words.
+    if (path.value === "") return { tone: "error", text: EMPTY_DOWNLOAD_FOLDER };
     const { resolution } = path;
     if (resolution === null) return null;
     if (resolution.kind === "invalid") {
@@ -524,6 +538,16 @@ export function SettingsView() {
   // line resolves against. Held here because the two fields are in different
   // groups; it starts from the store, as the field does (ADR 0051).
   const [typedRoot, setTypedRoot] = useState(settings.library_root);
+  // And it follows the store when the store moves, which is a commit: the
+  // Library root section remounts when a landing becomes the ordinary page, and
+  // its field starts again from the store, so this has to as well. Adjusted
+  // during render rather than in an effect, so the line never paints a frame
+  // against the old root.
+  const [seededFrom, setSeededFrom] = useState(settings.library_root);
+  if (seededFrom !== settings.library_root) {
+    setSeededFrom(settings.library_root);
+    setTypedRoot(settings.library_root);
+  }
   const handOff = useKeyboardHandoff();
 
   // Every way out lands the keyboard on the page it goes back to, whatever
@@ -646,7 +670,7 @@ export function SettingsView() {
             title to the section's (ADR 0033). */}
         {landing ? (
           <SettingsGroup id="folders" groups={groups}>
-            <LibraryRootSection />
+            <LibraryRootSection onValue={setTypedRoot} />
           </SettingsGroup>
         ) : (
           <>
@@ -673,13 +697,13 @@ export function SettingsView() {
               <ReviewWorklistSection />
               <ReviewOrderingSection />
             </SettingsGroup>
-            {/* Maintenance last: questions nobody asks until something looks
-                wrong (ADR 0020, ADR 0032). */}
             {/* Where Discover's downloads land, before any exists. The API key
                 section joins it with #342. */}
             <SettingsGroup id="wallhaven" groups={groups}>
               <DownloadFolderSection libraryRoot={typedRoot} />
             </SettingsGroup>
+            {/* Maintenance last: questions nobody asks until something looks
+                wrong (ADR 0020, ADR 0032). */}
             <SettingsGroup id="maintenance" groups={groups}>
               <ThumbnailsSection />
               <MissingFilesSection />
