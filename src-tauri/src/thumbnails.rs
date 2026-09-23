@@ -589,10 +589,9 @@ fn fulfill(plan: &Plan, cache_dir: &Path) -> Result<Resolved, AppError> {
     }
 
     let img = match decode_donor(plan, cache_dir, source_mtime) {
-        Some(img) => img,
-        None => decode_source(&plan.source)?,
+        Some(img) => downscale_if_wider(img, plan.size),
+        None => decode_source_at(&plan.source, plan.size)?,
     };
-    let img = downscale_if_wider(img, plan.size);
     let (width, height) = (img.width(), img.height());
     let bytes = encode_jpeg(&flatten_to_rgb(img))?;
     write_cache_file(cache_dir, plan.wallpaper_id, plan.size, &bytes)?;
@@ -625,9 +624,9 @@ fn decode_donor(plan: &Plan, cache_dir: &Path, source_mtime: i64) -> Option<Dyna
         .ok()
 }
 
-/// The most a single source decode may allocate: 1 GiB, which fits a 16K
-/// RGBA PNG (17280x9720 is ~670 MB) and refuses anything a header claims past
-/// that. A refusal is an `AppError::Image`, so it lands in the failure-note
+/// The most a single source decode may allocate: 1 GiB. This raises the
+/// `image` crate's default of 512 MiB, which refused a 16K RGBA PNG
+/// (17280x9720 is ~670 MB); anything a header claims past 1 GiB is refused. A refusal is an `AppError::Image`, so it lands in the failure-note
 /// path like any other undecodable source (ADR 0034) instead of aborting the
 /// process on an allocation that cannot be caught (ADR 0049).
 const MAX_DECODE_ALLOC: u64 = 1024 * 1024 * 1024;
@@ -686,14 +685,16 @@ fn is_large(width: u32, height: u32) -> bool {
     u64::from(width) * u64::from(height) * 4 > LARGE_DECODE_BYTES
 }
 
-/// The one way a source is decoded: capped by [`MAX_DECODE_ALLOC`], and
-/// gated by [`LARGE_DECODES`] when its header says it is large.
+/// The one way a source is decoded, already downscaled to `size`: capped by
+/// [`MAX_DECODE_ALLOC`], and gated by [`LARGE_DECODES`] when its header says
+/// it is large. The permit is held through the downscale, because the
+/// full-size buffer is alive until then and it is what the gate budgets for.
 ///
 /// The dimensions come from the header rather than the recorded ones
 /// (ADR 0044) because they are what the decoder is about to believe, and a
 /// stale or missing row must not let a large decode past the gate. It is the
 /// same header read [`measure_and_record`] does.
-fn decode_source(path: &Path) -> Result<DynamicImage, AppError> {
+fn decode_source_at(path: &Path, size: Size) -> Result<DynamicImage, AppError> {
     let image_err = |e: image::ImageError| AppError::Image(e.to_string());
     let (width, height) = ImageReader::open(path)?
         .with_guessed_format()?
@@ -704,7 +705,10 @@ fn decode_source(path: &Path) -> Result<DynamicImage, AppError> {
     let mut reader = ImageReader::open(path)?.with_guessed_format()?;
     reader.limits(limits);
     let _permit = is_large(width, height).then(|| LARGE_DECODES.acquire());
-    reader.decode().map_err(image_err)
+    Ok(downscale_if_wider(
+        reader.decode().map_err(image_err)?,
+        size,
+    ))
 }
 
 /// Phase 3 — records a freshly generated thumbnail. A no-op for a cache hit.
@@ -781,9 +785,7 @@ fn generate_both(
     cache_dir: &Path,
 ) -> Result<[Recorded; 2], AppError> {
     let source_mtime = source_mtime(source)?;
-    let decoded = decode_source(source)?;
-
-    let medium = flatten_to_rgb(downscale_if_wider(decoded, Size::Medium));
+    let medium = flatten_to_rgb(decode_source_at(source, Size::Medium)?);
     let recorded_medium = write_size(cache_dir, wallpaper_id, Size::Medium, &medium, source_mtime)?;
 
     // Wrapping the flattened medium back into a `DynamicImage` is a move, not a

@@ -1,9 +1,10 @@
 # A source decode is capped, and large ones take turns
 
 Every decode of a source goes through one helper in `thumbnails.rs` that sets
-`image::Limits::max_alloc` to `MAX_DECODE_ALLOC` (1 GiB). That fits a 16K
-RGBA PNG (17280x9720 is about 670 MB) and refuses a file whose header claims
-more. The refusal is an ordinary `AppError::Image`, so it goes down the same
+`image::Limits::max_alloc` to `MAX_DECODE_ALLOC` (1 GiB). That is a
+deliberate raise over the `image` crate's default of 512 MiB, which refused a
+16K RGBA PNG (17280x9720 is about 670 MB); a file whose header claims more
+than 1 GiB is still refused. The refusal is an ordinary `AppError::Image`, so it goes down the same
 path as any undecodable source: counted by the pass and written down as a
 failure note against that mtime (ADR 0034). An allocation that fails because
 the machine ran out of memory aborts the process and cannot be caught, so the
@@ -21,3 +22,7 @@ The gate reads the dimensions from the header, not the recorded ones
 (ADR 0044). The header is what the decoder is about to believe. A recorded row
 can be missing or stale after a re-export, and neither should let a large
 decode past the gate. The header read is cheap next to the decode it guards.
+
+The permit is held until the decoded image has been downscaled to the size
+being generated, not just through the decode: the full-size buffer is alive
+until then, and it is what the gate is budgeting for.
