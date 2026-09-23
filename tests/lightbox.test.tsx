@@ -434,6 +434,69 @@ test("Escape closes it and puts the card for the current selection back in focus
   );
 });
 
+/**
+ * The options every `focus()` in the test passed, by the element it landed on.
+ * happy-dom draws no focus ring and never will, so what the grid asked the
+ * engine for is the thing a test can see.
+ */
+function recordFocusCalls(): {
+  calls: { element: HTMLElement; options: FocusOptions | undefined }[];
+  restore: () => void;
+} {
+  const original = HTMLElement.prototype.focus;
+  const calls: { element: HTMLElement; options: FocusOptions | undefined }[] =
+    [];
+  HTMLElement.prototype.focus = function (options?: FocusOptions) {
+    calls.push({ element: this, options });
+    original.call(this, options);
+  };
+  return { calls, restore: () => (HTMLElement.prototype.focus = original) };
+}
+
+test("a lightbox opened with the keyboard hands back a drawn focus", async () => {
+  await enterReview();
+  await press("Enter");
+  const focus = recordFocusCalls();
+  try {
+    await press("Escape");
+  } finally {
+    focus.restore();
+  }
+
+  const last = focus.calls[focus.calls.length - 1];
+  expect(last?.element.getAttribute("aria-label")).toBe("first.jpg, Active");
+  expect(last?.options).toMatchObject({ focusVisible: true });
+});
+
+test("a lightbox opened with the mouse hands back a focus with no ring, so no overlay stays open", async () => {
+  await enterReview();
+  // A click leaves the focus undrawn in a real engine: WebKit focuses the cell
+  // under the press and matches no `:focus-visible` for it. happy-dom matches
+  // `:focus-visible` on whatever is focused, `body` included, so the engine's
+  // answer is stood in for the length of the press.
+  const matches = Element.prototype.matches;
+  Element.prototype.matches = function (selector: string) {
+    return selector === ":focus-visible" ? false : matches.call(this, selector);
+  };
+  try {
+    await click(cell("second.jpg, Active"));
+  } finally {
+    Element.prototype.matches = matches;
+  }
+  const focus = recordFocusCalls();
+  try {
+    // Escape, and not only the Close button: a keypress is what WebKit would
+    // otherwise take as the reason to draw the focus it hands back.
+    await press("Escape");
+  } finally {
+    focus.restore();
+  }
+
+  const last = focus.calls[focus.calls.length - 1];
+  expect(last?.element.getAttribute("aria-label")).toBe("second.jpg, Active");
+  expect(last?.options).toMatchObject({ focusVisible: false });
+});
+
 test("the Close button closes it, which is the touchscreen's way out", async () => {
   await enterReview();
   await press("Enter");

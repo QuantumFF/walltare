@@ -50,6 +50,16 @@ model rather than two.
 The selected card reveals its overlay through `group-focus-within`, which is the
 same reveal a hover gives.
 
+> **Amended 2026-09-23.** The reveal is now drawn focus only:
+> `group-focus-visible` for the cell and `group-has-[:focus-visible]` for its
+> buttons. `focus-within` also answered to focus a mouse left behind, so a card
+> whose button was clicked, or whose lightbox had just closed, kept its overlay
+> open after the pointer left. The lightbox's close is a focus moved by script,
+> which WebKit draws unless the last focus was a click, so the lightbox records
+> whether the focus it opened from was drawn and hands the card back with
+> `focus({ focusVisible })` to match: `Enter` then `Escape` reveals the card,
+> and a click then `Escape` does not.
+
 Moving the selection to an index outside the virtual window means asking the
 virtualiser to scroll it in first, so focus moves in a layout effect after the
 row commits rather than inside the key handler. Focusing a node that does not

@@ -560,18 +560,18 @@ test("the selected card shows its overlay", async () => {
   await press("ArrowRight");
 
   // Focus and hover reveal the same thing (ADR 0019), and the reveal is the
-  // card's own `group-focus-within`. What is worth pinning is that it still
-  // holds when focus is on the cell wrapper rather than on a button inside it:
-  // the wrapper *is* the `group`, and `:focus-within` matches an element that
-  // has focus itself. happy-dom has no `:focus-within`, so the two halves are
-  // asserted separately — the focused node is the group, and the group is what
-  // the overlay's reveal keys off.
+  // card's own `group-focus-visible`. What is worth pinning is that it holds
+  // when focus is on the cell wrapper rather than on a button inside it: the
+  // wrapper *is* the `group`, which `group-has-[:focus-visible]` alone would
+  // miss, since `:has()` looks only at descendants. happy-dom draws no focus,
+  // so the two halves are asserted separately — the focused node is the group,
+  // and the group is what the overlay's reveal keys off.
   const selected = cell(2);
   expect(document.activeElement).toBe(selected);
   expect(selected.className).toContain("group");
   expect(
     selected.querySelector(".absolute.inset-0")?.className ?? "",
-  ).toContain("group-focus-within:opacity-100");
+  ).toContain("group-focus-visible:opacity-100");
 });
 
 test("a reorder that keeps the card keeps the selection on it", async () => {
