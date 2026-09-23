@@ -1,5 +1,5 @@
 /**
- * Which wallpaper a surface is pointed at, and the one way that fact leaves it.
+ * Which item a surface is pointed at, and the one way that fact leaves it.
  *
  * The cursor belongs to whichever surface draws the list — the grid since #230,
  * and Review's strip since #265 — and what crosses the seam is a reading of it
@@ -27,6 +27,13 @@
  * `SelectionHandle` and `useSelection` here. What that ADR was actually
  * refusing, a new name added *beside* an old one, still holds: `WallpaperGrid`'s
  * export list is four names shorter and nothing was left behind as an alias.
+ *
+ * **Over any item with a key since #336.** The rule never read anything about a
+ * wallpaper but its id, and Discover's grid holds Results, whose Wallhaven ids
+ * are strings. So `WallpaperSelection` is `Selection<T>` and the selected item
+ * is `item`, the same rename refusal as above: nothing is left behind under the
+ * old name. `T` defaults to `Wallpaper`, which is what every surface but
+ * Discover's draws, so their handles are spelled as they were.
  */
 import type { Wallpaper } from "@/lib/client";
 import {
@@ -44,15 +51,23 @@ import {
 } from "react";
 
 /**
+ * What a list has to carry for a cursor to follow one entry of it: a key, unique
+ * in the list. A Wallpaper's is its row id; a Result's is its Wallhaven id.
+ */
+export interface Keyed {
+  id: string | number;
+}
+
+/**
  * A surface's selection, as that surface publishes it.
  *
  * Five members and not seven. Where the focus is used to be two of them, and it
  * is the drawing surface's own — `SelectionHandle` below is what a page asks
  * through (ADR 0029).
  */
-export interface WallpaperSelection {
-  /** The selected Wallpaper, or `null` when the list is empty. */
-  wallpaper: Wallpaper | null;
+export interface Selection<T extends Keyed = Wallpaper> {
+  /** The selected item, or `null` when the list is empty. */
+  item: T | null;
   /**
    * Where it sits in the whole list, and `-1` when nothing is selected. The
    * whole list and not the window a virtualising host mounted, which is what
@@ -63,7 +78,7 @@ export interface WallpaperSelection {
    * How long that list is, which is the other half of `3 / 50`.
    *
    * Carried here rather than left to the page to hand over beside the
-   * selection, because it is the same list: a page reading `wallpapers.length`
+   * selection, because it is the same list: a page reading `items.length`
    * for the lightbox could pass a count that the selection was never resolved
    * against, and the position line is the one place that disagreement would be
    * legible — as a `51 / 50`. #139's arrow buttons read it for the same reason,
@@ -83,14 +98,14 @@ export interface WallpaperSelection {
    * removed optimistically, by which time the selection has already moved on to
    * the next wallpaper (ADR 0022).
    */
-  selectId: (id: number) => void;
+  selectId: (id: T["id"]) => void;
 }
 
 /**
  * What a surface drawing a list can be asked from outside it, and what it says
  * back.
  *
- * A handle rather than members on `WallpaperSelection`, because both facts on it
+ * A handle rather than members on `Selection`, because both facts on it
  * belong to the surface: it holds what the last commit focused and whether the
  * curator is inside, and since #230 it holds the cursor as well. A request the
  * page held too made "does the selection have focus" a question with four
@@ -124,7 +139,7 @@ export type FocusRequest = FocusOptions & {
   reveal?: boolean;
 };
 
-export interface SelectionHandle {
+export interface SelectionHandle<T extends Keyed = Wallpaper> {
   /**
    * Put the selected wallpaper on screen and focus it, revealing it first.
    *
@@ -145,7 +160,7 @@ export interface SelectionHandle {
   /** Hear about it whenever the published selection is replaced. */
   subscribe: (listener: () => void) => () => void;
   /** The selection as last published, which is the one the surface was drawn from. */
-  selection: () => WallpaperSelection;
+  selection: () => Selection<T>;
 }
 
 /**
@@ -156,9 +171,13 @@ export interface SelectionHandle {
  * by #174). One object for the life of the module rather than a literal per
  * read, because `useSyncExternalStore` compares snapshots by identity and a new
  * one per render is a re-render per render.
+ *
+ * Typed as holding no item and taking any key, which is what lets the one object
+ * stand in for a selection over whichever list is asking.
  */
-export const NO_SELECTION: WallpaperSelection = {
-  wallpaper: null,
+export const NO_SELECTION: Omit<Selection<never>, "selectId"> &
+  Pick<Selection<Keyed>, "selectId"> = {
+  item: null,
   index: -1,
   length: 0,
   moveTo: () => {},
@@ -176,15 +195,15 @@ export const NO_SELECTION: WallpaperSelection = {
  * cells and the memo stops it at the two that changed, and this is how the same
  * object reaches a surface that is not below it at all.
  */
-interface SelectionPublication {
+interface SelectionPublication<T extends Keyed> {
   subscribe: (listener: () => void) => () => void;
-  get: () => WallpaperSelection;
+  get: () => Selection<T>;
   /** Announce a selection, or nothing at all if it is the one already out. */
-  publish: (next: WallpaperSelection) => void;
+  publish: (next: Selection<T>) => void;
 }
 
-function createPublication(): SelectionPublication {
-  let current = NO_SELECTION;
+function createPublication<T extends Keyed>(): SelectionPublication<T> {
+  let current: Selection<T> = NO_SELECTION;
   const listeners = new Set<() => void>();
   return {
     subscribe: (listener) => {
@@ -215,7 +234,7 @@ function createPublication(): SelectionPublication {
  *
  * `read` is what keeps a cursor move off the surfaces that do not draw one.
  * `useSyncExternalStore` re-renders a subscriber only when its own snapshot
- * changes, so a caller reading `wallpaper !== null` hears the list empty and
+ * changes, so a caller reading `item !== null` hears the list empty and
  * hears nothing about an arrow key. It has to be stable for the life of the
  * caller — a module-level function, not a literal per render — because a fresh
  * one is a fresh snapshot getter on every render.
@@ -224,10 +243,10 @@ function createPublication(): SelectionPublication {
  * rendering an empty state in its place. It reads as `NO_SELECTION` and
  * subscribes to nothing.
  */
-export function useSelection<T>(
-  handle: SelectionHandle | null,
-  read: (selection: WallpaperSelection) => T,
-): T {
+export function useSelection<R, T extends Keyed = Wallpaper>(
+  handle: SelectionHandle<T> | null,
+  read: (selection: Selection<T>) => R,
+): R {
   const subscribe = useCallback(
     (listener: () => void) => handle?.subscribe(listener) ?? (() => {}),
     [handle],
@@ -267,35 +286,35 @@ export function useSelection<T>(
  * place. Nothing and the first wallpaper are the same answer here, because the
  * fall back to position starts at 0.
  */
-export function useSelectionCursor(
-  wallpapers: Wallpaper[],
-  startOn: number | null = null,
-): WallpaperSelection {
-  const [selectedId, setSelectedId] = useState<number | null>(startOn);
+export function useSelectionCursor<T extends Keyed>(
+  items: T[],
+  startOn: T["id"] | null = null,
+): Selection<T> {
+  const [selectedId, setSelectedId] = useState<T["id"] | null>(startOn);
   // Where the selection was, for the fall back below. Also the initial stop:
   // with nothing selected yet the first entry holds the tab stop, because a list
   // where every cell is `tabindex="-1"` cannot be entered by keyboard at all.
   const positionRef = useRef(0);
 
-  let index = wallpapers.findIndex((w) => w.id === selectedId);
-  if (index === -1 && wallpapers.length > 0) {
-    index = Math.min(positionRef.current, wallpapers.length - 1);
+  let index = items.findIndex((entry) => entry.id === selectedId);
+  if (index === -1 && items.length > 0) {
+    index = Math.min(positionRef.current, items.length - 1);
   }
-  if (wallpapers.length === 0) index = -1;
-  const wallpaper = index === -1 ? null : wallpapers[index];
+  if (items.length === 0) index = -1;
+  const item = index === -1 ? null : items[index];
   if (index !== -1) positionRef.current = index;
 
   const moveTo = useCallback(
     (to: number) => {
-      if (wallpapers.length === 0) return;
-      const at = Math.max(0, Math.min(to, wallpapers.length - 1));
+      if (items.length === 0) return;
+      const at = Math.max(0, Math.min(to, items.length - 1));
       positionRef.current = at;
-      setSelectedId(wallpapers[at].id);
+      setSelectedId(items[at].id);
     },
-    [wallpapers],
+    [items],
   );
 
-  const selectId = useCallback((id: number) => setSelectedId(id), []);
+  const selectId = useCallback((id: T["id"]) => setSelectedId(id), []);
 
   // Memoised on the five values it carries, because the object is what the
   // surface publishes and the lightbox is a second rendering of it (ADR 0022). A
@@ -305,8 +324,8 @@ export function useSelectionCursor(
   // `selectId` never changes — so the identity moves when the selection moves or
   // the list does, and not otherwise.
   return useMemo(
-    () => ({ wallpaper, index, length: wallpapers.length, moveTo, selectId }),
-    [wallpaper, index, wallpapers.length, moveTo, selectId],
+    () => ({ item, index, length: items.length, moveTo, selectId }),
+    [item, index, items.length, moveTo, selectId],
   );
 }
 
@@ -318,8 +337,8 @@ export function useSelectionCursor(
  * `SelectionFocus.container` names. They are stable for the life of the caller,
  * so putting them on a container costs nothing per render.
  */
-export interface PublishedSelection {
-  selection: WallpaperSelection;
+export interface PublishedSelection<T extends Keyed> {
+  selection: Selection<T>;
   onFocus: () => void;
   onBlur: (event: FocusEvent<HTMLElement>) => void;
   /**
@@ -378,14 +397,14 @@ export interface SelectionFocus {
  * `focus` argument is latched rather than captured for the same reason, so a
  * caller may rebuild it per render.
  */
-export function usePublishedSelection(
-  wallpapers: Wallpaper[],
+export function usePublishedSelection<T extends Keyed>(
+  items: T[],
   focus: SelectionFocus,
-  ref: Ref<SelectionHandle> | undefined,
-  startOn: number | null = null,
-): PublishedSelection {
-  const selection = useSelectionCursor(wallpapers, startOn);
-  const { wallpaper: selected, index, moveTo } = selection;
+  ref: Ref<SelectionHandle<T>> | undefined,
+  startOn: T["id"] | null = null,
+): PublishedSelection<T> {
+  const selection = useSelectionCursor(items, startOn);
+  const { item: selected, index, moveTo } = selection;
 
   // Whether the move the next focus answers came from a key (`moveByKey`).
   const byKeyRef = useRef(false);
@@ -404,7 +423,7 @@ export function usePublishedSelection(
 
   // What the last commit put focus on, so a re-render that changes nothing does
   // not re-focus and re-scroll.
-  const focusedRef = useRef<number | null>(null);
+  const focusedRef = useRef<T["id"] | null>(null);
   const holdsFocusRef = useRef(false);
   // A page's request for the selected entry back, or `null` when nothing is
   // asking. It stays set until an entry has actually taken the focus — a reveal
@@ -424,8 +443,8 @@ export function usePublishedSelection(
   // counter.
   const [, askedForFocus] = useReducer((asks: number) => asks + 1, 0);
 
-  const [published] = useState(createPublication);
-  const [handle] = useState<SelectionHandle>(() => ({
+  const [published] = useState(createPublication<T>);
+  const [handle] = useState<SelectionHandle<T>>(() => ({
     focusSelection: (request = {}) => {
       const outstanding = focusRequestRef.current;
       const reveal =

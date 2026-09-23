@@ -1,11 +1,15 @@
 import { ActionButton } from "@/components/ActionButton";
 import { CropPreviewToggle, useCropPreview } from "@/components/CropPreview";
 import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
-import { answerKey, type ListingSurface } from "@/components/keymap";
+import {
+  STATUS_KEYS,
+  answerKey,
+  type ListingSurface,
+} from "@/components/keymap";
 import {
   useSelection,
   type SelectionHandle,
-  type WallpaperSelection,
+  type Selection,
 } from "@/components/selection";
 import {
   STATUS_ACTIONS,
@@ -94,11 +98,10 @@ const UNMEASURED_PICTURE: Box = { width: 1216, height: 680 };
  * commit — which is the difference between the surface painting the outgoing
  * wallpaper for a frame and never painting it at all.
  */
-const WHOLE = (selection: WallpaperSelection) => selection;
-const HAS_WALLPAPER = (selection: WallpaperSelection) =>
-  selection.wallpaper !== null;
-const NOTHING: WallpaperSelection = {
-  wallpaper: null,
+const WHOLE = (selection: Selection) => selection;
+const HAS_WALLPAPER = (selection: Selection) => selection.item !== null;
+const NOTHING: Selection = {
+  item: null,
   index: -1,
   length: 0,
   moveTo: () => {},
@@ -372,10 +375,12 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   // hear about the selection it opened onto one commit later; staying subscribed
   // costs a constant snapshot that no cursor move changes, so a curator walking
   // the grid with the arrows re-renders nothing in here (#230).
-  const { wallpaper, index, length, moveTo } = useSelection(
-    grid,
-    open ? WHOLE : CLOSED,
-  );
+  const {
+    item: wallpaper,
+    index,
+    length,
+    moveTo,
+  } = useSelection(grid, open ? WHOLE : CLOSED);
 
   /**
    * One step through the list, which is a selection move and nothing else.
@@ -432,15 +437,14 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      const intent = answerKey(event, {
-        surface: LIGHTBOX,
-        selected: wallpaper,
-        index,
-        length,
-      });
+      const intent = answerKey(
+        event,
+        { surface: LIGHTBOX, selected: wallpaper, index, length },
+        STATUS_KEYS,
+      );
       switch (intent?.kind) {
         case "act":
-          onAction(intent.action, intent.wallpaper);
+          onAction(intent.action, intent.item);
           break;
         case "crop":
           toggleCrop();

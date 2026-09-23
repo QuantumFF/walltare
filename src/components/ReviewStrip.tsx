@@ -6,7 +6,11 @@ import {
   useHeldDensity,
   type HeldDensity,
 } from "@/components/density";
-import { answerKey, type ListingSurface } from "@/components/keymap";
+import {
+  STATUS_KEYS,
+  answerKey,
+  type ListingSurface,
+} from "@/components/keymap";
 import {
   usePublishedSelection,
   type SelectionHandle,
@@ -242,7 +246,7 @@ export function ReviewStrip({
     onBlur: handleBlur,
     moveByKey,
   } = usePublishedSelection(wallpapers, focus, ref, startOn);
-  const { wallpaper: selected, index, moveTo } = selection;
+  const { item: selected, index, moveTo } = selection;
 
   // The same verdict the grid's cards wear, on the one wallpaper being judged:
   // Review lists undersized wallpapers rather than excluding them, so the hero
@@ -299,18 +303,17 @@ export function ReviewStrip({
   // what they do on a card, so no surface can offer the curator one set with the
   // mouse and another with the keyboard (ADR 0022, #286).
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const intent = answerKey(event, {
-      surface: STRIP,
-      selected,
-      index,
-      length: wallpapers.length,
-    });
+    const intent = answerKey(
+      event,
+      { surface: STRIP, selected, index, length: wallpapers.length },
+      STATUS_KEYS,
+    );
     switch (intent?.kind) {
       case "density":
         moveStep(intent.by);
         break;
       case "act":
-        onAction(intent.action, intent.wallpaper);
+        onAction(intent.action, intent.item);
         break;
       // The press is a question about the wallpaper on screen rather than a
       // decision about it or a step away from it (#266).
@@ -322,7 +325,7 @@ export function ReviewStrip({
         break;
       // The same entry point a click on the hero reaches.
       case "open":
-        onOpen?.(intent.wallpaper);
+        onOpen?.(intent.item);
         break;
       case "move":
         moveByKey(intent.to);

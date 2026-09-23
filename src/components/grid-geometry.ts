@@ -74,8 +74,8 @@ export const COLUMN_CLASSES: Record<number, string> = {
   10: "grid-cols-10",
 };
 
-/** The two tabs that mount this grid, which is what their bounds are named by. */
-export type DensityTab = "library" | "review";
+/** The tabs that mount this grid, which is what their bounds are named by. */
+export type DensityTab = "library" | "review" | "discover";
 
 /**
  * How far the density goes on each tab, and the most columns it starts on.
@@ -95,6 +95,12 @@ export type DensityTab = "library" | "review";
  * ADR 0041 measured the grid's frame time against. Ten is past the eight it was
  * measured at, and nobody has measured it.
  *
+ * Discover runs from two to five and starts on three (#336). Its cards carry a
+ * caption under a picture of a Result the curator is deciding whether to
+ * download, so they stay large: five across is where a caption's facts stop
+ * fitting, and three is what keeps a card near the 22rem the spec asks for at
+ * the default window.
+ *
  * The numbers are the grid's, and they stay here. A host names which tab it is
  * and the grid looks the bounds up, rather than the two pairs being exported for
  * a page to import and hand straight back — which would widen this module's
@@ -104,6 +110,7 @@ export type DensityTab = "library" | "review";
 const DENSITY: Record<DensityTab, DensityRange & { start: number }> = {
   library: { min: 2, max: 10, start: 5 },
   review: { min: 1, max: 6, start: 4 },
+  discover: { min: 2, max: 5, start: 3 },
 };
 
 /**
@@ -259,14 +266,46 @@ export function useDensity(
  * measurement is zero, the window collapses and the tests that pin it have
  * nothing to assert against (#131).
  *
- * `className` is the cross-reference and not always the thing that gets worn:
- * `aspect-video` stays literal on `WallpaperCard`, which is the element wearing
- * it, and this field is how a reader of either file finds the other. The other
- * two are worn by the grid's container in `WallpaperGrid.tsx` (ADR 0027).
+ * Both are worn by the grid's container in `ItemGrid.tsx` (ADR 0027). The
+ * card's own shape was the third of these until #336, and is `CardSpec` below.
  */
 export const GAP = { px: 24, className: "gap-6" };
-const CARD_ASPECT = { ratio: 9 / 16, className: "aspect-video" };
 export const PADDING = { px: 16, className: "p-4" };
+
+/**
+ * What one card in a uniform grid is, as the plan needs it before any card
+ * exists: the shape of its picture, and the fixed caption under that (#336).
+ *
+ * The host's and not the grid's, unlike the spacing above, because it is the
+ * card that wears it and the grid now draws whichever card its host renders.
+ * The pair is the same pair `GAP` is — a number beside the class it restates —
+ * so a card whose CSS changes without its spec following still puts the wrong
+ * cards on screen, and the spec is where a reader of the card finds the plan.
+ *
+ * Only the uniform grid reads the caption. The two layouts that draw each
+ * wallpaper at its own shape are a wall of pictures with nothing under them,
+ * and only Library draws those.
+ */
+export interface CardSpec {
+  /** The picture's shape, as height over width. */
+  ratio: number;
+  /** The class that draws that shape, on the card that wears it. */
+  className: string;
+  /** The caption's height under the picture, in pixels. Zero is none. */
+  caption: number;
+}
+
+/**
+ * Library's and Review's card: a 16:9 picture and nothing under it.
+ *
+ * `aspect-video` stays literal on `WallpaperCard`, which is the element wearing
+ * it, and this field is how a reader of either file finds the other.
+ */
+export const WALLPAPER_CARD: CardSpec = {
+  ratio: 9 / 16,
+  className: "aspect-video",
+  caption: 0,
+};
 
 /**
  * The gutter between wallpapers in the two layouts that draw each one at its own
@@ -345,12 +384,14 @@ export function rowHeight(
   boxWidth: number,
   columns: number,
   spacing: PlanSpacing = SPACING,
+  card: CardSpec = WALLPAPER_CARD,
 ): number {
   return uniformRowHeight({
     ...spacing,
     columns,
     width: boxWidth,
-    cardRatio: CARD_ASPECT.ratio,
+    cardRatio: card.ratio,
+    captionHeight: card.caption,
     unmeasuredHeight: UNMEASURED_ROW,
   });
 }
@@ -402,7 +443,7 @@ export interface PlacedCards {
  * plan is computable before anything renders, so there is nothing to correct
  * (#261).
  *
- * Called from `WindowedGrid` in `WallpaperGrid.tsx` and nowhere else. ADR 0027 exported it for
+ * Called from `WindowedGrid` in `ItemGrid.tsx` and nowhere else. ADR 0027 exported it for
  * `LibraryView` to call, on the argument that every number behind it is this
  * module's own CSS; #231 applied that argument to the call site as well, because
  * the virtualiser's re-render notification belongs to whoever calls it and the
@@ -426,6 +467,7 @@ export function useGridWindow(
   scroller: RefObject<HTMLDivElement | null>,
   layout: LibraryLayout,
   ratios: ReadonlyArray<number | null>,
+  card: CardSpec,
 ): {
   mounted: PlannedWindow;
   reveal: (index: number) => void;
@@ -451,12 +493,12 @@ export function useGridWindow(
   const plan: LayoutPlan | MasonryPlan | JustifiedPlan = useMemo<
     LayoutPlan | MasonryPlan | JustifiedPlan
   >(() => {
-    // The shape a wallpaper with no Dimensions is drawn at, and it is the grid's
+    // The shape a wallpaper with no Dimensions is drawn at, and it is the card's
     // own `aspect-video` rather than a number either layout invented: the
     // fallback is "draw it the way the app has always drawn it", so a library
     // mid-backfill reads as the layout the curator switched away from rather
     // than as a collapsed row.
-    const unknownRatio = CARD_ASPECT.ratio;
+    const unknownRatio = card.ratio;
     const spacing = LAYOUT_SPACING[layout];
     if (masonry) {
       return planMasonry({
@@ -481,7 +523,10 @@ export function useGridWindow(
         // because it is the same number of the same width being asked for
         // (#264). Worked out against the wall's own gutter rather than the
         // grid's, so four is four across the width this layout actually has.
-        targetHeight: rowHeight(boxWidth, columns, spacing),
+        targetHeight: rowHeight(boxWidth, columns, spacing, {
+          ...card,
+          caption: 0,
+        }),
         unknownRatio,
       });
     }
@@ -489,9 +534,9 @@ export function useGridWindow(
       ...spacing,
       count,
       columns,
-      rowHeight: rowHeight(boxWidth, columns),
+      rowHeight: rowHeight(boxWidth, columns, spacing, card),
     });
-  }, [masonry, layout, ratios, count, columns, boxWidth]);
+  }, [masonry, layout, ratios, count, columns, boxWidth, card]);
 
   const virtualiser = useVirtualizer({
     count: plan.rows.length,

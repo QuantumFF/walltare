@@ -1,3 +1,4 @@
+import { STATUS_KEYS, type AnyActionTable } from "@/components/keymap";
 import { LibraryView } from "@/components/LibraryView";
 import { RankView } from "@/components/RankView";
 import { ReviewView } from "@/components/ReviewView";
@@ -54,6 +55,21 @@ const TABS = [
 ] as const;
 
 type TabView = (typeof TABS)[number]["view"];
+
+/**
+ * The action table the shortcuts dialog lists the grid's keys from, per view:
+ * whatever the grid on that page acts on its items with (#336).
+ *
+ * Library and Review act on a Wallpaper's Status. Rank and Settings draw no
+ * grid, and list the library's keys there as they always have, since that is
+ * the grid a curator opening the list from either is most likely to reach next.
+ */
+const PAGE_ACTIONS: Record<View, AnyActionTable> = {
+  rank: STATUS_KEYS,
+  review: STATUS_KEYS,
+  library: STATUS_KEYS,
+  settings: STATUS_KEYS,
+};
 
 function isTabView(view: View): view is TabView {
   return TABS.some((tab) => tab.view === view);
@@ -517,7 +533,11 @@ function Shell({
           not what stacks it — the z-index in the component is. It is mounted
           here rather than in a view because `?` reaches it from all four
           destinations, and a per-view copy would need four (ADR 0015). */}
-      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      <ShortcutsDialog
+        open={shortcutsOpen}
+        onOpenChange={setShortcutsOpen}
+        actions={PAGE_ACTIONS[view]}
+      />
     </div>
   );
 }
