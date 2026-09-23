@@ -1,7 +1,11 @@
 import { ActionButton } from "@/components/ActionButton";
 import { CropPreviewToggle, useCropPreview } from "@/components/CropPreview";
 import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
-import { useDensityWheel } from "@/components/density";
+import {
+  useDensityWheel,
+  useHeldDensity,
+  type HeldDensity,
+} from "@/components/density";
 import { answerKey, type ListingSurface } from "@/components/keymap";
 import {
   usePublishedSelection,
@@ -67,7 +71,7 @@ const STRIP = { kind: "strip" } as const satisfies ListingSurface;
  * Not persisted, the same as the grid's zoom.
  */
 const FILMSTRIP_HEIGHTS = [96, 128, 160, 200, 256] as const;
-const FILMSTRIP_START = 1;
+export const FILMSTRIP_START = 1;
 
 /**
  * An entry's width over its height: the prototype's `w-24` over `h-14`.
@@ -174,6 +178,11 @@ export interface ReviewStripProps {
    * place in a fifty-row sweep.
    */
   startOn?: number | null;
+  /**
+   * Which of the filmstrip's heights it is drawn at, when the host holds it so
+   * it outlives this strip (see `HeldDensity`). Absent, the strip holds its own.
+   */
+  filmstripStep?: HeldDensity;
 }
 
 /**
@@ -210,6 +219,7 @@ export function ReviewStrip({
   evaluatedThreshold = DEFAULT_EVALUATED_THRESHOLD,
   ref,
   startOn,
+  filmstripStep,
 }: ReviewStripProps) {
   const stripRef = useRef<HTMLDivElement>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
@@ -237,6 +247,7 @@ export function ReviewStrip({
     selection,
     onFocus: handleFocus,
     onBlur: handleBlur,
+    moveByKey,
   } = usePublishedSelection(wallpapers, focus, ref, startOn);
   const { wallpaper: selected, index, moveTo } = selection;
 
@@ -268,7 +279,7 @@ export function ReviewStrip({
 
   // Which of `FILMSTRIP_HEIGHTS` the filmstrip is drawn at. In is larger, the
   // same direction the grid's zoom runs.
-  const [step, setStep] = useState(FILMSTRIP_START);
+  const [step, setStep] = useHeldDensity(filmstripStep, FILMSTRIP_START);
   const moveStep = useCallback(
     (by: number) =>
       setStep((was) =>
@@ -321,7 +332,7 @@ export function ReviewStrip({
         onOpen?.(intent.wallpaper);
         break;
       case "move":
-        moveTo(intent.to);
+        moveByKey(intent.to);
         break;
       // Every intent the keymap can hand this surface is answered above, so
       // only an unanswered key reaches here, and a binding newly given to this

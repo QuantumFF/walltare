@@ -1,16 +1,16 @@
 import { WallpaperCard } from "@/components/WallpaperCard";
-import { useDensityWheel } from "@/components/density";
+import {
+  useDensityWheel,
+  useHeldDensity,
+  type HeldDensity,
+} from "@/components/density";
 import { answerKey } from "@/components/keymap";
 import type { TransitionAction } from "@/components/transitions";
 import {
   usePublishedSelection,
   type SelectionHandle,
 } from "@/components/selection";
-import type {
-  LibraryLayout,
-  Resolution,
-  Wallpaper,
-} from "@/lib/client";
+import type { LibraryLayout, Resolution, Wallpaper } from "@/lib/client";
 import { isUndersized } from "@/lib/copy";
 import {
   NOTHING_MOUNTED,
@@ -96,7 +96,7 @@ type DensityTab = "library" | "review";
  * How far the density goes on each tab, and the most columns it starts on.
  *
  * #254's prototype, which is what the curator agreed on: Library runs from two
- * to ten and starts on five, Review from one to six and starts on three. Library
+ * to ten and starts on five, Review from one to six and starts on four. Library
  * is the browse surface, going "from a few large wallpapers to many small ones"
  * over a library of up to five thousand. Review is fifty wallpapers the curator
  * is deciding about, so it goes down to one wallpaper across and starts larger.
@@ -118,7 +118,7 @@ type DensityTab = "library" | "review";
  */
 const DENSITY: Record<DensityTab, DensityRange & { start: number }> = {
   library: { min: 2, max: 10, start: 5 },
-  review: { min: 1, max: 6, start: 3 },
+  review: { min: 1, max: 6, start: 4 },
 };
 
 /**
@@ -244,13 +244,16 @@ function useGridColumns(): number {
  * cannot hand over an object rebuilt per render — which would make the callback
  * a fresh one per render and the wheel listener a resubscription per render.
  */
-function useDensity(tab: DensityTab): {
+function useDensity(
+  tab: DensityTab,
+  held: HeldDensity | undefined,
+): {
   columns: number;
   step: (by: number) => void;
 } {
   const range = DENSITY[tab];
   const base = Math.min(useGridColumns(), range.start);
-  const [zoom, setZoom] = useState(0);
+  const [zoom, setZoom] = useHeldDensity(held, 0);
   const step = useCallback(
     (by: number) => setZoom((was) => densityZoom(base, was, by, range)),
     [base, range],
@@ -706,6 +709,11 @@ export interface WallpaperGridProps {
    */
   density: DensityTab;
   /**
+   * The zoom, when the host holds it so it outlives this grid (see
+   * `HeldDensity`). Absent, the grid holds its own.
+   */
+  zoom?: HeldDensity;
+  /**
    * How the cards are laid out: cropped to one shape, or each at its own.
    *
    * Read only by the windowed shape, and not because masonry is expensive. Its
@@ -779,15 +787,16 @@ export interface WallpaperGridProps {
 export function WallpaperGrid({
   scroller,
   density,
+  zoom,
   layout = "grid",
   ...props
 }: WallpaperGridProps) {
   // The density is resolved here, above the branch, because both shapes need
   // the count and neither is the whole grid: the windowed one cuts its rows at
   // it one component down and the cells move the selection by it two. Holding
-  // it here is also what makes the zoom survive a host swapping shapes, which
-  // nothing does today and which the props say nothing to forbid.
-  const { columns, step } = useDensity(density);
+  // it here is also what makes the zoom survive this grid swapping shapes; a
+  // host that swaps this grid for another surface holds it itself (`zoom`).
+  const { columns, step } = useDensity(density, zoom);
   return scroller ? (
     <WindowedGrid
       scroller={scroller}
@@ -808,8 +817,10 @@ export function WallpaperGrid({
  * They are still the same two facts crossing the same seam; the seam is inside
  * this file now, which is the whole of what that ticket moved.
  */
-interface GridProps
-  extends Omit<WallpaperGridProps, "scroller" | "density" | "layout"> {
+interface GridProps extends Omit<
+  WallpaperGridProps,
+  "scroller" | "density" | "zoom" | "layout"
+> {
   /**
    * How many cards share a row, resolved from the viewport and the curator's
    * zoom together. `WallpaperGrid` above is the one reader of either.
@@ -985,8 +996,9 @@ function Grid({
     selection,
     onFocus: handleFocus,
     onBlur: handleBlur,
+    moveByKey,
   } = usePublishedSelection(wallpapers, focus, ref, startOn);
-  const { wallpaper: selected, index, moveTo } = selection;
+  const { wallpaper: selected, index } = selection;
 
   // What this commit puts in the DOM, as positions in the whole list — which is
   // every card until a host's window says less. Nothing above this line reads
@@ -1044,7 +1056,7 @@ function Grid({
         onOpen?.(intent.wallpaper);
         break;
       case "move":
-        moveTo(intent.to);
+        moveByKey(intent.to);
         break;
       // Every intent the keymap can hand this surface is answered above, so
       // only an unanswered key reaches here, and a binding newly given to this

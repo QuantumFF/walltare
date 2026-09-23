@@ -322,6 +322,16 @@ export interface PublishedSelection {
   selection: WallpaperSelection;
   onFocus: () => void;
   onBlur: (event: FocusEvent<HTMLElement>) => void;
+  /**
+   * `moveTo` for a key: the entry it lands on is focused drawn, which is what
+   * reveals a card's overlay. A move from anywhere else leaves the drawing to
+   * the engine, and WebKitGTK copies the last focus's — after a click's
+   * hand-off (ADR 0047), an undrawn one, so the arrows moved an overlay nobody
+   * could see. Only the key says so, because the selection also moves when an
+   * action removes the row under it, and a vote made with the mouse must not
+   * pin the next card's overlay open.
+   */
+  moveByKey: (index: number) => void;
 }
 
 /**
@@ -375,7 +385,17 @@ export function usePublishedSelection(
   startOn: number | null = null,
 ): PublishedSelection {
   const selection = useSelectionCursor(wallpapers, startOn);
-  const { wallpaper: selected, index } = selection;
+  const { wallpaper: selected, index, moveTo } = selection;
+
+  // Whether the move the next focus answers came from a key (`moveByKey`).
+  const byKeyRef = useRef(false);
+  const moveByKey = useCallback(
+    (to: number) => {
+      byKeyRef.current = true;
+      moveTo(to);
+    },
+    [moveTo],
+  );
 
   const latest = useRef(focus);
   useLayoutEffect(() => {
@@ -469,6 +489,9 @@ export function usePublishedSelection(
     const active = document.activeElement;
     const holds = active instanceof Node && container.current?.contains(active);
     if (target === focusedRef.current && holds) {
+      // A key that moved nothing, at either end of the list, is spent here
+      // rather than left to draw whatever the selection does next.
+      byKeyRef.current = false;
       focusRequestRef.current = null;
       return;
     }
@@ -528,9 +551,13 @@ export function usePublishedSelection(
 
     const node = nodeAt(index);
     if (!node) return;
+    // Drawn when a key moved it here (`moveByKey`); the engine's guess
+    // otherwise.
+    const byKey = byKeyRef.current;
+    byKeyRef.current = false;
     focusedRef.current = target;
     focusRequestRef.current = null;
-    node.focus(request ?? undefined);
+    node.focus(request ?? (byKey ? { focusVisible: true } : undefined));
   });
 
   const onFocus = useCallback(() => {
@@ -553,5 +580,5 @@ export function usePublishedSelection(
     holdsFocusRef.current = false;
   }, []);
 
-  return { selection, onFocus, onBlur };
+  return { selection, onFocus, onBlur, moveByKey };
 }

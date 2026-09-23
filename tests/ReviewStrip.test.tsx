@@ -10,6 +10,7 @@ import {
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
 import {
+  cardsInARow,
   click,
   ctrlWheel,
   deferred,
@@ -459,9 +460,7 @@ test("the lightbox opens from the strip, on the wallpaper the hero is showing", 
 test("a click on the hero opens the lightbox and is not a keep or a reject", async () => {
   await openStrip([wallpaper(4, { filename: "keeper.jpg" })]);
 
-  await click(
-    reviewView().querySelector('[data-slot="hero"]') as HTMLElement,
-  );
+  await click(reviewView().querySelector('[data-slot="hero"]') as HTMLElement);
 
   expect(screen.getByRole("dialog", { name: "keeper.jpg" })).toBeTruthy();
   expect(entries()).toHaveLength(1);
@@ -517,6 +516,37 @@ test("the bar switches between the strip and the grid", async () => {
 
   expect(strip()).not.toBeNull();
   expect(inReview().queryByRole("grid")).toBeNull();
+});
+
+test("each layout keeps its own zoom across a switch", async () => {
+  // A switch unmounts one surface and mounts the other, so a zoom either held
+  // for itself was back at its start every time the curator swapped.
+  await openStrip(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
+  await enterStrip();
+  await press("+");
+  expect(entryHeight()).toBe(160);
+
+  await click(layoutButton("Grid"));
+  const grid = inReview().getByRole("grid", { name: "Wallpapers to review" });
+  await act(async () => {
+    (grid.querySelector('[tabindex="0"]') as HTMLElement).focus();
+  });
+  const start = await cardsInARow();
+  await press("-");
+  expect(await cardsInARow()).toBe(start + 1);
+
+  await click(layoutButton("Strip"));
+  expect(entryHeight()).toBe(160);
+
+  await click(layoutButton("Grid"));
+  await act(async () => {
+    (
+      inReview()
+        .getByRole("grid", { name: "Wallpapers to review" })
+        .querySelector('[tabindex="0"]') as HTMLElement
+    ).focus();
+  });
+  expect(await cardsInARow()).toBe(start + 1);
 });
 
 test("switching the layout with the pointer leaves the arrows on the worklist", async () => {

@@ -12,7 +12,32 @@
  * What each surface does with a step stays its own. This module turns an event
  * into a step and nothing else.
  */
-import { useEffect, type RefObject } from "react";
+import {
+  useEffect,
+  useState,
+  type Dispatch,
+  type RefObject,
+  type SetStateAction,
+} from "react";
+
+/**
+ * A density held by the host rather than the surface, as the `useState` pair
+ * that holds it.
+ *
+ * Review swaps its grid for its strip by unmounting one and mounting the other,
+ * so a density the surface held was back at its start after every swap. The
+ * page holds one per layout and hands each its own.
+ */
+export type HeldDensity = readonly [number, Dispatch<SetStateAction<number>>];
+
+/** The host's density when it holds one, and the surface's own when not. */
+export function useHeldDensity(
+  held: HeldDensity | undefined,
+  start: number,
+): HeldDensity {
+  const own = useState(start);
+  return held ?? own;
+}
 
 /**
  * Ctrl and the wheel over `target`, changing the density rather than the page's

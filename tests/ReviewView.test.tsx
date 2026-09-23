@@ -67,7 +67,8 @@ function toast(): { title: string; description: string | null } | null {
   return {
     title: root.querySelector("[data-slot='toast-title']")?.textContent ?? "",
     description:
-      root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
+      root.querySelector("[data-slot='toast-description']")?.textContent ??
+      null,
   };
 }
 
@@ -78,8 +79,7 @@ const destinationLine = () =>
   ) as HTMLElement | null;
 
 /** The body's spinner, which is only ever the first load's (#285). */
-const loader = () =>
-  reviewView().querySelector('[data-slot="review-loading"]');
+const loader = () => reviewView().querySelector('[data-slot="review-loading"]');
 
 const refreshButton = () =>
   inReview().getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
@@ -164,8 +164,16 @@ test("renders the rows the backend returned, in the order it returned them", asy
   // Each one past a Comparison, so the badge is a Score rather than the
   // `Unrated` a wallpaper the app knows nothing about reads (ADR 0013).
   await openReview([
-    wallpaper(3, { filename: "lowest.jpg", rating_mu: 8.24, comparisons_count: 4 }),
-    wallpaper(1, { filename: "middle.png", rating_mu: 25.0, comparisons_count: 4 }),
+    wallpaper(3, {
+      filename: "lowest.jpg",
+      rating_mu: 8.24,
+      comparisons_count: 4,
+    }),
+    wallpaper(1, {
+      filename: "middle.png",
+      rating_mu: 25.0,
+      comparisons_count: 4,
+    }),
     wallpaper(7, {
       filename: "highest.webp",
       rating_mu: 15.55,
@@ -204,17 +212,17 @@ test("the density gesture reaches this page too, and stops shorter than Library'
   // The same gesture on the other tab, which is the whole of user story 11:
   // two tabs behaving the same way under the same gesture. What differs is
   // where it stops — a worklist of fifty has no scale to buy at the far end,
-  // so Review stops at six where Library goes to ten, and it starts on three
+  // so Review stops at six where Library goes to ten, and it starts on four
   // (#254, #264).
   //
   // `ArrowDown` is what says how many cards share a row without a layout, since
   // happy-dom reports every card as the same zero-sized box at any density.
   await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
   await enterGrid();
-  expect(await cardsInARow()).toBe(3);
+  expect(await cardsInARow()).toBe(4);
 
   await zoom(-100);
-  expect(await cardsInARow()).toBe(2);
+  expect(await cardsInARow()).toBe(3);
 
   for (let at = 0; at < 8; at++) await zoom(100);
   expect(await cardsInARow()).toBe(6);
@@ -240,6 +248,34 @@ test("neither half of the gesture moves the selection", async () => {
   expect(selectedCard()).toBe("wall-3.jpg, Active");
   await press("-");
   expect(selectedCard()).toBe("wall-3.jpg, Active");
+});
+
+test("a key's move focuses drawn and a mouse vote's advance does not", async () => {
+  // `:focus-visible` is what reveals a card's overlay (#302), and happy-dom
+  // draws nothing, so what is pinned is what the grid asks `focus()` for.
+  await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
+  await enterGrid();
+  const asked: Array<{ focusVisible?: boolean } | undefined> = [];
+  const focus = HTMLElement.prototype.focus;
+  HTMLElement.prototype.focus = function (options) {
+    asked.push(options as { focusVisible?: boolean } | undefined);
+    focus.call(this, options);
+  };
+  try {
+    await press("ArrowRight");
+    expect(selectedCard()).toBe("wall-2.jpg, Active");
+    expect(asked[asked.length - 1]?.focusVisible).toBe(true);
+
+    // The row the mouse kept leaves, and the selection falls to the next one.
+    asked.length = 0;
+    await pointerClick(
+      inReview().getByRole("button", { name: /^Keep wall-2\.jpg/ }),
+    );
+    await flush();
+    expect(asked.some((options) => options?.focusVisible === true)).toBe(false);
+  } finally {
+    HTMLElement.prototype.focus = focus;
+  }
 });
 
 test("Refresh keeps the cursor on the same wallpaper and the density where it was", async () => {
@@ -274,12 +310,12 @@ test("Refresh keeps the cursor on the same wallpaper and the density where it wa
   });
   expect(selected.tabIndex).toBe(0);
 
-  // And two cards to a row is still two, which is the step the wheel left it on
-  // rather than the three this page starts on.
+  // And three cards to a row is still three, which is the step the wheel left it
+  // on rather than the four this page starts on.
   await act(async () => {
     selected.focus();
   });
-  expect(await cardsInARow()).toBe(2);
+  expect(await cardsInARow()).toBe(3);
 });
 
 test("a card changes no shadow on hover, so a wheel scroll stays smooth", async () => {
@@ -413,7 +449,9 @@ test("ordering by the highest Scores asks for that, and the bar says so", async 
     orderings.push(args.ordering);
     return [];
   });
-  mockCommand("get_settings", () => settings({ review_ordering: "score_desc" }));
+  mockCommand("get_settings", () =>
+    settings({ review_ordering: "score_desc" }),
+  );
 
   await openOnReview();
 
@@ -787,7 +825,9 @@ test("change in Settings opens the field the line is about", async () => {
   await openReview([wallpaper(6)]);
 
   await click(
-    inReview().getByRole("button", { name: "change in Settings" }) as HTMLElement,
+    inReview().getByRole("button", {
+      name: "change in Settings",
+    }) as HTMLElement,
   );
 
   // The words are a control rather than text: naming a destination that is one
@@ -798,9 +838,9 @@ test("change in Settings opens the field the line is about", async () => {
   expect(document.activeElement?.getAttribute("aria-label")).toBe(
     "Reject destination",
   );
-  expect(
-    screen.getByRole("button", { name: /back to/i }).textContent,
-  ).toBe("Back to ReviewEsc");
+  expect(screen.getByRole("button", { name: /back to/i }).textContent).toBe(
+    "Back to ReviewEsc",
+  );
 });
 
 test("the empty state offers a way to Rank", async () => {
@@ -967,9 +1007,7 @@ test("an Undo puts the card back where it was, and the selection with it", async
   mockCommand("move_wallpaper", (args) =>
     rejectedTo(args, "/library/rejected/reject-me.jpg"),
   );
-  mockCommand("restore_wallpaper", (args) =>
-    wrote(args, { status: "active" }),
-  );
+  mockCommand("restore_wallpaper", (args) => wrote(args, { status: "active" }));
 
   await enterGrid();
   await press("ArrowRight");
@@ -1020,9 +1058,7 @@ test("an Undo puts the card back beside its neighbour, when the list moved meanw
     moves.set(args.id, move);
     return move.promise;
   });
-  mockCommand("restore_wallpaper", (args) =>
-    wrote(args, { status: "active" }),
-  );
+  mockCommand("restore_wallpaper", (args) => wrote(args, { status: "active" }));
 
   // Two rejects in flight at once: the second card, and then the first while
   // the second's write is still out. The second lands last, so its toast is the
@@ -1034,14 +1070,12 @@ test("an Undo puts the card back beside its neighbour, when the list moved meanw
   await press("Delete");
   expect(cardNames()).toEqual(["third.jpg, Active"]);
   await act(async () => {
-    moves.get(5)?.resolve(
-      rejectedTo({ id: 5 }, "/library/rejected/first.jpg"),
-    );
+    moves.get(5)?.resolve(rejectedTo({ id: 5 }, "/library/rejected/first.jpg"));
   });
   await act(async () => {
-    moves.get(6)?.resolve(
-      rejectedTo({ id: 6 }, "/library/rejected/second.jpg"),
-    );
+    moves
+      .get(6)
+      ?.resolve(rejectedTo({ id: 6 }, "/library/rejected/second.jpg"));
   });
   expect(toast()?.title).toBe("Rejected second.jpg");
 
