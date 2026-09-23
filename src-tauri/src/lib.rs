@@ -19,7 +19,6 @@ mod window_state;
 use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
-use tauri::http::Uri;
 use tauri::{AppHandle, Emitter, Manager};
 
 use pregen::Pregen;
@@ -427,38 +426,6 @@ fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, 
     state.write(|conn| soft_reject::restore(conn, id))
 }
 
-/// Parses `wallpaper://localhost/image/{id}?size={size}`.
-///
-/// The whole of what the protocol closure does before [`serving::serve`] takes
-/// over, and the result crosses as a `Result` rather than being unwrapped here:
-/// a URL that named no wallpaper still has to be answered, and what status it is
-/// answered with belongs beside every other response the webview gets.
-///
-/// The `image` segment has to sit in the *path*. A custom-scheme URL parses as
-/// `scheme://authority/path`, so `wallpaper://image/7` puts `image` in the
-/// authority and leaves `/7` as the path — see `wallpaperImageUrl` in
-/// `src/lib/client.ts`, which is the only place these URLs are built.
-fn parse_image_request(uri: &Uri) -> Result<(i64, thumbnails::Size), error::AppError> {
-    let segments: Vec<&str> = uri.path().trim_start_matches('/').split('/').collect();
-    let ["image", id] = segments.as_slice() else {
-        return Err(error::AppError::BadRequest(format!(
-            "unexpected path {:?}",
-            uri.path()
-        )));
-    };
-    let wallpaper_id: i64 = id
-        .parse()
-        .map_err(|_| error::AppError::BadRequest(format!("malformed wallpaper id {id:?}")))?;
-    let size = uri
-        .query()
-        .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("size=")))
-        .and_then(thumbnails::Size::parse)
-        .ok_or_else(|| {
-            error::AppError::BadRequest(format!("missing or unknown size in {:?}", uri.query()))
-        })?;
-    Ok((wallpaper_id, size))
-}
-
 /// What the curator reads when their database was written by a newer walltare.
 ///
 /// A pure function so the copy is testable: the versions are the whole point of
@@ -604,8 +571,8 @@ pub fn run() {
             serving::start(app.handle());
             Ok(())
         })
-        // Reads the URL and hands what it says to [`serving::serve`]. Nothing
-        // else: the pool, the headers and the statuses are that module's, and so
+        // Hands the request's URL to [`serving::serve`]. Nothing else: the
+        // URL's grammar, the pool, the headers and the statuses are that module's, and so
         // are two of the three answers
         // [#224](https://github.com/QuantumFF/walltare/issues/224) was owed —
         // the order requests are served in, and one answer for two identical
@@ -613,11 +580,7 @@ pub fn run() {
         // thumbnail cache with ADR 0004's three phases (ADR 0040, #280). None of
         // them landed as a change to this closure.
         .register_asynchronous_uri_scheme_protocol("wallpaper", |ctx, request, responder| {
-            serving::serve(
-                ctx.app_handle(),
-                parse_image_request(request.uri()),
-                responder,
-            );
+            serving::serve(ctx.app_handle(), request.uri(), responder);
         })
         .invoke_handler(tauri::generate_handler![
             start_scan,
@@ -646,12 +609,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use thumbnails::Size;
-
-    fn parse(url: &str) -> Result<(i64, Size), error::AppError> {
-        parse_image_request(&url.parse::<Uri>().expect("test urls are well-formed"))
-    }
-
     #[test]
     fn a_panic_under_the_connection_leaves_it_usable_rather_than_poisoned() {
         // What `Db::connection` recovers from, and the reason it does: a panic
@@ -670,59 +627,6 @@ mod tests {
                 .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
                 .unwrap()),
             1
-        );
-    }
-
-    #[test]
-    fn the_url_the_frontend_builds_is_the_url_this_handler_accepts() {
-        // `wallpaperImageUrl` in src/lib/client.ts must keep producing this
-        // shape. Without the `localhost` authority the scheme parser reads
-        // `image` as the host and leaves `/7` as the whole path.
-        assert_eq!(
-            parse("wallpaper://localhost/image/7?size=medium").unwrap(),
-            (7, Size::Medium)
-        );
-        assert_eq!(
-            parse("wallpaper://localhost/image/42?size=small").unwrap(),
-            (42, Size::Small)
-        );
-        // Windows rewrites custom schemes to `http://<scheme>.localhost/...`.
-        assert_eq!(
-            parse("http://wallpaper.localhost/image/7?size=full").unwrap(),
-            (7, Size::Full)
-        );
-    }
-
-    #[test]
-    fn an_authority_shaped_url_is_rejected_rather_than_silently_mismatched() {
-        // The shape the port originally shipped: every request 400ed on Linux
-        // and macOS, so no wallpaper ever rendered.
-        let err = parse("wallpaper://image/7?size=medium").unwrap_err();
-        assert!(matches!(err, error::AppError::BadRequest(_)), "{err:?}");
-    }
-
-    #[test]
-    fn malformed_requests_are_bad_requests() {
-        for url in [
-            "wallpaper://localhost/image/notanumber?size=small",
-            "wallpaper://localhost/image/7?size=enormous",
-            "wallpaper://localhost/image/7",
-            "wallpaper://localhost/thumb/7?size=small",
-            "wallpaper://localhost/image/7/extra?size=small",
-        ] {
-            let err = parse(url).unwrap_err();
-            assert!(
-                matches!(err, error::AppError::BadRequest(_)),
-                "{url} gave {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn size_is_found_wherever_it_sits_in_the_query() {
-        assert_eq!(
-            parse("wallpaper://localhost/image/1?v=2&size=small").unwrap(),
-            (1, Size::Small)
         );
     }
 
