@@ -54,7 +54,10 @@ type Run = (Arc<AtomicBool>, std::thread::JoinHandle<()>);
 /// needs to. A finished pass's flag is one that nothing reads, so cancelling it
 /// does nothing; joining its thread returns at once; and nothing in the app asks
 /// whether a pass is running. An entry for a pass that has stopped behaves
-/// exactly as an empty slot would.
+/// exactly as an empty slot would. Its `JoinHandle`, and the panic payload if the
+/// pass panicked, are held until the next start joins them rather than detached.
+/// That costs one finished thread's bookkeeping at most, because each start
+/// joins the entry before it replaces it, so finished passes never pile up.
 ///
 /// The pass used to clear its own entry as its thread ended. That took a way
 /// back to this slot from the pass's thread, which was the `AppHandle`, and a
@@ -1291,9 +1294,15 @@ mod tests {
         let pregen = Pregen::default();
         let passes = Arc::new(Passes::default());
 
+        // Every start waits at the barrier and then goes at once, so they really
+        // do contend for the mutex rather than arriving one after another.
+        let barrier = std::sync::Barrier::new(8);
         std::thread::scope(|scope| {
             for _ in 0..8 {
-                scope.spawn(|| pregen.start(passes.until_cancelled()));
+                scope.spawn(|| {
+                    barrier.wait();
+                    pregen.start(passes.until_cancelled());
+                });
             }
         });
 
