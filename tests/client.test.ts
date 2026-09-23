@@ -1,4 +1,4 @@
-import { client, wallpaperImageUrl } from "@/lib/client";
+import { client, thumbnailSizeFor, wallpaperImageUrl } from "@/lib/client";
 import type { Settings, Theme } from "@/lib/client";
 import { describe, expect, test } from "bun:test";
 import { wallpaper } from "./fixtures";
@@ -611,5 +611,17 @@ describe("wallpaperImageUrl", () => {
     expect(wallpaperImageUrl(42, "medium")).toBe(
       "wallpaper://localhost/image/42?size=medium",
     );
+  });
+});
+
+describe("thumbnailSizeFor", () => {
+  test("keeps a small until it would be upscaled", () => {
+    expect(thumbnailSizeFor(400, 1)).toBe("small");
+    expect(thumbnailSizeFor(401, 1)).toBe("medium");
+  });
+
+  test("counts device pixels, so a HiDPI screen reaches medium sooner", () => {
+    expect(thumbnailSizeFor(300, 1)).toBe("small");
+    expect(thumbnailSizeFor(300, 2)).toBe("medium");
   });
 });
