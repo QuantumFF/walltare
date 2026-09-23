@@ -1,4 +1,14 @@
-# walltare
+<p align="center">
+  <img src="app-icon.png" alt="walltare icon" width="128" height="128">
+</p>
+
+<h1 align="center">walltare</h1>
+
+<p align="center">
+  <a href="https://github.com/QuantumFF/walltare/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/QuantumFF/walltare"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <img alt="Platform: Linux x86_64" src="https://img.shields.io/badge/platform-Linux%20x86__64-lightgrey">
+</p>
 
 walltare decides which of your wallpapers are worth keeping. Point it at a
 folder, pick between two images at a time, and it ranks the whole collection
@@ -7,6 +17,24 @@ your wallpaper.** Nothing in it touches your desktop background; that stays
 your desktop's job.
 
 Linux, x86_64, single user, no server. A Rust/Tauri port of [rate-wallpaper](https://github.com/QuantumFF/rate-wallpaper), which was Python/FastAPI.
+
+## Screenshots
+
+**Rank** — pick the one you prefer; every pick is a Comparison.
+
+![Rank: two wallpapers side by side](docs/screenshots/rank.png)
+
+**Review** — the lowest Scores still in play, each waiting on Keep or Reject.
+
+![Review: a grid of the lowest-scored wallpapers](docs/screenshots/review.png)
+
+**Library** — the whole collection, filtered by Status.
+
+![Library: the full collection as a grid](docs/screenshots/library.png)
+
+**Settings** — the Library root, the reject destination and the rest.
+
+![Settings: folders and display options](docs/screenshots/settings.png)
 
 ## Install
 
