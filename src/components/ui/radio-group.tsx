@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils"
 /*
  * Painted as a segmented control rather than as a column of dots, which is what
  * ADR 0020 asked the Appearance section for — the same track and segments the
- * chrome's tabs and the page bars' filters are drawn with.
+ * page bars' filters are drawn with.
  * `RadioGroupPrimitive.Indicator` is therefore not wrapped: the selected state
  * is the item raised off the track, and a dot inside it would be a second
  * answer to the same question. Everything

@@ -31,8 +31,8 @@
 
 /*
  * Whichever way an option says it is the current one: a pressed filter, a
- * selected tab, a checked radio. The segmented track carries all three, and
- * one variant keeps its "raised" treatment written once instead of three times.
+ * selected tab, a checked radio. One variant keeps the segmented track's
+ * "raised" treatment written once, whichever role its options carry.
  */
 @custom-variant current (&:is([aria-pressed="true"], [aria-selected="true"], [aria-checked="true"]));
 

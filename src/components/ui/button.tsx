@@ -24,8 +24,8 @@ const buttonVariants = cva(
         toggle:
           "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground aria-pressed:border-transparent aria-pressed:bg-secondary aria-pressed:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50 dark:aria-pressed:bg-input/70",
         // One option of a segmented track, raised off it while it is the
-        // current one — pressed, selected or checked, because the same shape
-        // carries a page's filters, the chrome's tabs and Settings' radios.
+        // current one — pressed or checked, because the same shape carries a
+        // page's filters and Settings' radios.
         segment:
           "text-muted-foreground hover:text-foreground current:border-border current:bg-background current:text-foreground current:shadow-xs dark:current:border-input dark:current:bg-input/50",
       },

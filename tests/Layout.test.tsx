@@ -419,33 +419,26 @@ test("the tab group is a tablist with one Tab stop, wherever the curator is", as
   expect(allTabs().map((el) => el.tabIndex)).toEqual([0, -1, -1]);
 });
 
-test("the active tab is the raised one", async () => {
+test("the active tab is the filled one", async () => {
   await openApp();
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert. The tabs are segments of the same track a page's filters sit in,
-  // raised onto the background while current: one step off the track, not the
+  // assert. `secondary` is the assertion: one step off the background, not the
   // inverted `primary` chip #44 turned down. A 2px underline held this spot
   // until it turned out to be unreadable at a glance, which is the one thing
   // the control exists to do.
-  //
-  // The treatment keys off `aria-selected` (through the `current:` variant,
-  // which also covers pressed and checked), so the attribute is what moves and
-  // the utility is what says it is drawn.
-  const raised = (label: string) =>
-    tab(label).getAttribute("aria-selected") === "true" &&
-    tab(label).className.split(" ").includes("current:bg-background");
+  // The inactive tab's own fill is `hover:bg-secondary/50`, so the assertion
+  // has to be the unprefixed utility rather than a substring of it.
+  const filled = (label: string) =>
+    tab(label).className.split(" ").includes("bg-secondary");
 
-  expect(tab("Rank").parentElement?.getAttribute("data-slot")).toBe(
-    "segmented-group",
-  );
-  expect(raised("Rank")).toBe(true);
+  expect(filled("Rank")).toBe(true);
   expect(tab("Rank").className).not.toContain("bg-primary");
-  expect(raised("Review")).toBe(false);
+  expect(filled("Review")).toBe(false);
 
   await click(tab("Review"));
-  expect(raised("Review")).toBe(true);
-  expect(raised("Rank")).toBe(false);
+  expect(filled("Review")).toBe(true);
+  expect(filled("Rank")).toBe(false);
 });
 
 test("the chrome row is the same row on every view, and each page carries the bar below it", async () => {
