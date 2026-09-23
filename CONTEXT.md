@@ -40,6 +40,25 @@ has none rather than a guess, and everything that would draw on them says nothin
 instead of saying something wrong. See
 [ADR 0044](docs/adr/0044-pixel-dimensions-live-on-the-wallpaper-row.md).
 
+## Wallhaven id
+
+Which Wallhaven wallpaper a wallpaper's file is. It is recorded when the
+wallpaper arrives in the library: by a download from Wallhaven, or by a scan
+that finds a file named the way Wallhaven names its files. After that it never
+changes. It stays through a soft reject, a Restore, and a file going missing.
+A file renamed outside the app is not changed by that either, because the app
+sees it as a new wallpaper at a new path.
+
+Most wallpapers have none. Several wallpapers may share one, for example a
+copy in two folders. A Wallhaven search result is already in the library when
+some wallpaper carries its id. It is Rejected when every wallpaper carrying its
+id is Rejected. Either way it is marked, not hidden, and it is not downloaded
+again. See
+[ADR 0050](docs/adr/0050-a-wallhaven-id-is-recorded-when-a-wallpaper-arrives.md).
+
+_Avoid_: Source (that is the full-size file as opposed to its thumbnail),
+provenance
+
 ## Screen
 
 How many pixels wide and tall the display the user is curating for is. One
