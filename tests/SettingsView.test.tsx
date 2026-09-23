@@ -351,12 +351,51 @@ test("the page is one column of eleven sections, in first-run order", async () =
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: eleven groups of one or two controls
+  // assert — and the width is the decision: eleven sections of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document
     .querySelector('[data-slot="settings-section"]')
-    ?.closest(".max-w-2xl") as HTMLElement;
-  expect(column.className).toContain("max-w-2xl");
+    ?.closest(".max-w-2xl");
+  expect(column).not.toBeNull();
+});
+
+test("the sections sit in four groups, and the jump row scrolls to each", async () => {
+  await openSettingsFromLibrary();
+
+  const groups = Array.from(
+    document.querySelectorAll('[data-slot="settings-group"]'),
+  ).map((group) => ({
+    title: group.querySelector("h2")?.textContent,
+    sections: Array.from(
+      group.querySelectorAll('[data-slot="settings-section"] h3'),
+    ).map((heading) => heading.textContent),
+  }));
+  expect(groups).toEqual([
+    { title: "Folders", sections: ["Library root", "Reject destination"] },
+    {
+      title: "Display",
+      sections: ["Appearance", "Screen", "Minimum resolution"],
+    },
+    {
+      title: "Curation",
+      sections: [
+        "Evaluated threshold",
+        "Startup view",
+        "Review worklist",
+        "Review ordering",
+      ],
+    },
+    { title: "Maintenance", sections: ["Thumbnails", "Missing files"] },
+  ]);
+
+  const nav = screen.getByRole("navigation", { name: "Settings groups" });
+  const maintenance = screen.getByRole("region", { name: "Maintenance" });
+  let scrolled = 0;
+  maintenance.scrollIntoView = () => {
+    scrolled += 1;
+  };
+  fireEvent.click(within(nav).getByRole("button", { name: "Maintenance" }));
+  expect(scrolled).toBe(1);
 });
 
 test("the bar names the page and the way out of it", async () => {
@@ -482,8 +521,19 @@ test("a first run leads with the prompt and nothing that is meaningless yet", as
   // not found yet (ADR 0033).
   expect(sectionHeadings()).toEqual(["Library root"]);
 
-  const column = sectionNamed("Library root").parentElement as HTMLElement;
+  const column = sectionNamed("Library root").closest(
+    ".max-w-2xl",
+  ) as HTMLElement;
   expect(column.firstElementChild).toBe(screen.getByRole("status"));
+
+  // Still inside its group, so the page's headings go h1, h2, h3 without a
+  // gap, and with no jump row: there is one group to jump to.
+  expect(
+    sectionNamed("Library root").closest('[data-slot="settings-group"]'),
+  ).not.toBeNull();
+  expect(
+    screen.queryByRole("navigation", { name: "Settings groups" }),
+  ).toBeNull();
 
   // And the one section that reads something on mount is not here to read it:
   // the cache is certainly empty on the launch that has never scanned, so this

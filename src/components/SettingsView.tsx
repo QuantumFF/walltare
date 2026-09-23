@@ -38,7 +38,9 @@ import { ArrowLeft } from "lucide-react";
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
+  type RefObject,
   type ReactNode,
   type Ref,
 } from "react";
@@ -85,35 +87,48 @@ export function Section({
 }
 
 /**
- * The groups the sections are gathered under, in page order. Twelve sections in
- * one flat column read as a wall; five named groups give the page something to
- * scan and the jump row something to point at. The section order inside and
- * across groups is ADR 0020's first-run-first, maintenance-last order,
- * unchanged.
+ * The groups the sections are gathered under, in page order. Eleven sections
+ * in one flat column read as a wall; four named groups give the page something
+ * to scan and the jump row something to point at. The section order is
+ * ADR 0020's first-run-first, maintenance-last order, unchanged (ADR 0020, as
+ * amended for #303).
  */
 const GROUPS = [
   { id: "folders", title: "Folders" },
-  { id: "appearance", title: "Appearance" },
+  { id: "display", title: "Display" },
   { id: "curation", title: "Curation" },
-  { id: "behaviour", title: "Startup & Review" },
   { id: "maintenance", title: "Maintenance" },
 ] as const;
 
 type GroupId = (typeof GROUPS)[number]["id"];
 
-function groupElementId(id: GroupId) {
-  return `settings-group-${id}`;
-}
+type GroupRefs = Partial<Record<GroupId, HTMLElement | null>>;
 
-/** One group: a heading, and its sections in a bordered card divided by rules. */
-function SettingsGroup({ id, children }: { id: GroupId; children: ReactNode }) {
+/**
+ * One group: a heading, and its sections in a bordered card divided by rules.
+ *
+ * `scroll-mt-14` clears the sticky jump row, which is what the group lands
+ * under when the row scrolls to it.
+ */
+function SettingsGroup({
+  id,
+  groups,
+  children,
+}: {
+  id: GroupId;
+  groups: RefObject<GroupRefs>;
+  children: ReactNode;
+}) {
   const title = GROUPS.find((group) => group.id === id)!.title;
-  const headingId = `${groupElementId(id)}-heading`;
+  const headingId = `settings-group-${id}`;
   return (
     <section
-      id={groupElementId(id)}
+      ref={(el) => {
+        groups.current[id] = el;
+      }}
       aria-labelledby={headingId}
-      className="scroll-mt-4 space-y-3"
+      data-slot="settings-group"
+      className="scroll-mt-14 space-y-3"
     >
       <h2
         id={headingId}
@@ -128,19 +143,26 @@ function SettingsGroup({ id, children }: { id: GroupId; children: ReactNode }) {
   );
 }
 
-/** A row of links to each group, so the bottom of the page is one click away. */
-function GroupNav() {
+/**
+ * A row of buttons to each group, stuck to the top of the view's scroll
+ * container so it is still there after the first jump.
+ */
+function GroupNav({ groups }: { groups: RefObject<GroupRefs> }) {
   return (
-    <nav aria-label="Settings groups" className="flex flex-wrap gap-1">
+    <nav
+      aria-label="Settings groups"
+      className="sticky top-0 z-10 -mx-4 flex flex-wrap gap-1 border-b border-border/60 bg-background/95 px-4 py-2 backdrop-blur"
+    >
       {GROUPS.map((group) => (
         <Button
           key={group.id}
           variant="ghost"
           size="sm"
           onClick={() =>
-            document
-              .getElementById(groupElementId(group.id))
-              ?.scrollIntoView({ block: "start", behavior: "smooth" })
+            groups.current[group.id]?.scrollIntoView({
+              block: "start",
+              behavior: "smooth",
+            })
           }
         >
           {group.title}
@@ -408,7 +430,7 @@ function RejectDestinationSection() {
 /**
  * The Settings page.
  *
- * One column at `max-w-2xl` holding ten sections in first-run order, a slot
+ * One column at `max-w-2xl` holding eleven sections in four groups, in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
  * the way out (ADR 0020, ADR 0032).
  *
@@ -455,6 +477,8 @@ export function SettingsView() {
    * `AppContext` already keeps the notice on the navigation record for.
    */
   const landing = bootNotice !== null;
+
+  const groups = useRef<GroupRefs>({});
 
   // Escape, and what it does not do: it reverts nothing. There is no Save to
   // undo and no dirty state to lose, because each field writes on blur and the
@@ -538,34 +562,41 @@ export function SettingsView() {
             the Library root is first on both the landing and the ordinary page,
             so nothing the curator learned where the field was moves once they
             have a library (ADR 0020, ADR 0032). */}
+        {/* On a landing the Library root is the only section, but it still
+            sits in its group so the heading levels do not skip from the page
+            title to the section's (ADR 0033). */}
         {landing ? (
-          <LibraryRootSection />
+          <SettingsGroup id="folders" groups={groups}>
+            <LibraryRootSection />
+          </SettingsGroup>
         ) : (
           <>
-            <GroupNav />
-            <SettingsGroup id="folders">
+            <GroupNav groups={groups} />
+            <SettingsGroup id="folders" groups={groups}>
               <LibraryRootSection />
               <RejectDestinationSection />
             </SettingsGroup>
-            <SettingsGroup id="appearance">
+            {/* The two sizes sit with Appearance because they are the same
+                kind of thing: what the app looks like and what it is being
+                curated for. Screen first, because Minimum resolution's default
+                is it (ADR 0020, ADR 0032). */}
+            <SettingsGroup id="display" groups={groups}>
               <AppearanceSection />
-            </SettingsGroup>
-            {/* What the app is being curated for, and how sure it has to be
-                before it says a wallpaper was Evaluated (ADR 0032, ADR 0046). */}
-            <SettingsGroup id="curation">
               <ScreenSection />
               <MinimumResolutionSection />
-              <EvaluatedSection />
             </SettingsGroup>
-            {/* How the app runs rather than how it looks (#259). */}
-            <SettingsGroup id="behaviour">
+            {/* How the app runs a curation: how sure a ranking has to be before
+                it says Evaluated (ADR 0046), which page opens, and what Review
+                hands the curator (#259). */}
+            <SettingsGroup id="curation" groups={groups}>
+              <EvaluatedSection />
               <StartupViewSection />
               <ReviewWorklistSection />
               <ReviewOrderingSection />
             </SettingsGroup>
             {/* Maintenance last: questions nobody asks until something looks
                 wrong (ADR 0020, ADR 0032). */}
-            <SettingsGroup id="maintenance">
+            <SettingsGroup id="maintenance" groups={groups}>
               <ThumbnailsSection />
               <MissingFilesSection />
             </SettingsGroup>
