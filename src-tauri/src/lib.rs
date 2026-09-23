@@ -572,8 +572,8 @@ pub fn run() {
             Ok(())
         })
         // Hands the request's URL to [`serving::serve`]. Nothing else: the
-        // URL's grammar, the pool, the headers and the statuses are that module's, and so
-        // are two of the three answers
+        // URL's grammar, the pool, the headers and the statuses are that
+        // module's, and so are two of the three answers
         // [#224](https://github.com/QuantumFF/walltare/issues/224) was owed —
         // the order requests are served in, and one answer for two identical
         // requests. The third, the bytes kept in memory, sits behind the

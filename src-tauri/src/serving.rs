@@ -1,10 +1,10 @@
 //! Everything the app knows about answering a `wallpaper://` request.
 //!
 //! One way in: [`serve`] takes the URL the protocol closure was handed, reads
-//! the wallpaper id and the [`Size`] off it, and answers the webview with a response. The
-//! URL's grammar, the worker pool, the flight table, the success headers and the mapping from an
-//! [`AppError`] to a status are all in here, and none of them is reachable from
-//! anywhere else.
+//! the wallpaper id and the [`Size`] off it, and answers the webview with a
+//! response. The URL's grammar, the worker pool, the flight table, the success
+//! headers and the mapping from an [`AppError`] to a status are all in here, and
+//! none of them is reachable from anywhere else.
 //!
 //! Before this module they were four things in three places — a Tauri closure,
 //! an `mpsc` channel, and three free functions in `lib.rs` — and none of it was
