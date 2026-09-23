@@ -12,9 +12,12 @@ import { expectConsoleError } from "./console-guard";
 import {
   click,
   ctrlWheel,
+  deferred,
+  flush,
   mockBootedApp,
   mockTransitions,
   openApp,
+  pointerClick,
   press,
   servingRows,
   settings,
@@ -510,6 +513,36 @@ test("the bar switches between the strip and the grid", async () => {
 
   expect(strip()).not.toBeNull();
   expect(inReview().queryByRole("grid")).toBeNull();
+});
+
+test("switching the layout with the pointer leaves the arrows on the worklist", async () => {
+  // The surface the hand-off first lands in is the one being replaced, so what
+  // this pins is the re-landing: the arrows reach whichever shape takes over.
+  await openStrip([
+    wallpaper(3, { filename: "first.jpg" }),
+    wallpaper(1, { filename: "second.png" }),
+  ]);
+
+  // The write answers a turn later, the way the backend does, so the new shape
+  // arrives after the commit the press belongs to rather than inside it.
+  const write = async (layout: ReviewLayout) => {
+    const answer = deferred<Settings>();
+    mockCommand("set_setting", () => answer.promise);
+    await pointerClick(layoutButton(layout === "grid" ? "Grid" : "Strip"));
+    stored = { ...stored, review_layout: layout };
+    await act(async () => {
+      answer.resolve(stored);
+    });
+    await flush();
+  };
+
+  await write("grid");
+  expect(focusedEntry()).toBe("first.jpg, Active");
+
+  await write("strip");
+  expect(focusedEntry()).toBe("first.jpg");
+  await press("ArrowRight");
+  expect(focusedEntry()).toBe("second.png");
 });
 
 test("the choice is stored under Review's own key, so a restart keeps it", async () => {

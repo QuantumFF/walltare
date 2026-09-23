@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import { useApp } from "@/context/AppContext";
 import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
+import { useKeyboardHandoff } from "@/context/KeyboardHandoffContext";
 import {
   client,
   type LibraryLayout,
@@ -370,6 +371,15 @@ export function LibraryView() {
   const [grid, setGrid] = useState<SelectionHandle | null>(null);
   const lightbox = useLightbox(grid);
 
+  // Whether the ordering's list was opened with the pointer, which decides where
+  // the focus goes when it closes. Radix puts it back on the trigger, which is
+  // right for a curator who opened it from the keyboard and strands the arrows
+  // for one who clicked: a trigger answers them by opening the list again. The
+  // same bargain as a button in the bar, made at close because the list is the
+  // popup `PageBar` leaves alone.
+  const handOff = useKeyboardHandoff();
+  const orderingByPointer = useRef(false);
+
   return (
     <>
       <PageBar>
@@ -482,13 +492,25 @@ export function LibraryView() {
           onValueChange={(value) => setOrdering(value as ListOrdering)}
         >
           <SelectTrigger
+            onPointerDown={() => {
+              orderingByPointer.current = true;
+            }}
+            onKeyDown={() => {
+              orderingByPointer.current = false;
+            }}
             aria-label="Order by"
             size="sm"
             className="shrink-0 text-[0.8rem]"
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent
+            onCloseAutoFocus={(event) => {
+              if (!orderingByPointer.current) return;
+              event.preventDefault();
+              handOff();
+            }}
+          >
             {ORDERINGS.map(({ value, label }) => (
               <SelectItem key={value} value={value} className="text-[0.8rem]">
                 {label}

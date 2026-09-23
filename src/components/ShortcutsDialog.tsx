@@ -43,6 +43,8 @@ const GROUPS: readonly {
       { keys: ["Ctrl", "2"], action: "Review" },
       { keys: ["Ctrl", "3"], action: "Library" },
       { keys: ["Ctrl", ","], action: "Settings" },
+      { keys: ["Ctrl", "Tab"], action: "Next tab" },
+      { keys: ["Ctrl", "Shift", "Tab"], action: "Previous tab" },
     ],
   },
   {

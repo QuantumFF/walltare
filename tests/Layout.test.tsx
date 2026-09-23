@@ -24,6 +24,7 @@ import {
   mountedViews,
   openApp,
   panesArrive,
+  pointerClick,
   press,
   settings,
   showingView,
@@ -288,6 +289,120 @@ test("an arrow inside the tab bar walks the tabs and casts no vote", async () =>
 
   await advancePickFeedback();
   expect(votes).toEqual([]);
+});
+
+test("after a pointer click on Rank's tab, the arrows vote rather than walk the tabs", async () => {
+  jest.useFakeTimers();
+  await openApp();
+  await panesArrive();
+
+  await pointerClick(tab("Rank"));
+  expect(document.activeElement).not.toBe(tab("Rank"));
+
+  await press("ArrowLeft");
+  await advancePickFeedback();
+  expect(showingView()).toBe("rank");
+  expect(votes).toEqual([[1, 2]]);
+});
+
+test("a pointer click on Review's tab hands the arrows to the selected card", async () => {
+  reviewRows = [
+    wallpaper(90, { filename: "lowest.jpg" }),
+    wallpaper(91, { filename: "next.jpg" }),
+  ];
+  await openApp();
+  // The first visit: the listing is still in flight at the click, so the grid
+  // the hand-off lands in arrives after it.
+  await pointerClick(tab("Review"));
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
+
+  // And a return, where the grid is already in the tree.
+  await pointerClick(tab("Library"));
+  await pointerClick(tab("Review"));
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
+
+  await press("ArrowRight");
+  expect(showingView()).toBe("review");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "next.jpg, Active",
+  );
+});
+
+test("a tab activated from the keyboard keeps the focus", async () => {
+  await openApp();
+  await act(async () => {
+    tab("Rank").focus();
+  });
+  await press("ArrowRight");
+  // Enter on a button is a click with no pointer behind it: `detail` is 0.
+  await click(tab("Review"));
+  expect(document.activeElement).toBe(tab("Review"));
+});
+
+test("a pointer press on a button in the page's bar hands the arrows back to the page", async () => {
+  reviewRows = [
+    wallpaper(90, { filename: "lowest.jpg" }),
+    wallpaper(91, { filename: "next.jpg" }),
+  ];
+  await openApp();
+  await click(tab("Review"));
+
+  await pointerClick(screen.getByRole("button", { name: "Refresh" }));
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
+  await press("ArrowRight");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "next.jpg, Active",
+  );
+
+  // The keyboard's own press leaves the focus on the button, the way a tab does.
+  const refresh = screen.getByRole("button", { name: "Refresh" });
+  await act(async () => {
+    refresh.focus();
+  });
+  await click(refresh);
+  expect(document.activeElement).toBe(refresh);
+});
+
+test("Library's layout buttons hand the arrows back to the grid", async () => {
+  await openApp();
+  await click(tab("Library"));
+
+  await pointerClick(screen.getByRole("button", { name: "Justified" }));
+  expect(document.activeElement?.getAttribute("role")).toBe("gridcell");
+});
+
+test("Ctrl+2 hands the arrows to the page it lands on", async () => {
+  await openApp();
+  await press("2", { target: window, ctrlKey: true });
+  expect(showingView()).toBe("review");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
+});
+
+test("leaving Settings by Escape or the gear hands the arrows to the page it returns to", async () => {
+  await openApp();
+  await click(tab("Review"));
+
+  await click(gear());
+  await press("Escape", { target: window });
+  expect(showingView()).toBe("review");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
+
+  await click(gear());
+  await click(gear());
+  expect(showingView()).toBe("review");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
 });
 
 test("the tab group is a tablist with one Tab stop, wherever the curator is", async () => {
@@ -600,6 +715,50 @@ test("Ctrl+1, Ctrl+2 and Ctrl+3 reach Rank, Review and Library", async () => {
   expect(showingView()).toBe("rank");
 });
 
+test("Ctrl+Tab and Ctrl+Shift+Tab walk the tabs in a ring", async () => {
+  await openApp();
+  const next = () => press("Tab", { target: window, ctrlKey: true });
+  const previous = () =>
+    press("Tab", { target: window, ctrlKey: true, shiftKey: true });
+
+  await next();
+  expect(showingView()).toBe("review");
+  await next();
+  expect(showingView()).toBe("library");
+  await next();
+  expect(showingView()).toBe("rank");
+
+  await previous();
+  expect(showingView()).toBe("library");
+  await previous();
+  expect(showingView()).toBe("review");
+
+  // Settings is not in the ring, so it leaves by the ends of it.
+  await click(gear());
+  await next();
+  expect(showingView()).toBe("rank");
+  await click(gear());
+  await previous();
+  expect(showingView()).toBe("library");
+});
+
+test("Ctrl+Tab hands the arrows to the page it lands on", async () => {
+  reviewRows = [
+    wallpaper(90, { filename: "lowest.jpg" }),
+    wallpaper(91, { filename: "next.jpg" }),
+  ];
+  await openApp();
+  await act(async () => {
+    tab("Rank").focus();
+  });
+
+  await press("Tab", { ctrlKey: true });
+  expect(showingView()).toBe("review");
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
+});
+
 test("Ctrl+, opens Settings and records where the curator was", async () => {
   await openApp();
   await click(tab("Library"));
@@ -683,6 +842,8 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     { keys: ["Ctrl", "2"], action: "Review" },
     { keys: ["Ctrl", "3"], action: "Library" },
     { keys: ["Ctrl", ","], action: "Settings" },
+    { keys: ["Ctrl", "Tab"], action: "Next tab" },
+    { keys: ["Ctrl", "Shift", "Tab"], action: "Previous tab" },
   ]);
   expect(rowsUnder(dialog, "Rank")).toEqual([
     { keys: ["←"], action: "Pick the wallpaper on the left" },

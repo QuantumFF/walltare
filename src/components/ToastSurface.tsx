@@ -10,6 +10,7 @@ import {
   ToastViewport,
 } from "@/components/ui/toast";
 import { useApp } from "@/context/AppContext";
+import { useHandOffOnPointerPress } from "@/context/KeyboardHandoffContext";
 import {
   useScanOutcome,
   useScanRun,
@@ -378,6 +379,7 @@ export function ToastSurface({
   lightboxOpen?: boolean;
 }) {
   const { view, setView } = useApp();
+  const handOffOnPointerPress = useHandOffOnPointerPress();
   // The scan is read rather than followed. What it does — the IPC, the Rounds
   // either side of it, the freshness events — is the scan run's, and this file
   // turns its state into the report and its outcome into the ending, which is
@@ -665,6 +667,11 @@ export function ToastSurface({
             // is the only `background` toast the app has.
             type="foreground"
             duration={transient.pinned ? Infinity : undefined}
+            // Undo and the close hand the keyboard back to the page they were
+            // pressed over. Radix parks the focus on the viewport when a toast
+            // holding it closes, which is somewhere no key the page answers
+            // reaches.
+            onClick={handOffOnPointerPress}
             onOpenChange={(open) => {
               if (!open) disarm(transient.key);
             }}
@@ -723,6 +730,7 @@ export function ToastSurface({
               // arms no close timer and the pause machinery is inert for it: the
               // report goes when the work does, or when the curator says so.
               duration={Infinity}
+              onClick={handOffOnPointerPress}
               onOpenChange={(open) => {
                 // "Stop telling me", for the rest of this run. A later scan or a
                 // later pass reports again, because it is a different run and

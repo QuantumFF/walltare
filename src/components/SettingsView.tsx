@@ -27,13 +27,20 @@ import {
 import { ThumbnailsSection } from "@/components/ThumbnailsSection";
 import { Button } from "@/components/ui/button";
 import { useApp, type View } from "@/context/AppContext";
+import { useKeyboardHandoff } from "@/context/KeyboardHandoffContext";
 import { useScanRun } from "@/context/ScanRunContext";
 import { isAppError } from "@/lib/client";
 // The counts in the Library root's line are the counts the shell's report
 // prints, written once so that one fact keeps one phrasing (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
 import { ArrowLeft } from "lucide-react";
-import { useEffect, useState, type ReactNode, type Ref } from "react";
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 /**
  * What the back control calls the view it goes back to.
@@ -349,6 +356,18 @@ function RejectDestinationSection() {
  */
 export function SettingsView() {
   const { bootNotice, returnTo, setView } = useApp();
+  const handOff = useKeyboardHandoff();
+
+  // Every way out lands the keyboard on the page it goes back to, whatever
+  // pressed it: the control that did it is unmounted with this page, so the
+  // focus has nowhere of its own to stay.
+  const goBack = useCallback(
+    (to: View) => {
+      setView(to);
+      handOff();
+    },
+    [handOff, setView],
+  );
 
   /**
    * Whether boot opened this page because there was nothing else to show, which
@@ -401,12 +420,12 @@ export function SettingsView() {
     // also close the page out from under the curator who opened it.
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
-      setView(returnTo);
+      goBack(returnTo);
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [returnTo, setView]);
+  }, [goBack, returnTo]);
 
   return (
     <>
@@ -422,7 +441,7 @@ export function SettingsView() {
             variant="ghost"
             size="sm"
             className="ml-auto"
-            onClick={() => setView(returnTo)}
+            onClick={() => goBack(returnTo)}
           >
             <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
             Back to {RETURN_LABEL[returnTo]}
