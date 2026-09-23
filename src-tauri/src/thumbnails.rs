@@ -576,15 +576,24 @@ fn fulfill(plan: &Plan, cache_dir: &Path) -> Result<Resolved, AppError> {
     let cache_path = cache_path(cache_dir, plan.wallpaper_id, plan.size);
 
     if let Some((width, height, recorded)) = plan.cached {
-        if recorded == source_mtime && cache_path.exists() {
-            return Ok(Resolved {
-                thumbnail: Thumbnail {
-                    bytes: std::fs::read(&cache_path)?,
-                    width,
-                    height,
-                },
-                record_mtime: None,
-            });
+        if recorded == source_mtime {
+            // Read straight away rather than checking `exists()` first: a file
+            // missing at read time is the same "regenerate" case, without the
+            // race between the check and the read.
+            match std::fs::read(&cache_path) {
+                Ok(bytes) => {
+                    return Ok(Resolved {
+                        thumbnail: Thumbnail {
+                            bytes,
+                            width,
+                            height,
+                        },
+                        record_mtime: None,
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 
