@@ -5,8 +5,8 @@
 //! they set in motion lives here.
 //!
 //! The work list is in [`work_list`](mod@work_list): which wallpapers the pass
-//! owes something, what each is owed, and the order it reaches them in. It asks
-//! [`ThumbnailCache`] only which cache files are on disk.
+//! owes something, what each is owed, and the order it reaches them in. It
+//! asks [`ThumbnailCache`] for the rows and for which cache files are on disk.
 //!
 //! The warming does not live here. How a wallpaper is generated, which failures
 //! are written down and what that does to the bytes in memory are all
@@ -22,12 +22,12 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::serving::ImageWorkers;
-use crate::thumbnails::{self, ThumbnailCache, Warmed};
+use crate::thumbnails::{self, Pending, ThumbnailCache, Warmed};
 use crate::{error, Db};
 
 mod work_list;
 
-pub use work_list::{still_due, work_list, Missing, Pending};
+pub use work_list::work_list;
 
 /// How far through its work list the pre-generation pass is.
 ///
@@ -369,7 +369,7 @@ mod tests {
     use std::cell::RefCell;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
-    use thumbnails::Size;
+    use thumbnails::{Missing, Size};
 
     /// A library the pre-generation pass can be run against: the connection
     /// behind the mutex the pass locks, a folder of source images, and the

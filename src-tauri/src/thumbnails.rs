@@ -1,19 +1,18 @@
 //! The thumbnail cache: every thumbnail the app has made, and everything it
 //! remembers about them.
 //!
-//! Four things are kept, and this module is the only one that writes any of
+//! Four things are kept, and this module is the only one that touches any of
 //! them: a JPEG per wallpaper and size in the cache directory, a `thumbnails`
 //! row saying which source mtime that JPEG was made from, a `thumbnail_failures`
 //! note for a source that would not decode (ADR 0034), and the bytes of the last
-//! few hundred thumbnails in memory (ADR 0040). The one reader outside is the
-//! pre-generation pass's work list, which joins the two tables into its query
-//! and asks [`ThumbnailCache::cached`] which files are on disk.
+//! few hundred thumbnails in memory (ADR 0040).
 //!
 //! One type, [`ThumbnailCache`], and a handful of operations on it:
 //!
 //! - [`ThumbnailCache::answer`] — one wallpaper at one size, for `serving`.
 //! - [`ThumbnailCache::warm`] — one wallpaper the pre-generation pass reached.
-//! - [`ThumbnailCache::cached`] — which files the work list may count as warm.
+//! - [`ThumbnailCache::candidates`] and [`ThumbnailCache::cached`] — what the
+//!   pass's work list reads to decide which wallpapers are owed something.
 //! - [`ThumbnailCache::clear`] — Settings' Clear thumbnail cache.
 //! - [`ThumbnailCache::size`] — the Settings readout.
 //!
@@ -34,8 +33,8 @@
 //!
 //! What stays outside is what is not about the cache. `serving` keeps the worker
 //! pool, the flight table and the mapping from an answer to an HTTP response;
-//! `pregen` keeps the run's lifecycle, its work list, its tally and its report.
-//! Neither names a cache file.
+//! `pregen` keeps the run's lifecycle, the work list's order and freshness rule,
+//! its tally and its report. Neither holds a connection or names a cache file.
 
 use std::collections::HashSet;
 use std::io::Cursor;
@@ -51,7 +50,6 @@ use rusqlite::Connection;
 
 use crate::db::{self, Status};
 use crate::error::AppError;
-use crate::pregen::{still_due, Missing, Pending};
 use crate::Db;
 
 mod image_cache;
@@ -324,6 +322,24 @@ impl ThumbnailCache {
         };
         measure_and_record(db, id, &source);
         Ok(warmed)
+    }
+
+    /// Every wallpaper as the work list needs to see it: the row, the mtimes
+    /// its two sizes were recorded at, and any failure note — the database half
+    /// of the work list, in no particular order.
+    ///
+    /// The order is the pass's and not this module's, so [`crate::pregen`] puts
+    /// the rows in it; each row carries the `comparisons_count` it sorts by.
+    ///
+    /// One statement over the whole `wallpapers` table and nothing else.
+    /// Everything that touches the disk happens after it, with the connection
+    /// released, which is the split `missing.rs` already keeps between its own
+    /// two halves and for the same reason: at ADR 0016's 5,000-wallpaper
+    /// ceiling the second half is 5,000 `stat` calls, and making them under the
+    /// connection mutex queues every command and every `wallpaper://` request
+    /// behind a walk of somebody's external drive (ADR 0039).
+    pub fn candidates(&self, db: &Db) -> Result<Vec<Candidate>, AppError> {
+        db.read(candidates)
     }
 
     /// Which thumbnails have a file in the cache directory, for the work list.
@@ -876,6 +892,124 @@ fn note_failure(
         rusqlite::params![wallpaper_id, source_mtime, message],
     )?;
     Ok(())
+}
+
+/// Which of the two pre-generated sizes a wallpaper is short of.
+///
+/// Two variants rather than a set of sizes, because the pass branches on
+/// exactly this: `Both` is the single decode [`generate_both`] exists for, and
+/// one missing size is the donor case [`plan`] and [`fulfill`] already handle.
+/// "Neither" is [`Pending::missing`]'s `None` rather than a third variant: a
+/// wallpaper with both sizes fresh owes the pass no thumbnail at all, and a
+/// variant of this enum meaning "no size" would have to be matched at every
+/// site that asks which size to make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Missing {
+    Both,
+    Only(Size),
+}
+
+/// One wallpaper the pre-generation pass would reach, and what it owes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    pub wallpaper_id: i64,
+    /// Where the file sat when the list was built, which is what the freshness
+    /// check `stat`ed. A reject or a Restore rewrites `path`, so
+    /// [`ThumbnailCache::warm`] re-reads the row under its own lock and
+    /// generates from what it finds there rather than from this copy.
+    pub source: PathBuf,
+    /// The Status the list saw, for the pass to compare the row against.
+    ///
+    /// The list carries it so the pass can tell a wallpaper that was already
+    /// Rejected when it was listed — the tail group ADR 0016 put at the end of
+    /// the queue — from one rejected since, which is a snapshot gone stale.
+    pub status: Status,
+    /// Which pre-generated sizes this wallpaper is short of, or `None` when both
+    /// are fresh and it is on the list for its pixel dimensions alone.
+    ///
+    /// `None` is the backfill of ADR 0044, and it is the only thing the entry
+    /// has to say about dimensions. Every wallpaper the pass reaches is measured
+    /// — a wallpaper in the other two cases is there because its `source_mtime`
+    /// stopped matching, which is the file having been rewritten, and that is
+    /// exactly when stored dimensions go stale. So what the entry records is the
+    /// one thing that is not implied: whether there is anything to generate.
+    pub missing: Option<Missing>,
+}
+
+/// One wallpaper as the query saw it, before anything is asked of the
+/// filesystem.
+///
+/// Owned data and no borrow of the connection, which is what lets
+/// [`ThumbnailCache::candidates`] hand the whole library over and be finished with the
+/// connection before the first `stat` (ADR 0039).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    pub wallpaper_id: i64,
+    /// Where the row says the file is.
+    pub source: PathBuf,
+    pub status: Status,
+    /// How many Comparisons the wallpaper has been in, which the work list
+    /// orders by.
+    pub comparisons_count: i64,
+    /// The `source_mtime` the `small` was recorded at, if it has a row.
+    pub small_mtime: Option<i64>,
+    /// The same for the `medium`.
+    pub medium_mtime: Option<i64>,
+    /// The mtime an undecodable source was noted at, if one was (ADR 0034).
+    pub failed_mtime: Option<i64>,
+    /// Whether the row already carries the source's pixel dimensions (ADR 0044).
+    pub dimensions_known: bool,
+}
+
+/// The query behind [`ThumbnailCache::candidates`].
+fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime,
+                w.width IS NOT NULL AND w.height IS NOT NULL, w.comparisons_count
+         FROM wallpapers w
+         LEFT JOIN thumbnails s ON s.wallpaper_id = w.id AND s.size = 'small'
+         LEFT JOIN thumbnails m ON m.wallpaper_id = w.id AND m.size = 'medium'
+         LEFT JOIN thumbnail_failures f ON f.wallpaper_id = w.id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Candidate {
+            wallpaper_id: row.get(0)?,
+            source: PathBuf::from(row.get::<_, String>(1)?),
+            status: row.get(2)?,
+            small_mtime: row.get(3)?,
+            medium_mtime: row.get(4)?,
+            failed_mtime: row.get(5)?,
+            dimensions_known: row.get(6)?,
+            comparisons_count: row.get(7)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Where a listed wallpaper's file sits now, or `None` if the pass must leave it
+/// alone.
+///
+/// Read immediately before generating, under the same lock, because the work
+/// list is a snapshot: a reject can land in the middle of a pass over it, and it
+/// rewrites both the Status and the path.
+///
+/// The Status is compared against the one the list saw rather than against
+/// Eligible. A wallpaper listed as Rejected is the tail group ADR 0016 put at
+/// the end of the queue so it would be generated last, not dropped, and the
+/// library page defaults to a filter of All. A wallpaper listed as Active or
+/// Kept and Rejected now is the stale snapshot, and is skipped. A row that is no
+/// longer there is skipped too, rather than failed.
+///
+/// The path comes from this read as well, so a file that moved between the list
+/// and its turn is generated where it landed.
+pub fn still_due(conn: &Connection, pending: &Pending) -> Result<Option<PathBuf>, AppError> {
+    let (status, path) = match wallpaper_row(conn, pending.wallpaper_id) {
+        Ok(row) => row,
+        Err(AppError::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let rejected_since = status == Status::Rejected && pending.status != Status::Rejected;
+    Ok((!rejected_since).then_some(path))
 }
 
 /// The cache directory's filenames, read once, for the work list's freshness

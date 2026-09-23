@@ -5,16 +5,12 @@
 //! under the connection, and the `read_dir` plus one `stat` per row with it
 //! released (ADR 0039). The order is the pass's (ADR 0016), and so is what an
 //! entry says it is owed. What the cache holds is [`ThumbnailCache`]'s, and all
-//! it is asked is [`ThumbnailCache::cached`] — which files are on disk — and
-//! the one `stat` a freshness rule compares against.
+//! it is asked is [`ThumbnailCache::candidates`] — the rows — and
+//! [`ThumbnailCache::cached`] — which files are on disk.
 
-use std::path::PathBuf;
-
-use rusqlite::Connection;
-
-use crate::db::{self, Status};
+use crate::db::Status;
 use crate::error::AppError;
-use crate::thumbnails::{source_mtime, Size, ThumbnailCache};
+use crate::thumbnails::{source_mtime, Candidate, Missing, Pending, Size, ThumbnailCache};
 use crate::Db;
 
 /// Every wallpaper the pre-generation pass would warm, in the order it would
@@ -25,85 +21,16 @@ use crate::Db;
 /// sits on — holds nothing while the first view fetches its listing and fires
 /// fifty thumbnail requests (ADR 0039).
 pub fn work_list(db: &Db, cache: &ThumbnailCache) -> Result<Vec<Pending>, AppError> {
-    let candidates = db.read(candidates)?;
+    let mut candidates = cache.candidates(db)?;
+    order(&mut candidates);
     due(&candidates, cache)
 }
 
-/// Which of the two pre-generated sizes a wallpaper is short of.
+/// Puts the rows in the order the pass reaches them: Rejected last, then least
+/// compared first, then by id.
 ///
-/// Two variants rather than a set of sizes, because the pass branches on
-/// exactly this: `Both` is the single decode `generate_both` exists for, and one
-/// missing size is the donor case `plan` and `fulfill` already handle.
-/// "Neither" is [`Pending::missing`]'s `None` rather than a third variant: a
-/// wallpaper with both sizes fresh owes the pass no thumbnail at all, and a
-/// variant of this enum meaning "no size" would have to be matched at every
-/// site that asks which size to make.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Missing {
-    Both,
-    Only(Size),
-}
-
-/// One wallpaper the pre-generation pass would reach, and what it owes it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Pending {
-    pub wallpaper_id: i64,
-    /// Where the file sat when the list was built, which is what the freshness
-    /// check `stat`ed. A reject or a Restore rewrites `path`, so
-    /// [`ThumbnailCache::warm`] re-reads the row under its own lock and
-    /// generates from what it finds there rather than from this copy.
-    pub source: PathBuf,
-    /// The Status the list saw, for the pass to compare the row against.
-    ///
-    /// The list carries it so the pass can tell a wallpaper that was already
-    /// Rejected when it was listed — the tail group ADR 0016 put at the end of
-    /// the queue — from one rejected since, which is a snapshot gone stale.
-    pub status: Status,
-    /// Which pre-generated sizes this wallpaper is short of, or `None` when both
-    /// are fresh and it is on the list for its pixel dimensions alone.
-    ///
-    /// `None` is the backfill of ADR 0044, and it is the only thing the entry
-    /// has to say about dimensions. Every wallpaper the pass reaches is measured
-    /// — a wallpaper in the other two cases is there because its `source_mtime`
-    /// stopped matching, which is the file having been rewritten, and that is
-    /// exactly when stored dimensions go stale. So what the entry records is the
-    /// one thing that is not implied: whether there is anything to generate.
-    pub missing: Option<Missing>,
-}
-
-/// One wallpaper as the query saw it, before anything is asked of the
-/// filesystem.
-///
-/// Owned data and no borrow of the connection, which is what lets
-/// [`candidates`] hand the whole library over and be finished with the
-/// connection before the first `stat` (ADR 0039).
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Candidate {
-    wallpaper_id: i64,
-    /// Where the row says the file is.
-    source: PathBuf,
-    status: Status,
-    /// The `source_mtime` the `small` was recorded at, if it has a row.
-    small_mtime: Option<i64>,
-    /// The same for the `medium`.
-    medium_mtime: Option<i64>,
-    /// The mtime an undecodable source was noted at, if one was (ADR 0034).
-    failed_mtime: Option<i64>,
-    /// Whether the row already carries the source's pixel dimensions (ADR 0044).
-    dimensions_known: bool,
-}
-
-/// Every wallpaper the pass might owe something to, in the order it would reach
-/// them — the database half of the work list.
-///
-/// The one statement outside `thumbnails` that reads its two tables. It is here
-/// rather than there because the order is the pass's: which wallpapers the
-/// curator reaches first is a question about the queue, and the joins are only
-/// the freshness the queue is filtered by.
-///
-/// The order is `status = 'rejected' ASC, comparisons_count ASC, id ASC`.
 /// Rejected is a tail group behind the Eligible pool, so warming rejects costs
-/// the voting pool nothing (ADR 0016), and `comparisons_count ASC` targets the
+/// the voting pool nothing (ADR 0016), and least compared first targets the
 /// half of a pair `select_pair` picks by least-compared ties, which is the half
 /// anything can aim at. A scan inserts rows at count 0, so freshly scanned
 /// files land at the head.
@@ -111,42 +38,21 @@ struct Candidate {
 /// Each row carries the Status it was listed under, because the pass compares
 /// the row against that rather than against Eligible: a Rejected entry is the
 /// tail group and gets generated, one rejected after the fact does not.
-///
-/// One statement over the whole `wallpapers` table and nothing else. Everything
-/// that touches the disk is [`due`]'s, which is the split `missing.rs`
-/// already keeps between its own two halves and for the same reason: at
-/// ADR 0016's 5,000-wallpaper ceiling the second half is 5,000 `stat` calls, and
-/// making them under the connection mutex queues every command and every
-/// `wallpaper://` request behind a walk of somebody's external drive (ADR 0039).
-fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
-    let mut stmt = conn.prepare(
-        "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime,
-                w.width IS NOT NULL AND w.height IS NOT NULL
-         FROM wallpapers w
-         LEFT JOIN thumbnails s ON s.wallpaper_id = w.id AND s.size = 'small'
-         LEFT JOIN thumbnails m ON m.wallpaper_id = w.id AND m.size = 'medium'
-         LEFT JOIN thumbnail_failures f ON f.wallpaper_id = w.id
-         ORDER BY w.status = 'rejected' ASC, w.comparisons_count ASC, w.id ASC",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(Candidate {
-            wallpaper_id: row.get(0)?,
-            source: PathBuf::from(row.get::<_, String>(1)?),
-            status: row.get(2)?,
-            small_mtime: row.get(3)?,
-            medium_mtime: row.get(4)?,
-            failed_mtime: row.get(5)?,
-            dimensions_known: row.get(6)?,
-        })
-    })?;
-    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+fn order(candidates: &mut [Candidate]) {
+    candidates.sort_by_key(|c| {
+        (
+            c.status == Status::Rejected,
+            c.comparisons_count,
+            c.wallpaper_id,
+        )
+    });
 }
 
 /// Every wallpaper the pre-generation pass would generate, in the order it
 /// would reach them — the filesystem half, run with the connection released.
 ///
 /// One `read_dir` of the cache directory, through [`ThumbnailCache::cached`],
-/// and one `stat` per source file, over the rows [`candidates`] handed over. No
+/// and one `stat` per source file, over the rows [`order`] arranged. No
 /// image bytes are read at all. Running the cache's own lookup over the library
 /// instead would reuse the freshness
 /// rule exactly, and would also read the whole cache off disk on every launch to
@@ -217,36 +123,13 @@ fn due(candidates: &[Candidate], cache: &ThumbnailCache) -> Result<Vec<Pending>,
     Ok(pending)
 }
 
-/// Where a listed wallpaper's file sits now, or `None` if the pass must leave it
-/// alone.
-///
-/// Read immediately before generating, under the same lock, because the work
-/// list is a snapshot: a reject can land in the middle of a pass over it, and it
-/// rewrites both the Status and the path.
-///
-/// The Status is compared against the one the list saw rather than against
-/// Eligible. A wallpaper listed as Rejected is the tail group ADR 0016 put at
-/// the end of the queue so it would be generated last, not dropped, and the
-/// library page defaults to a filter of All. A wallpaper listed as Active or
-/// Kept and Rejected now is the stale snapshot, and is skipped. A row that is no
-/// longer there is skipped too, rather than failed.
-///
-/// The path comes from this read as well, so a file that moved between the list
-/// and its turn is generated where it landed.
-pub fn still_due(conn: &Connection, pending: &Pending) -> Result<Option<PathBuf>, AppError> {
-    let (status, path) = match db::get_wallpaper(conn, pending.wallpaper_id) {
-        Ok(row) => (row.status, PathBuf::from(row.path)),
-        Err(AppError::NotFound(_)) => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    let rejected_since = status == Status::Rejected && pending.status != Status::Rejected;
-    Ok((!rejected_since).then_some(path))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db;
     use image::{DynamicImage, Rgba, RgbaImage};
+    use rusqlite::Connection;
+    use std::path::PathBuf;
 
     /// A library behind a [`ThumbnailCache`], the way `thumbnails`' own tests
     /// build one: a `Db` over an in-memory database, a folder of sources and a
@@ -558,7 +441,8 @@ mod tests {
 
         // The order the two halves are called in production: the query, then
         // the `read_dir` and the `stat`s, with nothing borrowed in between.
-        let rows = library.db.read(candidates).unwrap();
+        let mut rows = library.cache.candidates(&library.db).unwrap();
+        order(&mut rows);
         let list = due(&rows, &library.cache).unwrap();
 
         assert_eq!(
@@ -633,6 +517,7 @@ mod tests {
                 medium_mtime: Some(warm_mtime),
                 failed_mtime: None,
                 dimensions_known: true,
+                comparisons_count: 0,
             },
             Candidate {
                 wallpaper_id: 2,
@@ -642,6 +527,7 @@ mod tests {
                 medium_mtime: None,
                 failed_mtime: None,
                 dimensions_known: true,
+                comparisons_count: 0,
             },
             Candidate {
                 wallpaper_id: 3,
@@ -651,6 +537,7 @@ mod tests {
                 medium_mtime: Some(donor_mtime),
                 failed_mtime: None,
                 dimensions_known: true,
+                comparisons_count: 0,
             },
             Candidate {
                 wallpaper_id: 4,
@@ -660,6 +547,7 @@ mod tests {
                 medium_mtime: None,
                 failed_mtime: Some(broken_mtime),
                 dimensions_known: true,
+                comparisons_count: 0,
             },
             // Recorded as warm against an mtime nothing can be compared to any
             // more, so it is listed and the pass gets to count it (ADR 0032).
@@ -671,6 +559,7 @@ mod tests {
                 medium_mtime: Some(1),
                 failed_mtime: None,
                 dimensions_known: true,
+                comparisons_count: 0,
             },
         ];
 
