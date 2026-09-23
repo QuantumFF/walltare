@@ -51,6 +51,11 @@ two.
 The three quantities join `COLUMNS` as private constants, each written beside
 the class string it restates, and none of them is exported.
 
+> **Amended by [#310](https://github.com/QuantumFF/walltare/pull/310),
+> 2026-09-23.** The geometry moved verbatim into `src/components/grid-geometry.ts`,
+> which exports it to `WallpaperGrid.tsx` and its test and to nothing else. It is
+> still private to the grid: no page imports a number or a class from it.
+
 ```ts
 const GAP = { px: 24, className: "gap-6" };
 const CARD_ASPECT = { ratio: 9 / 16, className: "aspect-video" };

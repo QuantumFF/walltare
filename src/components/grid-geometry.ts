@@ -262,7 +262,7 @@ export function useDensity(
  * `className` is the cross-reference and not always the thing that gets worn:
  * `aspect-video` stays literal on `WallpaperCard`, which is the element wearing
  * it, and this field is how a reader of either file finds the other. The other
- * two are worn by the container below (ADR 0027).
+ * two are worn by the grid's container in `WallpaperGrid.tsx` (ADR 0027).
  */
 export const GAP = { px: 24, className: "gap-6" };
 const CARD_ASPECT = { ratio: 9 / 16, className: "aspect-video" };
@@ -371,7 +371,7 @@ export const NO_RATIOS: ReadonlyArray<number | null> = [];
  * One object rather than two props, because either alone is a layout that cannot
  * be drawn: cards out of the flow hold no scroll height open, and a scroll height
  * with no boxes under it is an empty page. Its presence is also what says which
- * of the two shapes the grid below is drawing, so there is one question to ask
+ * of the two shapes the grid is drawing, so there is one question to ask
  * rather than two that could disagree.
  *
  * The boxes are the plan's, so a card's size is the size the window was measured
@@ -402,12 +402,12 @@ export interface PlacedCards {
  * plan is computable before anything renders, so there is nothing to correct
  * (#261).
  *
- * Private, and called from `WindowedGrid` below. ADR 0027 exported it for
+ * Called from `WindowedGrid` in `WallpaperGrid.tsx` and nowhere else. ADR 0027 exported it for
  * `LibraryView` to call, on the argument that every number behind it is this
  * module's own CSS; #231 applied that argument to the call site as well, because
  * the virtualiser's re-render notification belongs to whoever calls it and the
  * library page was the wrong tree to rebuild inside a wheel gesture. The hook
- * has no caller outside this file any more.
+ * has no caller outside the grid any more.
  *
  * `count` and not the list: the arithmetic needs the length and nothing else, so
  * the hook never holds the rows. The scroller arrives as a ref the host already
