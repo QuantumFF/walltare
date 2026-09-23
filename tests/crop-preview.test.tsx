@@ -207,6 +207,35 @@ test.each(["strip", "lightbox"])(
   },
 );
 
+test.each(["strip", "lightbox"])(
+  "the crop preview button in the %s does what C does, and shows it is down",
+  async (surface) => {
+    stored = settings({ review_layout: "strip", screen: SCREEN });
+    await openStrip([wallpaper(1, { filename: "wide.jpg" })]);
+    await enterStrip();
+    if (surface === "lightbox") await press("Enter");
+
+    // The one in front: the strip's row stays mounted under the lightbox.
+    const root =
+      surface === "lightbox"
+        ? screen.getByRole("dialog", { name: "wide.jpg" })
+        : reviewView();
+    const toggle = () =>
+      within(root).getByRole("button", { name: /Crop preview/ });
+
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    expect(toggle().querySelector("kbd")?.textContent).toBe("C");
+
+    await click(toggle());
+    expect(preview(root)).not.toBeNull();
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+
+    await click(toggle());
+    expect(preview(root)).toBeNull();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  },
+);
+
 test("the preview stays up while the curator arrows through the worklist", async () => {
   // The whole reason it is a toggle. A key held down is a key that cannot
   // arrow, so the bars have to survive a step.

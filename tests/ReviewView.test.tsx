@@ -800,7 +800,7 @@ test("change in Settings opens the field the line is about", async () => {
   );
   expect(
     screen.getByRole("button", { name: /back to/i }).textContent,
-  ).toBe("Back to Review· Esc");
+  ).toBe("Back to ReviewEsc");
 });
 
 test("the empty state offers a way to Rank", async () => {

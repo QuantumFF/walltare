@@ -9,6 +9,7 @@ import { WallpaperGrid } from "@/components/WallpaperGrid";
 import type { SelectionHandle } from "@/components/selection";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
+import { SegmentedGroup } from "@/components/ui/segmented";
 import {
   Select,
   SelectContent,
@@ -402,10 +403,9 @@ export function LibraryView() {
             Pressed and not checked: a `radiogroup` would put the four on the
             arrow keys, and this page already spends the arrows on moving the
             selection through the grid (ADR 0019). */}
-        <div
+        <SegmentedGroup
           role="group"
           aria-label="Filter by Status"
-          className="flex shrink-0 items-center gap-1"
         >
           {FILTERS.map(({ value, label }) => {
             const current = filter === value;
@@ -413,16 +413,15 @@ export function LibraryView() {
               <Button
                 key={value}
                 size="sm"
-                variant={current ? "secondary" : "ghost"}
+                variant="segment"
                 aria-pressed={current}
                 onClick={() => setFilter(value)}
-                className="rounded-full"
               >
                 {label}
               </Button>
             );
           })}
-        </div>
+        </SegmentedGroup>
 
         {/* The other axis, and deliberately not a fifth chip.
 
@@ -432,10 +431,10 @@ export function LibraryView() {
             bar can be asked, and it is the question that makes cleaning them out
             one action rather than a hunt (CONTEXT.md, #258).
 
-            Said in the shape as well as in the position. The chips are a group
-            of four pills sharing one accessible name; this is one square-edged
-            button standing outside that group, so what a curator sees is two
-            controls rather than five of one. `aria-pressed` is the same
+            Said in the shape as well as in the position. The chips are four
+            segments in one track sharing one accessible name; this is one
+            outlined toggle standing outside that track, so what a curator sees
+            is two controls rather than five of one. `aria-pressed` is the same
             statement to a screen reader that the fill is to an eye, and it is
             pressed and not checked for the reason the chips are: a `radiogroup`
             would put the arrow keys on the bar, which this page spends on the
@@ -456,7 +455,7 @@ export function LibraryView() {
             for rather than somewhere in the middle of it (ADR 0016). */}
         <Button
           size="sm"
-          variant={undersizedOnly ? "secondary" : "ghost"}
+          variant="toggle"
           aria-pressed={undersizedOnly}
           title={`Below the minimum resolution of ${readableSize(minimumResolution)}`}
           onClick={() => {
@@ -539,10 +538,9 @@ export function LibraryView() {
             `radiogroup` would put them on the arrow keys, and this page
             spends the arrows on moving the selection through the grid
             (ADR 0019). */}
-        <div
+        <SegmentedGroup
           role="group"
           aria-label="Layout"
-          className="flex shrink-0 items-center gap-1"
         >
           {LAYOUTS.map(({ value, label, Icon }) => {
             const current = layout === value;
@@ -553,7 +551,7 @@ export function LibraryView() {
                 // no word, so a button sized for a label would be a chip's worth
                 // of empty space either side of it.
                 size="icon-sm"
-                variant={current ? "secondary" : "ghost"}
+                variant="segment"
                 aria-pressed={current}
                 aria-label={label}
                 title={label}
@@ -568,13 +566,12 @@ export function LibraryView() {
                     },
                   );
                 }}
-                className="rounded-full"
               >
                 <Icon aria-hidden />
               </Button>
             );
           })}
-        </div>
+        </SegmentedGroup>
 
         {/* The row count, which is the size of the library under this filter and
             not a page of it: one call returns every matching row, so nothing

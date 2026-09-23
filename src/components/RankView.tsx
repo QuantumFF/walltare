@@ -520,7 +520,10 @@ export function RankView() {
     <>
       {header}
 
-      <div className="mx-auto flex w-full max-w-[1920px] min-h-0 flex-1 flex-col justify-center gap-4 p-4">
+      {/* No maximum width: the pair is the whole of this page, so it takes the
+          whole window rather than stopping at a 1920px column with the rest of
+          a wide monitor left as margin. */}
+      <div className="flex w-full min-h-0 flex-1 flex-col justify-center gap-4 p-4">
         {error && (
           <p
             className="mx-auto text-sm text-destructive"
@@ -533,7 +536,14 @@ export function RankView() {
 
         {/* The Comparison itself: the same component twice, with the side and
             the wallpaper as the only difference between the two. */}
-        <div className="grid grid-cols-2 items-start gap-4 md:gap-8">
+        {/* As wide as the window allows, and no wider than its height does.
+            The panes are 16:9, so on a wide, short window their width would
+            otherwise drive a height taller than the view — and with the column
+            centred, the overflow falls off the top where it cannot be scrolled
+            to, taking the Skip button below with it. 14rem is everything else
+            in the window's height: the chrome and page bar, this column's
+            padding, the key under each pane and the Skip row. */}
+        <div className="mx-auto grid w-full max-w-[calc((100dvh_-_14rem)_*_32_/_9_+_2rem)] grid-cols-2 items-start gap-4 md:gap-8">
           <Pane
             side="left"
             src={leftSrc}
@@ -563,13 +573,12 @@ export function RankView() {
             the pair rather than the destination. */}
         <div className="flex items-center justify-center pt-2">
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             onClick={() => void handleSkip()}
             disabled={voting !== null || skipping}
-            className="text-muted-foreground hover:text-foreground"
           >
-            <SkipForward className="h-4 w-4" />
+            <SkipForward />
             Skip pair
           </Button>
         </div>

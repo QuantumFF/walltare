@@ -1,5 +1,5 @@
+import { ActionButton } from "@/components/ActionButton";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   DEFAULT_EVALUATED_THRESHOLD,
   wallpaperImageUrl,
@@ -17,7 +17,6 @@ import {
   UNDERSIZED,
 } from "@/lib/copy";
 import {
-  ACTION_CONTROLS,
   STATUS_ACTIONS,
   type TransitionAction,
 } from "@/components/transitions";
@@ -544,7 +543,10 @@ export const WallpaperCard = memo(function WallpaperCard({
           animated && "transition-opacity will-change-[opacity]",
         )}
       >
-        <div className="pointer-events-auto flex flex-col gap-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent p-2 pt-6">
+        {/* `.dark` because the gradient is dark in both themes, so the buttons
+            on it take the dark palette's variants rather than colours of their
+            own; `@container` for the key chips' width rule below. */}
+        <div className="dark @container pointer-events-auto flex flex-col gap-2 bg-gradient-to-t from-black/90 via-black/70 to-transparent p-2 pt-6">
           <div className="min-w-0">
             <p
               className="truncate text-[11px] font-medium text-white"
@@ -583,54 +585,39 @@ export const WallpaperCard = memo(function WallpaperCard({
             keyboard.
           */}
           <div className="flex gap-1.5">
-            {STATUS_ACTIONS[wallpaper.status].map((action) => {
-              const { label, Icon, destructive } = ACTION_CONTROLS[action];
-              // Only Restore has a row it cannot act on, and only because
-              // ADR 0009's migration left one behind.
-              const unavailable = action === "restore" && !restorable;
-              return (
-                <Button
-                  key={action}
-                  size="xs"
-                  variant={destructive ? "destructive" : undefined}
-                  // Not `disabled`. A disabled button is not focusable, so under
-                  // ADR 0019's keyboard model the reason would be unreachable by
-                  // keyboard and silent to a screen reader, which is most of the
-                  // people the explanation exists for. `aria-disabled` keeps the
-                  // control in the tab order and in the roving selection, styled
-                  // as unavailable, and lets it explain itself when pressed.
-                  aria-disabled={unavailable ? true : undefined}
-                  aria-label={`${label} ${wallpaper.filename}`}
-                  tabIndex={buttonTabIndex}
-                  // The refusal an origin-less row gets is the host's, inside
-                  // the one `perform` every trigger reaches, so pressing Restore
-                  // and pressing `R` are the same event with the same outcome
-                  // (ADR 0023).
-                  onClick={(event) => {
-                    // Where the card's own click handler stops. The cell
-                    // underneath opens the lightbox, and a press on one of
-                    // these is that transition and not both of them (#134).
-                    //
-                    // Propagation only: the default action stays, because that
-                    // is what `Enter` on a focused button produces. Cancelling
-                    // it here would leave the keyboard pressing a control that
-                    // does nothing.
-                    event.stopPropagation();
-                    onAction(action, wallpaper);
-                  }}
-                  className={cn(
-                    destructive
-                      ? "flex-1 bg-destructive/90 text-white hover:bg-destructive"
-                      : "flex-1 bg-white/15 text-white hover:bg-white/25",
-                    unavailable &&
-                      "cursor-not-allowed opacity-40 hover:bg-white/15",
-                  )}
-                >
-                  <Icon />
-                  {label}
-                </Button>
-              );
-            })}
+            {STATUS_ACTIONS[wallpaper.status].map((action) => (
+              <ActionButton
+                key={action}
+                action={action}
+                // Only Restore has a row it cannot act on, and only because
+                // ADR 0009's migration left one behind.
+                unavailable={action === "restore" && !restorable}
+                subject={wallpaper.filename}
+                tabIndex={buttonTabIndex}
+                // The refusal an origin-less row gets is the host's, inside
+                // the one `perform` every trigger reaches, so pressing Restore
+                // and pressing `R` are the same event with the same outcome
+                // (ADR 0023).
+                onClick={(event) => {
+                  // Where the card's own click handler stops. The cell
+                  // underneath opens the lightbox, and a press on one of
+                  // these is that transition and not both of them (#134).
+                  //
+                  // Propagation only: the default action stays, because that
+                  // is what `Enter` on a focused button produces. Cancelling
+                  // it here would leave the keyboard pressing a control that
+                  // does nothing.
+                  event.stopPropagation();
+                  onAction(action, wallpaper);
+                }}
+                // What goes as the card narrows: the key chip first, then the
+                // verb, leaving the icon. At the Library's densest a card is
+                // about a hundred pixels wide, where a verb truncates to "K…"
+                // and says less than the check mark does; the accessible name
+                // carries the verb either way.
+                className="min-w-0 flex-1 [&_kbd]:hidden @[15rem]:[&_kbd]:inline-flex [&_[data-slot=action-label]]:hidden @[9rem]:[&_[data-slot=action-label]]:inline"
+              />
+            ))}
           </div>
         </div>
       </div>

@@ -1,9 +1,13 @@
+import { keyShortcut, printedKey } from "@/components/keymap";
 import { useToaster } from "@/components/ToastSurface";
+import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { useApp } from "@/context/AppContext";
 import type { Wallpaper } from "@/lib/client";
 import { cropCaption, dimensionsOf } from "@/lib/copy";
 import { cropToFill, ratioOf, type CropPlan } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
+import { Crop } from "lucide-react";
 import { useCallback } from "react";
 
 /**
@@ -31,6 +35,31 @@ export function useCropPreview(): { on: boolean; toggle: () => void } {
   }, [on, saveSetting, show]);
 
   return { on, toggle };
+}
+
+/**
+ * The crop preview's switch, for a pointer: the same toggle `C` flips, pressed
+ * while the bars are up. It sits in the Review strip's row and the lightbox's,
+ * beside the decisions, and prints its key the way they print theirs — a key
+ * named in a muted caption beside a row of buttons read as a caption, and
+ * gave a pointer nothing to press.
+ */
+export function CropPreviewToggle() {
+  const { on, toggle } = useCropPreview();
+  return (
+    <Button
+      size="sm"
+      variant="toggle"
+      aria-pressed={on}
+      aria-keyshortcuts={keyShortcut("crop")}
+      onClick={toggle}
+      className="shrink-0"
+    >
+      <Crop />
+      Crop preview
+      <Kbd aria-hidden>{printedKey("crop")}</Kbd>
+    </Button>
+  );
 }
 
 export interface CropPreviewProps {

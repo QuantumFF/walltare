@@ -4,6 +4,7 @@ import { ReviewView } from "@/components/ReviewView";
 import { SettingsView } from "@/components/SettingsView";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { ToastSurface, useToaster } from "@/components/ToastSurface";
+import { Button } from "@/components/ui/button";
 import { useApp, type View } from "@/context/AppContext";
 import {
   KeyboardHandoffProvider,
@@ -167,6 +168,9 @@ function ViewTabs() {
                 // visible one would render the tab's own word twice, twelve
                 // pixels apart, which is the duplicate ADR 0015 came back to
                 // delete.
+                //
+                // Not the segmented track the page bars' filters sit in: the
+                // curator kept this look for the one row that navigates.
                 "bg-secondary font-medium text-foreground"
               : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
           )}
@@ -201,7 +205,10 @@ function Chrome() {
   };
 
   return (
-    <header className="sticky top-0 z-30 shrink-0 border-b border-border bg-background/95 backdrop-blur">
+    // No rule under it. Every view hangs a `PageBar` directly below, and the
+    // bar's own bottom border is the one edge between the chrome and the page;
+    // a second line one bar above it split one header into two strips.
+    <header className="sticky top-0 z-30 shrink-0 bg-background/95 backdrop-blur">
       <div
         data-slot="chrome-row"
         // The window is undecorated, so this row is the title bar: Tauri moves
@@ -221,21 +228,19 @@ function Chrome() {
 
         <ViewTabs />
 
-        <button
-          type="button"
+        <Button
+          variant={onSettings ? "secondary" : "ghost"}
+          size="icon"
           aria-label="Settings"
           // Not a tab, so it cannot be `aria-selected`. While Settings is up no
-          // tab is underlined and the gear carries the active treatment
-          // instead, and this is that state spelled out for a screen reader.
+          // tab is filled and the gear carries the active treatment instead,
+          // and this is that state spelled out for a screen reader.
           aria-current={onSettings ? "page" : undefined}
           onClick={toggleSettings}
-          className={cn(
-            "ml-auto rounded-md p-2 transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-            onSettings ? "bg-accent text-foreground" : "text-muted-foreground",
-          )}
+          className={cn("ml-auto", !onSettings && "text-muted-foreground")}
         >
-          <SettingsIcon className="h-4 w-4" aria-hidden />
-        </button>
+          <SettingsIcon aria-hidden />
+        </Button>
       </div>
     </header>
   );

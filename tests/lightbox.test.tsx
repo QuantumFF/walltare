@@ -131,7 +131,9 @@ const next = () => screen.getByRole("button", { name: "Next wallpaper" });
  * beside it.
  */
 const actions = () =>
-  Array.from(row().querySelectorAll("button")).map((button) =>
+  // The transitions only: the crop preview's toggle shares the row, and
+  // `crop-preview.test.tsx` is where it is asserted.
+  Array.from(row().querySelectorAll("button[data-action]")).map((button) =>
     `${button.getAttribute("aria-label")} ${button.querySelector("kbd")?.textContent ?? ""}`.trim(),
   );
 
@@ -689,6 +691,14 @@ test("an Active wallpaper offers Keep and Reject, with the key on each button", 
   // already changes on every step, because it is measured off a picture, so
   // reserving button space stabilises the wrong axis.
   expect(actions()).toEqual(["Keep K", "Reject Del"]);
+
+  // The chip is for an eye; a screen reader gets the binding off the button,
+  // in ARIA's spelling rather than the chip's abbreviation.
+  expect(action("Keep").getAttribute("aria-keyshortcuts")).toBe("K");
+  expect(action("Reject").getAttribute("aria-keyshortcuts")).toBe("Delete");
+  expect(action("Reject").querySelector("kbd")?.getAttribute("aria-hidden")).toBe(
+    "true",
+  );
 });
 
 test("a Kept wallpaper offers Make Active and Reject", async () => {

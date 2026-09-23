@@ -11,6 +11,7 @@ import { WallpaperGrid } from "@/components/WallpaperGrid";
 import type { SelectionHandle } from "@/components/selection";
 import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
+import { SegmentedGroup } from "@/components/ui/segmented";
 import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
 import { useKeyboardSurface } from "@/context/KeyboardHandoffContext";
@@ -268,10 +269,9 @@ export function ReviewView() {
             Pressed and not checked: a `radiogroup` would put the two on the
             arrow keys, and this page spends the arrows on walking the worklist
             (ADR 0019). */}
-        <div
+        <SegmentedGroup
           role="group"
           aria-label="Layout"
-          className="flex shrink-0 items-center gap-1"
         >
           {LAYOUTS.map(({ value, label, Icon }) => {
             const current = layout === value;
@@ -279,7 +279,7 @@ export function ReviewView() {
               <Button
                 key={value}
                 size="sm"
-                variant={current ? "secondary" : "ghost"}
+                variant="segment"
                 aria-pressed={current}
                 // Nothing is said about a write that failed. The control is a
                 // read-out of the setting, so a refused write leaves the layout
@@ -301,14 +301,13 @@ export function ReviewView() {
                     },
                   );
                 }}
-                className="rounded-full"
               >
                 <Icon />
                 {label}
               </Button>
             );
           })}
-        </div>
+        </SegmentedGroup>
 
         {/* Refresh, and nothing beside it.
 
