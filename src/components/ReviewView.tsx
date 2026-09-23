@@ -105,7 +105,8 @@ export function ReviewView() {
    * (CONTEXT.md): a wallpaper that changed Status anywhere else leaves the list.
    * The other direction is not a patch this page can make — nothing in a row
    * says where it belongs in an ordering by Score — so a wallpaper that just
-   * became Active arrives with the next fetch.
+   * became Active arrives with the next fetch. The exception is an Undo of this
+   * page's own keep or reject, which puts the card back in the slot it left.
    *
    * `optimistic` is what makes this page's reject feel like one keystroke: the
    * card goes on the click and comes back with the selection if the write fails.
