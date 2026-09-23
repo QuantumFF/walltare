@@ -5,6 +5,10 @@ import { SettingsView } from "@/components/SettingsView";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { ToastSurface, useToaster } from "@/components/ToastSurface";
 import { useApp, type View } from "@/context/AppContext";
+import {
+  KeyboardHandoffProvider,
+  useKeyboardHandoff,
+} from "@/context/KeyboardHandoffContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { ScanRunProvider, useScanOutcome } from "@/context/ScanRunContext";
 import { client } from "@/lib/client";
@@ -17,6 +21,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 
@@ -73,6 +78,7 @@ function viewBody(view: TabView): ReactNode {
  */
 function ViewTabs() {
   const { view, setView } = useApp();
+  const handOff = useKeyboardHandoff();
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   const selected = TABS.findIndex((tab) => tab.view === view);
 
@@ -85,6 +91,14 @@ function ViewTabs() {
   const select = (index: number) => {
     tabs.current[index]?.focus();
     setView(TABS[index].view);
+  };
+
+  // A pointer click leaves the tablist; the keyboard stays in it. `detail`
+  // counts the pointer's clicks and is 0 for a click the keyboard synthesised
+  // from Enter or Space, which stays on the tab like the arrows.
+  const click = (event: MouseEvent<HTMLButtonElement>, index: number) => {
+    setView(TABS[index].view);
+    if (event.detail > 0) handOff();
   };
 
   const handleKeyDown = (
@@ -126,7 +140,7 @@ function ViewTabs() {
           role="tab"
           aria-selected={view === tab.view}
           tabIndex={index === stop ? 0 : -1}
-          onClick={() => setView(tab.view)}
+          onClick={(event) => click(event, index)}
           onKeyDown={(event) => handleKeyDown(event, index)}
           className={cn(
             "h-8 rounded-md px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
@@ -156,6 +170,7 @@ function ViewTabs() {
 /** Brand left, tabs centred, gear right, and the same height on every view. */
 function Chrome() {
   const { view, returnTo, setView } = useApp();
+  const handOff = useKeyboardHandoff();
   const onSettings = view === "settings";
 
   const toggleSettings = () => {
@@ -169,7 +184,9 @@ function Chrome() {
     // landed the curator here — there is nowhere to go and the tabs are the
     // exit (ADR 0020). Escape does the same thing from the page's own handler,
     // which is where it has to be to answer from inside a text field.
-    if (returnTo) setView(returnTo);
+    if (!returnTo) return;
+    setView(returnTo);
+    handOff();
   };
 
   return (
@@ -283,6 +300,8 @@ function Shell({
     setVisited(new Set(visited).add(view));
   }
 
+  const handOff = useKeyboardHandoff();
+
   const [lightboxContainer, setLightboxContainer] = useState<HTMLElement | null>(
     null,
   );
@@ -371,6 +390,26 @@ function Shell({
 
       if (!event.ctrlKey || event.altKey || event.metaKey) return;
 
+      // The tabs in a ring, the way a browser walks its own: `Ctrl+Tab` to the
+      // next and `Ctrl+Shift+Tab` to the previous, wrapping at both ends. From
+      // Settings, which is not in the ring, the next is the first tab and the
+      // previous the last — the stop the tablist itself falls back to there.
+      if (event.key === "Tab") {
+        event.preventDefault();
+        const at = TABS.findIndex((tab) => tab.view === view);
+        const last = TABS.length - 1;
+        const next = event.shiftKey
+          ? at <= 0
+            ? last
+            : at - 1
+          : at === last
+            ? 0
+            : at + 1;
+        setView(TABS[next].view);
+        handOff();
+        return;
+      }
+
       // A shortcut for the button on screen, not an undo stack. With no toast
       // up, or one that offers no Undo, it does nothing — and that is the honest
       // behaviour rather than a gap: CONTEXT.md says Comparisons are never
@@ -389,6 +428,7 @@ function Shell({
 
       if (destination !== "settings") {
         setView(destination);
+        handOff();
         return;
       }
       // The same bargain the gear strikes: Settings is a page with no back of
@@ -401,7 +441,7 @@ function Shell({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [setView, view]);
+  }, [handOff, setView, view]);
 
   return (
     <div className="flex h-screen flex-col bg-background font-sans text-foreground antialiased selection:bg-primary selection:text-primary-foreground">
@@ -498,9 +538,14 @@ export function Layout() {
 
   return (
     <ScanRunProvider>
-      <ToastSurface lightboxOpen={lightboxOpen}>
-        <Shell lightboxOpen={lightboxOpen} setLightboxOpen={setLightboxOpen} />
-      </ToastSurface>
+      <KeyboardHandoffProvider>
+        <ToastSurface lightboxOpen={lightboxOpen}>
+          <Shell
+            lightboxOpen={lightboxOpen}
+            setLightboxOpen={setLightboxOpen}
+          />
+        </ToastSurface>
+      </KeyboardHandoffProvider>
     </ScanRunProvider>
   );
 }

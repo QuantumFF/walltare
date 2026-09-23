@@ -2,6 +2,7 @@ import App from "@/App";
 import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
+import { KeyboardHandoffProvider } from "@/context/KeyboardHandoffContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { ScanRunProvider } from "@/context/ScanRunContext";
 import {
@@ -444,12 +445,14 @@ export async function renderInApp(ui: ReactNode) {
     <AppProvider>
       <AppEventsProvider>
         <ScanRunProvider>
-          <ToastSurface>
-            <LightboxHostProvider value={LIGHTBOX_HOST}>
-              <ViewProbe />
-              {ui}
-            </LightboxHostProvider>
-          </ToastSurface>
+          <KeyboardHandoffProvider>
+            <ToastSurface>
+              <LightboxHostProvider value={LIGHTBOX_HOST}>
+                <ViewProbe />
+                {ui}
+              </LightboxHostProvider>
+            </ToastSurface>
+          </KeyboardHandoffProvider>
         </ScanRunProvider>
       </AppEventsProvider>
     </AppProvider>,
@@ -481,6 +484,20 @@ export async function click(element: Element): Promise<void> {
 }
 
 /**
+ * One click made with the pointer, which counts its clicks in `detail`.
+ *
+ * `click` above is the click Enter or Space synthesises, with `detail` at 0, and
+ * the difference is one the app reads: a control the pointer pressed hands the
+ * keyboard back to the page, and one the keyboard pressed keeps it.
+ */
+export async function pointerClick(element: Element): Promise<void> {
+  await act(async () => {
+    fireEvent.click(element, { detail: 1 });
+  });
+  await flush();
+}
+
+/**
  * One keystroke, and the state updates behind it.
  *
  * The target defaults to wherever focus is, which is what a curator's keyboard
@@ -498,6 +515,7 @@ export async function press(
     ctrlKey?: boolean;
     altKey?: boolean;
     metaKey?: boolean;
+    shiftKey?: boolean;
   } = {},
 ): Promise<void> {
   const { target = document.activeElement ?? document.body, ...modifiers } =
