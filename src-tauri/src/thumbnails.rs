@@ -40,7 +40,7 @@ use std::collections::HashSet;
 use std::io::Cursor;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::UNIX_EPOCH;
 
 use image::codecs::jpeg::JpegEncoder;
@@ -590,10 +590,7 @@ fn fulfill(plan: &Plan, cache_dir: &Path) -> Result<Resolved, AppError> {
 
     let img = match decode_donor(plan, cache_dir, source_mtime) {
         Some(img) => img,
-        None => ImageReader::open(&plan.source)?
-            .with_guessed_format()?
-            .decode()
-            .map_err(|e| AppError::Image(e.to_string()))?,
+        None => decode_source(&plan.source)?,
     };
     let img = downscale_if_wider(img, plan.size);
     let (width, height) = (img.width(), img.height());
@@ -626,6 +623,88 @@ fn decode_donor(plan: &Plan, cache_dir: &Path, source_mtime: i64) -> Option<Dyna
         .ok()?
         .decode()
         .ok()
+}
+
+/// The most a single source decode may allocate: 1 GiB, which fits a 16K
+/// RGBA PNG (17280x9720 is ~670 MB) and refuses anything a header claims past
+/// that. A refusal is an `AppError::Image`, so it lands in the failure-note
+/// path like any other undecodable source (ADR 0034) instead of aborting the
+/// process on an allocation that cannot be caught (ADR 0049).
+const MAX_DECODE_ALLOC: u64 = 1024 * 1024 * 1024;
+
+/// A source whose decoded RGBA buffer would exceed this is a "large" decode
+/// and waits on [`LARGE_DECODES`]. 256 MB is 64 megapixels: an 8K source
+/// (33 MP) is still small, a 16K one is not.
+const LARGE_DECODE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// How many large decodes may run at once across every serving worker and
+/// the pre-generation pass (ADR 0049).
+const LARGE_DECODE_PERMITS: usize = 1;
+
+static LARGE_DECODES: DecodeGate = DecodeGate::new(LARGE_DECODE_PERMITS);
+
+/// A counting semaphore: at most `permits` holders at a time.
+struct DecodeGate {
+    in_use: Mutex<usize>,
+    freed: Condvar,
+    permits: usize,
+}
+
+struct DecodePermit<'a>(&'a DecodeGate);
+
+impl DecodeGate {
+    const fn new(permits: usize) -> Self {
+        Self {
+            in_use: Mutex::new(0),
+            freed: Condvar::new(),
+            permits,
+        }
+    }
+
+    fn acquire(&self) -> DecodePermit<'_> {
+        // A poisoned count is still a count: a holder that panicked released
+        // its permit on the way out through `Drop`.
+        let mut in_use = self.in_use.lock().unwrap_or_else(|e| e.into_inner());
+        while *in_use >= self.permits {
+            in_use = self.freed.wait(in_use).unwrap_or_else(|e| e.into_inner());
+        }
+        *in_use += 1;
+        DecodePermit(self)
+    }
+}
+
+impl Drop for DecodePermit<'_> {
+    fn drop(&mut self) {
+        let mut in_use = self.0.in_use.lock().unwrap_or_else(|e| e.into_inner());
+        *in_use -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
+/// Whether a source of these dimensions has to wait on [`LARGE_DECODES`].
+fn is_large(width: u32, height: u32) -> bool {
+    u64::from(width) * u64::from(height) * 4 > LARGE_DECODE_BYTES
+}
+
+/// The one way a source is decoded: capped by [`MAX_DECODE_ALLOC`], and
+/// gated by [`LARGE_DECODES`] when its header says it is large.
+///
+/// The dimensions come from the header rather than the recorded ones
+/// (ADR 0044) because they are what the decoder is about to believe, and a
+/// stale or missing row must not let a large decode past the gate. It is the
+/// same header read [`measure_and_record`] does.
+fn decode_source(path: &Path) -> Result<DynamicImage, AppError> {
+    let image_err = |e: image::ImageError| AppError::Image(e.to_string());
+    let (width, height) = ImageReader::open(path)?
+        .with_guessed_format()?
+        .into_dimensions()
+        .map_err(image_err)?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_ALLOC);
+    let mut reader = ImageReader::open(path)?.with_guessed_format()?;
+    reader.limits(limits);
+    let _permit = is_large(width, height).then(|| LARGE_DECODES.acquire());
+    reader.decode().map_err(image_err)
 }
 
 /// Phase 3 — records a freshly generated thumbnail. A no-op for a cache hit.
@@ -702,10 +781,7 @@ fn generate_both(
     cache_dir: &Path,
 ) -> Result<[Recorded; 2], AppError> {
     let source_mtime = source_mtime(source)?;
-    let decoded = ImageReader::open(source)?
-        .with_guessed_format()?
-        .decode()
-        .map_err(|e| AppError::Image(e.to_string()))?;
+    let decoded = decode_source(source)?;
 
     let medium = flatten_to_rgb(downscale_if_wider(decoded, Size::Medium));
     let recorded_medium = write_size(cache_dir, wallpaper_id, Size::Medium, &medium, source_mtime)?;
@@ -1315,6 +1391,83 @@ mod tests {
             .unwrap()
             .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
             .unwrap();
+    }
+
+    /// A PNG of real pixels whose IHDR has been rewritten to claim `width` x
+    /// `height`, with the chunk's CRC fixed up so the decoder believes it.
+    fn png_claiming(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        solid(4, 4, [1, 2, 3, 255])
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        // Signature (8), length (4), "IHDR" (4), then width and height.
+        bytes[16..20].copy_from_slice(&width.to_be_bytes());
+        bytes[20..24].copy_from_slice(&height.to_be_bytes());
+        let crc = crc32(&bytes[12..29]);
+        bytes[29..33].copy_from_slice(&crc.to_be_bytes());
+        bytes
+    }
+
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= u32::from(b);
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    #[test]
+    fn a_header_claiming_enormous_dimensions_fails_into_a_failure_note() {
+        let library = Library::new();
+        let id = library.seed("huge.png", &solid(4, 4, [1, 2, 3, 255]));
+        std::fs::write(library.source("huge.png"), png_claiming(100_000, 100_000)).unwrap();
+
+        let result = library.cache.warm(
+            &library.db,
+            &Pending {
+                wallpaper_id: id,
+                source: library.source("huge.png"),
+                status: Status::Active,
+                missing: Some(Missing::Both),
+            },
+        );
+
+        assert!(matches!(result, Err(AppError::Image(_))), "{result:?}");
+        assert!(library.failure_noted(id));
+    }
+
+    #[test]
+    fn only_large_sources_wait_on_the_gate() {
+        assert!(!is_large(7680, 4320));
+        assert!(is_large(17280, 9720));
+    }
+
+    #[test]
+    fn the_decode_gate_admits_at_most_its_permits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let gate = DecodeGate::new(2);
+        let running = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..8 {
+                s.spawn(|| {
+                    let _permit = gate.acquire();
+                    let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    running.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        assert_eq!(*gate.in_use.lock().unwrap(), 0);
     }
 
     #[test]
