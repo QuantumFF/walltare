@@ -1,4 +1,4 @@
-import type { CardAction } from "@/components/WallpaperCard";
+import type { TransitionAction } from "@/components/transitions";
 import { client, type Wallpaper } from "@/lib/client";
 import type {
   SelectionHandle,
@@ -39,7 +39,7 @@ afterEach(() => {
 
 /** The commands the keys below reached, in order, and what was asked for. */
 let commands: string[];
-let asked: CardAction[];
+let asked: TransitionAction[];
 /**
  * The wallpapers the host was asked to open the lightbox on, in order, whether
  * that came from a click or from `Enter` (#134, #138).
@@ -116,7 +116,7 @@ function mixed(): Wallpaper[] {
  * nothing that decides for itself whether the action was offered. That decision
  * is the card's table, which is the point of asserting on the commands.
  */
-function handleAction(action: CardAction, subject: Wallpaper): void {
+function handleAction(action: TransitionAction, subject: Wallpaper): void {
   asked.push(action);
   if (action === "keep") void client.keepWallpaper(subject.id);
   if (action === "make-active") void client.unkeepWallpaper(subject.id);
