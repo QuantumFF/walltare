@@ -150,9 +150,10 @@ export function useWallpaperRows({
   // the command wrote, and a whole row replacing a whole row cannot wipe an
   // Origin the way a partial patch did (#141).
   //
-  // Nothing is ever inserted. The guard is what says so, and the reason is
+  // Nothing is ever inserted here. The guard is what says so, and the reason is
   // position: an ordering by Score cannot be read off a row, so a wallpaper that
-  // just became Active arrives with the page's next fetch.
+  // just became Active arrives with the page's next fetch — unless it is an Undo
+  // of this page's own optimistic removal, which knows its slot (see `toast`).
   useAppEvent((event) => {
     if (event.type !== "status-changed") return;
     const { wallpaper } = event;
@@ -189,18 +190,29 @@ export function useWallpaperRows({
    * with the new path in the description, which is where the collision is worth
    * reading.
    *
-   * The two Undos are closures over `perform`, so an Undo is the same transition
-   * a card's own button makes — the removal, the patch, the toast and the
-   * failure handling included. `ToastSurface` keeps the copy, the `once()`
+   * The two Undos are closures over the transition, so an Undo is the same
+   * transition a card's own button makes — the removal, the patch, the toast and
+   * the failure handling included. `ToastSurface` keeps the copy, the `once()`
    * double-press guard and the slot precedence; only the call left it.
+   *
+   * `removedFrom` is where the optimistic removal took the card from, and the
+   * Undo carries it so that the inverse can put the card back there. Nothing
+   * else could: the patch never inserts, because a row cannot say where it
+   * belongs in an ordering by Score — but the slot the curator just emptied is
+   * an answer to exactly that.
    */
-  const toast = (action: TransitionAction, was: Wallpaper, wrote: Wallpaper) => {
+  const toast = (
+    action: TransitionAction,
+    was: Wallpaper,
+    wrote: Wallpaper,
+    removedFrom: number,
+  ) => {
     switch (action) {
       case "keep":
         show({
           kind: "kept",
           filename: was.filename,
-          undo: () => perform("make-active", wrote),
+          undo: () => void latest.current("make-active", wrote, removedFrom),
         });
         return;
       case "make-active":
@@ -218,7 +230,7 @@ export function useWallpaperRows({
           renamed: wrote.filename !== was.filename,
           relativeDestination: destination.relative,
           finalPath: wrote.path,
-          undo: () => perform("restore", wrote),
+          undo: () => void latest.current("restore", wrote, removedFrom),
         });
         return;
       case "restore":
@@ -231,7 +243,18 @@ export function useWallpaperRows({
     }
   };
 
-  const run = async (action: TransitionAction, wallpaper: Wallpaper) => {
+  /**
+   * One transition, whole.
+   *
+   * `putBackAt` is an Undo's: the slot the transition it inverts removed the
+   * card from, or `-1` for every other press. A landed inverse whose row belongs
+   * here again goes back into that slot, with the selection on it.
+   */
+  const run = async (
+    action: TransitionAction,
+    wallpaper: Wallpaper,
+    putBackAt = -1,
+  ) => {
     // The cohort ADR 0009's migration left with no Origin, refused with no round
     // trip because `origin_path` is on the DTO for exactly this. It lives on the
     // one path every trigger goes through — the card's button, the grid's `R`,
@@ -266,7 +289,8 @@ export function useWallpaperRows({
       // in place under the cursor, but a virtualised grid may reorder it or
       // filter it out from under the click, and a card that vanishes is not a
       // confirmation (ADR 0016, ADR 0017).
-      toast(action, wallpaper, wrote);
+      toast(action, wallpaper, wrote, removedFrom);
+      if (belongs(wrote.status)) restore(putBackAt, wrote);
     } catch (error) {
       console.error(FAILURE_LOG[action], error);
       restore(removedFrom, wallpaper);
@@ -286,7 +310,7 @@ export function useWallpaperRows({
 
   /**
    * Puts one optimistically removed card back where it was, and the selection
-   * back on it.
+   * back on it: after a write that failed, or after the Undo of one that landed.
    *
    * Restoring a whole snapshot of the list would resurrect any *other* card that
    * was successfully removed while this action was in flight — the snapshot goes
@@ -326,8 +350,8 @@ export function useWallpaperRows({
     latest.current = run;
   });
 
-  // Stable, and the two Undo closures above name it while it is still in its
-  // temporal dead zone — which is fine, because they are called from a toast
+  // Stable, and the two Undo closures above name `latest` while it is still in
+  // its temporal dead zone — which is fine, because they are called from a toast
   // long after this render finished.
   const perform = useCallback((action: TransitionAction, wallpaper: Wallpaper) => {
     void latest.current(action, wallpaper);

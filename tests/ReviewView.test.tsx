@@ -951,6 +951,58 @@ test("Delete rejects the selected card, with no confirm in the way", async () =>
   expect(selectedCard()).toBe("next.jpg, Active");
 });
 
+test("an Undo puts the card back where it was, and the selection with it", async () => {
+  await openReview([
+    wallpaper(5, { filename: "before.jpg" }),
+    wallpaper(6, { filename: "reject-me.jpg" }),
+    wallpaper(7, { filename: "after.jpg" }),
+  ]);
+  mockCommand("move_wallpaper", (args) =>
+    rejectedTo(args, "/library/rejected/reject-me.jpg"),
+  );
+  mockCommand("restore_wallpaper", (args) =>
+    wrote(args, { status: "active" }),
+  );
+
+  await enterGrid();
+  await press("ArrowRight");
+  await press("Delete");
+  expect(inReview().queryByAltText("reject-me.jpg")).toBeNull();
+
+  await press("z", { ctrlKey: true });
+
+  // The Restore made it Active again, which is what this list holds, and the
+  // card it took out optimistically comes back in the slot it left rather than
+  // with the next fetch.
+  expect(toast()?.title).toBe("Restored reject-me.jpg");
+  expect(
+    inReview()
+      .getAllByRole("gridcell")
+      .map((cell) => cell.getAttribute("aria-label")),
+  ).toEqual(["before.jpg, Active", "reject-me.jpg, Active", "after.jpg, Active"]);
+  expect(selectedCard()).toBe("reject-me.jpg, Active");
+});
+
+test("a keep's Undo puts the card back too", async () => {
+  await openReview([
+    wallpaper(4, { filename: "keeper.jpg" }),
+    wallpaper(5, { filename: "next.jpg" }),
+  ]);
+
+  await enterGrid();
+  await press("k");
+  expect(inReview().queryByAltText("keeper.jpg")).toBeNull();
+
+  await press("z", { ctrlKey: true });
+
+  expect(
+    inReview()
+      .getAllByRole("gridcell")
+      .map((cell) => cell.getAttribute("aria-label")),
+  ).toEqual(["keeper.jpg, Active", "next.jpg, Active"]);
+  expect(selectedCard()).toBe("keeper.jpg, Active");
+});
+
 test("a key that fails puts the card back, and the selection with it", async () => {
   expectConsoleError(/Failed to keep wallpaper/);
   await openReview([
