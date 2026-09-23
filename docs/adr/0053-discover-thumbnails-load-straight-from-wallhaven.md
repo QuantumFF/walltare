@@ -74,3 +74,7 @@ look at.
 
 **The webview can now reach the internet.** It can do so only through `<img>`,
 and only to one host.
+
+> **Amended by [ADR 0055](0055-discover-previews-the-full-file.md),
+> 2026-09-24.** The full-size preview came back: `img-src` also gains
+> `https://w.wallhaven.cc`, for Discover's lightbox only. Cards keep `th.`.
