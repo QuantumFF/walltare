@@ -202,9 +202,9 @@ interface AppContextType {
    */
   readLibrary: () => Promise<Stats>;
   /**
-   * What the app re-reads after a scan, called by the shell on every
-   * `scan-complete`: the count the Library root section prints, and the boot
-   * rule's one rerun.
+   * What the app re-reads after a scan, called by the shell on every scan run
+   * that finished rather than failed: the count the Library root section
+   * prints, and the boot rule's one rerun.
    *
    * The rerun is a no-op unless the library was empty before the scan and is
    * not after, which is what makes it happen at most once: a first run scans,

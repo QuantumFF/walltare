@@ -12,11 +12,17 @@ import {
   stats,
   wallpaper,
 } from "./fixtures";
+import { expectConsoleError } from "./console-guard";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // ADR 0021's lower slot. The report is shell-level and outlives every page, so
 // every test here renders the whole app and drives the backend events the way
 // the backend emits them.
+//
+// What is asserted is the words, where they appear and how long they stay. Which
+// ending a scan had — an empty folder against nothing new, whether the Round
+// moved backwards — is decided by the scan run before the toast hears of it, and
+// is `scan-run.test.tsx`'s.
 
 /** ADR 0009's eight seconds, which the provider applies when nothing overrides it. */
 const LIFETIME = 8000;
@@ -157,6 +163,26 @@ async function scanFrom(path: string) {
   expect(scannedPaths).toEqual([path]);
 }
 
+/**
+ * Press Scan on a folder the backend refuses before any walk starts, and go
+ * back to Rank. What refuses it is the field's to say (ADR 0020), so the
+ * sentence is expected on the console and nowhere near this surface.
+ */
+async function refusedScanFrom(path: string) {
+  expectConsoleError(/Failed to start a scan/);
+  mockCommand("start_scan", () =>
+    Promise.reject({ kind: "invalid_path", message: path }),
+  );
+  await click(gear());
+  await act(async () => {
+    fireEvent.change(screen.getByPlaceholderText("/home/user/wallpapers"), {
+      target: { value: path },
+    });
+  });
+  await click(screen.getByRole("button", { name: /^rescan$/i }));
+  await click(tab("Rank"));
+}
+
 /** Land on Review and keep wall-7, which is the transition that covers a report. */
 async function keepWall7() {
   await click(tab("Review"));
@@ -286,8 +312,9 @@ test("closing the progress does not suppress the ending", async () => {
   await emit("scan-complete", { added_count: 3, scanned_count: 40 });
 
   // The ending is news about the library rather than news about the work, and
-  // it lands in the upper slot, which nothing dismissed.
-  expect(toast()?.title).toBe("3 wallpapers added");
+  // it lands in the upper slot, which nothing dismissed. With nothing to explain
+  // about the Round, the count is the whole of it.
+  expect(toast()).toEqual({ title: "3 wallpapers added", description: null });
 });
 
 test("a scan started on Settings is silent there and reports where the curator goes", async () => {
@@ -322,6 +349,31 @@ test("the report is suppressed on Settings rather than dismissed by it", async (
 
   await click(tab("Rank"));
   expect(toast()?.title).toBe("Preparing thumbnails… 5 of 10");
+});
+
+// A scan drops the pass it covers, because its ending restarts the pass as a
+// run of its own. A scan the backend refused never started, so it has no
+// ending to restart anything with: the pass underneath is the same run it was,
+// and has to come back exactly as the curator left it.
+test("a refused scan keeps the pass progress", async () => {
+  await openApp();
+  await emit("pregen-progress", { done: 5, total: 10 });
+
+  await refusedScanFrom("/definitely/not/a/dir");
+
+  expect(toast()?.title).toBe("Preparing thumbnails… 5 of 10");
+});
+
+test("a refused scan leaves a closed pass closed", async () => {
+  await openApp();
+  await emit("pregen-progress", { done: 5, total: 10 });
+  await click(closeButton()!);
+
+  await refusedScanFrom("/definitely/not/a/dir");
+  await emit("pregen-progress", { done: 6, total: 10 });
+
+  // Still the run the curator said "stop telling me" about.
+  expect(toast()).toBeNull();
 });
 
 test("the report's action opens Settings from where the curator was, and stays up", async () => {
@@ -369,21 +421,7 @@ test("a scan that added wallpapers says how many, and explains the Round moving 
   });
 });
 
-test("a scan that added wallpapers to a library already on Round 1 explains nothing", async () => {
-  // The other half of the rule, and the reason it is a comparison rather than a
-  // sentence attached to the count: a number that did not move needs no excuse.
-  mockCommand("get_stats", () =>
-    stats({ round: 1, round_participated_count: 10, evaluated_count: 0 }),
-  );
-  await openApp();
-  await scanFrom("/library");
-
-  await emit("scan-complete", { added_count: 6, scanned_count: 18 });
-
-  expect(toast()).toEqual({ title: "6 wallpapers added", description: null });
-});
-
-test("a rescan that added nothing is not reported as an empty folder", async () => {
+test("a rescan that added nothing says how many files it looked at", async () => {
   await openApp();
 
   await emit("scan-complete", { added_count: 0, scanned_count: 2000 });
@@ -415,22 +453,7 @@ test("a walk that turned up nothing at all pins, with the folder as written", as
   expect(closeButton()).not.toBeNull();
 });
 
-test("a scan that failed pins the backend's own account of it", async () => {
-  freezeClock();
-  await openApp();
-
-  await emit("scan-failed", { message: "permission denied: /library/private" });
-
-  expect(toast()).toEqual({
-    title: "Couldn't finish the scan",
-    description: "permission denied: /library/private",
-  });
-
-  await runOut(LIFETIME * 10);
-  expect(toast()?.title).toBe("Couldn't finish the scan");
-});
-
-test("a Library root that is gone reaches the curator wherever they are", async () => {
+test("a scan that failed pins the backend's own account, wherever the curator is", async () => {
   freezeClock();
   await openApp();
 
@@ -447,13 +470,15 @@ test("a Library root that is gone reaches the curator wherever they are", async 
       "every wallpaper already in your library is still in it.",
   });
 
-  expect(toast()?.title).toBe("Couldn't finish the scan");
-  // The second sentence is the half the curator cannot see for themselves:
-  // CONTEXT.md keeps the wallpapers an earlier scan found in the library
-  // regardless of where the Library root points now.
-  expect(toast()?.description).toContain(
-    "every wallpaper already in your library is still in it",
-  );
+  // The backend's message verbatim. Its second sentence is the half the curator
+  // cannot see for themselves: CONTEXT.md keeps the wallpapers an earlier scan
+  // found in the library regardless of where the Library root points now.
+  expect(toast()).toEqual({
+    title: "Couldn't finish the scan",
+    description:
+      "There's no folder at /media/photos/walls. Nothing was scanned, and " +
+      "every wallpaper already in your library is still in it.",
+  });
   await runOut(LIFETIME * 10);
   expect(toast()?.title).toBe("Couldn't finish the scan");
 });

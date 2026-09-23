@@ -948,19 +948,32 @@ test("a first run puts the caret in the field without selecting what is in it", 
   expect(value).toBe("~/pics");
 });
 
-test("leaving the page drops its scan subscriptions", async () => {
+test("a scan still running when the curator comes back is still on the button", async () => {
   await openSettingsFromLibrary();
+  await type("/tmp/wallpapers");
+  await click(scanButton());
+  await emit("scan-progress", { scanned: 412, added: 38 });
 
-  // Two listeners for the same event: this section's, for the button's label,
-  // and the toast surface's, which reports the same scan wherever the curator
-  // goes (ADR 0021).
-  expect(await emit("scan-progress", { scanned: 1, added: 1 })).toBe(2);
+  // Settings is the one view the shell unmounts, and a walk takes minutes, so
+  // the curator leaving and coming back mid-scan is the ordinary case. The run
+  // lives above the view swap rather than in this page, so the page that
+  // remounts reads the scan that is still going instead of offering to start a
+  // second one the backend would refuse (ADR 0015).
+  await click(screen.getByRole("tab", { name: "Rank" }));
+  await emit("scan-progress", { scanned: 800, added: 90 });
+  // The gear by where it sits: on Rank the shell's report of this same scan is
+  // up, and its action carries the name "Settings" too (ADR 0021).
+  await click(
+    document.querySelector(
+      '[data-slot="chrome-row"] button[aria-label="Settings"]',
+    ) as HTMLElement,
+  );
 
-  await click(backControl() as HTMLButtonElement);
+  expect(scanButton().textContent).toBe("Scanning… 800 scanned, 90 added");
+  expect(scanButton().disabled).toBe(true);
 
-  // Settings is the one view the shell unmounts, so this one has to go and the
-  // shell's has to stay.
-  expect(await emit("scan-progress", { scanned: 2, added: 2 })).toBe(1);
+  await emit("scan-complete", { added_count: 90, scanned_count: 800 });
+  expect(scanButton().textContent).toBe("Rescan");
 });
 
 // The Reject destination section, which is the only place `reject_destination`

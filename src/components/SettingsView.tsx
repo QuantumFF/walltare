@@ -25,14 +25,13 @@ import {
   ScreenSection,
 } from "@/components/ScreenSections";
 import { ThumbnailsSection } from "@/components/ThumbnailsSection";
-import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
 import { useApp, type View } from "@/context/AppContext";
-import { client, isAppError, type ScanProgress } from "@/lib/client";
+import { useScanRun } from "@/context/ScanRunContext";
+import { isAppError } from "@/lib/client";
 // The counts in the Library root's line are the counts the shell's report
 // prints, written once so that one fact keeps one phrasing (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
-import { useBackendEvents } from "@/lib/useBackendEvents";
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useState, type ReactNode, type Ref } from "react";
 
@@ -118,7 +117,11 @@ function scanStartError(err: unknown): string {
  */
 function LibraryRootSection() {
   const { libraryTotal } = useApp();
-  const { scanStarted } = useToaster();
+  // The run is read from above the view swap rather than held here. This is
+  // the one page the shell unmounts and a walk takes minutes, so a button that
+  // kept its own `scanning` came back from a tab switch offering to start a
+  // scan that was still going (ADR 0015).
+  const { state: run, start } = useScanRun();
 
   // A Scan that never got going, on the status line until the value changes.
   // Not a toast: ADR 0020 put it here because the field is where the fix is
@@ -134,53 +137,24 @@ function LibraryRootSection() {
   });
   const { value, commit, resolution } = path;
 
-  const [scanning, setScanning] = useState(false);
-  const [progress, setProgress] = useState<ScanProgress | null>(null);
-
-  // The button's own progress line, and the two endings that free it.
-  //
-  // What the endings *say* is not read here. ADR 0021 gives every word about how
-  // a scan finished to the toast, which can name the folder as the curator wrote
-  // it and reach them on whatever page they wandered to during a walk that takes
-  // minutes. What is left to this section is a button that has a scan to stop
-  // presenting as running.
-  const finished = () => {
-    setScanning(false);
-    setProgress(null);
-  };
-
-  useBackendEvents({
-    scanProgress: setProgress,
-    scanComplete: finished,
-    scanFailed: finished,
-  });
+  // What the endings *say* is not read here either. ADR 0021 gives every word
+  // about how a scan finished to the toast, which can name the folder as the
+  // curator wrote it and reach them on whatever page they wandered to. What is
+  // left to this section is a button that presents a scan as running for
+  // exactly as long as the run says one is.
+  const scanning = run.running;
+  const progress = run.running ? run.progress : null;
 
   const scan = () => {
     if (!value || scanning) return;
-    setScanning(true);
     setScanError(null);
-    setProgress(null);
-
-    void (async () => {
-      try {
-        // The order ADR 0010 fixed and ADR 0020 repeats: the store learns the
-        // folder, then the walk starts on the same string, unexpanded, because
-        // the backend is what expands a Written path and storing one expanded
-        // would freeze what a variable meant this session (ADR 0011).
-        await commit(value);
-        await client.startScan(value);
-        // The walk emits nothing until it is over, so the report of a scan in
-        // progress can only start from the call that asked for one — and the
-        // folder as the curator wrote it is knowable nowhere else either
-        // (ADR 0021).
-        scanStarted(value);
-      } catch (error) {
-        setScanning(false);
-        setProgress(null);
-        setScanError(scanStartError(error));
-        console.error("Failed to start a scan:", error);
-      }
-    })();
+    // The field's own commit is handed over as the store, so the write the
+    // scan makes is the one the field already knows about and the blur on the
+    // way to this button does not make it twice (ADR 0026).
+    void start(value, commit).catch((error: unknown) => {
+      setScanError(scanStartError(error));
+      console.error("Failed to start a scan:", error);
+    });
   };
 
   /**

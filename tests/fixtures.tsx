@@ -3,6 +3,7 @@ import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
+import { ScanRunProvider } from "@/context/ScanRunContext";
 import {
   WORKLIST_SIZES,
   type BackendCommands,
@@ -424,6 +425,10 @@ export function currentView(): string | null {
  * what the surface does with a keyboard is `toasts.test.tsx`'s to assert against
  * the whole app.
  *
+ * The scan run is under it for no reason of the view's: the surface reads the
+ * run to report it, so a surface mounted without one throws before anything
+ * renders. What a scan does is `scan-run.test.tsx`'s to assert.
+ *
  * The lightbox host is the third, and its limit is the sharpest. Any page that
  * mounts a grid reads it, so a view mounted without it throws before it
  * renders; what it holds here is a `null` container, which Radix's `Portal`
@@ -438,12 +443,14 @@ export async function renderInApp(ui: ReactNode) {
   const rendered = render(
     <AppProvider>
       <AppEventsProvider>
-        <ToastSurface>
-          <LightboxHostProvider value={LIGHTBOX_HOST}>
-            <ViewProbe />
-            {ui}
-          </LightboxHostProvider>
-        </ToastSurface>
+        <ScanRunProvider>
+          <ToastSurface>
+            <LightboxHostProvider value={LIGHTBOX_HOST}>
+              <ViewProbe />
+              {ui}
+            </LightboxHostProvider>
+          </ToastSurface>
+        </ScanRunProvider>
       </AppEventsProvider>
     </AppProvider>,
   );

@@ -63,6 +63,15 @@ before it walks anything, and clears the scan error on every keystroke. Three
 quarters of the hook would come back out through callbacks and a render prop,
 which is a larger interface than the one it replaced.
 
+> **Amended by [#283](https://github.com/QuantumFF/walltare/issues/283),
+> 2026-09-23.** Scan now reads `value` twice, not three times. The scan run
+> above the view swap owns the start sequence, so `startScan` and
+> `scanStarted` became one `start(value, commit)` — the field's `commit`
+> handed over as the store — and `disabled` is the other read. The argument is
+> unchanged: Scan still
+> awaits `commit` before anything walks, through the run, and still clears the
+> scan error on every keystroke, so the hook still stays with the page.
+
 `options.onEdit` is how the scan error gets cleared now that the module owns the
 `onChange`. It fires on typing and on a Browse pick, which are exactly the two
 places `edit` is called today, because a freshly picked folder makes a stale
