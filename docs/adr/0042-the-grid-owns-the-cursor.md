@@ -181,6 +181,13 @@ Eight names before, the same eight after: `rowHeight`, `printedKey`,
 — `WallpaperGrid`, `useGridSelection`, `WallpaperGridHandle` — with the same
 three names in it.
 
+> **Amended by [#286](https://github.com/QuantumFF/walltare/issues/286),
+> 2026-09-23.** `printedKey` and `actionFor` are no longer the grid's. The
+> listing keymap is one table in `keymap.ts`, which exports `printedKey` and
+> replaces `actionFor` with `answerKey`; the Status-to-action table it resolves
+> against lives in `transitions.ts`. The count above records this ADR's own
+> change and is not a live inventory.
+
 `useGridSelection` changed signature rather than being replaced by a new name
 beside it, because it is the same fact under the same label: the grid's
 selection. What moved is which side of the seam holds it. `WallpaperGridProps`

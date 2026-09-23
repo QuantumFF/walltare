@@ -116,7 +116,7 @@ const CLOSED = () => NOTHING;
  * which keys are its. It walks with `←` and `→` alone, since one wallpaper at a
  * time has no rows for Up and Down to move by.
  */
-const LIGHTBOX: ListingSurface = { kind: "lightbox" };
+const LIGHTBOX = { kind: "lightbox" } as const satisfies ListingSurface;
 
 /**
  * Whether a lightbox is up, and the two gestures that change that.
@@ -432,6 +432,14 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
         case "move":
           moveTo(intent.to);
           break;
+        // A held `C`: answered, and toggling nothing.
+        case "held":
+          break;
+        // Every intent the keymap can hand this surface is answered above, so
+        // only an unanswered key reaches here, and a binding newly given to
+        // this surface fails to compile until it is (#286).
+        default:
+          intent satisfies undefined;
       }
     };
 

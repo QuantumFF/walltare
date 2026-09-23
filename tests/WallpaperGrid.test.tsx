@@ -114,7 +114,8 @@ function mixed(): Wallpaper[] {
 /**
  * What a page does with what a card asks for: one command per action, and
  * nothing that decides for itself whether the action was offered. That decision
- * is the card's table, which is the point of asserting on the commands.
+ * is `STATUS_ACTIONS`'s, in `transitions.ts`, which is the point of asserting on
+ * the commands.
  */
 function handleAction(action: TransitionAction, subject: Wallpaper): void {
   asked.push(action);

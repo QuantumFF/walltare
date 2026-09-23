@@ -45,7 +45,7 @@ import {
  * line of wallpapers, so Up and Down walk it by one, and `Enter` opens from
  * anywhere but a button.
  */
-const STRIP: ListingSurface = { kind: "strip" };
+const STRIP = { kind: "strip" } as const satisfies ListingSurface;
 
 /**
  * How tall a filmstrip entry is at each density step, in pixels, and the step it
@@ -314,6 +314,9 @@ export function ReviewStrip({
       case "crop":
         toggleCrop();
         break;
+      // A held `C`: answered, and toggling nothing.
+      case "held":
+        break;
       // The same entry point a click on the hero reaches.
       case "open":
         onOpen?.(intent.wallpaper);
@@ -321,6 +324,11 @@ export function ReviewStrip({
       case "move":
         moveTo(intent.to);
         break;
+      // Every intent the keymap can hand this surface is answered above, so
+      // only an unanswered key reaches here, and a binding newly given to this
+      // surface fails to compile until it is (#286).
+      default:
+        intent satisfies undefined;
     }
   };
 

@@ -1046,6 +1046,11 @@ function Grid({
       case "move":
         moveTo(intent.to);
         break;
+      // Every intent the keymap can hand this surface is answered above, so
+      // only an unanswered key reaches here, and a binding newly given to this
+      // surface fails to compile until it is (#286).
+      default:
+        intent satisfies undefined;
     }
   };
 

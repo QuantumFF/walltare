@@ -45,8 +45,8 @@ export type ListingSurface =
 type SurfaceKind = ListingSurface["kind"];
 
 /** Where a key lands: the surface, and the selection it holds right now. */
-export interface KeyContext {
-  surface: ListingSurface;
+export interface KeyContext<S extends ListingSurface = ListingSurface> {
+  surface: S;
   /** The selected wallpaper, or `null` when there is none. */
   selected: Wallpaper | null;
   /** The selection's position in the list, or -1 when there is none. */
@@ -113,8 +113,8 @@ interface Binding {
   listed: Partial<Record<ShortcutGroup, string>>;
 }
 
-const ALL: readonly SurfaceKind[] = ["grid", "strip", "lightbox"];
-const LISTINGS: readonly SurfaceKind[] = ["grid", "strip"];
+const ALL = ["grid", "strip", "lightbox"] as const;
+const LISTINGS = ["grid", "strip"] as const;
 
 /**
  * Every key a listing surface answers, in the order the shortcuts dialog lists
@@ -172,7 +172,7 @@ const LISTINGS: readonly SurfaceKind[] = ["grid", "strip"];
  * over a grid of thirty thumbnails, where it would be noise rather than an
  * answer (#266).
  */
-const BINDINGS: readonly Binding[] = [
+const BINDINGS = [
   {
     keys: ["ArrowLeft"],
     printed: "←",
@@ -271,7 +271,42 @@ const BINDINGS: readonly Binding[] = [
       lightbox: "Show what your screen would crop",
     },
   },
-];
+] as const satisfies readonly Binding[];
+
+/** The table read at run time, where one entry's literal types are no help. */
+const TABLE: readonly Binding[] = BINDINGS;
+
+/**
+ * The intents a surface can be handed, read off the table's `on` lists rather
+ * than written beside them.
+ *
+ * So a surface's handler can switch over exactly these and end in a default
+ * that only `undefined` reaches: add a surface to a binding's `on` and every
+ * handler that does not yet act on what it means stops compiling, rather than
+ * the key being prevented and then doing nothing.
+ */
+export type IntentOn<K extends SurfaceKind> = Extract<
+  Intent,
+  { kind: KindOf<BoundOn<(typeof BINDINGS)[number], K>["does"]> }
+>;
+
+type BoundOn<B, K> = B extends { on: readonly (infer O)[] }
+  ? K extends O
+    ? B
+    : never
+  : never;
+
+type KindOf<D> = D extends { move: unknown }
+  ? "move"
+  : D extends { act: unknown }
+    ? "act"
+    : D extends { density: unknown }
+      ? "density"
+      : D extends "open"
+        ? "open"
+        : D extends "crop"
+          ? "crop" | "held"
+          : never;
 
 /**
  * What a keypress means on this surface, with the key prevented whenever it
@@ -289,13 +324,14 @@ const BINDINGS: readonly Binding[] = [
  * Status offers nothing for, and `Enter` on a button, whose own activation is
  * the default this would otherwise cancel.
  */
-export function answerKey(
+export function answerKey<S extends ListingSurface>(
   event: KeyPress,
-  context: KeyContext,
-): Intent | undefined {
+  context: KeyContext<S>,
+): IntentOn<S["kind"]> | undefined {
   const intent = intentOf(event, context);
   if (intent) event.preventDefault();
-  return intent;
+  // Narrowed by the table's own `on` lists, which `intentOf` is what reads.
+  return intent as IntentOn<S["kind"]> | undefined;
 }
 
 function intentOf(
@@ -312,7 +348,7 @@ function intentOf(
   // Compared without case, so a curator with Caps Lock on still keeps and still
   // restores.
   const key = event.key.toLowerCase();
-  const binding = BINDINGS.find(
+  const binding = TABLE.find(
     (entry) =>
       entry.on.includes(surface.kind) &&
       entry.keys.some((bound) => bound.toLowerCase() === key),
@@ -413,7 +449,7 @@ function opensFrom(target: EventTarget | null, surface: ListingSurface) {
  * one would print rather than a case the app reaches.
  */
 export function printedKey(action: TransitionAction): string {
-  const bound = BINDINGS.find(
+  const bound = TABLE.find(
     ({ does }) =>
       typeof does === "object" && "act" in does && does.act.includes(action),
   );
@@ -435,7 +471,7 @@ export interface ShortcutLine {
  * app binds is the failure it exists to prevent (ADR 0015).
  */
 export function shortcutLines(group: ShortcutGroup): ShortcutLine[] {
-  return BINDINGS.flatMap((binding) => {
+  return TABLE.flatMap((binding) => {
     const action = binding.listed[group];
     return action ? [{ keys: [binding.printed], action }] : [];
   });

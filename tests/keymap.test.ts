@@ -151,6 +151,12 @@ const CASES: Case[] = [
       modifiers: { shiftKey: true },
       means: { kind: "density", by: 1 },
     },
+    {
+      on,
+      key: "_",
+      modifiers: { shiftKey: true },
+      means: { kind: "density", by: -1 },
+    },
     { on, key: "+", modifiers: { ctrlKey: true }, means: undefined },
     { on, key: "-", modifiers: { altKey: true }, means: undefined },
     { on, key: "=", modifiers: { metaKey: true }, means: undefined },
@@ -200,6 +206,9 @@ const CASES: Case[] = [
       }),
     ),
     { on, key: "k", modifiers: { shiftKey: true }, means: undefined },
+    { on, key: "Delete", modifiers: { shiftKey: true }, means: undefined },
+    { on, key: "C", modifiers: { shiftKey: true }, means: undefined },
+    { on, key: "Enter", modifiers: { shiftKey: true }, means: undefined },
     { on, key: "z", modifiers: { ctrlKey: true }, means: undefined },
     // Nothing selected, nothing to move or act on.
     {
