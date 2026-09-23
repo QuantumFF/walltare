@@ -479,11 +479,11 @@ test("the plus and minus keys move the density the wheel does", async () => {
 test("the density stops at each tab's own bounds", async () => {
   viewportWidth(1024);
   // Review's range, #254's one to six: a worklist of fifty has no scale for the
-  // far end to buy, and it goes down to one wallpaper across. It starts on three
-  // however wide the window, where the viewport alone would give four here.
+  // far end to buy, and it goes down to one wallpaper across. It starts on four
+  // however wide the window, which is the viewport's own count here.
   await mount(cards(40), "review");
   await enterGrid();
-  expect(await cardsInARow()).toBe(3);
+  expect(await cardsInARow()).toBe(4);
 
   for (let at = 0; at < 6; at++) await zoom(100);
   expect(await cardsInARow()).toBe(6);

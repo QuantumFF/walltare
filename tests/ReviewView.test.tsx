@@ -204,17 +204,17 @@ test("the density gesture reaches this page too, and stops shorter than Library'
   // The same gesture on the other tab, which is the whole of user story 11:
   // two tabs behaving the same way under the same gesture. What differs is
   // where it stops — a worklist of fifty has no scale to buy at the far end,
-  // so Review stops at six where Library goes to ten, and it starts on three
+  // so Review stops at six where Library goes to ten, and it starts on four
   // (#254, #264).
   //
   // `ArrowDown` is what says how many cards share a row without a layout, since
   // happy-dom reports every card as the same zero-sized box at any density.
   await openReview(Array.from({ length: 20 }, (_, i) => wallpaper(i + 1)));
   await enterGrid();
-  expect(await cardsInARow()).toBe(3);
+  expect(await cardsInARow()).toBe(4);
 
   await zoom(-100);
-  expect(await cardsInARow()).toBe(2);
+  expect(await cardsInARow()).toBe(3);
 
   for (let at = 0; at < 8; at++) await zoom(100);
   expect(await cardsInARow()).toBe(6);
@@ -274,12 +274,12 @@ test("Refresh keeps the cursor on the same wallpaper and the density where it wa
   });
   expect(selected.tabIndex).toBe(0);
 
-  // And two cards to a row is still two, which is the step the wheel left it on
-  // rather than the three this page starts on.
+  // And three cards to a row is still three, which is the step the wheel left it
+  // on rather than the four this page starts on.
   await act(async () => {
     selected.focus();
   });
-  expect(await cardsInARow()).toBe(2);
+  expect(await cardsInARow()).toBe(3);
 });
 
 test("a card changes no shadow on hover, so a wheel scroll stays smooth", async () => {

@@ -528,9 +528,15 @@ export function usePublishedSelection(
 
     const node = nodeAt(index);
     if (!node) return;
+    // A selection that moved under a focus the surface holds was moved by a
+    // key, so its focus is drawn: that is what reveals a card's overlay. Left
+    // to the engine, WebKitGTK copies the last focus, and after a click's
+    // hand-off (ADR 0047) that was an undrawn one. A re-home of the same
+    // entry keeps the guess, and so does an entry a click already focused.
+    const moved = target !== focusedRef.current && node !== active;
     focusedRef.current = target;
     focusRequestRef.current = null;
-    node.focus(request ?? undefined);
+    node.focus(request ?? (moved ? { focusVisible: true } : undefined));
   });
 
   const onFocus = useCallback(() => {

@@ -5,7 +5,7 @@ import {
   RejectDestinationLine,
   useRejectDestination,
 } from "@/components/RejectDestination";
-import { ReviewStrip } from "@/components/ReviewStrip";
+import { FILMSTRIP_START, ReviewStrip } from "@/components/ReviewStrip";
 import { useToaster } from "@/components/ToastSurface";
 import { WallpaperGrid } from "@/components/WallpaperGrid";
 import type { SelectionHandle } from "@/components/selection";
@@ -168,6 +168,11 @@ export function ReviewView() {
    * selection back on a wallpaper the curator has since moved off. A refetch
    * remounts nothing, so it needs no handover at all (#285).
    */
+  // Each layout's density, held here for the same reason: the swap would
+  // otherwise put it back at the start every time.
+  const gridZoom = useState(0);
+  const filmstripStep = useState(FILMSTRIP_START);
+
   const handOver = useRef<number | null>(null);
   const resumeOn = handOver.current;
   // Keyed on the layout change, so an unrelated render between the click and
@@ -379,8 +384,11 @@ export function ReviewView() {
 
            The `animate-in fade-in duration-500` went with the padding. It fired
            on every refetch, so a Refresh flashed the whole grid out and back,
-           and no other view in the app announces itself that way. */
-        <div className="flex h-full w-full flex-col p-4">
+           and no other view in the app announces itself that way.
+
+           It is its own scroller, the way the library page's rows are, so the
+           bar above stays put while the worklist scrolls under it. */
+        <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto p-4">
           {wallpapers.length === 0 ? (
             /* The shared state, so this page's "nothing here" is built the same
                way the library page's two are (ADR 0015). The route out names
@@ -435,11 +443,12 @@ export function ReviewView() {
               minimumResolution={settings.minimum_resolution}
               evaluatedThreshold={settings.evaluated_threshold}
               startOn={resumeOn}
+              filmstripStep={filmstripStep}
             />
           ) : (
             /* The grid's `density` is the same gesture Library answers, on
                #254's range for this tab: one to six cards to a row, starting on
-               three, where Library runs two to ten. This page's cards are
+               four, where Library runs two to ten. This page's cards are
                wallpapers the curator is deciding about, so it stops shorter and
                goes larger (#264). */
             <WallpaperGrid
@@ -454,6 +463,7 @@ export function ReviewView() {
               className="pb-8"
               startOn={resumeOn}
               density="review"
+              zoom={gridZoom}
             />
           )}
         </div>
