@@ -99,11 +99,12 @@ ignorance.
 
 ```ts
 useWallpaperRows({
+  view,         // the page the rows are shown on
+  fetch,        // (setRows) => Promise<void>, the page's own fetch
   belongs,      // (status: Status) => boolean
   destination,  // the page's own useRejectDestination read-out
-  owe,          // from useRefetchWhenShown, for a stale row
   optimistic,   // { selectId } | undefined
-}): { rows, setRows, perform }
+}): { rows, setRows, perform, owe }
 ```
 
 `perform(action, wallpaper)` owns the whole sequence: the origin-less refusal,
@@ -132,13 +133,19 @@ ask for an optimistic removal without saying how the selection comes back.
 its own open question
 ([#162](https://github.com/QuantumFF/walltare/issues/162)).
 
-**`owe` rather than a view name.** Nothing left in the module wants page
-identity, because the toast requests no longer carry a view and the stale-row
-refetch is the page's own fetch.
+**`view` and `fetch`, and the module returns `owe`.** The toast requests no
+longer carry a view, so the only page identity left in here is what
+`useRefetchWhenShown` waits for. The module calls it itself over the page's
+fetch, which is what breaks the cycle each page used to hand-wire through a
+forward-referenced `owe`: the module holds the rows the fetch writes, and the
+fetch is the one the deferral runs
+([#308](https://github.com/QuantumFF/walltare/pull/308)). This amends the
+original `owe` parameter, which took the page's own `useRefetchWhenShown`.
 
 **The fetch stays on the page.** Library's carries a filter, an ordering and a
 scroll reset; Review's carries a loading flag and a limit. Merging those is a
-different argument, and `setRows` is what a page's fetch writes through.
+different argument. The module hands the fetch the `setRows` it writes through
+and decides only when it runs again: after a scan and after a stale-row refusal.
 
 The two patch reducers fold into the module: they were one rule with two
 predicates, which is what `belongs` is. Library's `score-changed` subscription

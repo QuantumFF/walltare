@@ -52,7 +52,7 @@ network traffic.
 
 The redundant-looking `localhost` invites cleanup. Both sides carry a comment
 saying why it is there, and tests on both sides pin the exact string:
-`the_url_the_frontend_builds_is_the_url_this_handler_accepts` in `lib.rs`, and
+`the_url_the_frontend_builds_is_the_url_this_handler_accepts` in `serving.rs`, and
 the `wallpaperImageUrl` test in `tests/client.test.ts`. A companion Rust test
 asserts that the old authority-shaped URL is rejected.
 
