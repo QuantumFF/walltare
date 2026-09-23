@@ -235,6 +235,10 @@ through this file. The epic rules all three out for 1.0.0.
 > `https://th.wallhaven.cc` for Discover's thumbnails, and nothing else.
 > `connect-src` stays local, and the allowlist test gains that one origin as
 > an exact match.
+>
+> **Amended by [ADR 0055](0055-discover-previews-the-full-file.md),
+> 2026-09-24.** `img-src` also gains `https://w.wallhaven.cc`, for Discover's
+> full-size preview. `connect-src` is still local.
 
 **The crate manifest drops to seven direct dependencies.** The epic's phrasing
 is "six to five"; `[dependencies]` in `src-tauri/Cargo.toml` actually listed
