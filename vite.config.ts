@@ -4,7 +4,10 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 // @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST;
+const { TAURI_DEV_HOST: host, WALLTARE_DEV_PORT } = process.env;
+// `bun run dev:app` picks a free one so checkouts can run side by side
+// (scripts/dev-app.ts); plain `bun tauri dev` keeps the port tauri.conf.json names.
+const port = Number(WALLTARE_DEV_PORT ?? 1420);
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -21,19 +24,20 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    port,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: port + 1,
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching `src-tauri`, and `bun run dev:app`'s
+      //    database and thumbnail cache
+      ignored: ["**/src-tauri/**", "**/.dev-data/**"],
     },
   },
 }));
