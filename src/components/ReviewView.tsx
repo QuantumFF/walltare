@@ -15,11 +15,7 @@ import { SegmentedGroup } from "@/components/ui/segmented";
 import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
 import { useKeyboardSurface } from "@/context/KeyboardHandoffContext";
-import {
-  client,
-  type ReviewLayout,
-  type ReviewOrdering,
-} from "@/lib/client";
+import { client, type ReviewLayout, type ReviewOrdering } from "@/lib/client";
 import { cn } from "@/lib/utils";
 import {
   Check,
@@ -185,7 +181,11 @@ export function ReviewView() {
   const fetchReviewList = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await client.listWallpapers("active", ordering, worklistSize);
+      const list = await client.listWallpapers(
+        "active",
+        ordering,
+        worklistSize,
+      );
       setRows(list);
     } catch (err) {
       console.error("Failed to fetch review list:", err);
@@ -274,10 +274,7 @@ export function ReviewView() {
             Pressed and not checked: a `radiogroup` would put the two on the
             arrow keys, and this page spends the arrows on walking the worklist
             (ADR 0019). */}
-        <SegmentedGroup
-          role="group"
-          aria-label="Layout"
-        >
+        <SegmentedGroup role="group" aria-label="Layout">
           {LAYOUTS.map(({ value, label, Icon }) => {
             const current = layout === value;
             return (

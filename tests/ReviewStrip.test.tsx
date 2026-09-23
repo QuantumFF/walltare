@@ -460,9 +460,7 @@ test("the lightbox opens from the strip, on the wallpaper the hero is showing", 
 test("a click on the hero opens the lightbox and is not a keep or a reject", async () => {
   await openStrip([wallpaper(4, { filename: "keeper.jpg" })]);
 
-  await click(
-    reviewView().querySelector('[data-slot="hero"]') as HTMLElement,
-  );
+  await click(reviewView().querySelector('[data-slot="hero"]') as HTMLElement);
 
   expect(screen.getByRole("dialog", { name: "keeper.jpg" })).toBeTruthy();
   expect(entries()).toHaveLength(1);

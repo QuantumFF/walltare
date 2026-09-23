@@ -10,11 +10,7 @@ import {
   usePublishedSelection,
   type SelectionHandle,
 } from "@/components/selection";
-import type {
-  LibraryLayout,
-  Resolution,
-  Wallpaper,
-} from "@/lib/client";
+import type { LibraryLayout, Resolution, Wallpaper } from "@/lib/client";
 import { isUndersized } from "@/lib/copy";
 import {
   NOTHING_MOUNTED,
@@ -798,8 +794,8 @@ export function WallpaperGrid({
   // The density is resolved here, above the branch, because both shapes need
   // the count and neither is the whole grid: the windowed one cuts its rows at
   // it one component down and the cells move the selection by it two. Holding
-  // it here is also what makes the zoom survive a host swapping shapes, which
-  // nothing does today and which the props say nothing to forbid.
+  // it here is also what makes the zoom survive this grid swapping shapes; a
+  // host that swaps this grid for another surface holds it itself (`zoom`).
   const { columns, step } = useDensity(density, zoom);
   return scroller ? (
     <WindowedGrid
@@ -821,11 +817,10 @@ export function WallpaperGrid({
  * They are still the same two facts crossing the same seam; the seam is inside
  * this file now, which is the whole of what that ticket moved.
  */
-interface GridProps
-  extends Omit<
-    WallpaperGridProps,
-    "scroller" | "density" | "zoom" | "layout"
-  > {
+interface GridProps extends Omit<
+  WallpaperGridProps,
+  "scroller" | "density" | "zoom" | "layout"
+> {
   /**
    * How many cards share a row, resolved from the viewport and the curator's
    * zoom together. `WallpaperGrid` above is the one reader of either.
@@ -1001,8 +996,9 @@ function Grid({
     selection,
     onFocus: handleFocus,
     onBlur: handleBlur,
+    moveByKey,
   } = usePublishedSelection(wallpapers, focus, ref, startOn);
-  const { wallpaper: selected, index, moveTo } = selection;
+  const { wallpaper: selected, index } = selection;
 
   // What this commit puts in the DOM, as positions in the whole list — which is
   // every card until a host's window says less. Nothing above this line reads
@@ -1060,7 +1056,7 @@ function Grid({
         onOpen?.(intent.wallpaper);
         break;
       case "move":
-        moveTo(intent.to);
+        moveByKey(intent.to);
         break;
       // Every intent the keymap can hand this surface is answered above, so
       // only an unanswered key reaches here, and a binding newly given to this

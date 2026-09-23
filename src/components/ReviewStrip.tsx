@@ -247,6 +247,7 @@ export function ReviewStrip({
     selection,
     onFocus: handleFocus,
     onBlur: handleBlur,
+    moveByKey,
   } = usePublishedSelection(wallpapers, focus, ref, startOn);
   const { wallpaper: selected, index, moveTo } = selection;
 
@@ -331,7 +332,7 @@ export function ReviewStrip({
         onOpen?.(intent.wallpaper);
         break;
       case "move":
-        moveTo(intent.to);
+        moveByKey(intent.to);
         break;
       // Every intent the keymap can hand this surface is answered above, so
       // only an unanswered key reaches here, and a binding newly given to this

@@ -98,6 +98,15 @@ nothing rather than pulling focus off the lightbox.
 > closes, if the curator has not acted first; a toast's Undo pressed over the
 > picture still leaves the focus alone while the picture is up.
 
+> **Amended by [#304](https://github.com/QuantumFF/walltare/pull/304),
+> 2026-09-23.** A hand-off focuses the surface undrawn, and WebKitGTK draws a
+> focus moved by script the way the last one was drawn, so after a pointer
+> hand-off the arrows moved an overlay nobody could see (#302 reveals it on
+> `:focus-visible` only). A key that moves the selection now asks for the
+> focus it lands drawn (`moveByKey` in `selection.ts`). Only a key: the
+> selection also moves when an action removes the row under it, and a vote made
+> with the mouse must not pin the next card's overlay open.
+
 ## Considered
 
 **`preventDefault` on `mousedown`**, so a clicked control never takes the focus.
