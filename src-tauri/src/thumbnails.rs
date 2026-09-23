@@ -1572,6 +1572,21 @@ mod tests {
     }
 
     #[test]
+    fn an_unreadable_cache_file_is_an_error_not_a_regenerate() {
+        // Only NotFound means "regenerate"; any other read failure surfaces,
+        // as it did when `exists()` guarded the read.
+        let mut library = Library::new();
+        let id = library.seed("u.png", &solid(300, 150, [1, 1, 1, 255]));
+        library.answer(id, Size::Small).unwrap();
+        let path = library.cache_file(id, Size::Small);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        library.relaunch();
+
+        assert!(library.answer(id, Size::Small).is_err());
+    }
+
+    #[test]
     fn a_donor_whose_cache_file_is_gone_falls_back_to_the_source() {
         let library = Library::new();
         let id = library.seed("g.png", &solid(3000, 1000, [10, 200, 10, 255]));
