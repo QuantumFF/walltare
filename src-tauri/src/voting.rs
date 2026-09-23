@@ -164,44 +164,46 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
     // than being spelled here four times (ADR 0024).
     let eligible = db::Status::ELIGIBLE_SQL;
 
-    // `MIN` over no rows is NULL, which is the empty-pool case and reports Round
-    // 1: the app is always about to run Round 1, and a null would make every
-    // consumer branch on a state that has nothing to say.
-    let (eligible_count, floor): (u32, Option<i64>) = conn.query_row(
-        &format!(
-            "SELECT COUNT(*), MIN(comparisons_count) FROM wallpapers
-             WHERE {eligible}"
-        ),
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let round = floor.map_or(1, |f| count_u32(f).saturating_add(1));
-
-    // `>= round`, not `>= round - 1`: the floor is `round - 1` and every
-    // eligible wallpaper sits at or above it by construction, so the looser
-    // comparison would read as a full Round forever.
-    let round_participated_count: u32 = conn.query_row(
-        &format!(
-            "SELECT COUNT(*) FROM wallpapers
-             WHERE {eligible} AND comparisons_count >= ?1"
-        ),
-        [round],
-        |r| r.get(0),
-    )?;
     // The σ bound is the curator's, not this module's: they decide how many
     // Comparisons make a Score trustworthy, and the headline has to count what
     // the badges are showing (CONTEXT.md, ADR 0046). Read here rather than passed
     // in, so `vote`'s follow-up snapshot and a bare `get_stats` cannot be
     // counting against two different thresholds.
     let threshold = crate::settings::evaluated_threshold(conn)?;
-    let evaluated_count: u32 = conn.query_row(
+
+    // One pass over the Eligible pool for every count below; the floor comes
+    // from a CTE because the participated count is measured against it.
+    //
+    // `MIN` over no rows is NULL, which is the empty-pool case and reports Round
+    // 1: the app is always about to run Round 1, and a null would make every
+    // consumer branch on a state that has nothing to say.
+    //
+    // Participated is `>= floor + 1` (i.e. `>= round`), not `>= floor`: every
+    // eligible wallpaper sits at or above the floor by construction, so the
+    // looser comparison would read as a full Round forever. `COUNT(CASE ..)`
+    // rather than `SUM`, so an empty pool yields 0 instead of NULL.
+    let (eligible_count, floor, round_participated_count, evaluated_count): (
+        u32,
+        Option<i64>,
+        u32,
+        u32,
+    ) = conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM wallpapers
-             WHERE {eligible} AND rating_sigma < ?1"
+            "WITH floor AS (
+                 SELECT MIN(comparisons_count) AS m FROM wallpapers WHERE {eligible}
+             )
+             SELECT COUNT(*),
+                    (SELECT m FROM floor),
+                    COUNT(CASE WHEN comparisons_count >= (SELECT m FROM floor) + 1
+                               THEN 1 END),
+                    COUNT(CASE WHEN rating_sigma < ?1 THEN 1 END)
+             FROM wallpapers
+             WHERE {eligible}"
         ),
         [threshold],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
+    let round = floor.map_or(1, |f| count_u32(f).saturating_add(1));
     Ok(Stats {
         total_wallpapers,
         eligible_count,
@@ -683,6 +685,72 @@ mod tests {
         assert_eq!(after.eligible_count, 3);
         assert_eq!(after.round_participated_count, 0);
         assert_eq!(after.total_wallpapers, 4);
+    }
+
+    /// The Eligible counts as four separate queries, the way `get_stats` used
+    /// to take them; the single-pass query must agree with it on any library.
+    fn legacy_eligible_counts(conn: &Connection) -> (u32, u32, u32, u32) {
+        let eligible = db::Status::ELIGIBLE_SQL;
+        let (count, floor): (u32, Option<i64>) = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*), MIN(comparisons_count) FROM wallpapers WHERE {eligible}"
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let round = floor.map_or(1, |f| count_u32(f).saturating_add(1));
+        let participated: u32 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM wallpapers WHERE {eligible} AND comparisons_count >= ?1"
+                ),
+                [round],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let threshold = crate::settings::evaluated_threshold(conn).unwrap();
+        let evaluated: u32 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM wallpapers WHERE {eligible} AND rating_sigma < ?1"),
+                [threshold],
+                |r| r.get(0),
+            )
+            .unwrap();
+        (count, round, participated, evaluated)
+    }
+
+    #[test]
+    fn single_pass_stats_match_the_per_count_queries_on_seeded_libraries() {
+        // Deterministic LCG: the crate has no `rand`, and a fixed sequence is
+        // what a regression test wants anyway.
+        let mut state: u64 = 0x57a7;
+        let mut pick = |n: u64| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            usize::try_from((state >> 33) % n).unwrap()
+        };
+        for _ in 0..50 {
+            let conn = test_conn();
+            let rows = pick(20);
+            for _ in 0..rows {
+                let status = ["active", "kept", "rejected"][pick(3)];
+                let sigma = [0.5, 3.999, 4.0, 4.001, SIGMA][pick(5)];
+                seed_on(&conn, status, MU, sigma, i64::try_from(pick(6)).unwrap());
+            }
+            let s = get_stats(&conn).unwrap();
+            assert_eq!(
+                (
+                    s.eligible_count,
+                    s.round,
+                    s.round_participated_count,
+                    s.evaluated_count
+                ),
+                legacy_eligible_counts(&conn)
+            );
+        }
     }
 
     #[test]

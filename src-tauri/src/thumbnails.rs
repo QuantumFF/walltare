@@ -576,15 +576,24 @@ fn fulfill(plan: &Plan, cache_dir: &Path) -> Result<Resolved, AppError> {
     let cache_path = cache_path(cache_dir, plan.wallpaper_id, plan.size);
 
     if let Some((width, height, recorded)) = plan.cached {
-        if recorded == source_mtime && cache_path.exists() {
-            return Ok(Resolved {
-                thumbnail: Thumbnail {
-                    bytes: std::fs::read(&cache_path)?,
-                    width,
-                    height,
-                },
-                record_mtime: None,
-            });
+        if recorded == source_mtime {
+            // Read straight away rather than checking `exists()` first: a file
+            // missing at read time is the same "regenerate" case, without the
+            // race between the check and the read.
+            match std::fs::read(&cache_path) {
+                Ok(bytes) => {
+                    return Ok(Resolved {
+                        thumbnail: Thumbnail {
+                            bytes,
+                            width,
+                            height,
+                        },
+                        record_mtime: None,
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 
@@ -1715,6 +1724,21 @@ mod tests {
             px[0] > px[2],
             "expected the medium's red, got {px:?} — the source was decoded"
         );
+    }
+
+    #[test]
+    fn an_unreadable_cache_file_is_an_error_not_a_regenerate() {
+        // Only NotFound means "regenerate"; any other read failure surfaces,
+        // as it did when `exists()` guarded the read.
+        let mut library = Library::new();
+        let id = library.seed("u.png", &solid(300, 150, [1, 1, 1, 255]));
+        library.answer(id, Size::Small).unwrap();
+        let path = library.cache_file(id, Size::Small);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        library.relaunch();
+
+        assert!(library.answer(id, Size::Small).is_err());
     }
 
     #[test]
