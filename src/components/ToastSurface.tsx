@@ -9,6 +9,7 @@ import {
   ToastTitle,
   ToastViewport,
 } from "@/components/ui/toast";
+import { Kbd } from "@/components/ui/kbd";
 import { useApp } from "@/context/AppContext";
 import { useHandOffOnPointerPress } from "@/context/KeyboardHandoffContext";
 import {
@@ -705,8 +706,15 @@ export function ToastSurface({
             {transient.undo && (
               // Named twice over: "Undo" on the button, and the binding spelled
               // out for a reader who cannot tab to it inside eight seconds.
-              <ToastAction altText="Undo (Ctrl+Z)" onClick={transient.undo}>
+              <ToastAction
+                altText="Undo (Ctrl+Z)"
+                aria-keyshortcuts="Control+Z"
+                onClick={transient.undo}
+              >
                 Undo
+                {/* The shell's shortcut for this button, printed on it the
+                    way every other action prints its key. */}
+                <Kbd aria-hidden>Ctrl+Z</Kbd>
               </ToastAction>
             )}
 

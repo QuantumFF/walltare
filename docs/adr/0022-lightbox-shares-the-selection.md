@@ -255,6 +255,16 @@ than a key in a hint line, and it survives the row narrowing, because the
 buttons are what never drop. The position, `3 / 50`, stays, because clamping
 made the end of the list mean something.
 
+> **Amended 2026-09-23, at the curator's request.** The row holds up to three
+> buttons now: a **Crop preview** toggle, printing `C`, ahead of the
+> transitions. `C` already answered here with nothing on screen to press, and
+> the Review strip's caption naming it read as text rather than as a control,
+> so both surfaces got the same button. It is one of the buttons, so it never
+> drops either, and the floor is reached on wider pictures than the 382px case
+> above; the read-out still goes first. The transitions are drawn by one
+> `ActionButton` shared with the strip and the card overlay, so the three
+> surfaces show one control rather than three looks for the same decision.
+
 ### The picture never blanks
 
 On a step, the outgoing image stays painted until the next one fires `load`. The

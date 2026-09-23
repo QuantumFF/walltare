@@ -1,4 +1,5 @@
 import { shortcutLines, type ShortcutLine } from "@/components/keymap";
+import { buttonVariants } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
@@ -161,9 +162,12 @@ export function ShortcutsDialog({
 
           <Dialog.Close
             aria-label="Close"
-            className="absolute top-4 right-4 rounded-md p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "icon-sm" }),
+              "absolute top-3 right-3 text-muted-foreground",
+            )}
           >
-            <X className="size-4" />
+            <X />
           </Dialog.Close>
         </Dialog.Content>
       </Dialog.Portal>

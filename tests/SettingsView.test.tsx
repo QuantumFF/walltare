@@ -372,7 +372,8 @@ test("the bar names the page and the way out of it", async () => {
   // could have come from either of the other two, and it names the key that
   // does the same thing, because that route is otherwise invisible.
   const back = backControl() as HTMLButtonElement;
-  expect(back.textContent).toBe("Back to Library· Esc");
+  expect(back.textContent).toBe("Back to LibraryEsc");
+  expect(back.querySelector("kbd")?.textContent).toBe("Esc");
   expect(bar.contains(back)).toBe(true);
 
   await click(back);

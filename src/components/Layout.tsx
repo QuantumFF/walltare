@@ -4,6 +4,8 @@ import { ReviewView } from "@/components/ReviewView";
 import { SettingsView } from "@/components/SettingsView";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { ToastSurface, useToaster } from "@/components/ToastSurface";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { SegmentedGroup } from "@/components/ui/segmented";
 import { useApp, type View } from "@/context/AppContext";
 import {
   KeyboardHandoffProvider,
@@ -136,10 +138,10 @@ function ViewTabs() {
   };
 
   return (
-    <div
+    <SegmentedGroup
       role="tablist"
       aria-label="Views"
-      className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1"
+      className="absolute left-1/2 -translate-x-1/2"
     >
       {TABS.map((tab, index) => (
         <button
@@ -153,28 +155,21 @@ function ViewTabs() {
           tabIndex={index === stop ? 0 : -1}
           onClick={(event) => click(event, index)}
           onKeyDown={(event) => handleKeyDown(event, index)}
-          className={cn(
-            "h-8 rounded-md px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-            view === tab.view
-              ? // A filled tab, where a 2px underline in the foreground colour
-                // used to be. #44 ruled that navigation should not assert itself
-                // as hard as a primary button, and that still holds: the fill is
-                // `secondary`, one step off the background rather than inverted,
-                // so the tab reads as the surface the page hangs from instead of
-                // as the thing to press. What the underline could not do is say
-                // which view is up from across the room, which is the whole job
-                // of this control. The view's own heading stays `sr-only`: a
-                // visible one would render the tab's own word twice, twelve
-                // pixels apart, which is the duplicate ADR 0015 came back to
-                // delete.
-                "bg-secondary font-medium text-foreground"
-              : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-          )}
+          // The segmented track every choice between options sits in, so the
+          // view tabs and a page's filters read as one kind of control. The
+          // current tab is raised off the track rather than inverted: #44 ruled
+          // that navigation should not assert itself as hard as a primary
+          // button, and that still holds, while the raised segment still says
+          // which view is up from across the room. The view's own heading
+          // stays `sr-only`: a visible one would render the tab's own word
+          // twice, twelve pixels apart, which is the duplicate ADR 0015 came
+          // back to delete.
+          className={buttonVariants({ variant: "segment" })}
         >
           {tab.label}
         </button>
       ))}
-    </div>
+    </SegmentedGroup>
   );
 }
 
@@ -201,7 +196,10 @@ function Chrome() {
   };
 
   return (
-    <header className="sticky top-0 z-30 shrink-0 border-b border-border bg-background/95 backdrop-blur">
+    // No rule under it. Every view hangs a `PageBar` directly below, and the
+    // bar's own bottom border is the one edge between the chrome and the page;
+    // a second line one bar above it split one header into two strips.
+    <header className="sticky top-0 z-30 shrink-0 bg-background/95 backdrop-blur">
       <div
         data-slot="chrome-row"
         // The window is undecorated, so this row is the title bar: Tauri moves
@@ -221,21 +219,19 @@ function Chrome() {
 
         <ViewTabs />
 
-        <button
-          type="button"
+        <Button
+          variant={onSettings ? "secondary" : "ghost"}
+          size="icon"
           aria-label="Settings"
           // Not a tab, so it cannot be `aria-selected`. While Settings is up no
-          // tab is underlined and the gear carries the active treatment
-          // instead, and this is that state spelled out for a screen reader.
+          // tab is raised and the gear carries the active treatment instead,
+          // and this is that state spelled out for a screen reader.
           aria-current={onSettings ? "page" : undefined}
           onClick={toggleSettings}
-          className={cn(
-            "ml-auto rounded-md p-2 transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-            onSettings ? "bg-accent text-foreground" : "text-muted-foreground",
-          )}
+          className={cn("ml-auto", !onSettings && "text-muted-foreground")}
         >
-          <SettingsIcon className="h-4 w-4" aria-hidden />
-        </button>
+          <SettingsIcon aria-hidden />
+        </Button>
       </div>
     </header>
   );

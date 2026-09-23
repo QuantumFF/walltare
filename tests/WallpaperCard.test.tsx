@@ -253,7 +253,7 @@ test("a Kept card offers Make Active and Reject", async () => {
   expect(buttonNames()).toEqual(["Make Active wall-1.jpg", "Reject wall-1.jpg"]);
   expect(
     screen.getByRole("button", { name: "Make Active wall-1.jpg" }).textContent,
-  ).toBe("Make Active");
+  ).toBe("Make ActiveK");
 
   await act(async () => {
     fireEvent.click(

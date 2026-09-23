@@ -1,4 +1,5 @@
-import { useCropPreview } from "@/components/CropPreview";
+import { ActionButton } from "@/components/ActionButton";
+import { CropPreviewToggle, useCropPreview } from "@/components/CropPreview";
 import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
 import { useDensityWheel } from "@/components/density";
 import { answerKey, type ListingSurface } from "@/components/keymap";
@@ -7,12 +8,10 @@ import {
   type SelectionHandle,
 } from "@/components/selection";
 import {
-  ACTION_CONTROLS,
   STATUS_ACTIONS,
   type TransitionAction,
 } from "@/components/transitions";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   DEFAULT_EVALUATED_THRESHOLD,
   wallpaperImageUrl,
@@ -392,18 +391,20 @@ export function ReviewStrip({
         </div>
       </div>
 
-      {/* The row under the picture, as #254's prototype laid it out: centred,
-          the filename and Score in one muted line, the crop preview's key, then
-          the decision. It sits between the hero and the filmstrip rather than
-          over the picture, because the picture is the thing being judged and an
-          overlay on it is a judgement made through something.
+      {/* The row under the picture, in the place #254's prototype put it:
+          centred, the filename and Score in one muted line, the crop preview's
+          toggle, then the decision. It sits between the hero and the filmstrip
+          rather than over the picture, because the picture is the thing being
+          judged and an overlay on it is a judgement made through something.
 
-          This is the opposite trade to the lightbox's, on purpose. ADR 0022
-          prints each key on its button and keeps the position because the
-          arrows clamp; the strip carries neither, and names only `C`, because
-          that is the row the curator agreed on in the prototype. The filmstrip
-          under it already shows where the current wallpaper is in the queue,
-          and K, Delete and the arrows are in the `?` dialog. */}
+          What the prototype had in the row has moved on since. It named `C` in
+          a muted caption beside two bare verbs, and on screen the caption read
+          as text rather than as something to press, while the same decision
+          looked like a different control on each of the three surfaces that
+          offer it. So the crop preview is a button now, and every button here
+          prints its key the way the lightbox's and the cards' do. The row still
+          leaves out the lightbox's position, because the filmstrip under it
+          already shows where the current wallpaper is in the queue. */}
       {selected && (
         <div
           data-slot="review-hero-row"
@@ -437,34 +438,24 @@ export function ReviewStrip({
               {UNDERSIZED}
             </Badge>
           )}
-          <span
-            data-slot="review-crop-hint"
-            className="shrink-0 text-xs text-muted-foreground/70"
-          >
-            C: crop preview
-          </span>
+          <CropPreviewToggle />
 
           {/* The decision, without leaving the layout that made it possible.
               One button per action the Status offers, off the same
               `STATUS_ACTIONS` the card's overlay and the lightbox's row render
-              from, so a curator cannot be offered one set here and another
-              there. Review lists Active rows only, so in practice that is Keep
+              from, and drawn by the same `ActionButton`, so a curator cannot be
+              offered one set here and another there, or the same set in another
+              style. Review lists Active rows only, so in practice that is Keep
               and Reject; nothing here branches on the page it is mounted in. */}
-          {STATUS_ACTIONS[selected.status].map((action) => {
-            const { label: actionLabel, destructive } = ACTION_CONTROLS[action];
-            return (
-              <Button
-                key={action}
-                size="sm"
-                variant={destructive ? "destructive" : "default"}
-                aria-label={`${actionLabel} ${selected.filename}`}
-                onClick={() => onAction(action, selected)}
-                className="shrink-0"
-              >
-                {actionLabel}
-              </Button>
-            );
-          })}
+          {STATUS_ACTIONS[selected.status].map((action) => (
+            <ActionButton
+              key={action}
+              action={action}
+              subject={selected.filename}
+              onClick={() => onAction(action, selected)}
+              className="shrink-0"
+            />
+          ))}
         </div>
       )}
 

@@ -1,17 +1,13 @@
-import { useCropPreview } from "@/components/CropPreview";
+import { ActionButton } from "@/components/ActionButton";
+import { CropPreviewToggle, useCropPreview } from "@/components/CropPreview";
 import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
-import {
-  answerKey,
-  printedKey,
-  type ListingSurface,
-} from "@/components/keymap";
+import { answerKey, type ListingSurface } from "@/components/keymap";
 import {
   useSelection,
   type SelectionHandle,
   type WallpaperSelection,
 } from "@/components/selection";
 import {
-  ACTION_CONTROLS,
   STATUS_ACTIONS,
   type TransitionAction,
 } from "@/components/transitions";
@@ -31,7 +27,6 @@ import {
   STATUS_LABEL,
 } from "@/lib/copy";
 import type { Box } from "@/lib/layout-plan";
-import { cn } from "@/lib/utils";
 import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -564,7 +559,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
             // measured. No z-index of its own — the shell's portal node is a
             // `z-50` stacking context, so this paints over the pages and under
             // the toast by sitting in it.
-            className="fixed inset-0 flex flex-col bg-neutral-950/80 outline-none"
+            className="dark fixed inset-0 flex flex-col bg-neutral-950/80 outline-none"
           >
             <div className="relative flex min-h-0 flex-1 items-center justify-center p-8">
               {/* The cell the picture and the row share. The bottom padding is
@@ -669,9 +664,12 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                           and stays off fifty Active cards that would all say
                           the same word; here there is one wallpaper and nothing
                           for it to repeat. */}
-                      <span className="shrink-0 rounded border border-white/20 px-1.5 py-0.5 text-[11px] text-white/70">
+                      <Badge
+                        variant="outline"
+                        className="text-muted-foreground"
+                      >
                         {STATUS_LABEL[wallpaper.status]}
-                      </span>
+                      </Badge>
                     </div>
 
                     {/*
@@ -759,75 +757,32 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                     deliver.
                   */}
                   <div className="flex shrink-0 items-center gap-1.5">
-                    {STATUS_ACTIONS[wallpaper.status].map((action) => {
-                      const { label, Icon, destructive } =
-                        ACTION_CONTROLS[action];
-                      // Known before the press, because ADR 0009 put
-                      // `origin_path` on the DTO for exactly this.
-                      const unavailable =
-                        action === "restore" && wallpaper.origin_path === null;
-                      return (
-                        <Button
-                          key={action}
-                          size="sm"
-                          // Not `disabled`, for ADR 0019's reason: a disabled
-                          // button is not focusable, so the sentence explaining
-                          // why a Rejected wallpaper cannot go back would be
-                          // unreachable by keyboard and silent to a screen
-                          // reader, which is most of the people it is written
-                          // for. `aria-disabled` keeps the control focusable and
-                          // lets it explain itself when pressed.
-                          aria-disabled={unavailable ? true : undefined}
-                          // The verb alone. On a card this carries the filename
-                          // too, because a grid of fifty rows has fifty Keeps in
-                          // it; here there is one wallpaper and the dialog is
-                          // already named by it, so repeating the name on every
-                          // control would be the third time a reader hears it.
-                          // The printed key stays out of the name for the same
-                          // reason it is on the button at all: it is the binding
-                          // shown to an eye, not part of what the control does.
-                          aria-label={label}
-                          // The refusal an origin-less row gets is the host's
-                          // `perform`, so pressing Restore in here, pressing it
-                          // on the card, and pressing `R` on either are one
-                          // event with one outcome (ADR 0023).
-                          onClick={() => onAction(action, wallpaper)}
-                          // The Review strip's pair as the dark theme draws
-                          // it: the dark `--primary` (neutral-200) with its dark
-                          // foreground, and the destructive variant's red tint
-                          // with the dark `--destructive` as the text. Spelled out here
-                          // rather than taken from the variants, because the
-                          // theme tokens follow the page and this ground is dark
-                          // in both themes, so in Light the primary would be a
-                          // near-black button on a near-black backdrop. The base
-                          // variant is `default` because it carries no `dark:`
-                          // classes to outrank these. Not `flex-1`: here the
-                          // buttons are the part of the row that never shrinks.
-                          className={cn(
-                            destructive
-                              ? "bg-red-500/20 text-red-400 hover:bg-red-500/30"
-                              : "bg-neutral-200 text-neutral-900 hover:bg-neutral-200/80",
-                            unavailable &&
-                              "cursor-not-allowed opacity-40 hover:bg-neutral-200",
-                          )}
-                        >
-                          <Icon />
-                          {label}
-                          {/* The key, on the control it fires. It survives the
-                              row narrowing because the buttons are what never
-                              drop, which is why the prototype's
-                              `← → navigate · Esc close` hint went and the
-                              arrows and Escape live in the `?` dialog instead
-                              (ADR 0022). A chip tinted from the button's own
-                              text colour rather than a bordered box, so it
-                              reads as part of the button on both the white one
-                              and the red one. */}
-                          <kbd className="ml-0.5 rounded bg-current/15 px-1 font-mono text-[10px] leading-4 font-normal">
-                            {printedKey(action)}
-                          </kbd>
-                        </Button>
-                      );
-                    })}
+                    <CropPreviewToggle />
+                    {STATUS_ACTIONS[wallpaper.status].map((action) => (
+                      <ActionButton
+                        key={action}
+                        action={action}
+                        // Known before the press, because ADR 0009 put
+                        // `origin_path` on the DTO for exactly this.
+                        unavailable={
+                          action === "restore" && wallpaper.origin_path === null
+                        }
+                        // No `subject`, so the name is the verb alone. On a card
+                        // it carries the filename too, because a grid of fifty
+                        // rows has fifty Keeps in it; here there is one
+                        // wallpaper and the dialog is already named by it, so
+                        // repeating the name on every control would be the
+                        // third time a reader hears it. The printed key stays
+                        // out of the name for the same reason it is on the
+                        // button at all: it is the binding shown to an eye, not
+                        // part of what the control does.
+                        // The refusal an origin-less row gets is the host's
+                        // `perform`, so pressing Restore in here, pressing it
+                        // on the card, and pressing `R` on either are one
+                        // event with one outcome (ADR 0023).
+                        onClick={() => onAction(action, wallpaper)}
+                      />
+                    ))}
                   </div>
                 </div>
               </div>
@@ -855,36 +810,42 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                 keys clamp at the same place, so a control nobody can focus
                 takes nothing away from anybody.
               */}
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="icon-lg"
                 aria-label="Previous wallpaper"
                 tabIndex={-1}
                 disabled={atFirst}
                 onClick={() => step(-1)}
-                className="absolute top-1/2 left-2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-white/10"
+                className="absolute top-1/2 left-2 -translate-y-1/2 rounded-full"
               >
-                <ChevronLeft className="h-6 w-6" />
-              </button>
+                <ChevronLeft className="size-5" />
+              </Button>
 
-              <button
-                type="button"
+              <Button
+                variant="secondary"
+                size="icon-lg"
                 aria-label="Next wallpaper"
                 tabIndex={-1}
                 disabled={atLast}
                 onClick={() => step(1)}
-                className="absolute top-1/2 right-2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-white/10"
+                className="absolute top-1/2 right-2 -translate-y-1/2 rounded-full"
               >
-                <ChevronRight className="h-6 w-6" />
-              </button>
+                <ChevronRight className="size-5" />
+              </Button>
 
               {/* The way out for a pointer, and under ADR 0019 the only one a
                   touchscreen has: there is no hover to reveal and no Escape to
                   press. */}
-              <Dialog.Close
-                aria-label="Close"
-                className="absolute top-2 right-2 rounded-full bg-white/10 p-2 text-white outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60"
-              >
-                <X className="h-5 w-5" />
+              <Dialog.Close asChild>
+                <Button
+                  variant="secondary"
+                  size="icon-lg"
+                  aria-label="Close"
+                  className="absolute top-2 right-2 rounded-full"
+                >
+                  <X className="size-5" />
+                </Button>
               </Dialog.Close>
             </div>
           </Dialog.Content>

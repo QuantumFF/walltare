@@ -140,10 +140,13 @@ test("a keep raises its toast, with the Undo named twice over", async () => {
 
   expect(toast()).toEqual({ title: "Kept wall-7.jpg", description: null });
 
-  // The word on the button, and the binding spelled out for a reader who
-  // cannot tab to it inside eight seconds.
+  // The word on the button, the key chip beside it for an eye, the binding
+  // named to a screen reader, and spelled out for a reader who cannot tab to it
+  // inside eight seconds.
   const undo = undoButton();
-  expect(undo?.textContent).toBe("Undo");
+  expect(undo?.textContent).toBe("UndoCtrl+Z");
+  expect(undo?.querySelector("kbd")?.getAttribute("aria-hidden")).toBe("true");
+  expect(undo?.getAttribute("aria-keyshortcuts")).toBe("Control+Z");
   expect(undo?.getAttribute("aria-label") ?? "").toBe("");
   expect(screen.getByRole("status").textContent).toContain("Undo (Ctrl+Z)");
 });

@@ -439,7 +439,8 @@ function opensFrom(target: EventTarget | null, surface: ListingSurface) {
 /**
  * The key that fires an action, spelled as the control firing it prints it:
  * `Keep K`, `Reject Del`, `Restore R`, and `Make Active K` for the other end of
- * the keep slot (#140).
+ * the keep slot (#140) — and `C` on the crop preview's toggle, a button that
+ * fires one of the table's plain intents rather than a transition.
  *
  * Read out of the table rather than written a second time beside the labels, so
  * a rebinding takes the print with it: a button carrying a key that no longer
@@ -448,12 +449,30 @@ function opensFrom(target: EventTarget | null, surface: ListingSurface) {
  * narrowing. Every action is bound, so the empty string is what a future unbound
  * one would print rather than a case the app reaches.
  */
-export function printedKey(action: TransitionAction): string {
-  const bound = TABLE.find(
-    ({ does }) =>
-      typeof does === "object" && "act" in does && does.act.includes(action),
-  );
+export function printedKey(action: ButtonBinding): string {
+  const bound = bindingOf(action);
   return bound ? (bound.button ?? bound.printed) : "";
+}
+
+/**
+ * The same key as a button's `aria-keyshortcuts` names it: the table's own
+ * spelling, which for every key a button fires is the one ARIA uses —
+ * `Delete` where the button prints `Del`. The chip is hidden from a screen
+ * reader, so this is where the binding reaches one.
+ */
+export function keyShortcut(action: ButtonBinding): string {
+  return bindingOf(action)?.printed ?? "";
+}
+
+/** What a button can fire: a transition, or one of the table's plain intents. */
+type ButtonBinding = TransitionAction | Extract<Does, string>;
+
+function bindingOf(action: ButtonBinding): Binding | undefined {
+  return TABLE.find(({ does }) =>
+    typeof does === "object"
+      ? "act" in does && does.act.some((acts) => acts === action)
+      : does === action,
+  );
 }
 
 /** One line of the shortcuts dialog. */

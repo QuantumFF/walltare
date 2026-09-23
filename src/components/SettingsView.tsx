@@ -26,6 +26,7 @@ import {
 } from "@/components/ScreenSections";
 import { ThumbnailsSection } from "@/components/ThumbnailsSection";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import { useApp, type View } from "@/context/AppContext";
 import { useKeyboardHandoff } from "@/context/KeyboardHandoffContext";
 import { useScanRun } from "@/context/ScanRunContext";
@@ -438,19 +439,20 @@ export function SettingsView() {
 
         {returnTo && (
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             className="ml-auto"
+            aria-keyshortcuts="Escape"
             onClick={() => goBack(returnTo)}
           >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
+            <ArrowLeft aria-hidden />
             Back to {RETURN_LABEL[returnTo]}
             {/* Two of the three ways out are invisible — Escape, and the gear
                 that toggles back — so the one control that is visible says which
                 key does the same thing. There is no Done beside it, because a
                 button that only navigates would look like the Save this page
                 does not have (ADR 0020). */}
-            <span className="text-muted-foreground">· Esc</span>
+            <Kbd aria-hidden>Esc</Kbd>
           </Button>
         )}
       </PageBar>

@@ -260,16 +260,20 @@ test("the hero's Score badge reads against the curator's Evaluated threshold (#2
 /** How tall the filmstrip draws its entries, in pixels, off the one it marks. */
 const entryHeight = () => Number.parseFloat(marked()[0]?.style.height ?? "");
 
-test("the hero row names the crop preview's key, as the prototype did (#254)", async () => {
+test("the hero row puts the crop preview and the decision on buttons that print their keys", async () => {
   await openStrip([wallpaper(1, { filename: "first.jpg" })]);
 
   const row = reviewView().querySelector(
     '[data-slot="review-hero-row"]',
   ) as HTMLElement;
   expect(row.textContent).toContain("first.jpg");
-  expect(
-    row.querySelector('[data-slot="review-crop-hint"]')?.textContent,
-  ).toBe("C: crop preview");
+  // A button rather than a caption naming `C`, and the same key chip the
+  // lightbox's and the cards' buttons carry.
+  const key = (name: RegExp | string) =>
+    within(row).getByRole("button", { name }).querySelector("kbd")?.textContent;
+  expect(key(/Crop preview/)).toBe("C");
+  expect(key("Keep first.jpg")).toBe("K");
+  expect(key("Reject first.jpg")).toBe("Del");
 });
 
 test("plus and minus size the filmstrip, clamped at both ends (#264)", async () => {

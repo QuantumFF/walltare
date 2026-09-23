@@ -29,6 +29,13 @@
     }
 }
 
+/*
+ * Whichever way an option says it is the current one: a pressed filter, a
+ * selected tab, a checked radio. The segmented track carries all three, and
+ * one variant keeps its "raised" treatment written once instead of three times.
+ */
+@custom-variant current (&:is([aria-pressed="true"], [aria-selected="true"], [aria-checked="true"]));
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Geist Variable', sans-serif;
@@ -72,7 +79,14 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-:root {
+/*
+ * `.dark` as well as `:root`, so the class can also go on a subtree: the
+ * lightbox and a card's overlay sit on a dark ground in both themes, and a
+ * `.dark` on them resolves the stock variants against the dark palette rather
+ * than each surface painting its own colours.
+ */
+:root,
+.dark {
     /*
      * The palette below only reaches what we paint ourselves. A native control
      * and a scrollbar are drawn by the UA from its own appearance, and

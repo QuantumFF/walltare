@@ -2,6 +2,7 @@ import * as React from "react"
 import { Toast as ToastPrimitive } from "radix-ui"
 import { X } from "lucide-react"
 
+import { buttonVariants } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 
 /**
@@ -123,7 +124,10 @@ function ToastAction({
       // is the only route to this button for a reader who cannot tab to it
       // inside eight seconds, and Radix announces it in place of the label.
       className={cn(
-        "col-start-2 row-start-1 row-span-2 ml-3 self-center rounded-md font-medium underline underline-offset-4 outline-none hover:no-underline focus-visible:ring-3 focus-visible:ring-ring/50",
+        // The app's outlined button rather than an underlined link, so the one
+        // action a toast offers looks like every other action in the window.
+        buttonVariants({ variant: "outline", size: "sm" }),
+        "col-start-2 row-start-1 row-span-2 ml-3 self-center",
         className,
       )}
       {...props}
@@ -142,12 +146,13 @@ function ToastClose({
       data-slot="toast-close"
       aria-label={ariaLabel}
       className={cn(
-        "col-start-3 row-start-1 row-span-2 ml-3 self-center rounded-md p-1 text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50",
+        buttonVariants({ variant: "ghost", size: "icon-xs" }),
+        "col-start-3 row-start-1 row-span-2 ml-3 self-center text-muted-foreground",
         className,
       )}
       {...props}
     >
-      {children ?? <X className="size-3.5" />}
+      {children ?? <X />}
     </ToastPrimitive.Close>
   )
 }

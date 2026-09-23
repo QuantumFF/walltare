@@ -37,7 +37,9 @@ export function EmptyState({
     <div className="flex h-full flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
       <Icon className="h-10 w-10 text-muted-foreground/30" aria-hidden />
       <p className="text-sm text-muted-foreground">{children}</p>
-      <Button variant="link" onClick={onAction}>
+      {/* Outlined, as Rank's own way out of an empty pool is: the route is an
+          action, and an action in this app is a button that looks like one. */}
+      <Button variant="outline" onClick={onAction}>
         {action}
       </Button>
     </div>
