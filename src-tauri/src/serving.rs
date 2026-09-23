@@ -2,9 +2,9 @@
 //!
 //! One way in: [`serve`] takes the wallpaper id and the [`Size`] the protocol
 //! closure read off the URL, and answers the webview with a response. The
-//! worker pool, ADR 0004's three phases, the success headers and the mapping
-//! from an [`AppError`] to a status are all in here, and none of them is
-//! reachable from anywhere else.
+//! worker pool, the flight table, the success headers and the mapping from an
+//! [`AppError`] to a status are all in here, and none of them is reachable from
+//! anywhere else.
 //!
 //! Before this module they were four things in three places — a Tauri closure,
 //! an `mpsc` channel, and three free functions in `lib.rs` — and none of it was
@@ -17,21 +17,22 @@
 //! in memory, so a warm hit still costs a channel hop, two lock acquisitions, a
 //! `stat`, an `exists` and a file read.
 //!
-//! All three of those answers now live here
-//! ([#228](https://github.com/QuantumFF/walltare/issues/228), ADR 0040), and
-//! they are three types in this file:
+//! Two of those answers live here
+//! ([#228](https://github.com/QuantumFF/walltare/issues/228), ADR 0040), and they
+//! are two types in this file:
 //!
 //! - [`ImageWorkers`] is a stack rather than a queue, so the newest request —
 //!   the one whose card is most likely still on screen — is served first, and
 //!   nothing is dropped.
 //! - [`InFlight`] gives a request that arrives while an identical one is being
 //!   answered the first one's answer.
-//! - [`ImageCache`] holds the bytes of the last few hundred thumbnails, so a
-//!   card that scrolls back into view costs a hash lookup and a copy.
 //!
-//! A request meets them in that order on the way down and the reverse on the way
-//! back, and none of the three is visible to the webview, to `lib.rs`, or to the
-//! frontend's three callers of `wallpaperImageUrl`.
+//! The third, the bytes of the last few hundred thumbnails in memory, is the
+//! thumbnail cache's (#280): what fills it and what empties it are operations of
+//! [`ThumbnailCache`], and this module only asks it. A request meets the three
+//! in the order memory, flight, work on the way down, and none of them is
+//! visible to the webview, to `lib.rs`, or to the frontend's three callers of
+//! `wallpaperImageUrl`.
 //!
 //! [`ImageWorkers`] has two producers rather than one
 //! ([#232](https://github.com/QuantumFF/walltare/issues/232)). The
@@ -43,7 +44,6 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -51,34 +51,14 @@ use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Manager, UriSchemeResponder};
 
 use crate::error::AppError;
-use crate::thumbnails::{self, Plan, Resolved, Size};
-use crate::{CacheDir, Db};
+use crate::thumbnails::{self, Size, ThumbnailCache};
+use crate::Db;
 
 /// Concurrent thumbnail generations. The review grid requests fifty images at
 /// once and a 4K decode holds tens of megabytes, so an unbounded thread per
 /// request would spike memory and thrash the CPU.
 const IMAGE_WORKER_FLOOR: usize = 2;
 const IMAGE_WORKER_CEILING: usize = 8;
-
-/// How many thumbnails [`ImageCache`] holds at once.
-///
-/// An entry count, and it bounds memory because an entry's size is bounded:
-/// ADR 0012 measured a `small` at about 31KB and a `medium` at about 383KB, and
-/// both are capped by a maximum width — 400px and 1920px — rather than by the
-/// source. So 256 entries is about 8MB of `small`s, which is the shape a scroll
-/// through Library or Review produces, and 98MB in the pathological case of
-/// nothing but `medium`s, which takes 256 lightbox steps with no revisit to
-/// reach. Next to the 2GB of disk cache ADR 0016 already allows at its ceiling,
-/// the first number is nothing and the second is affordable.
-///
-/// It is sized to hold more than the views can show. Review mounts fifty cards
-/// and Library's virtual window with ADR 0016's one row of overscan is around
-/// thirty five, so 256 covers both grids at once plus several screens of
-/// scrollback and the lightbox's `medium`s — a wheel gesture down and back up
-/// hits memory the whole way.
-///
-/// `full` is not held at all; [`ImageCache::store`] says why.
-const IMAGE_CACHE_ENTRIES: usize = 256;
 
 /// Five minutes is measured against the only thing that invalidates a
 /// thumbnail: the source file's mtime changing when someone edits a wallpaper
@@ -108,7 +88,7 @@ const IMAGE_CACHE_CONTROL: &str = "max-age=300";
 const ERROR_CACHE_CONTROL: &str = "max-age=30";
 
 /// One wallpaper at one size, which is everything a `wallpaper://` URL says and
-/// so the key all three of this module's answers are held under.
+/// so the key a flight is held under.
 type Key = (i64, Size);
 
 /// What a request came away with: the JPEG bytes, or why there are none.
@@ -119,20 +99,18 @@ type Key = (i64, Size);
 /// per waiter.
 type Answer = Result<Arc<Vec<u8>>, AppError>;
 
-/// Starts the threads that answer `wallpaper://` requests, and the two tables
+/// Starts the threads that answer `wallpaper://` requests, and the flight table
 /// they answer through.
 ///
-/// Called once from `setup`, so the pool is up before the first card asks.
-/// Nothing outside this module names the stack, either lane or the job type,
-/// which is what keeps the admission policy a change to this file and to nothing
-/// else. Two things are reachable from outside and each is one method wide:
-/// [`ImageCache`] for what invalidates it, since Settings' Clear thumbnail cache
-/// throws away rows and files in `lib.rs` and the bytes have to go with them, and
-/// [`ImageWorkers::background`] for the pre-generation pass, which is the second
-/// producer and cannot reach the lane any other way.
+/// Called once from `setup`, after the [`ThumbnailCache`] is managed, so the pool
+/// is up before the first card asks. Nothing outside this module names the
+/// stack, either lane or the job type, which is what keeps the admission policy
+/// a change to this file and to nothing else. One thing is reachable from
+/// outside and it is one method wide: [`ImageWorkers::background`] for the
+/// pre-generation pass, which is the second producer and cannot reach the lane
+/// any other way.
 pub fn start(app: &AppHandle) {
     app.manage(ImageWorkers::new(worker_count()));
-    app.manage(ImageCache::new(IMAGE_CACHE_ENTRIES));
     app.manage(InFlight::default());
 }
 
@@ -155,12 +133,11 @@ pub fn serve(
 ) {
     // A hit answers here, on the UI thread, and that is deliberate. The channel
     // hop is one of the six costs #224 counted against a warm request, and this
-    // is the one place it can be skipped. What the UI thread does is take a
-    // mutex held only for a hash lookup, and copy at most a `medium` — never a
-    // `stat`, never a file read, never a decode, and never a lock any of those
-    // are holding.
+    // is the one place it can be skipped. What the UI thread does is
+    // [`ThumbnailCache::remembered`] — a mutex held only for a hash lookup — and
+    // a copy of at most a `medium`.
     if let Ok((wallpaper_id, size)) = asked_for {
-        if let Some(bytes) = app.state::<ImageCache>().get(wallpaper_id, size) {
+        if let Some(bytes) = app.state::<ThumbnailCache>().remembered(wallpaper_id, size) {
             responder.respond(image_response(bytes.to_vec()));
             return;
         }
@@ -172,18 +149,11 @@ pub fn serve(
         let response = match asked_for {
             Ok((wallpaper_id, size)) => {
                 let db = handle.state::<Db>();
-                let cache_dir = handle.state::<CacheDir>();
-                let memory = handle.state::<ImageCache>();
+                let cache = handle.state::<ThumbnailCache>();
                 let in_flight = handle.state::<InFlight>();
-                answer(
-                    &db,
-                    &cache_dir.0,
-                    &memory,
-                    &in_flight,
-                    wallpaper_id,
-                    size,
-                    thumbnails::fulfill,
-                )
+                answer(&in_flight, wallpaper_id, size, || {
+                    cache.answer(&db, wallpaper_id, size)
+                })
             }
             Err(e) => error_response(&e),
         };
@@ -194,40 +164,24 @@ pub fn serve(
 
 /// One wallpaper at one size, as the response the webview gets.
 ///
-/// The function the tests drive. It takes the connection, the cache directory
-/// and the two tables rather than an `AppHandle` so that driving it needs
-/// neither a running Tauri app nor a protocol handler — an in-memory database
-/// and a temp directory are the whole of the setup.
+/// The function the tests drive. It takes the flight table and the work rather
+/// than an `AppHandle` so that driving it needs neither a running Tauri app nor
+/// a protocol handler — an in-memory database and a temp directory behind a
+/// [`ThumbnailCache`] are the whole of the setup.
 ///
-/// The three answers in the order a request meets them: the bytes in memory,
-/// then an identical request already being answered, then the work. Production
-/// always passes [`thumbnails::fulfill`] for the last of those; a test passes a
-/// phase two it can count, which is how "two concurrent requests decode once" is
-/// asserted rather than described.
-#[allow(clippy::too_many_arguments)]
-fn answer<F>(
-    db: &Db,
-    cache_dir: &Path,
-    memory: &ImageCache,
+/// An identical request already being answered is joined, and otherwise this
+/// request does the work. Production always passes the thumbnail cache's
+/// [`ThumbnailCache::answer`], which asks memory first; a test passes work it
+/// can count, which is how "two concurrent requests decode once" is asserted
+/// rather than described.
+fn answer(
     in_flight: &InFlight,
     wallpaper_id: i64,
     size: Size,
-    fulfill: F,
-) -> Response<Vec<u8>>
-where
-    F: FnOnce(&Plan, &Path) -> Result<Resolved, AppError>,
-{
-    // Checked again here, having been checked on the UI thread: a request that
-    // queued behind an identical one may have been overtaken by its answer,
-    // which under a stack is the common case rather than the rare one.
-    if let Some(bytes) = memory.get(wallpaper_id, size) {
-        return image_response(bytes.to_vec());
-    }
-
+    work: impl FnOnce() -> Answer,
+) -> Response<Vec<u8>> {
     let answer = match in_flight.join(wallpaper_id, size) {
-        Joined::Leading(leader) => {
-            leader.publish(generate(db, cache_dir, memory, wallpaper_id, size, fulfill))
-        }
+        Joined::Leading(leader) => leader.publish(work()),
         Joined::Waiting(answer) => answer,
     };
 
@@ -235,76 +189,6 @@ where
         Ok(bytes) => image_response(bytes.to_vec()),
         Err(e) => error_response(e),
     }
-}
-
-/// The work a miss costs, and the one place bytes enter [`ImageCache`].
-fn generate<F>(
-    db: &Db,
-    cache_dir: &Path,
-    memory: &ImageCache,
-    wallpaper_id: i64,
-    size: Size,
-    fulfill: F,
-) -> Answer
-where
-    F: FnOnce(&Plan, &Path) -> Result<Resolved, AppError>,
-{
-    let served = phases(db, cache_dir, wallpaper_id, size, fulfill)?;
-    let bytes = Arc::new(served.bytes);
-    if served.regenerated {
-        // These bytes were made from the source as it is now, so every other
-        // size of this wallpaper in memory was made from an older read of it.
-        // The source's mtime moving is the only thing that invalidates a
-        // thumbnail (ADR 0016), and a regenerate is this module hearing that it
-        // moved — for one size, about a file all the sizes share.
-        //
-        // A first generation of a second size lands here too, and drops a
-        // sibling that was in fact still fresh. That costs one cache-file read
-        // the next time the sibling is asked for; keeping a stale one would show
-        // the curator the wrong picture until it fell out of the cache.
-        memory.forget(wallpaper_id);
-    }
-    memory.store(wallpaper_id, size, Arc::clone(&bytes));
-    Ok(bytes)
-}
-
-/// What phase two came away with, and whether it did the work.
-struct Served {
-    bytes: Vec<u8>,
-    /// `true` when phase two generated the bytes, `false` when it read the cache
-    /// file. The same thing [`thumbnails::record`] reads to decide whether there
-    /// is a row to write, and [`generate`] reads it to decide what in memory the
-    /// generation just invalidated.
-    regenerated: bool,
-}
-
-/// ADR 0004's three phases, in the order `pregen::generate_one` mirrors: the
-/// plan under the connection, the image work with it released, the record under
-/// it again.
-///
-/// Phase two is a parameter, and production always passes
-/// [`thumbnails::fulfill`]. It is what makes the split assertable rather than
-/// merely written down: the connection being free across the decode is the half
-/// of ADR 0039's rule no type can hold, and a `plan` whose guard survived into
-/// a temporary would compile, return the right bytes, and quietly serialize
-/// every request in the app behind one decode.
-fn phases<F>(
-    db: &Db,
-    cache_dir: &Path,
-    wallpaper_id: i64,
-    size: Size,
-    fulfill: F,
-) -> Result<Served, AppError>
-where
-    F: FnOnce(&Plan, &Path) -> Result<Resolved, AppError>,
-{
-    let plan = db.read(|conn| thumbnails::plan(conn, wallpaper_id, size))?;
-    let resolved = fulfill(&plan, cache_dir)?;
-    db.write(|conn| thumbnails::record(conn, &plan, &resolved))?;
-    Ok(Served {
-        regenerated: resolved.record_mtime.is_some(),
-        bytes: resolved.thumbnail.bytes,
-    })
 }
 
 fn image_response(body: Vec<u8>) -> Response<Vec<u8>> {
@@ -333,136 +217,6 @@ fn error_response(e: &AppError) -> Response<Vec<u8>> {
         .header(tauri::http::header::CACHE_CONTROL, ERROR_CACHE_CONTROL)
         .body(serde_json::to_vec(e).unwrap_or_default())
         .unwrap()
-}
-
-/// The JPEG bytes of the thumbnails asked for most recently, bounded by
-/// [`IMAGE_CACHE_ENTRIES`] and evicting whichever has gone unasked-for longest.
-///
-/// This is where ADR 0016's parked `Map<id, blob>` landed. It sits behind
-/// [`serve`], on the side that already holds the bytes, so it serves all three
-/// callers that ADR named — the library card, the review card and the lightbox's
-/// two sizes — without any of them knowing it exists.
-///
-/// What it is worth is the six costs a warm request paid: a channel hop, two
-/// mutex acquisitions, a `stat`, an `exists` and a full file read, for bytes the
-/// process was already holding a moment ago. A hit is a hash lookup and a copy.
-///
-/// Bytes go in from [`generate`] and come out of [`ImageCache::get`]. What takes
-/// them back out is the three things that invalidate a thumbnail: Clear
-/// thumbnail cache calls [`ImageCache::forget_all`], a purge of one wallpaper
-/// calls [`ImageCache::forget`], and a regenerate is [`generate`]'s own business.
-/// Nothing here expires on a clock — see ADR 0040 for what that costs.
-pub struct ImageCache {
-    entries: Mutex<Entries>,
-    capacity: usize,
-}
-
-#[derive(Default)]
-struct Entries {
-    held: HashMap<Key, Held>,
-    /// Ticks on every read and every insert, so the smallest stamp in the map is
-    /// the least recently used entry. A `u64` of request counter overflows after
-    /// more requests than a hundred lifetimes of scrolling.
-    clock: u64,
-}
-
-struct Held {
-    bytes: Arc<Vec<u8>>,
-    used: u64,
-}
-
-impl ImageCache {
-    fn new(capacity: usize) -> Self {
-        Self {
-            entries: Mutex::new(Entries::default()),
-            capacity,
-        }
-    }
-
-    /// The bytes for one wallpaper at one size, if they are still held, and a
-    /// note that they were wanted.
-    fn get(&self, wallpaper_id: i64, size: Size) -> Option<Arc<Vec<u8>>> {
-        let mut entries = self.entries();
-        entries.clock += 1;
-        let used = entries.clock;
-        let held = entries.held.get_mut(&(wallpaper_id, size))?;
-        held.used = used;
-        Some(Arc::clone(&held.bytes))
-    }
-
-    /// Holds one thumbnail's bytes, evicting the coldest entries if that puts
-    /// the map over its bound.
-    fn store(&self, wallpaper_id: i64, size: Size, bytes: Arc<Vec<u8>>) {
-        // `full` is never held. The bound is an entry count, and an entry count
-        // bounds memory only while an entry's size is bounded: a `small` is at
-        // most 400px wide and a `medium` at most 1920, while `full` re-encodes
-        // the source at whatever resolution it has, so one entry could be tens
-        // of megabytes and 256 of them could be gigabytes. Nothing in the app
-        // asks for `full` — the card and the filmstrip ask for `small`, Rank and
-        // the lightbox for `medium` — so this costs nothing and keeps the
-        // constant's arithmetic closed.
-        if size == Size::Full {
-            return;
-        }
-        let mut entries = self.entries();
-        entries.clock += 1;
-        let used = entries.clock;
-        entries
-            .held
-            .insert((wallpaper_id, size), Held { bytes, used });
-
-        while entries.held.len() > self.capacity {
-            // A scan of at most `capacity` stamps rather than an intrusive list,
-            // and it runs only on the insert after a miss — which has just paid
-            // a cache-file read or a whole decode, either of which is orders of
-            // magnitude more than 256 integer comparisons (ADR 0040).
-            let coldest = entries
-                .held
-                .iter()
-                .min_by_key(|(_, held)| held.used)
-                .map(|(key, _)| *key);
-            match coldest {
-                Some(key) => entries.held.remove(&key),
-                None => break,
-            };
-        }
-    }
-
-    /// Forgets every size of one wallpaper.
-    ///
-    /// A purge and a regenerate are both about a source file, and every size
-    /// came off that one file, so neither invalidates a size at a time.
-    pub fn forget(&self, wallpaper_id: i64) {
-        self.entries().held.retain(|(id, _), _| *id != wallpaper_id);
-    }
-
-    /// Forgets everything, for Settings' Clear thumbnail cache.
-    ///
-    /// The third half of that operation: `lib.rs` unlinks the files, deletes the
-    /// rows, and calls this. A curator who asked for the cache to be thrown away
-    /// and then saw the same thumbnails come back would have been told the
-    /// button does not work.
-    pub fn forget_all(&self) {
-        self.entries().held.clear();
-    }
-
-    /// Recovers from poisoning rather than bricking every later request, the way
-    /// `Db::connection` does and for the same reason: nothing under this guard
-    /// leaves the map inconsistent, so reusing it is strictly better than
-    /// refusing to serve an image for the rest of the process.
-    fn entries(&self) -> MutexGuard<'_, Entries> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Whether one thumbnail's bytes are held, without counting as a use.
-    ///
-    /// Tests only, and eviction is why: asking the question through
-    /// [`ImageCache::get`] would move the entry to the most recently used end
-    /// and change the answer to the next question.
-    #[cfg(test)]
-    fn holds(&self, wallpaper_id: i64, size: Size) -> bool {
-        self.entries().held.contains_key(&(wallpaper_id, size))
-    }
 }
 
 /// The requests being answered right now, so a second one for the same
@@ -593,7 +347,7 @@ impl Leader<'_> {
         }
         self.settled = true;
         self.in_flight.flights().remove(&self.key);
-        let settled = answer.unwrap_or_else(|| Arc::new(Err(panicked())));
+        let settled = answer.unwrap_or_else(|| Arc::new(Err(thumbnails::panicked())));
         *self
             .flight
             .answer
@@ -611,15 +365,6 @@ impl Drop for Leader<'_> {
     fn drop(&mut self) {
         self.settle(None);
     }
-}
-
-/// What image work is answered with when it panicked rather than finished.
-///
-/// One sentence in one place, because both producers can hear it: a follower
-/// gets it from [`Leader`]'s `Drop`, and the pre-generation pass gets it from
-/// [`ImageWorkers::background`] coming back with nothing.
-pub fn panicked() -> AppError {
-    AppError::Image("generating the thumbnail panicked".to_string())
 }
 
 /// A fixed set of threads for image work: `wallpaper://` requests newest first,
@@ -821,22 +566,21 @@ mod tests {
     use super::*;
     use crate::db;
     use image::{DynamicImage, Rgba, RgbaImage};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::mpsc;
 
     /// A library holding one 800x600 wallpaper, a cache directory beside it, a
-    /// `Db` over an in-memory database, and the two tables a request passes
-    /// through. No Tauri app and no protocol handler: the module's own interface
-    /// is the whole seam.
+    /// `Db` over an in-memory database, the [`ThumbnailCache`] over both and the
+    /// flight table a request passes through. No Tauri app and no protocol
+    /// handler: the module's own interface is the whole seam.
     ///
-    /// The two directories are separate, the way they are in production — the
-    /// cache lives under `app_data` and the Library root is wherever the curator
-    /// keeps their wallpapers. Sharing one would make emptying the cache delete
-    /// the library, which is the difference between a test that clears a cache
-    /// and one that only looks like it.
+    /// What a thumbnail is — generated, read back, held in memory, invalidated —
+    /// is the thumbnail cache's, and tested there. What is tested here is what a
+    /// request adds: the response the webview gets, and one answer for two
+    /// identical requests.
     struct Library {
         db: Db,
-        memory: ImageCache,
+        thumbnails: ThumbnailCache,
         in_flight: InFlight,
         /// Deleted when the fixture is, which is what keeps every path below
         /// valid for the length of a test and no longer.
@@ -868,7 +612,7 @@ mod tests {
 
         Library {
             db: Db::new(conn),
-            memory: ImageCache::new(IMAGE_CACHE_ENTRIES),
+            thumbnails: ThumbnailCache::new(cache.clone()),
             in_flight: InFlight::default(),
             _dir: dir,
             cache,
@@ -878,31 +622,18 @@ mod tests {
     }
 
     impl Library {
-        fn cache_dir(&self) -> &Path {
-            &self.cache
-        }
-
         fn cache_file(&self, size: &str) -> PathBuf {
             self.cache.join(format!("{}_{size}.jpg", self.wallpaper_id))
         }
 
         fn serve(&self, size: Size) -> Response<Vec<u8>> {
-            self.serve_with(size, thumbnails::fulfill)
+            self.serve_id(self.wallpaper_id, size)
         }
 
-        fn serve_with<F>(&self, size: Size, fulfill: F) -> Response<Vec<u8>>
-        where
-            F: FnOnce(&Plan, &Path) -> Result<Resolved, AppError>,
-        {
-            answer(
-                &self.db,
-                self.cache_dir(),
-                &self.memory,
-                &self.in_flight,
-                self.wallpaper_id,
-                size,
-                fulfill,
-            )
+        fn serve_id(&self, wallpaper_id: i64, size: Size) -> Response<Vec<u8>> {
+            answer(&self.in_flight, wallpaper_id, size, || {
+                self.thumbnails.answer(&self.db, wallpaper_id, size)
+            })
         }
 
         fn recorded_mtime(&self, size: &str) -> Option<i64> {
@@ -915,6 +646,16 @@ mod tests {
                 .ok()
             })
         }
+    }
+
+    fn mtime_of(path: &Path) -> i64 {
+        std::fs::metadata(path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as i64
     }
 
     fn header(response: &Response<Vec<u8>>, name: tauri::http::HeaderName) -> String {
@@ -941,9 +682,8 @@ mod tests {
     }
 
     #[test]
-    fn a_first_request_generates_the_thumbnail_and_records_it() {
+    fn a_first_request_is_answered_with_a_jpeg_and_the_thumbnail_recorded() {
         let library = library();
-        let expected_mtime = thumbnails::source_mtime(&library.source).unwrap();
 
         let response = library.serve(Size::Small);
 
@@ -955,56 +695,27 @@ mod tests {
         let decoded = image::load_from_memory(response.body()).expect("the body is a JPEG");
         assert_eq!((decoded.width(), decoded.height()), (400, 300));
         assert!(library.cache_file("small").exists());
-        assert_eq!(library.recorded_mtime("small"), Some(expected_mtime));
-    }
-
-    #[test]
-    fn a_cache_hit_reads_the_file_rather_than_decoding_the_source_again() {
-        // The cache file is tampered with between the two requests, so what
-        // comes back says which path ran: the bytes on disk mean the recorded
-        // row and the source mtime agreed and nothing was decoded, and a fresh
-        // JPEG would mean the hit was missed.
-        let library = library();
-        library.serve(Size::Small);
-
-        std::fs::write(library.cache_file("small"), b"the cache said so").unwrap();
-        // The file tier is this test's subject, and the memory tier answers
-        // ahead of it. Forgetting is what a second launch does for free.
-        library.memory.forget_all();
-        let response = library.serve(Size::Small);
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(response.body(), b"the cache said so");
-    }
-
-    #[test]
-    fn a_thumbnail_recorded_against_an_older_source_is_regenerated() {
-        // A wallpaper edited in place: the row and the file are both there, and
-        // the mtime they were recorded against is not the source's any more.
-        // The tampered cache file is what makes the regenerate visible.
-        let library = library();
-        library.serve(Size::Small);
-        std::fs::write(library.cache_file("small"), b"stale bytes").unwrap();
-        library.db.write(|conn| {
-            conn.execute(
-                "UPDATE thumbnails SET source_mtime = 1 WHERE wallpaper_id = ?1",
-                [library.wallpaper_id],
-            )
-            .unwrap();
-        });
-        // Nothing in memory revalidates, so the tier below it is where the
-        // freshness rule lives and where this test looks.
-        library.memory.forget_all();
-
-        let response = library.serve(Size::Small);
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let decoded = image::load_from_memory(response.body()).expect("the body is a JPEG");
-        assert_eq!((decoded.width(), decoded.height()), (400, 300));
         assert_eq!(
             library.recorded_mtime("small"),
-            Some(thumbnails::source_mtime(&library.source).unwrap()),
-            "the regenerated thumbnail was recorded against the source it was made from"
+            Some(mtime_of(&library.source))
+        );
+    }
+
+    #[test]
+    fn a_repeat_request_is_cached_by_the_webview_for_as_long_as_any_other() {
+        // The second answer comes out of memory, and what the header says is how
+        // long the answer stays true, which is a property of the thumbnail
+        // rather than of which tier answered (ADR 0040).
+        let library = library();
+        let first = library.serve(Size::Small);
+
+        let second = library.serve(Size::Small);
+
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(second.body(), first.body());
+        assert_eq!(
+            header(&second, tauri::http::header::CACHE_CONTROL),
+            "max-age=300"
         );
     }
 
@@ -1012,15 +723,7 @@ mod tests {
     fn a_wallpaper_that_does_not_exist_is_a_not_found_the_card_can_read() {
         let library = library();
 
-        let response = answer(
-            &library.db,
-            library.cache_dir(),
-            &library.memory,
-            &library.in_flight,
-            9999,
-            Size::Small,
-            thumbnails::fulfill,
-        );
+        let response = library.serve_id(9999, Size::Small);
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(
@@ -1047,177 +750,11 @@ mod tests {
     }
 
     #[test]
-    fn the_connection_is_free_while_the_image_work_happens() {
-        // ADR 0004's split, pinned. Phase two runs here with the connection
-        // released, and `Db::is_free` is a `try_lock` on the thread that would
-        // be holding it, so a phase one whose guard leaked into a temporary
-        // fails this and nothing else — it would still serve the right bytes.
-        let library = library();
-
-        let served = phases(
-            &library.db,
-            library.cache_dir(),
-            library.wallpaper_id,
-            Size::Small,
-            |plan, cache_dir| {
-                assert!(
-                    library.db.is_free(),
-                    "the connection is held across the decode"
-                );
-                thumbnails::fulfill(plan, cache_dir)
-            },
-        )
-        .unwrap();
-
-        assert!(image::load_from_memory(&served.bytes).is_ok());
-    }
-
-    #[test]
-    fn a_repeat_request_is_answered_without_the_connection_or_the_disk() {
-        // Everything a miss would need is taken away first: the row `plan`
-        // reads, the source `fulfill` stats, and the cache file it reads. Any
-        // request that reaches the connection is a 404 and any that reaches the
-        // filesystem is a 500, so a 200 with the same bytes is the memory tier
-        // and can be nothing else (ADR 0040).
-        let library = library();
-        let first = library.serve(Size::Small);
-
-        library.db.write(|conn| {
-            conn.execute("DELETE FROM wallpapers", []).unwrap();
-            conn.execute("DELETE FROM thumbnails", []).unwrap();
-        });
-        std::fs::remove_file(&library.source).unwrap();
-        std::fs::remove_file(library.cache_file("small")).unwrap();
-
-        let second = library.serve(Size::Small);
-
-        assert_eq!(second.status(), StatusCode::OK);
-        assert_eq!(second.body(), first.body());
-        assert_eq!(
-            header(&second, tauri::http::header::CACHE_CONTROL),
-            "max-age=300",
-            "a memory hit is still cached by the webview for as long as any other"
-        );
-    }
-
-    #[test]
-    fn the_bytes_in_memory_are_bounded_and_the_coldest_goes_first() {
-        // The bound is an entry count and eviction is least-recently-used, so a
-        // wallpaper asked for again outlives one that was stored later and never
-        // asked for. Two entries rather than 256 so the eviction is the test's
-        // subject rather than its setup.
-        let cache = ImageCache::new(2);
-        cache.store(1, Size::Small, Arc::new(vec![1]));
-        cache.store(2, Size::Small, Arc::new(vec![2]));
-
-        assert!(cache.get(1, Size::Small).is_some(), "still held");
-        cache.store(3, Size::Small, Arc::new(vec![3]));
-
-        assert!(cache.holds(1, Size::Small), "asked for most recently");
-        assert!(!cache.holds(2, Size::Small), "the coldest went");
-        assert!(cache.holds(3, Size::Small), "just stored");
-    }
-
-    #[test]
-    fn a_full_size_image_is_never_held_in_memory() {
-        // What keeps `IMAGE_CACHE_ENTRIES` an honest bound: `small` and `medium`
-        // are capped by a maximum width, `full` is capped by nothing.
-        let cache = ImageCache::new(2);
-
-        cache.store(1, Size::Full, Arc::new(vec![0; 4096]));
-
-        assert!(!cache.holds(1, Size::Full));
-    }
-
-    #[test]
-    fn clearing_the_thumbnail_cache_forgets_the_bytes_in_memory() {
-        // Settings' Clear thumbnail cache, in the order `clear_cache` runs it:
-        // files, then rows, then the bytes (ADR 0039, ADR 0040). With the source
-        // gone as well, only the memory tier could still answer with a picture,
-        // so an error is the proof that it did not.
-        let library = library();
-        library.serve(Size::Small);
-
-        thumbnails::clear_cache_files(library.cache_dir()).unwrap();
-        library.db.write(thumbnails::forget_thumbnails).unwrap();
-        library.memory.forget_all();
-        std::fs::remove_file(&library.source).unwrap();
-
-        let response = library.serve(Size::Small);
-
-        assert!(
-            response.status().is_client_error() || response.status().is_server_error(),
-            "a cleared thumbnail was still served from memory"
-        );
-    }
-
-    #[test]
-    fn purging_one_wallpapers_thumbnails_forgets_its_bytes_in_memory() {
-        // The single-wallpaper case of the same three halves, and the reason
-        // `ImageCache::forget` takes a wallpaper rather than a wallpaper and a
-        // size: a purge is about the source file every size came off.
-        let library = library();
-        library.serve(Size::Small);
-
-        thumbnails::purge_cache_files(library.cache_dir(), library.wallpaper_id).unwrap();
-        library
-            .db
-            .write(|conn| thumbnails::purge_thumbnails(conn, library.wallpaper_id))
-            .unwrap();
-        library.memory.forget(library.wallpaper_id);
-        std::fs::remove_file(&library.source).unwrap();
-
-        let response = library.serve(Size::Small);
-
-        assert!(
-            response.status().is_client_error() || response.status().is_server_error(),
-            "a purged thumbnail was still served from memory"
-        );
-    }
-
-    #[test]
-    fn regenerating_a_stale_thumbnail_forgets_the_wallpapers_bytes_in_memory() {
-        // A wallpaper edited in place, discovered by a request for one size
-        // while another size of it is held in memory. The source moved, so both
-        // are stale, and only the size that missed can find that out.
-        let library = library();
-        library.serve(Size::Small);
-        // Straight through the phases, so the medium reaches the disk and the
-        // row without reaching memory — which is what makes the request below a
-        // miss that has to plan.
-        phases(
-            &library.db,
-            library.cache_dir(),
-            library.wallpaper_id,
-            Size::Medium,
-            thumbnails::fulfill,
-        )
-        .unwrap();
-        library.db.write(|conn| {
-            conn.execute("UPDATE thumbnails SET source_mtime = 1", [])
-                .unwrap();
-        });
-
-        let medium = library.serve(Size::Medium);
-        assert_eq!(medium.status(), StatusCode::OK, "the medium regenerated");
-
-        // With the source gone, an answer for the small can only come from
-        // memory, and the regenerate above is what should have taken it out.
-        std::fs::remove_file(&library.source).unwrap();
-        let small = library.serve(Size::Small);
-
-        assert!(
-            small.status().is_client_error() || small.status().is_server_error(),
-            "a stale small was still served from memory after its wallpaper regenerated"
-        );
-    }
-
-    #[test]
     fn two_concurrent_requests_for_the_same_thumbnail_decode_once() {
         // The lightbox's filmstrip and the grid behind it, both asking for the
-        // same `small`. The leader's phase two blocks until the follower is
-        // parked on its flight, so the two are concurrent by construction rather
-        // than by timing (ADR 0040).
+        // same `small`. The leader's work blocks until the follower is parked on
+        // its flight, so the two are concurrent by construction rather than by
+        // timing (ADR 0040).
         let library = Arc::new(library());
         let decodes = Arc::new(AtomicUsize::new(0));
         let (leader_started, leader_is_working) = mpsc::channel();
@@ -1227,11 +764,12 @@ mod tests {
             let library = Arc::clone(&library);
             let decodes = Arc::clone(&decodes);
             std::thread::spawn(move || {
-                library.serve_with(Size::Small, move |plan, cache_dir| {
+                let (id, size) = (library.wallpaper_id, Size::Small);
+                answer(&library.in_flight, id, size, || {
                     decodes.fetch_add(1, Ordering::SeqCst);
                     leader_started.send(()).unwrap();
                     leader_may_finish.recv().unwrap();
-                    thumbnails::fulfill(plan, cache_dir)
+                    library.thumbnails.answer(&library.db, id, size)
                 })
             })
         };
@@ -1241,9 +779,10 @@ mod tests {
             let library = Arc::clone(&library);
             let decodes = Arc::clone(&decodes);
             std::thread::spawn(move || {
-                library.serve_with(Size::Small, move |plan, cache_dir| {
+                let (id, size) = (library.wallpaper_id, Size::Small);
+                answer(&library.in_flight, id, size, || {
                     decodes.fetch_add(1, Ordering::SeqCst);
-                    thumbnails::fulfill(plan, cache_dir)
+                    library.thumbnails.answer(&library.db, id, size)
                 })
             })
         };

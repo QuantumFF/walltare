@@ -495,10 +495,11 @@ fn wallpaper_from_row(row: &rusqlite::Row) -> Result<Wallpaper, rusqlite::Error>
 
 /// One wallpaper by id, and [`AppError::NotFound`] when there is no such row.
 ///
-/// The one read six sites share: the four transitions' guards, the row each of
-/// them answers with after its commit, and `get_pair`. `voting::fetch_summary`
-/// joins them, which is what leaves one `QueryReturnedNoRows` closure in the
-/// crate where there were five (ADR 0025).
+/// The one read eight sites share: the four transitions' guards, the row each of
+/// them answers with after its commit, `get_pair`, `voting::fetch_summary`, and
+/// the thumbnail cache's row read (#280). That is what leaves one
+/// `QueryReturnedNoRows` closure for a missing wallpaper in the crate
+/// (ADR 0025).
 ///
 /// It maps the missing row itself because no caller has anything better to say
 /// about a missing id: `NotFound` already meant that at five of the six sites,
@@ -1003,7 +1004,12 @@ mod tests {
 
         assert!(table_exists(&conn, "thumbnail_failures").unwrap());
         assert_eq!(schema_version(&conn).unwrap(), before);
-        crate::thumbnails::note_failure(&conn, id, 42, "not an image").unwrap();
+        conn.execute(
+            "INSERT INTO thumbnail_failures (wallpaper_id, source_mtime, message)
+             VALUES (?1, 42, 'not an image')",
+            [id],
+        )
+        .unwrap();
         assert_eq!(count_wallpapers(&conn), 1);
     }
 

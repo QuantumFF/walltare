@@ -24,6 +24,7 @@ use tauri::http::Uri;
 use tauri::{AppHandle, Emitter, Manager};
 
 use pregen::Pregen;
+use thumbnails::ThumbnailCache;
 
 const SCAN_CHUNK_SIZE: usize = 256;
 
@@ -107,7 +108,7 @@ impl Db {
     /// The one thing that can observe the half of ADR 0039's rule the types do
     /// not hold. A released guard leaves no trace, but a `try_lock` from the
     /// thread that would be holding it fails, which is what
-    /// `serving::the_connection_is_free_while_the_image_work_happens` asserts
+    /// `thumbnails::the_connection_is_free_while_the_image_work_happens` asserts
     /// about ADR 0004's phase two. Tests only: production code that asks this
     /// question is deciding whether to wait, which is the mutex's job.
     #[cfg(test)]
@@ -115,8 +116,6 @@ impl Db {
         self.0.try_lock().is_ok()
     }
 }
-
-pub struct CacheDir(pub PathBuf);
 
 /// Set while a scan thread is running, so a second `start_scan` is refused
 /// rather than racing the first over the same connection.
@@ -418,47 +417,33 @@ fn cancel_pregen(state: tauri::State<'_, Pregen>) {
 
 /// How much disk the thumbnail cache is holding, for the Settings readout.
 ///
-/// A thin wrapper: the walk sits beside the rest of the cache in
-/// [`thumbnails::cache_size`], which is also where its cost is written down.
-/// ADR 0020 reads it on mount, on `pregen-complete` and after a clear, never per
-/// progress event.
+/// A thin wrapper over [`ThumbnailCache::size`], which is also where its cost is
+/// written down. ADR 0020 reads it on mount, on `pregen-complete` and after a
+/// clear, never per progress event.
 #[tauri::command]
 fn get_cache_size(
-    cache_dir: tauri::State<'_, CacheDir>,
+    thumbnails: tauri::State<'_, ThumbnailCache>,
 ) -> Result<thumbnails::CacheSize, error::AppError> {
-    thumbnails::cache_size(&cache_dir.0)
+    thumbnails.size()
 }
 
 /// Throws the whole thumbnail cache away, and does not start it building again.
 ///
 /// Clearing is a rebuild rather than a way to reclaim disk: the next launch
 /// refills it, because the pass has no opt-out (ADR 0012).
-/// `thumbnails::purge_cache_files` and `thumbnails::purge_thumbnails` stay the
-/// single-wallpaper case.
 #[tauri::command]
 fn clear_cache(
     pregen: tauri::State<'_, Pregen>,
     db: tauri::State<'_, Db>,
-    cache_dir: tauri::State<'_, CacheDir>,
-    images: tauri::State<'_, serving::ImageCache>,
+    thumbnails: tauri::State<'_, ThumbnailCache>,
 ) -> Result<(), error::AppError> {
     // Before anything is deleted, so a pass is not writing files into the
     // directory this is about to empty. It stands down between wallpapers and
     // this does not wait for it, so it can still finish the wallpaper it is on;
-    // the two halves below are ordered around exactly that, files first and
-    // rows last, and [`thumbnails::clear_cache_files`] is where that ordering is
-    // written down.
+    // what gets deleted in which order around exactly that is
+    // [`ThumbnailCache::clear`]'s, and written down there.
     pregen.cancel();
-    // Emptying the directory is up to 10,000 unlinks and takes no connection,
-    // so the curator's grid keeps being served while it happens (ADR 0039).
-    thumbnails::clear_cache_files(&cache_dir.0)?;
-    let forgotten = db.write(thumbnails::forget_thumbnails);
-    // Third, and last for the same ordering reason: a request that was mid-flight
-    // through the two halves above can still have stored bytes, and a curator who
-    // asked for the cache to be thrown away and then saw the same thumbnails come
-    // back would have been told the button does not work (ADR 0040).
-    images.forget_all();
-    forgotten
+    thumbnails.clear(&db)
 }
 
 /// How many Eligible wallpapers have no file behind them, for the Settings
@@ -794,7 +779,7 @@ pub fn run() {
             db::init_schema(&conn)?;
             let cache_dir = dir.join("thumbnails");
             std::fs::create_dir_all(&cache_dir)?;
-            app.manage(CacheDir(cache_dir));
+            app.manage(ThumbnailCache::new(cache_dir));
             app.manage(Db::new(conn));
             // Read once, here, rather than on every settings call: it is the
             // default behind a stored preference, and a monitor swap is a
@@ -806,12 +791,13 @@ pub fn run() {
             Ok(())
         })
         // Reads the URL and hands what it says to [`serving::serve`]. Nothing
-        // else: the pool, ADR 0004's three phases, the headers and the statuses
-        // are that module's, and so are the three answers
+        // else: the pool, the headers and the statuses are that module's, and so
+        // are two of the three answers
         // [#224](https://github.com/QuantumFF/walltare/issues/224) was owed —
-        // the order requests are served in, one answer for two identical
-        // requests, and the bytes kept in memory (ADR 0040). All three landed as
-        // changes to one file rather than to this closure.
+        // the order requests are served in, and one answer for two identical
+        // requests. The third, the bytes kept in memory, sits behind the
+        // thumbnail cache with ADR 0004's three phases (ADR 0040, #280). None of
+        // them landed as a change to this closure.
         .register_asynchronous_uri_scheme_protocol("wallpaper", |ctx, request, responder| {
             serving::serve(
                 ctx.app_handle(),
