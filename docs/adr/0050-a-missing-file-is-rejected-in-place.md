@@ -23,9 +23,9 @@ drive had no way to shed those wallpapers.
 
 **A Soft reject of a wallpaper with nothing at its path moves nothing.** The row
 becomes Rejected, keeps its `path` and `filename`, and records the Origin as that
-same path. Whether the file is there is `missing::is_gone`, the one `exists()`
-check the Settings count already uses, so the line counts exactly what its button
-rejects. The Comparisons stay, and the wallpaper leaves voting and review
+same path. Whether the file is there is `missing::is_missing`, the one
+`exists()` check the Settings count already uses, so a reject in place only ever
+happens to a file the count would count. The Comparisons stay, and the wallpaper leaves voting and review
 because it is no longer Eligible.
 
 **The reject destination is not resolved for it.** `reject_destination::prepare`
@@ -43,15 +43,17 @@ while the file is still missing, and it is what restores a file that came back
 (a drive plugged in again) where it is. The moving Restore would find the file
 in its own way and land it as `name (2).jpg`.
 
-**Settings rejects every missing file in one press.** Once a check has found
-some, the Missing files section offers **Reject missing**.
-`reject_missing_files` repeats the count's two halves (the pool under the lock,
-the `stat`s with it released) and then calls `soft_reject::reject_gone` under the
-lock. That function asks each file again, so a file that came back between the
-check and the press is left alone, and a wallpaper something else already
-rejected is skipped. It answers with the rows it wrote. The section publishes
-one `status-changed` per row, which is the patch Review and Library already
-apply, and re-reads the stats for Rank's headline.
+**Settings rejects the missing files in one press.** Once a check has found
+some, the Missing files section offers **Reject missing**. The check answers
+with the ids it counted as well as the count, and `reject_missing_files` takes
+those ids, so the press rejects what the line said. A file that went missing
+after the check is not in the number the curator agreed to, and the press does
+not walk the library a second time. `soft_reject::reject_missing` asks each id
+again under the lock, so a file that came back between the check and the press
+is left alone, and a wallpaper something else already rejected is skipped. It
+answers with the rows it wrote. The section publishes one `status-changed` per
+row, which is the patch Review and Library already apply, and re-reads the
+stats for Rank's headline.
 
 **No new Status.** ADR 0032's reasons stand: missing is a fact about the
 filesystem, not something the curator did. What changed is that the curator now
@@ -98,4 +100,5 @@ changed.
 source to make the move fail. That is now a success, so the test makes the move
 fail from a read-only source folder instead.
 
-`Command` in `client.ts` names 18 commands.
+`Command` in `client.ts` names 19 commands, and `MissingFiles` carries an
+`ids` list beside its two counts.

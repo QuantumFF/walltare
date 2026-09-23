@@ -270,21 +270,22 @@ async fn count_missing_files(app: AppHandle) -> Result<missing::MissingFiles, er
     .await
 }
 
-/// Soft-rejects every Eligible wallpaper whose file is missing, and answers with
-/// the rows it wrote.
+/// Soft-rejects the wallpapers a Settings check counted as missing, and
+/// answers with the rows it wrote.
 ///
-/// [`count_missing_files`]'s two halves with a write on the end: the pool comes
-/// off the database, the `stat` per row happens with the connection released,
-/// and only the ids that were gone go back under the lock, where
-/// [`soft_reject::reject_gone`] asks each one again. Nothing moves on disk, so
-/// the reject destination is not read (ADR 0050).
+/// `ids` is the `ids` of the [`missing::MissingFiles`] that
+/// [`count_missing_files`] answered with, so the button rejects what the line
+/// said rather than walking the library a second time.
+/// [`soft_reject::reject_missing`] asks each one again under the lock. Nothing
+/// moves on disk, so the reject destination is not read (ADR 0050).
 #[tauri::command]
-async fn reject_missing_files(app: AppHandle) -> Result<Vec<db::Wallpaper>, error::AppError> {
-    off_main_thread(app, |app| {
-        let db = app.state::<Db>();
-        let files = db.read(missing::eligible_files)?;
-        let gone = missing::gone_ids(&files);
-        db.write(|conn| soft_reject::reject_gone(conn, &gone))
+async fn reject_missing_files(
+    ids: Vec<i64>,
+    app: AppHandle,
+) -> Result<Vec<db::Wallpaper>, error::AppError> {
+    off_main_thread(app, move |app| {
+        app.state::<Db>()
+            .write(|conn| soft_reject::reject_missing(conn, &ids))
     })
     .await
 }

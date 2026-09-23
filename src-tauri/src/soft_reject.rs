@@ -84,7 +84,7 @@ pub fn reject_in(
 ) -> Result<Wallpaper, AppError> {
     let row = db.read(|conn| db::get_wallpaper(conn, wallpaper_id))?;
     let source = PathBuf::from(&row.path);
-    let staged = if row.status.may_become(Status::Rejected) && !missing::is_gone(&source) {
+    let staged = if row.status.may_become(Status::Rejected) && !missing::is_missing(&source) {
         resolve_destination_dir(&source, destination_folder)
             .ok()
             .and_then(|dir| Staged::if_cross_device(&source, &dir))
@@ -124,7 +124,7 @@ fn reject_with(
     }
 
     let source = PathBuf::from(&row.path);
-    if missing::is_gone(&source) {
+    if missing::is_missing(&source) {
         reject_in_place(&tx, wallpaper_id)?;
         tx.commit()?;
         return db::get_wallpaper(conn, wallpaper_id);
@@ -165,18 +165,20 @@ fn reject_with(
 /// Soft-rejects every wallpaper in `ids` whose file is still gone, in one
 /// transaction, and answers with the rows it wrote.
 ///
-/// The ids come from [`missing::gone_ids`], which ran with the connection
-/// released, so each one is asked again here under the lock: a file that came
-/// back in between (a drive plugged in again) is left alone rather than being
-/// rejected in place beside a file that is there, and so is a wallpaper some
-/// other transition already took out of the Eligible pool. Only the ids that
-/// were gone get a `stat` here, so this is cheap exactly when the check was.
-pub fn reject_gone(conn: &Connection, ids: &[i64]) -> Result<Vec<Wallpaper>, AppError> {
+/// The ids are the ones a Settings check counted ([`missing::count_missing`]),
+/// so the button rejects what the line said and nothing that went missing
+/// since. That check ran a while ago with the connection released, so each one
+/// is asked again here under the lock: a file that came back in between (a
+/// drive plugged in again) is left alone rather than being rejected in place
+/// beside a file that is there, and so is a wallpaper some other transition
+/// already took out of the Eligible pool. Only the counted ids get a `stat`
+/// here, and a missing local path answers one at once.
+pub fn reject_missing(conn: &Connection, ids: &[i64]) -> Result<Vec<Wallpaper>, AppError> {
     let tx = conn.unchecked_transaction()?;
     let mut rejected = Vec::new();
     for &id in ids {
         let row = db::get_wallpaper(&tx, id)?;
-        if row.status.may_become(Status::Rejected) && missing::is_gone(Path::new(&row.path)) {
+        if row.status.may_become(Status::Rejected) && missing::is_missing(Path::new(&row.path)) {
             reject_in_place(&tx, id)?;
             rejected.push(id);
         }
@@ -267,10 +269,7 @@ fn restore_with(
     };
 
     if origin == row.path {
-        tx.execute(
-            "UPDATE wallpapers SET status = ?1, origin_path = NULL WHERE id = ?2",
-            rusqlite::params![Status::Active, wallpaper_id],
-        )?;
+        restore_in_place(&tx, wallpaper_id)?;
         tx.commit()?;
         return db::get_wallpaper(conn, wallpaper_id);
     }
@@ -323,6 +322,16 @@ fn restore_with(
     finish_move(&source, &dest_path, staged)?;
     tx.commit()?;
     db::get_wallpaper(conn, wallpaper_id)
+}
+
+/// The Restore of a wallpaper rejected in place: the Status and the Origin,
+/// and nothing on disk. The mirror of [`reject_in_place`].
+fn restore_in_place(tx: &Connection, wallpaper_id: i64) -> Result<(), AppError> {
+    tx.execute(
+        "UPDATE wallpapers SET status = ?1, origin_path = NULL WHERE id = ?2",
+        rusqlite::params![Status::Active, wallpaper_id],
+    )?;
+    Ok(())
 }
 
 /// Expands `destination_folder`, resolves it against the wallpaper's own folder
@@ -1682,7 +1691,7 @@ mod tests {
         std::fs::remove_file(tmp.path().join("a.jpg")).unwrap();
         std::fs::remove_file(tmp.path().join("k.jpg")).unwrap();
 
-        let wrote = reject_gone(&conn, &[gone_active, gone_kept, came_back, already]).unwrap();
+        let wrote = reject_missing(&conn, &[gone_active, gone_kept, came_back, already]).unwrap();
 
         let ids: Vec<i64> = wrote.iter().map(|w| w.id).collect();
         assert_eq!(ids, vec![gone_active, gone_kept]);

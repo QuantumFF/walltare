@@ -24,8 +24,8 @@
 //!
 //! ## Two halves, because one of them must not hold the lock
 //!
-//! [`eligible_files`] is the database half and [`count_missing`] (or
-//! [`gone_ids`], for the button that rejects them) is the filesystem half, split for the reason ADR 0004 split thumbnail resolution:
+//! [`eligible_files`] is the database half and [`count_missing`] is the
+//! filesystem half, split for the reason ADR 0004 split thumbnail resolution:
 //! at ADR 0016's 5,000-wallpaper ceiling this is 5,000 `stat` calls, and doing
 //! them under the connection mutex would queue every command and every
 //! `wallpaper://` request behind a walk of somebody's external drive. The
@@ -55,18 +55,22 @@ use crate::error::AppError;
 /// because a bare count answers nothing: three missing out of five is a broken
 /// library and three out of five thousand is a Tuesday, and the two numbers have
 /// to come from one pass or the line can report a ratio that was never true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct MissingFiles {
     /// Eligible wallpapers whose file is not where their row says it is.
     pub missing: i64,
     /// The Eligible pool the check walked: Active plus Kept (`CONTEXT.md`).
     pub eligible: i64,
+    /// Which wallpapers those `missing` are, so the Settings button rejects
+    /// exactly what the line counted rather than walking the library again
+    /// and rejecting files that went missing after the check (ADR 0050).
+    pub ids: Vec<i64>,
 }
 
 /// One Eligible wallpaper and where its file is supposed to be.
 ///
-/// The id rides along with the path so that [`gone_ids`] can name the rows the
-/// Settings button soft-rejects, from the same pass that counted them.
+/// The id rides along with the path so that [`count_missing`] can name the
+/// rows it counted, which are the ones the Settings button soft-rejects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EligibleFile {
     pub id: i64,
@@ -109,19 +113,10 @@ pub fn eligible_files(conn: &Connection) -> Result<Vec<EligibleFile>, AppError> 
 /// the same answer the curator gets from the card: all three make the
 /// `wallpaper://` request fail.
 ///
-/// The count below and the Soft reject of a gone file (ADR 0050) both ask it,
-/// so the wallpapers the Settings line counts are the ones its button rejects.
-pub fn is_gone(path: &Path) -> bool {
+/// The count below and the Soft reject of a missing file (ADR 0050) both ask
+/// it, so a reject in place happens only to a file the count would count.
+pub fn is_missing(path: &Path) -> bool {
     !path.exists()
-}
-
-/// The ids of the `files` with nothing behind them, in the order given.
-pub fn gone_ids(files: &[EligibleFile]) -> Vec<i64> {
-    files
-        .iter()
-        .filter(|f| is_gone(Path::new(&f.path)))
-        .map(|f| f.id)
-        .collect()
 }
 
 /// How many of `files` have nothing behind them.
@@ -132,9 +127,15 @@ pub fn gone_ids(files: &[EligibleFile]) -> Vec<i64> {
 /// feeds says `files missing` for that reason, rather than claiming to count
 /// every wallpaper the grid cannot paint.
 pub fn count_missing(files: &[EligibleFile]) -> MissingFiles {
+    let ids: Vec<i64> = files
+        .iter()
+        .filter(|f| is_missing(Path::new(&f.path)))
+        .map(|f| f.id)
+        .collect();
     MissingFiles {
-        missing: gone_ids(files).len() as i64,
+        missing: ids.len() as i64,
         eligible: files.len() as i64,
+        ids,
     }
 }
 
@@ -196,7 +197,8 @@ mod tests {
             found,
             MissingFiles {
                 missing: 0,
-                eligible: 0
+                eligible: 0,
+                ids: vec![]
             }
         );
     }
@@ -211,7 +213,8 @@ mod tests {
             count_missing(&[file(1, there), file(2, gone)]),
             MissingFiles {
                 missing: 1,
-                eligible: 2
+                eligible: 2,
+                ids: vec![2]
             }
         );
     }
@@ -252,13 +255,14 @@ mod tests {
             count_missing(&eligible_files(&conn).unwrap()),
             MissingFiles {
                 missing: 1,
-                eligible: 3
+                eligible: 3,
+                ids: vec![3]
             }
         );
     }
 
     #[test]
-    fn gone_ids_names_exactly_the_rows_the_count_counted() {
+    fn the_count_names_the_rows_it_counted() {
         // The Settings button rejects what the line counted, so the two must
         // come off one definition of missing rather than two.
         let dir = tempfile::tempdir().unwrap();
@@ -268,19 +272,22 @@ mod tests {
             file(9, dir.path().join("also-gone.jpg").display().to_string()),
         ];
 
-        assert_eq!(gone_ids(&files), vec![7, 9]);
-        assert_eq!(count_missing(&files).missing, 2);
+        let found = count_missing(&files);
+        assert_eq!(found.ids, vec![7, 9]);
+        assert_eq!(found.missing, 2);
     }
 
     #[test]
     fn the_count_crosses_the_ipc_with_the_fields_client_ts_expects() {
         let json = serde_json::to_value(MissingFiles {
-            missing: 3,
+            missing: 2,
             eligible: 120,
+            ids: vec![4, 9],
         })
         .unwrap();
 
-        assert_eq!(json["missing"], 3);
+        assert_eq!(json["missing"], 2);
         assert_eq!(json["eligible"], 120);
+        assert_eq!(json["ids"], serde_json::json!([4, 9]));
     }
 }

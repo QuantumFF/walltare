@@ -23,12 +23,13 @@ const REJECT_FAILED = "Couldn't reject the wallpapers whose files are missing.";
  *
  * `nothing moved` because that is the half the curator cannot see: every one
  * of these was rejected in place, and the reject destination received nothing
- * (ADR 0050). Zero is a drive that came back between the check and the press,
- * since the backend asks each file again.
+ * (ADR 0050). Zero says only that nothing was left to reject, because the
+ * backend asks each file again: the files may have come back, or the
+ * wallpapers may have been rejected somewhere else in between.
  */
 function rejectedLine(rejected: number): string {
   return rejected === 0
-    ? "Nothing rejected · the files are back"
+    ? "Nothing left to reject"
     : `${counted(rejected, "wallpaper")} rejected · nothing moved`;
 }
 
@@ -120,16 +121,19 @@ export function MissingFilesSection() {
    * headline is re-read the way `EvaluatedSection` re-reads it, and a failed
    * re-read leaves the old one standing until the next vote.
    *
-   * The count comes off the line afterwards, because the rows it counted are
-   * not Eligible any more; pressing Check now again is how to see what is left.
+   * It rejects the rows the check counted, by id, and not whatever is missing
+   * by the time of the press: a file that went missing since is not in the
+   * number the curator agreed to. The count comes off the line afterwards,
+   * because the rows it counted are not Eligible any more; pressing Check now
+   * again is how to see what is left.
    */
   const reject = () => {
-    if (busy) return;
+    if (busy || !found) return;
     setBusy("rejecting");
     setFailed(null);
 
     void client
-      .rejectMissingFiles()
+      .rejectMissingFiles(found.ids)
       .then((rows) => {
         for (const wallpaper of rows) {
           publish({ type: "status-changed", wallpaper });
