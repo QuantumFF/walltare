@@ -16,7 +16,6 @@ mod thumbnails;
 mod voting;
 mod window_state;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
@@ -95,25 +94,6 @@ impl Db {
     }
 }
 
-/// Set while a scan thread is running, so a second `start_scan` is refused
-/// rather than racing the first over the same connection.
-#[derive(Default)]
-pub struct ScanRunning(AtomicBool);
-
-/// Clears [`ScanRunning`] however the scan thread ends, panic included —
-/// otherwise one panicked scan would refuse every later scan for the rest of
-/// the process.
-struct ScanGuard(AppHandle);
-
-impl Drop for ScanGuard {
-    fn drop(&mut self) {
-        self.0
-            .state::<ScanRunning>()
-            .0
-            .store(false, Ordering::SeqCst);
-    }
-}
-
 #[tauri::command]
 fn get_pair(
     state: tauri::State<'_, Db>,
@@ -173,14 +153,14 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
     // leaves no scan running.
     let root = scan::LibraryRoot::expand(&path)?;
 
-    if app.state::<ScanRunning>().0.swap(true, Ordering::SeqCst) {
+    let Some(running) = app.state::<scan::Running>().try_start() else {
         return Err(error::AppError::InvalidTransition(
             "a scan is already running".to_string(),
         ));
-    }
+    };
 
     std::thread::spawn(move || {
-        let _running = ScanGuard(app.clone());
+        let _running = running;
         scan::run(&app.state::<Db>(), root, &ScanEvents(&app));
     });
     Ok(())
@@ -608,7 +588,7 @@ pub fn run() {
             // default behind a stored preference, and a monitor swap is a
             // restart away from being noticed either way.
             app.manage(detect_screen(app.handle()));
-            app.manage(ScanRunning::default());
+            app.manage(scan::Running::default());
             app.manage(Pregen::default());
             serving::start(app.handle());
             Ok(())
