@@ -51,6 +51,15 @@ between 2 and 8.
 > hold, and until now the whole of this decision was written down and pinned by
 > nothing.
 
+> **Amended by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** The function that sequences the phases is
+> `ThumbnailCache::answer_with` in the thumbnail cache module, and `serving::serve`
+> asks it through `ThumbnailCache::answer` rather than sequencing them itself.
+> Phase two is a parameter there, filled the same two ways, and the test that
+> asserts the connection is free moved with it. The pre-generation pass's
+> one-size case goes through the same phases two and three instead of a second
+> copy of them in `pregen`. The order and the phases are unchanged.
+
 `resolve`, the convenience wrapper that runs all three against one connection,
 is now `#[cfg(test)]`. Only the unit tests use it.
 

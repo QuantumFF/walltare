@@ -102,6 +102,12 @@ in the order the pass will walk them, which is still
 unchanged. `pregen::run` calls the two in order, and `Db::read` has released the
 connection before the second one starts.
 
+> **Amended by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** `ThumbnailCache::work_list` calls the two in order, and
+> `pregen::run` calls it. Both halves are private to the thumbnail cache module;
+> the split, the release between them and the test with no connection anywhere
+> are unchanged.
+
 **Nothing about the list's contents or its order changes.** Every ADR 0012
 amendment still holds exactly as written: the Rejected tail group from ADR 0016,
 the Status re-check against the Status the list saw, and the
@@ -129,6 +135,15 @@ consequences.
 a write. The path still comes from the row rather than from the work list's
 snapshot, for `still_due`'s reason — a reject or a Restore moves the file while
 the pass is running.
+
+> **Amended by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** Both places moved into the thumbnail cache module, with their
+> shapes intact. The clear is `ThumbnailCache::clear`, which runs the two halves
+> in this order and then forgets the bytes in memory, so `clear_cache` makes one
+> call. `remember` is the module's own, called by `ThumbnailCache::warm` on a
+> failure. It keeps its three steps with the `stat` between them, and its first
+> step reads the row through the module's one row read over `get_wallpaper`
+> rather than through `current_source_path`.
 
 ### The Soft reject is the one exception, and it is argued
 
@@ -242,6 +257,12 @@ exists, the box pre-reduce before Lanczos3, `generate_both`'s single decode for
 two sizes: all unchanged, and `resolve_image` and `generate_one` still call
 `plan` / `fulfill` / `record` in that order. The work list's order and contents
 are unchanged and now pinned.
+
+> **Amended by [#280](https://github.com/QuantumFF/walltare/issues/280),
+> 2026-09-23.** `resolve_image` and `generate_one` are gone. The callers of
+> `plan` / `fulfill` / `record` are `ThumbnailCache::answer` and the one-size
+> case of `ThumbnailCache::warm`, which share phases two and three and still run
+> the three in that order.
 
 **The next child in [#224](https://github.com/QuantumFF/walltare/issues/224)
 inherits an admission point.** `serve(id, size)` lands on top of this interface,
