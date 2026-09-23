@@ -16,13 +16,20 @@ import {
   usePublishedSelection,
   type SelectionHandle,
 } from "@/components/selection";
-import type { LibraryLayout, Resolution, Wallpaper } from "@/lib/client";
+import {
+  thumbnailSizeFor,
+  type LibraryLayout,
+  type Resolution,
+  type Wallpaper,
+} from "@/lib/client";
 import { isUndersized, shapeOf } from "@/lib/wallpaper";
 import type { PlannedWindow } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import {
+  useEffect,
   useMemo,
   useRef,
+  useState,
   type KeyboardEvent,
   type Ref,
   type RefObject,
@@ -332,6 +339,41 @@ function WindowedGrid({
 }
 
 /**
+ * The thumbnail a uniform grid's cell is sharp at, from the grid's own width.
+ *
+ * A `small` is 400px wide, and a grid zoomed in to two or three columns draws
+ * it far wider than that, so every card read as blurred. One observer on the
+ * grid rather than one per card, because ADR 0041 puts the gesture's cost in
+ * card mount. The cell width is the grid's width over its columns, gap and
+ * padding ignored: it overshoots by a few pixels, which moves the threshold a
+ * few pixels early and never leaves a card upscaled.
+ *
+ * The positioned layouts do not need it: their boxes already carry a width.
+ */
+function useCellImageSize(
+  grid: RefObject<HTMLDivElement | null>,
+  columns: number,
+): "small" | "medium" {
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const node = grid.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    // The last non-zero width is kept, as `useGridWindow` keeps its own, so a
+    // view the shell hides does not drop every card back to a `small`.
+    const observer = new ResizeObserver(([entry]) => {
+      const measured = entry.contentRect.width;
+      if (measured > 0) setWidth(measured);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [grid]);
+  return thumbnailSizeFor(
+    width / Math.max(columns, 1),
+    window.devicePixelRatio || 1,
+  );
+}
+
+/**
  * The cells, the cursor, the focus and the keys.
  *
  * One tab stop with a roving selection: the container is `role="grid"`, each
@@ -419,6 +461,9 @@ function Grid({
     [windowed, wallpapers],
   );
   const cards = mounted ? mounted.cards : everyCard;
+
+  // Which thumbnail a uniform cell asks for. See `useCellImageSize`.
+  const cellImageSize = useCellImageSize(gridRef, columns);
 
   // Ctrl and the wheel over the cards, changing the density rather than the
   // page's scale. See `useDensityWheel`, which Review's strip reads too.
@@ -556,6 +601,16 @@ function Grid({
             cellIndex={cardIndex}
             selected={cardIndex === index}
             box={placed?.boxes[cardIndex]}
+            // A string and not a width, so a resize that leaves a card on the
+            // same side of the threshold is no prop change to its memo (#230).
+            imageSize={
+              placed
+                ? thumbnailSizeFor(
+                    placed.boxes[cardIndex].width,
+                    window.devicePixelRatio || 1,
+                  )
+                : cellImageSize
+            }
             undersized={
               minimumResolution
                 ? isUndersized(wallpaper, minimumResolution)
