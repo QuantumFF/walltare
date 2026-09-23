@@ -434,8 +434,10 @@ export const WallpaperCard = memo(function WallpaperCard({
         in a stacking context of its own, so those three still paint on top: a
         card whose file is gone keeps its Score, keeps its Status and keeps every
         transition the Status offers. Rejecting or restoring one is exactly the
-        thing the curator might want to do about it, and ADR 0009's
-        `file_missing` is what answers if the move has nothing to move.
+        thing the curator might want to do about it: a reject of a gone file
+        moves nothing and takes it out of voting and review (ADR 0050), and
+        ADR 0009's `file_missing` answers a Restore whose file has left the
+        reject folder.
 
         `pointer-events-none` because the cell underneath is the click target: a
         gone card still opens the lightbox, which is where the path and the

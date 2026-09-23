@@ -264,6 +264,10 @@ export function useWallpaperRows({
           // backend derived the `filename` it stored from the path it wrote, so
           // this cannot disagree with the database (ADR 0003, ADR 0023).
           renamed: wrote.filename !== was.filename,
+          // A moving reject always changes the path, since the backend refuses
+          // a destination that is the file's own folder, so an unchanged one is
+          // the reject in place of a file that was already gone (ADR 0050).
+          moved: wrote.path !== was.path,
           relativeDestination: destination.relative,
           finalPath: wrote.path,
           undo: () => void latest.current("restore", wrote, vacancy),

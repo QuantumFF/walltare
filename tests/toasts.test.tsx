@@ -204,6 +204,27 @@ test("a reject that renamed the file says so even from an absolute destination",
   });
 });
 
+test("a reject of a file that was already gone says nothing moved rather than naming a path", async () => {
+  // The backend rejects a gone file in place: the row keeps its path and the
+  // Origin is that same path (ADR 0050). The destination is relative here, so
+  // the ordinary rule would print the path — one the file is not at.
+  mockCommand("move_wallpaper", (args) =>
+    wrote(args, {
+      status: "rejected",
+      path: "/library/wall-7.jpg",
+      origin_path: "/library/wall-7.jpg",
+    }),
+  );
+  await openReview();
+  await rejectWall7();
+
+  expect(toast()).toEqual({
+    title: "Rejected wall-7.jpg",
+    description: "The file was already gone, so nothing moved.",
+  });
+  expect(undoButton()).not.toBeNull();
+});
+
 test("undoing a keep makes it Active again and answers in the toast that offered it", async () => {
   await openReview();
   await click(/keep wall-7\.jpg/i);

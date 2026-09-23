@@ -410,8 +410,8 @@ test("a gone card keeps its Score, its Status and its transitions", async () => 
 
   // The panel covers the picture and nothing else. Rejecting or restoring a
   // wallpaper whose file is gone is exactly what the curator might want to do
-  // about it, and ADR 0009's `file_missing` is what answers if the move has
-  // nothing to move — so none of these leaves the card (ADR 0032).
+  // about it — a reject of a gone file moves nothing and takes it out of the
+  // pool (ADR 0050) — so none of these leaves the card (ADR 0032).
   expect(badge().textContent).toBe("22.4");
   expect(screen.queryByText("Rejected")).not.toBeNull();
   expect(buttonNames()).toEqual(["Restore wall-1.jpg"]);

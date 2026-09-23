@@ -1,5 +1,6 @@
 import { Section } from "@/components/SettingsView";
 import { Button } from "@/components/ui/button";
+import { useAppEvents } from "@/context/AppEventsContext";
 import { client, type MissingFiles } from "@/lib/client";
 import { counted } from "@/lib/copy";
 import { useState } from "react";
@@ -13,6 +14,23 @@ import { useState } from "react";
  * count from before the press.
  */
 const CHECK_FAILED = "Couldn't check the library for missing files.";
+
+/** The same, for a press of the reject button. */
+const REJECT_FAILED = "Couldn't reject the wallpapers whose files are missing.";
+
+/**
+ * How the line writes what one reject of the missing files did.
+ *
+ * `nothing moved` because that is the half the curator cannot see: every one
+ * of these was rejected in place, and the reject destination received nothing
+ * (ADR 0050). Zero is a drive that came back between the check and the press,
+ * since the backend asks each file again.
+ */
+function rejectedLine(rejected: number): string {
+  return rejected === 0
+    ? "Nothing rejected · the files are back"
+    : `${counted(rejected, "wallpaper")} rejected · nothing moved`;
+}
 
 /**
  * How the line writes what one check found.
@@ -36,8 +54,8 @@ function checkedLine({ missing, eligible }: MissingFiles): string {
 }
 
 /**
- * The Missing files section: one button, and one line about the last time it was
- * pressed.
+ * The Missing files section: a button, a second one once a check has found
+ * something, and one line about the last press.
  *
  * A wallpaper whose file was deleted or moved outside the app still has a row,
  * because nothing deletes one — `comparisons` references it with `RESTRICT` and
@@ -53,10 +71,12 @@ function checkedLine({ missing, eligible }: MissingFiles): string {
  * afterwards — a count is about the moment it was taken, and the button is how
  * the curator takes another (ADR 0032).
  *
- * There is nothing to fix from here, deliberately. The rows stay, so the
- * honest offer is a number and the library grid, where each card says which
- * wallpaper it was; a control that dropped those rows would take their
- * Comparisons with them, which the domain does not allow (ADR 0001).
+ * **Rejecting them is the one fix on offer.** A check that found some offers
+ * a second button that soft-rejects every one: nothing moves, the rows stay
+ * with their Comparisons, and they leave voting and review because they are no
+ * longer Eligible. Rows are never dropped, because that would take their
+ * Comparisons with them, which the domain does not allow (ADR 0001); a Restore
+ * of any one of them puts it back (ADR 0050).
  */
 export function MissingFilesSection() {
   /**
@@ -66,39 +86,90 @@ export function MissingFilesSection() {
    * filesystem that has moved on.
    */
   const [found, setFound] = useState<MissingFiles | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [checking, setChecking] = useState(false);
+  /** How many the last reject took out of the pool, or `null` for none yet. */
+  const [rejected, setRejected] = useState<number | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"checking" | "rejecting" | null>(null);
+  const { publish } = useAppEvents();
 
   const check = () => {
-    if (checking) return;
-    setChecking(true);
-    // Both cleared on the way in, so the line never shows a stale count or a
+    if (busy) return;
+    setBusy("checking");
+    // All cleared on the way in, so the line never shows a stale count or a
     // stale failure beside a check that is running.
-    setFailed(false);
+    setFailed(null);
     setFound(null);
+    setRejected(null);
 
     void client
       .countMissingFiles()
       .then(setFound)
       .catch((error: unknown) => {
         console.error("Failed to check the library for missing files:", error);
-        setFailed(true);
+        setFailed(CHECK_FAILED);
       })
-      .finally(() => setChecking(false));
+      .finally(() => setBusy(null));
   };
 
   /**
-   * The one line, and the three things it says.
+   * Soft-reject everything the check found, then tell the other views.
+   *
+   * Every row goes out as its own `status-changed`, which is the patch Review
+   * and Library already apply to a reject made anywhere else: Review drops the
+   * rows and Library repaints their pills. The Eligible pool shrank, so Rank's
+   * headline is re-read the way `EvaluatedSection` re-reads it, and a failed
+   * re-read leaves the old one standing until the next vote.
+   *
+   * The count comes off the line afterwards, because the rows it counted are
+   * not Eligible any more; pressing Check now again is how to see what is left.
+   */
+  const reject = () => {
+    if (busy) return;
+    setBusy("rejecting");
+    setFailed(null);
+
+    void client
+      .rejectMissingFiles()
+      .then((rows) => {
+        for (const wallpaper of rows) {
+          publish({ type: "status-changed", wallpaper });
+        }
+        setFound(null);
+        setRejected(rows.length);
+        // Its own catch, so a re-read that fails does not report a reject
+        // that landed as one that did not.
+        void client
+          .getStats()
+          .then((stats) => publish({ type: "stats-changed", stats }))
+          .catch((error: unknown) => {
+            console.error("Failed to re-read the stats after a reject:", error);
+          });
+      })
+      .catch((error: unknown) => {
+        console.error("Failed to reject the missing files:", error);
+        setFailed(REJECT_FAILED);
+      })
+      .finally(() => setBusy(null));
+  };
+
+  /**
+   * The one line, and the things it says.
    *
    * A check in flight says nothing here: the button's own label carries it, the
    * way the Scan button carries a scan. Before the first press there is no line
-   * at all, the way an unresolved path field has none.
+   * at all, the way an unresolved path field has none. A reject in flight
+   * leaves the count up, since it is the count being acted on.
    */
   const line = ((): { tone: "muted" | "error"; text: string } | null => {
-    if (failed) return { tone: "error", text: CHECK_FAILED };
-    if (checking || !found) return null;
+    if (failed) return { tone: "error", text: failed };
+    if (busy === "checking") return null;
+    if (rejected !== null)
+      return { tone: "muted", text: rejectedLine(rejected) };
+    if (!found) return null;
     return { tone: "muted", text: checkedLine(found) };
   })();
+  const offerReject =
+    found !== null && found.missing > 0 && busy !== "checking";
 
   return (
     <Section heading="Missing files">
@@ -119,10 +190,18 @@ export function MissingFilesSection() {
           Scan a first run is entirely about (ADR 0020). The label says what the
           press does rather than naming the section again, and it carries the
           check the way the Scan button carries a scan. */}
-      <div className="flex">
-        <Button variant="outline" onClick={check} disabled={checking}>
-          {checking ? "Checking…" : "Check now"}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" onClick={check} disabled={busy !== null}>
+          {busy === "checking" ? "Checking…" : "Check now"}
         </Button>
+        {/* Only beside a count that found some, so it is never a button that
+            acts on nothing. Outline like its neighbour: a reject is undone by a
+            Restore, so it is not the destructive colour. */}
+        {offerReject && (
+          <Button variant="outline" onClick={reject} disabled={busy !== null}>
+            {busy === "rejecting" ? "Rejecting…" : "Reject missing"}
+          </Button>
+        )}
       </div>
     </Section>
   );
