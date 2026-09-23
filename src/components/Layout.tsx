@@ -7,6 +7,7 @@ import { ToastSurface, useToaster } from "@/components/ToastSurface";
 import { useApp, type View } from "@/context/AppContext";
 import {
   KeyboardHandoffProvider,
+  pressedByPointer,
   useKeyboardHandoff,
 } from "@/context/KeyboardHandoffContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
@@ -68,6 +69,18 @@ function viewBody(view: TabView): ReactNode {
 }
 
 /**
+ * The tab one step from `from` in the ring, wrapping at both ends — the same
+ * ring the tablist's arrows and `Ctrl+Tab` walk.
+ *
+ * `-1` is Settings, which is not in the ring: its first step lands on an end of
+ * it, the first tab forwards and the last backwards.
+ */
+function stepTab(from: number, by: 1 | -1): number {
+  if (from === -1) return by === 1 ? 0 : TABS.length - 1;
+  return (from + by + TABS.length) % TABS.length;
+}
+
+/**
  * The tab group: an ARIA tablist with a roving tabindex.
  *
  * There are no `tabpanel`s to point `aria-controls` at. Two of the three panels
@@ -93,24 +106,22 @@ function ViewTabs() {
     setView(TABS[index].view);
   };
 
-  // A pointer click leaves the tablist; the keyboard stays in it. `detail`
-  // counts the pointer's clicks and is 0 for a click the keyboard synthesised
-  // from Enter or Space, which stays on the tab like the arrows.
+  // A pointer click leaves the tablist; the keyboard stays in it. Enter or
+  // Space on a tab stays on it, like the arrows.
   const click = (event: MouseEvent<HTMLButtonElement>, index: number) => {
     setView(TABS[index].view);
-    if (event.detail > 0) handOff();
+    if (pressedByPointer(event)) handOff();
   };
 
   const handleKeyDown = (
     event: KeyboardEvent<HTMLButtonElement>,
     index: number,
   ) => {
-    const last = TABS.length - 1;
     let next: number;
-    if (event.key === "ArrowLeft") next = index === 0 ? last : index - 1;
-    else if (event.key === "ArrowRight") next = index === last ? 0 : index + 1;
+    if (event.key === "ArrowLeft") next = stepTab(index, -1);
+    else if (event.key === "ArrowRight") next = stepTab(index, 1);
     else if (event.key === "Home") next = 0;
-    else if (event.key === "End") next = last;
+    else if (event.key === "End") next = TABS.length - 1;
     else return;
 
     // The arrow is answered here, and saying so is load-bearing. Rank stays
@@ -391,21 +402,12 @@ function Shell({
       if (!event.ctrlKey || event.altKey || event.metaKey) return;
 
       // The tabs in a ring, the way a browser walks its own: `Ctrl+Tab` to the
-      // next and `Ctrl+Shift+Tab` to the previous, wrapping at both ends. From
-      // Settings, which is not in the ring, the next is the first tab and the
-      // previous the last — the stop the tablist itself falls back to there.
+      // next and `Ctrl+Shift+Tab` to the previous, from Settings too
+      // (`stepTab`).
       if (event.key === "Tab") {
         event.preventDefault();
         const at = TABS.findIndex((tab) => tab.view === view);
-        const last = TABS.length - 1;
-        const next = event.shiftKey
-          ? at <= 0
-            ? last
-            : at - 1
-          : at === last
-            ? 0
-            : at + 1;
-        setView(TABS[next].view);
+        setView(TABS[stepTab(at, event.shiftKey ? -1 : 1)].view);
         handOff();
         return;
       }
@@ -538,7 +540,7 @@ export function Layout() {
 
   return (
     <ScanRunProvider>
-      <KeyboardHandoffProvider>
+      <KeyboardHandoffProvider lightboxOpen={lightboxOpen}>
         <ToastSurface lightboxOpen={lightboxOpen}>
           <Shell
             lightboxOpen={lightboxOpen}

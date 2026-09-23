@@ -134,6 +134,9 @@ export function RejectDestinationLine({
         // default — which is the one thing a curator tabbing the bar could not
         // tell apart from the paragraph it sits in.
         className="rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        // It puts the focus in the field itself, so a page bar's hand-off
+        // leaves it alone (`useHandOffOnPointerPress`).
+        data-moves-focus
         onClick={() =>
           setView("settings", { returnTo: view, focus: "reject_destination" })
         }

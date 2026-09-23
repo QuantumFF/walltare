@@ -13,6 +13,7 @@ import { useWallpaperRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/context/AppContext";
 import { useRefetchWhenShown } from "@/context/AppEventsContext";
+import { useKeyboardSurface } from "@/context/KeyboardHandoffContext";
 import {
   client,
   type ReviewLayout,
@@ -106,7 +107,7 @@ export function ReviewView() {
    * The other direction is not a patch this page can make — nothing in a row
    * says where it belongs in an ordering by Score — so a wallpaper that just
    * became Active arrives with the next fetch. The exception is an Undo of this
-   * page's own keep or reject, which puts the card back in the slot it left.
+   * page's own keep or reject, which puts the card back where it left.
    *
    * `optimistic` is what makes this page's reject feel like one keystroke: the
    * card goes on the click and comes back with the selection if the write fails.
@@ -149,6 +150,8 @@ export function ReviewView() {
   // handle arriving and going. `setGrid`'s identity is stable.
   const [grid, setGrid] = useState<SelectionHandle | null>(null);
   const lightbox = useLightbox(grid);
+  // And where a hand-off to this page lands, the strip or the grid (ADR 0047).
+  useKeyboardSurface("review", grid);
 
   /**
    * The wallpaper the outgoing surface was on, for the incoming one to open on.
@@ -218,8 +221,8 @@ export function ReviewView() {
 
   // The two forward references the module above takes, as declarations so they
   // can be handed over before the hooks that answer them have run. Both fire
-  // only from a transition: `selectId` from a failed one, `oweRefetch` from one
-  // the backend refused over a stale row.
+  // only from a transition: `selectId` from a failed one or an Undo that landed,
+  // `oweRefetch` from one the backend refused over a stale row.
   function selectId(id: number) {
     grid?.selection().selectId(id);
   }

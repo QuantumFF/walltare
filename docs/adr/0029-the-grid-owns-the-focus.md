@@ -262,6 +262,16 @@ handle, and it is the same two lines in each file.
 > takes an optional `FocusRequest`, recorded under the Decision above. Which
 > closes hand focus back is still untouched.*
 
+> **Amended by [ADR 0047](0047-a-pressed-control-hands-the-keyboard-back.md),
+> 2026-09-23.** `FocusRequest` gains `reveal`, and `{ reveal: false }` focuses
+> the selected entry where it stands — or the container, when the window has
+> scrolled it away — without scrolling. A keyboard hand-off is the caller: it
+> returns the curator to a page whose scroll position is theirs, and it goes
+> through the handle rather than finding a node itself, which is this ADR's rule.
+> The default is the reveal, and every earlier caller is unchanged. Of two
+> outstanding requests the later one's drawing still wins, but a reveal in
+> either of them is kept.
+
 **Nothing outside the grid can ask whether the selection has focus.** If some
 future surface needs to know, the thing to add is a reason rather than a getter,
 because the answer is only ever used to decide whether to move focus, and moving
