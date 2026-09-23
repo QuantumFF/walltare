@@ -18,6 +18,7 @@ use crate::error::AppError;
 const THEME: &str = "theme";
 const LIBRARY_ROOT: &str = "library_root";
 const REJECT_DESTINATION: &str = "reject_destination";
+const DOWNLOAD_FOLDER: &str = "download_folder";
 const SCREEN: &str = "screen";
 const MINIMUM_RESOLUTION: &str = "minimum_resolution";
 const REVIEW_LAYOUT: &str = "review_layout";
@@ -420,6 +421,9 @@ pub struct Settings {
     pub library_root: String,
     /// A Written path. Relative means one rejected folder beside each wallpaper.
     pub reject_destination: String,
+    /// A Written path: where a Discover download lands. Relative means under
+    /// the Library root as it stands at each download (ADR 0051).
+    pub download_folder: String,
     /// Which layout the Library tab draws, remembered across restarts.
     pub library_layout: LibraryLayout,
     /// How many wallpapers Review puts in front of the curator at once.
@@ -491,6 +495,8 @@ impl Settings {
             theme: Theme::System,
             library_root: String::new(),
             reject_destination: "./rejected".to_string(),
+            // A folder named `wallhaven` inside the Library root (`CONTEXT.md`).
+            download_folder: "wallhaven".to_string(),
             // The layout the app has always had, so a curator who ignores the
             // control sees exactly what they saw before it existed.
             library_layout: LibraryLayout::Grid,
@@ -599,6 +605,7 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         theme: read(stored, THEME, Theme::parse).unwrap_or(defaults.theme),
         library_root: text(LIBRARY_ROOT).unwrap_or(defaults.library_root),
         reject_destination: text(REJECT_DESTINATION).unwrap_or(defaults.reject_destination),
+        download_folder: text(DOWNLOAD_FOLDER).unwrap_or(defaults.download_folder),
         library_layout: read(stored, LIBRARY_LAYOUT, LibraryLayout::parse)
             .unwrap_or(defaults.library_layout),
         review_worklist_size: read(stored, REVIEW_WORKLIST_SIZE, WorklistSize::parse)
@@ -657,6 +664,7 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         // filesystem: an unmounted drive is not a bad setting.
         LIBRARY_ROOT => Ok(value == without.library_root),
         REJECT_DESTINATION => Ok(value == without.reject_destination),
+        DOWNLOAD_FOLDER => Ok(value == without.download_folder),
         LIBRARY_LAYOUT => Ok(LibraryLayout::written(value)? == without.library_layout),
         REVIEW_WORKLIST_SIZE => Ok(WorklistSize::written(value)? == without.review_worklist_size),
         STARTUP_VIEW => Ok(StartupView::written(value)? == without.startup_view),
@@ -764,6 +772,7 @@ mod tests {
                 theme: Theme::System,
                 library_root: String::new(),
                 reject_destination: "./rejected".to_string(),
+                download_folder: "wallhaven".to_string(),
                 library_layout: LibraryLayout::Grid,
                 review_worklist_size: worklist(50),
                 startup_view: StartupView::Rank,
@@ -1256,6 +1265,7 @@ mod tests {
         set(&conn, "theme", "light", detected()).unwrap();
         set(&conn, "library_root", "/pics", detected()).unwrap();
         set(&conn, "reject_destination", "/bin", detected()).unwrap();
+        set(&conn, "download_folder", "~/downloads", detected()).unwrap();
         set(&conn, "screen", "2560x1440", detected()).unwrap();
         set(&conn, "minimum_resolution", "1280x720", detected()).unwrap();
         set(&conn, "review_layout", "strip", detected()).unwrap();
@@ -1268,6 +1278,7 @@ mod tests {
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
         set(&conn, "reject_destination", "./rejected", detected()).unwrap();
+        set(&conn, "download_folder", "wallhaven", detected()).unwrap();
         set(&conn, "review_layout", "grid", detected()).unwrap();
         set(&conn, "library_layout", "grid", detected()).unwrap();
         set(&conn, "crop_preview", "false", detected()).unwrap();
@@ -1585,6 +1596,7 @@ mod tests {
         assert_eq!(json["theme"], "dark");
         assert_eq!(json["library_root"], "~/pics");
         assert_eq!(json["reject_destination"], "./rejected");
+        assert_eq!(json["download_folder"], "wallhaven");
         // A layout crosses as the same string a write accepts, the way the theme
         // does, so the frontend can hand a read value straight back.
         assert_eq!(json["library_layout"], "masonry");
@@ -1617,6 +1629,34 @@ mod tests {
         // three numbers on both sides of the IPC, which is the duplication this
         // epic already refused over the Screen (ADR 0046).
         assert_eq!(json["evaluated_threshold"], 4.0);
+    }
+
+    #[test]
+    fn the_download_folder_defaults_to_wallhaven_and_is_stored_as_written() {
+        let conn = store();
+        assert_eq!(get(&conn, detected()).unwrap().download_folder, "wallhaven");
+
+        // As written, `~` and variables included, and never checked against
+        // the filesystem on the way in: a relative one means the Library root
+        // as it stands at each download, so resolving it here would freeze it
+        // (ADR 0011, ADR 0051).
+        for written in [
+            "~/Pictures/wallhaven",
+            "$XDG_PICTURES_DIR/walls",
+            "walls/new",
+        ] {
+            assert_eq!(
+                set(&conn, "download_folder", written, detected())
+                    .unwrap()
+                    .download_folder,
+                written
+            );
+        }
+        assert_eq!(stored_rows(&conn), 1);
+
+        // And writing the default back deletes the row (ADR 0010).
+        set(&conn, "download_folder", "wallhaven", detected()).unwrap();
+        assert_eq!(stored_rows(&conn), 0);
     }
 
     #[test]

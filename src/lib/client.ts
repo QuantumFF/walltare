@@ -209,6 +209,11 @@ export interface Settings {
   /** A Written path. Relative means one rejected folder beside each wallpaper. */
   reject_destination: string;
   /**
+   * A Written path: where a Discover download lands. Relative means under the
+   * Library root as it stands at each download (ADR 0051).
+   */
+  download_folder: string;
+  /**
    * Which layout the Library tab draws, remembered across restarts.
    *
    * Stored here because the store is what survives a restart, and offered
@@ -355,6 +360,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   library_root: "",
   reject_destination: "./rejected",
+  download_folder: "wallhaven",
   library_layout: "grid",
   review_worklist_size: 50,
   startup_view: "rank",
@@ -464,7 +470,7 @@ export interface BackendEvents {
  *
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
  * `BackendEvents` does above for the five event names: the one place in the
- * frontend where these 18 strings are written down. `client`'s methods below
+ * frontend where these 19 strings are written down. `client`'s methods below
  * reach them through `call`, the only caller in the app; the test suite's
  * `mockCommand` is the other reader, which is why the names are exported rather
  * than inlined (ADR 0031).
@@ -483,6 +489,7 @@ export type Command =
   | "reject_missing_files"
   | "expand_path"
   | "check_reject_destination"
+  | "check_download_folder"
   | "get_pair"
   | "vote"
   | "get_stats"
@@ -520,6 +527,10 @@ export interface BackendCommands {
   check_reject_destination: {
     args: { written: string };
     answer: DestinationCheck;
+  };
+  check_download_folder: {
+    args: { written: string; libraryRoot: string };
+    answer: DownloadFolderCheck;
   };
   get_pair: {
     args: { exclude?: number[] };
@@ -607,6 +618,22 @@ export interface Expanded {
  */
 export type DestinationCheck =
   | { state: "relative" }
+  | { state: "ready"; resolved: string }
+  | { state: "absent"; resolved: string }
+  | { state: "refused"; resolved: string; reason: string };
+
+/**
+ * Mirrors download_folder::Check: whether the Download folder the curator is
+ * writing could take a download, against the Library root as its own field has
+ * it (ADR 0051).
+ *
+ * A relative Download folder means the Library root, and the root has to exist,
+ * so the two root states come before any answer about the folder. Each `reason`
+ * is the backend's own sentence, and the same one a refused download carries.
+ */
+export type DownloadFolderCheck =
+  | { state: "no_root"; reason: string }
+  | { state: "root_missing"; reason: string }
   | { state: "ready"; resolved: string }
   | { state: "absent"; resolved: string }
   | { state: "refused"; resolved: string; reason: string };
@@ -771,6 +798,21 @@ export const client = {
    */
   checkRejectDestination: (written: string) =>
     call("check_reject_destination", { written }),
+
+  /**
+   * Answers whether a Written path can serve as the Download folder, against
+   * `libraryRoot` as the curator has it written: no root, a root that is not
+   * there, there and able to take a file, not there yet, or refused with the
+   * backend's own sentence.
+   *
+   * The root is passed rather than read from the store, so the Download folder
+   * field follows the Library root field before it commits. Creates nothing,
+   * and probes a folder that is there the way `checkRejectDestination` does
+   * (ADR 0035, ADR 0051). Rejects with `invalid_path_syntax` for a malformed
+   * Download folder.
+   */
+  checkDownloadFolder: (written: string, libraryRoot: string) =>
+    call("check_download_folder", { written, libraryRoot }),
 
   /**
    * Opens the desktop's folder picker and resolves with the folder the curator

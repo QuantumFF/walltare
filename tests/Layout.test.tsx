@@ -80,6 +80,12 @@ beforeEach(() => {
       ? { state: "ready", resolved: args.written }
       : { state: "relative" },
   );
+  // The Download folder's field asks whether a download could land there; with
+  // no Library root the answer is that nothing can be (ADR 0051).
+  mockCommand("check_download_folder", () => ({
+    state: "no_root",
+    reason: "No library root is set, so nothing can be downloaded",
+  }));
   mockCommand("set_setting", () => settings());
   // And its Thumbnails section walks the cache directory on mount, for the line
   // it reads out (ADR 0020).

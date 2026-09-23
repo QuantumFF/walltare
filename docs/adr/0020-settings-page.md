@@ -76,6 +76,11 @@ last.
 > headings do not skip a level, and the jump row is absent because there is
 > one group.
 
+> **Amended by [#337](https://github.com/QuantumFF/walltare/issues/337),
+> 2026-09-24.** Twelve sections, in five groups: a **Wallhaven** group, holding
+> the Download folder, sits between Curation and Maintenance, so maintenance is
+> still last. The Wallhaven API key section joins that group later.
+
 Sections rather than a flat list of label-and-control rows. The ticket called
 four groups of one or two controls thin, and it would be, except the two path
 items are each a field, a Browse button, and a status line under them. In a flat

@@ -1,4 +1,5 @@
 mod db;
+mod download_folder;
 mod error;
 mod missing;
 mod paths;
@@ -336,6 +337,26 @@ async fn check_reject_destination(
     off_main_thread(app, move |_| reject_destination::check(&written)).await
 }
 
+/// Whether the Download folder the curator is writing could take a download,
+/// against the Library root as it is written in its own field right now.
+///
+/// The root comes from the caller rather than the store, so the Download folder
+/// field follows edits to the Library root field before they are committed. The
+/// download itself asks [`download_folder::prepare`] with the stored root. Like
+/// [`check_reject_destination`], it writes a probe into a folder that is there
+/// and creates nothing (ADR 0035, ADR 0051).
+#[tauri::command]
+async fn check_download_folder(
+    written: String,
+    library_root: String,
+    app: AppHandle,
+) -> Result<download_folder::Check, error::AppError> {
+    off_main_thread(app, move |_| {
+        download_folder::check(&written, &library_root)
+    })
+    .await
+}
+
 #[tauri::command]
 fn get_settings(
     state: tauri::State<Db>,
@@ -638,6 +659,7 @@ pub fn run() {
             reject_missing_files,
             expand_path,
             check_reject_destination,
+            check_download_folder,
             get_pair,
             vote,
             get_stats,

@@ -85,20 +85,40 @@ pub(crate) fn check_with(
     }
     let resolved = expanded.display().to_string();
 
-    match std::fs::metadata(&expanded) {
+    Ok(match inspect(&expanded, REJECTS) {
+        Found::Absent => Check::Absent { resolved },
+        Found::Ready => Check::Ready { resolved },
+        Found::Refused(reason) => Check::Refused { resolved, reason },
+    })
+}
+
+/// What a folder that has been resolved says about taking a file, without
+/// creating it.
+///
+/// Shared with the Download folder's check (ADR 0051), which asks the same
+/// question of a different folder and says the same three sentences with its
+/// own noun in them.
+pub(crate) enum Found {
+    /// Nothing there yet.
+    Absent,
+    /// There, and it takes a file.
+    Ready,
+    /// There, and it will not take a file, with the sentence saying why.
+    Refused(String),
+}
+
+/// The body of both checks: stat `dir`, and probe it when it is a folder.
+///
+/// `what` is the noun a refusal names, `rejects` or `downloads`.
+pub(crate) fn inspect(dir: &Path, what: &str) -> Found {
+    match std::fs::metadata(dir) {
         // Creating nothing is the whole difference between this and a reject.
         // The curator is still typing.
-        Err(_) => Ok(Check::Absent { resolved }),
-        Ok(found) if !found.is_dir() => Ok(Check::Refused {
-            reason: not_a_folder(&expanded),
-            resolved,
-        }),
-        Ok(_) => match takes_a_file(&expanded) {
-            Ok(()) => Ok(Check::Ready { resolved }),
-            Err(cause) => Ok(Check::Refused {
-                reason: cannot_write(&expanded, &cause),
-                resolved,
-            }),
+        Err(_) => Found::Absent,
+        Ok(found) if !found.is_dir() => Found::Refused(not_a_folder(dir, what)),
+        Ok(_) => match takes_a_file(dir) {
+            Ok(()) => Found::Ready,
+            Err(cause) => Found::Refused(cannot_write(dir, &cause)),
         },
     }
 }
@@ -119,12 +139,18 @@ pub(crate) fn check_with(
 /// back as a new Active row. It is also what stops `~/pics` and `$HOME/pics`
 /// becoming two spellings of one folder.
 pub fn prepare(dir: &Path) -> Result<PathBuf, AppError> {
+    prepare_folder(dir, REJECTS)
+}
+
+/// The body of [`prepare`], with the noun a refusal names passed in, so the
+/// Download folder can be made ready by the same steps (ADR 0051).
+pub(crate) fn prepare_folder(dir: &Path, what: &str) -> Result<PathBuf, AppError> {
     // Before `create_dir_all`, which would report a file in the way as an
     // `AlreadyExists` errno and leave the curator to work out what already
     // exists.
     if let Ok(found) = std::fs::metadata(dir) {
         if !found.is_dir() {
-            return Err(AppError::InvalidPath(not_a_folder(dir)));
+            return Err(AppError::InvalidPath(not_a_folder(dir, what)));
         }
     }
     std::fs::create_dir_all(dir)
@@ -156,9 +182,12 @@ fn takes_a_file(dir: &Path) -> std::io::Result<()> {
 // name the folder, because at reject time a relative destination resolves per
 // wallpaper and the curator cannot otherwise tell which folder refused.
 
-fn not_a_folder(dir: &Path) -> String {
+/// The noun this module's refusals name.
+const REJECTS: &str = "rejects";
+
+fn not_a_folder(dir: &Path, what: &str) -> String {
     format!(
-        "{} is not a folder, so rejects cannot go there",
+        "{} is not a folder, so {what} cannot go there",
         dir.display()
     )
 }

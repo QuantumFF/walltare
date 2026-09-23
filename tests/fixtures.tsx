@@ -273,6 +273,7 @@ export function settings(over: Partial<Settings> = {}): Settings {
     theme: "system",
     library_root: "",
     reject_destination: "./rejected",
+    download_folder: "wallhaven",
     library_layout: "grid",
     review_worklist_size: 50,
     startup_view: "rank",
