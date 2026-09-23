@@ -230,6 +230,12 @@ is the point, and it means a feature that needs the network — an update check,
 telemetry, a remote wallpaper source — is a decision that has to come back
 through this file. The epic rules all three out for 1.0.0.
 
+> **Amended by [ADR 0053](0053-discover-thumbnails-load-straight-from-wallhaven.md),
+> 2026-09-24.** The remote wallpaper source came back: `img-src` gains
+> `https://th.wallhaven.cc` for Discover's thumbnails, and nothing else.
+> `connect-src` stays local, and the allowlist test gains that one origin as
+> an exact match.
+
 **The crate manifest drops to seven direct dependencies.** The epic's phrasing
 is "six to five"; `[dependencies]` in `src-tauri/Cargo.toml` actually listed
 eight, and now lists seven: `tauri`, `tauri-plugin-window-state`,
