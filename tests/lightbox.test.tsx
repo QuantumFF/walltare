@@ -434,6 +434,103 @@ test("Escape closes it and puts the card for the current selection back in focus
   );
 });
 
+/**
+ * Swap one method on a prototype for the length of `run`, and put it back
+ * however `run` ends.
+ */
+async function withPatched<T extends object, K extends keyof T>(
+  owner: T,
+  key: K,
+  replace: (original: T[K]) => T[K],
+  run: () => Promise<void>,
+): Promise<void> {
+  const original = owner[key];
+  owner[key] = replace(original);
+  try {
+    await run();
+  } finally {
+    owner[key] = original;
+  }
+}
+
+/**
+ * The options the last `focus()` during `run` passed, and the element it landed
+ * on. happy-dom draws no focus ring and never will, so what the grid asked the
+ * engine for is the thing a test can see.
+ */
+async function lastFocusDuring(
+  run: () => Promise<void>,
+): Promise<{ element: HTMLElement; options: unknown } | undefined> {
+  let last: { element: HTMLElement; options: unknown } | undefined;
+  await withPatched(
+    HTMLElement.prototype,
+    "focus",
+    (focus) =>
+      function (this: HTMLElement, options?: FocusOptions) {
+        last = { element: this, options };
+        focus.call(this, options);
+      },
+    run,
+  );
+  return last;
+}
+
+/**
+ * Open the lightbox on a card the way a mouse does.
+ *
+ * A click leaves the focus undrawn in a real engine: WebKit focuses the cell
+ * under the press and matches no `:focus-visible` for it. happy-dom matches
+ * `:focus-visible` on whatever is focused, `body` included, so the engine's
+ * answer is stood in for the length of the press.
+ */
+async function openWithMouse(label: string): Promise<void> {
+  await withPatched(
+    Element.prototype,
+    "matches",
+    (matches) =>
+      function (this: Element, selector: string) {
+        return selector === ":focus-visible"
+          ? false
+          : matches.call(this, selector);
+      },
+    () => click(cell(label)),
+  );
+}
+
+test("a lightbox opened with the keyboard hands back a drawn focus", async () => {
+  await enterReview();
+  await press("Enter");
+
+  const last = await lastFocusDuring(() => press("Escape"));
+
+  expect(last?.element.getAttribute("aria-label")).toBe("first.jpg, Active");
+  expect(last?.options).toMatchObject({ focusVisible: true });
+});
+
+test("a lightbox opened with the mouse hands back a focus with no ring, so no overlay stays open", async () => {
+  await enterReview();
+  await openWithMouse("second.jpg, Active");
+
+  // Escape, and not only the Close button: a keypress is what WebKit would
+  // otherwise take as the reason to draw the focus it hands back.
+  const last = await lastFocusDuring(() => press("Escape"));
+
+  expect(last?.element.getAttribute("aria-label")).toBe("second.jpg, Active");
+  expect(last?.options).toMatchObject({ focusVisible: false });
+});
+
+test("the Close button after a mouse open hands back no ring either", async () => {
+  await enterReview();
+  await openWithMouse("second.jpg, Active");
+
+  const last = await lastFocusDuring(() =>
+    click(screen.getByRole("button", { name: "Close" })),
+  );
+
+  expect(last?.element.getAttribute("aria-label")).toBe("second.jpg, Active");
+  expect(last?.options).toMatchObject({ focusVisible: false });
+});
+
 test("the Close button closes it, which is the touchscreen's way out", async () => {
   await enterReview();
   await press("Enter");

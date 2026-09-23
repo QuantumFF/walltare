@@ -101,6 +101,11 @@ export interface WallpaperGridHandle {
 }
 ```
 
+> **Amended by [#299](https://github.com/QuantumFF/walltare/pull/299),
+> 2026-09-23.** `focusSelection` is `(request?: FocusRequest) => void` now, so
+> the lightbox's close can say whether the focus it hands back is drawn. ADR
+> 0029's amendment of the same date has the reason.
+
 Two methods and no value, because that is what `useSyncExternalStore` reads. The
 grid publishes in a layout effect, so what a subscriber gets is the selection the
 cells were actually drawn from rather than one resolved mid-render. `GridSelection`

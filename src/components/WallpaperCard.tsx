@@ -182,10 +182,10 @@ export interface WallpaperCardProps {
  *
  * Its design is #44's prototype at ADR 0019's corrections: a dense
  * `aspect-video` card with the Score badge top right, the Status pill top left,
- * and the actions in a bottom overlay revealed by `group-hover` and
- * `group-focus-within`. #254's prototype is what the two uncropped layouts wear
- * on top of that: no border and no rounding once the card is handed a box, and a
- * ring on the selected one.
+ * and the actions in a bottom overlay revealed by `group-hover` and by keyboard
+ * focus on the card or inside it. #254's prototype is what the two uncropped
+ * layouts wear on top of that: no border and no rounding once the card is
+ * handed a box, and a ring on the selected one.
  *
  * It carries no hover shadow, deliberately. A wheel scroll holds the pointer
  * still while cards stream underneath, so every card that passes fires
@@ -531,10 +531,16 @@ export const WallpaperCard = memo(function WallpaperCard({
         keeps the uncovered image clickable, so a click on the picture is a
         click on the cell and opens the lightbox; the strip takes its own events
         back for the buttons.
+
+        Focus reveals it only when the focus is drawn, on the cell or on one of
+        its buttons, which is ADR 0019's selected card under the keyboard. Plain
+        `focus-within` also answered to focus a click left behind, so a card
+        whose button was clicked, or whose lightbox was just closed, kept its
+        overlay open after the pointer left.
       */}
       <div
         className={cn(
-          "pointer-events-none absolute inset-0 flex flex-col justify-end opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+          "pointer-events-none absolute inset-0 flex flex-col justify-end opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible]:opacity-100",
           animated && "transition-opacity will-change-[opacity]",
         )}
       >

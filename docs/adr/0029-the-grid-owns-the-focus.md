@@ -82,6 +82,17 @@ focused, and a flag that is already set is already asking for it. `answeredRef`
 and its three write-backs become one flag, set by `focusSelection` and cleared
 on the commit where a cell actually takes the focus.
 
+> **Amended by [#299](https://github.com/QuantumFF/walltare/pull/299),
+> 2026-09-23.** `focusSelection` takes an optional request now,
+> `focusSelection(request?: FocusRequest)`, which is `focus()`'s own options
+> with `focusVisible` added. The lightbox's close passes whether the focus it
+> opened from was drawn, so a card handed back after a mouse-driven open does
+> not have its overlay revealed (ADR 0019 as amended). Left out, the engine's
+> own guess stands, which is what every other caller gets. The flag became
+> `focusRequestRef`, holding the request or `null` rather than a boolean; one
+> outstanding request is still all the grid keeps, and the later one's drawing
+> wins.
+
 The ref object rather than a callback the page wraps around it. A callback's
 identity changes every render, so `close`'s `useCallback` deps churn and the
 page has to stabilise it; the ref is stable for the life of the page, and
@@ -246,6 +257,10 @@ handle, and it is the same two lines in each file.
 >
 > `focusSelection` itself is untouched, and so is everything above about which of
 > the three closes hands focus back.
+>
+> *Since widened by [#299](https://github.com/QuantumFF/walltare/pull/299): it
+> takes an optional `FocusRequest`, recorded under the Decision above. Which
+> closes hand focus back is still untouched.*
 
 **Nothing outside the grid can ask whether the selection has focus.** If some
 future surface needs to know, the thing to add is a reason rather than a getter,

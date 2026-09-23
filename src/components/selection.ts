@@ -107,9 +107,26 @@ export interface WallpaperSelection {
  * the selection has focus, because the only use for the answer is deciding
  * whether to move it, and that is what `focusSelection` is for.
  */
+/**
+ * How a requested focus is drawn, in the shape `focus()` itself takes.
+ *
+ * `focusVisible` is in WebKit and the HTML spec and not yet in the DOM lib this
+ * repo's TypeScript ships, hence the widening. The platform's own three states
+ * are the ones meant: drawn, not drawn, and absent for the engine's guess.
+ */
+export type FocusRequest = FocusOptions & { focusVisible?: boolean };
+
 export interface SelectionHandle {
-  /** Put the selected wallpaper on screen and focus it, revealing it first. */
-  focusSelection: () => void;
+  /**
+   * Put the selected wallpaper on screen and focus it, revealing it first.
+   *
+   * `focusVisible` is whether the focus it lands should match `:focus-visible`,
+   * which is what reveals a card's overlay. A focus moved by script is one the
+   * engine has to guess about, and WebKitGTK guesses visible whenever the last
+   * focus was not a click — so a caller that knows how the curator got here
+   * says so rather than leaving it to the guess. Left out, the guess stands.
+   */
+  focusSelection: (request?: FocusRequest) => void;
   /** Hear about it whenever the published selection is replaced. */
   subscribe: (listener: () => void) => () => void;
   /** The selection as last published, which is the one the surface was drawn from. */
@@ -354,23 +371,27 @@ export function usePublishedSelection(
   // not re-focus and re-scroll.
   const focusedRef = useRef<number | null>(null);
   const holdsFocusRef = useRef(false);
-  // Whether a page has asked for the selected entry back. It stays set until an
-  // entry has actually taken the focus — a reveal that has not mounted the row
-  // yet leaves it outstanding for the commit that follows.
+  // A page's request for the selected entry back, or `null` when nothing is
+  // asking. It stays set until an entry has actually taken the focus — a reveal
+  // that has not mounted the row yet leaves it outstanding for the commit that
+  // follows. The request carries how the focus is to be drawn, because that
+  // means nothing without it.
   //
-  // A flag and not a counter: two requests in a row want the same entry focused,
-  // and once the asking and the answering are in one place a flag that is
-  // already set is already asking for it (ADR 0029).
-  const wantsFocusRef = useRef(false);
-  // The commit the flag is answered on. Setting a ref renders nothing, and the
-  // effect that reads it runs on a render — so the ask schedules one. Its value
-  // is never read, which is what keeps it a nudge rather than a second counter.
+  // One request and not a counter: two requests in a row want the same entry
+  // focused, and once the asking and the answering are in one place a request
+  // already outstanding is already asking for it (ADR 0029). The later one's
+  // drawing is the one kept.
+  const focusRequestRef = useRef<FocusRequest | null>(null);
+  // The commit the request is answered on. Setting a ref renders nothing, and
+  // the effect that reads it runs on a render — so the ask schedules one. Its
+  // value is never read, which is what keeps it a nudge rather than a second
+  // counter.
   const [, askedForFocus] = useReducer((asks: number) => asks + 1, 0);
 
   const [published] = useState(createPublication);
   const [handle] = useState<SelectionHandle>(() => ({
-    focusSelection: () => {
-      wantsFocusRef.current = true;
+    focusSelection: (request = {}) => {
+      focusRequestRef.current = request;
       askedForFocus();
     },
     subscribe: published.subscribe,
@@ -406,7 +427,8 @@ export function usePublishedSelection(
     // the override below because the entry it has to land on is the one for the
     // current selection, which after two hundred steps is neither where focus is
     // nor an entry that has a node (ADR 0022).
-    const requested = wantsFocusRef.current;
+    const request = focusRequestRef.current;
+    const requested = request !== null;
 
     // Moving the selection must not steal focus. When the curator is somewhere
     // else in the app, a list that changes underneath updates the selection and
@@ -427,7 +449,7 @@ export function usePublishedSelection(
     const active = document.activeElement;
     const holds = active instanceof Node && container.current?.contains(active);
     if (target === focusedRef.current && holds) {
-      wantsFocusRef.current = false;
+      focusRequestRef.current = null;
       return;
     }
 
@@ -461,9 +483,9 @@ export function usePublishedSelection(
     // records about its ask. The rule holds whichever surface a page decides to
     // show next, which is why it is stated rather than left out (ADR 0029).
     if (target === null || index === -1) {
-      container.current?.focus();
+      container.current?.focus(request ?? undefined);
       focusedRef.current = null;
-      wantsFocusRef.current = false;
+      focusRequestRef.current = null;
       return;
     }
 
@@ -473,8 +495,8 @@ export function usePublishedSelection(
     const node = nodeAt(index);
     if (!node) return;
     focusedRef.current = target;
-    wantsFocusRef.current = false;
-    node.focus();
+    focusRequestRef.current = null;
+    node.focus(request ?? undefined);
   });
 
   const onFocus = useCallback(() => {

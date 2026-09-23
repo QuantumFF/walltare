@@ -366,6 +366,12 @@ and declares no `will-change` has no composited layer to promote, on either
 trigger, so `group-focus-within` costs nothing and the plan parked under "If the
 grid ever janks" needs no extra variant.
 
+> **Amended by [#299](https://github.com/QuantumFF/walltare/pull/299),
+> 2026-09-23.** The focus trigger is drawn focus now, `group-focus-visible` and
+> `group-has-[:focus-visible]`, which ADR 0019's own amendment prices. It still
+> animates nothing and promotes no layer, so the parked plan still needs no
+> extra variant.
+
 **Virtualisation is what forces ADR 0019's keyboard model.** Mounting a window
 of cards means a DOM tab order reaches about thirty of them and then leaves the
 grid, so the roving selection there is a consequence of this decision rather than

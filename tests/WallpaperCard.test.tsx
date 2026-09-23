@@ -343,12 +343,18 @@ test("hover and focus reveal the same overlay", async () => {
   await mount(card());
 
   // Two triggers, one overlay. The keyboard selection #124 builds reveals a
-  // card the same way a pointer does (ADR 0019).
+  // card the same way a pointer does (ADR 0019) — keyboard focus on the cell or
+  // on a button inside it. Drawn focus only: `focus-within` also answered to
+  // the focus a click leaves behind, which kept a card's overlay open after
+  // the pointer had left it.
   const overlay = cardElement("wall-1.jpg, Active").querySelector(
     ".absolute.inset-0",
   );
-  expect(overlay?.className ?? "").toContain("group-hover:opacity-100");
-  expect(overlay?.className ?? "").toContain("group-focus-within:opacity-100");
+  const classes = overlay?.className ?? "";
+  expect(classes).toContain("group-hover:opacity-100");
+  expect(classes).toContain("group-focus-visible:opacity-100");
+  expect(classes).toContain("group-has-[:focus-visible]:opacity-100");
+  expect(classes).not.toContain("group-focus-within");
 });
 
 test("the card animates nothing unless the page asks for it", async () => {
