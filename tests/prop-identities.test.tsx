@@ -90,6 +90,8 @@ function selection(): WallpaperSelection {
  * (ADR 0027), and since #264 both are handed one answer that `useDensity`
  * resolved — which is what the one-subscription test below now pins.
  */
+async function noFetch() {}
+
 function Page({ list }: { list: Wallpaper[] }) {
   const [, forceRender] = useReducer((renders: number) => renders + 1, 0);
   rerender = forceRender;
@@ -97,8 +99,9 @@ function Page({ list }: { list: Wallpaper[] }) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const { perform } = useWallpaperRows({
     belongs: (status) => status === "active",
+    view: "library",
+    fetch: noFetch,
     destination: DESTINATION,
-    owe: () => {},
   });
   const [handle, setHandle] = useState<SelectionHandle | null>(null);
   gridHandle = handle;

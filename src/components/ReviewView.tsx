@@ -9,11 +9,10 @@ import { FILMSTRIP_START, ReviewStrip } from "@/components/ReviewStrip";
 import { useToaster } from "@/components/ToastSurface";
 import { WallpaperGrid } from "@/components/WallpaperGrid";
 import type { SelectionHandle } from "@/components/selection";
-import { useWallpaperRows } from "@/components/useWallpaperRows";
+import { useWallpaperRows, type SetRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { SegmentedGroup } from "@/components/ui/segmented";
 import { useApp } from "@/context/AppContext";
-import { useRefetchWhenShown } from "@/context/AppEventsContext";
 import { useKeyboardSurface } from "@/context/KeyboardHandoffContext";
 import { client, type ReviewLayout, type ReviewOrdering } from "@/lib/client";
 import { cn } from "@/lib/utils";
@@ -96,6 +95,26 @@ export function ReviewView() {
   // to remove.
   const { show } = useToaster();
 
+  const fetchReviewList = useCallback(
+    async (setRows: SetRows) => {
+      setLoading(true);
+      try {
+        const list = await client.listWallpapers(
+          "active",
+          ordering,
+          worklistSize,
+        );
+        setRows(list);
+      } catch (err) {
+        console.error("Failed to fetch review list:", err);
+        show({ kind: "load-failed", noun: "the review list", error: err });
+      } finally {
+        setLoading(false);
+      }
+    },
+    [ordering, worklistSize, show],
+  );
+
   /**
    * The rows, and the four transitions on them (ADR 0023).
    *
@@ -109,16 +128,21 @@ export function ReviewView() {
    * `optimistic` is what makes this page's reject feel like one keystroke: the
    * card goes on the click and comes back with the selection if the write fails.
    *
-   * Both of the fields below are forward references to hooks further down, and
-   * neither is read during render. The selection is resolved over the rows this
-   * module holds, and the module's re-insert is what puts the selection back on
-   * the card it re-inserted; the fetch writes through `setRows`, and `owe` is
-   * the deferral of that fetch.
+   * `selectId` is a forward reference to the grid further down, and is not read
+   * during render: the selection is resolved over the rows this module holds,
+   * and the module's re-insert is what puts the selection back on the card it
+   * re-inserted.
+   *
+   * The refetch after a scan waits until Review is the view being shown: a
+   * worklist's worth of thumbnail requests from a hidden page — and the curator
+   * may have asked for a hundred — is exactly what ADR 0012's dedicated
+   * pre-generation thread exists to keep off the rank view's next pair.
    */
-  const { rows, setRows, perform } = useWallpaperRows({
+  const { rows, setRows, perform, owe } = useWallpaperRows({
+    view: "review",
+    fetch: fetchReviewList,
     belongs: (status) => status === "active",
     destination,
-    owe: oweRefetch,
     optimistic: { selectId },
   });
   const wallpapers = rows ?? [];
@@ -178,30 +202,6 @@ export function ReviewView() {
     handOver.current = null;
   }, [layout]);
 
-  const fetchReviewList = useCallback(async () => {
-    setLoading(true);
-    try {
-      const list = await client.listWallpapers(
-        "active",
-        ordering,
-        worklistSize,
-      );
-      setRows(list);
-    } catch (err) {
-      console.error("Failed to fetch review list:", err);
-      show({ kind: "load-failed", noun: "the review list", error: err });
-    } finally {
-      setLoading(false);
-    }
-  }, [ordering, worklistSize, setRows, show]);
-
-  // The one event this list answers with a fetch rather than with a patch, and
-  // the fetch waits until Review is the view being shown: a worklist's worth of
-  // thumbnail requests from a hidden page — and the curator may have asked for a
-  // hundred — is exactly what ADR 0012's dedicated pre-generation thread exists
-  // to keep off the rank view's next pair.
-  const owe = useRefetchWhenShown("review", fetchReviewList);
-
   // Whether this page has asked for its list yet, which is what separates the
   // two things the effect below has to do. A ref because nothing renders from
   // it and it must not reset when the settings it is guarding move.
@@ -219,22 +219,17 @@ export function ReviewView() {
   useEffect(() => {
     if (!fetched.current) {
       fetched.current = true;
-      void fetchReviewList();
+      void fetchReviewList(setRows);
       return;
     }
     owe();
-  }, [owe, fetchReviewList]);
+  }, [owe, fetchReviewList, setRows]);
 
-  // The two forward references the module above takes, as declarations so they
-  // can be handed over before the hooks that answer them have run. Both fire
-  // only from a transition: `selectId` from a failed one or an Undo that landed,
-  // `oweRefetch` from one the backend refused over a stale row.
+  // The forward reference the module above takes, as a declaration so it can be
+  // handed over before the grid that answers it has mounted. It fires only from
+  // a failed transition or an Undo that landed.
   function selectId(id: number) {
     grid?.selection().selectId(id);
-  }
-
-  function oweRefetch() {
-    owe();
   }
 
   // The destination line, in the bar this page owns below the chrome. The
@@ -322,7 +317,7 @@ export function ReviewView() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => void fetchReviewList()}
+          onClick={() => void fetchReviewList(setRows)}
           className="gap-2"
           disabled={loading}
         >
