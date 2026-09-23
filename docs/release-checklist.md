@@ -75,7 +75,7 @@ dependency list rather than the installed app. See
       nonsense name to `depends` in `packaging/PKGBUILD`, run `./install.sh`,
       and read it back in the error. Revert the edit.
 - [ ] **`pacman -Qi walltare` reports the version in
-      `src-tauri/Cargo.toml`.** For this release, 1.0.0. If those two disagree,
+      `src-tauri/Cargo.toml`.** For this release, 1.1.0. If those two disagree,
       the PKGBUILD stopped reading the crate manifest and there are two version
       numbers again.
 - [ ] **`pacman -Ql walltare` lists nothing surprising.** The binary at
@@ -208,7 +208,7 @@ was built.
       means the upload half-finished; a third one was attached by hand and
       nothing in the release notes accounts for it.
 - [ ] **The AppImage filename carries the version in
-      `src-tauri/Cargo.toml`.** For this release, `walltare_1.0.0_amd64.AppImage`.
+      `src-tauri/Cargo.toml`.** For this release, `walltare_1.1.0_amd64.AppImage`.
       A name and a manifest that disagree mean the tag was built from a
       different commit than the one being shipped.
 - [ ] **The checksums verify in the directory they were downloaded into.**
@@ -377,7 +377,7 @@ database.
       build understands, and saying nothing has been changed. There is no app
       window behind it, and dismissing it ends the process. The number it should
       name for this build is `SCHEMA_VERSION` in `src-tauri/src/db.rs`, which is
-      3 for this release.
+      4 for this release.
 
       Then `mv walltare.db.bak walltare.db` and launch again: the library opens
       with every Comparison in it. See
