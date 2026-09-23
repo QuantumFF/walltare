@@ -327,35 +327,21 @@ test("clicking a filmstrip entry moves the hero to it", async () => {
   ]);
 });
 
-test("the arrow keys walk the queue, and clamp at both ends", async () => {
+test("an arrow key moves the hero and the focus with it", async () => {
   await openStrip([
     wallpaper(3, { filename: "first.jpg" }),
     wallpaper(1, { filename: "second.png" }),
-    wallpaper(7, { filename: "third.webp" }),
   ]);
 
   await enterStrip();
   expect(focusedEntry()).toBe("first.jpg");
 
+  // Which way each key moves, and the clamp at the ends, are the keymap's and
+  // asserted there once for every surface (#286). What is the strip's own is
+  // that the move lands: the hero shows it and the filmstrip's focus follows.
   await press("ArrowRight");
   expect(heroPicture()?.alt).toBe("second.png");
   expect(focusedEntry()).toBe("second.png");
-
-  // All four arrows walk one line of wallpapers, so a curator sweeping the
-  // worklist does not have to notice which pair this surface chose.
-  await press("ArrowDown");
-  expect(heroPicture()?.alt).toBe("third.webp");
-
-  // The end clamps rather than wrapping, which is what makes reaching it the
-  // moment the sweep is done.
-  await press("ArrowRight");
-  expect(heroPicture()?.alt).toBe("third.webp");
-
-  await press("ArrowUp");
-  expect(heroPicture()?.alt).toBe("second.png");
-  await press("ArrowLeft");
-  await press("ArrowLeft");
-  expect(heroPicture()?.alt).toBe("first.jpg");
 });
 
 test("Keep acts on the wallpaper the hero is showing, from the control", async () => {
@@ -419,8 +405,8 @@ test("K and Delete act on the hero, the same as the controls do", async () => {
   await press("k");
   await press("Delete");
 
-  // One vocabulary in the app: the keys resolve through the grid's own
-  // `actionFor`, so a key and a button cannot come to mean different things
+  // One vocabulary in the app: the keys resolve through the same keymap the
+  // grid reads, so a key and a button cannot come to mean different things
   // (ADR 0019, ADR 0022).
   expect(commands).toEqual(["keep 4", "reject 5"]);
   expect(heroPicture()?.alt).toBe("last.jpg");

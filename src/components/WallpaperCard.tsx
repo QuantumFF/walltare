@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import {
   DEFAULT_EVALUATED_THRESHOLD,
   wallpaperImageUrl,
-  type Status,
   type Wallpaper,
 } from "@/lib/client";
 import type { PlannedBox } from "@/lib/layout-plan";
@@ -17,157 +16,22 @@ import {
   STATUS_LABEL,
   UNDERSIZED,
 } from "@/lib/copy";
-import { cn } from "@/lib/utils";
 import {
-  Check,
-  FolderInput,
-  ImageOff,
-  RotateCcw,
-  Undo2,
-  type LucideIcon,
-} from "lucide-react";
+  ACTION_CONTROLS,
+  STATUS_ACTIONS,
+  type TransitionAction,
+} from "@/components/transitions";
+import { cn } from "@/lib/utils";
+import { ImageOff } from "lucide-react";
 import { memo, useState } from "react";
-
-/**
- * The four transitions a card can offer, named after the resulting Status where
- * the domain has no verb for one: `make-active` is the keep inverse, which
- * CONTEXT.md leaves unnamed on purpose and ADR 0019 labels **Make Active**
- * rather than coining a noun.
- */
-export type CardAction = "keep" | "reject" | "make-active" | "restore";
-
-/**
- * What each Status offers: Active gets Keep and Reject, Kept gets Make Active
- * and Reject, Rejected gets Restore (ADR 0019).
- *
- * One table, read twice. The overlay below renders its buttons from it, and
- * #125's direct keys resolve against it in `WallpaperGrid`, so a key cannot
- * offer a transition the buttons do not — and neither surface can drift into
- * asking for one the domain refuses. CONTEXT.md is what makes that a
- * correctness rule rather than a tidiness one: Active becomes Kept or Rejected,
- * Kept becomes Rejected or Active again, Rejected becomes Active again by a
- * Restore, and anything else is an error the backend answers with
- * `invalid_transition` rather than a no-op. Every entry here is one of those
- * legal moves; a key that finds none simply does nothing.
- */
-export const STATUS_ACTIONS: Record<Status, readonly CardAction[]> = {
-  active: ["keep", "reject"],
-  kept: ["make-active", "reject"],
-  rejected: ["restore"],
-};
-
-/**
- * How each action reads on the control that makes it, and the accessible name it
- * takes here: `<label> <filename>`, so a screen reader hears which card the
- * control belongs to on a grid full of identical rows.
- *
- * **Make Active** is the keep inverse's label, naming the resulting Status
- * rather than coining a noun — not "Un-keep", and not the prototype's "Return to
- * voting", which is wrong against the glossary: a Kept wallpaper already votes,
- * and what un-keeping restores is appearance in Review (ADR 0017, ADR 0019).
- *
- * Exported because #140 puts the same four in the lightbox's row. That surface
- * has its own layout and its own accessible name — one wallpaper, already named
- * by the dialog — and none of that is the wording, which is the half that must
- * not differ: the label above is the one ADR 0019 argued three alternatives down
- * to, and a second copy of it is where "Un-keep" comes back.
- */
-export const ACTION_CONTROLS: Record<
-  CardAction,
-  { label: string; Icon: LucideIcon; destructive?: boolean }
-> = {
-  keep: { label: "Keep", Icon: Check },
-  "make-active": { label: "Make Active", Icon: Undo2 },
-  reject: { label: "Reject", Icon: FolderInput, destructive: true },
-  restore: { label: "Restore", Icon: RotateCcw },
-};
-
-/**
- * The direct keys, as the actions each one names.
- *
- * `K` names two, because the keep slot has two ends: keeping an Active
- * wallpaper and making a Kept one Active again. One finger, one meaning — "the
- * keep decision" — and the card's Status picks which end of it applies, so `K`
- * is never a keep on one card and something unrelated on the card beside it.
- *
- * `Delete` rather than a letter for reject is what keeps `R` unambiguous. A
- * Rejected card offers only Restore and a non-Rejected card only Reject, so one
- * `R` for both is technically unambiguous and would still be the same finger
- * producing opposite outcomes on cards sitting next to each other in a mixed
- * grid. `Delete` also carries the right shape for the one action here that moves
- * a file (ADR 0019).
- */
-const KEY_ACTIONS: Record<string, readonly CardAction[]> = {
-  k: ["keep", "make-active"],
-  delete: ["reject"],
-  r: ["restore"],
-};
-
-/**
- * How each key is written on the control that fires it: `Keep K`, `Reject Del`,
- * `Restore R`, and `Make Active K` for the other end of the keep slot (#140).
- *
- * `Del` is the one abbreviation, because the key's own name is wider than the
- * verb in front of it on a row that has a floor to fit inside, and because it
- * is what the key is printed as on the keyboard the curator is looking at.
- */
-const KEY_NAMES: Record<string, string> = { k: "K", delete: "Del", r: "R" };
-
-/**
- * The key that fires an action, spelled as the control firing it prints it.
- *
- * Read out of the table above rather than written a second time beside the
- * labels, so a rebinding takes the print with it: a button carrying a key that
- * no longer works is worse than a button carrying no key at all, and #140 puts
- * the key on the button precisely because that is the copy that survives the
- * row narrowing. Every action is bound, so the empty string is what a future
- * unbound one would print rather than a case the app reaches.
- */
-export function printedKey(action: CardAction): string {
-  const bound = Object.entries(KEY_ACTIONS).find(([, actions]) =>
-    actions.includes(action),
-  );
-  return bound ? KEY_NAMES[bound[0]] : "";
-}
-
-/**
- * What a key means on a wallpaper of this Status, or `null` for nothing at all.
- *
- * The answer is an intersection rather than a second table: the key names
- * candidates, and `STATUS_ACTIONS` — the same table the card's buttons render
- * from — says which of them this row actually offers. So a key the Status has no
- * action for does nothing, which is what makes a wrong key a wrong key rather
- * than a wrong action, and what keeps the keyboard from ever asking for a
- * transition CONTEXT.md calls an error.
- *
- * The key is lowercased so that a curator with Caps Lock on still keeps and
- * still restores.
- *
- * Exported because every surface that answers a key answers these three: the
- * grid, #140's lightbox, and Review's strip. Each resolves them here rather than
- * carrying its own copy, which is the same reason their buttons all render from
- * `STATUS_ACTIONS` and their presses all reach the host's own `perform`: one
- * action vocabulary in the app, and no surface that can offer a curator one set
- * with the mouse and another with the keyboard (ADR 0022).
- *
- * It lives beside the two tables it reads rather than in `WallpaperGrid.tsx`,
- * where it was written. Nothing about a key is a fact about a grid — #265 gave
- * Review a second surface answering the same three, and a strip importing a grid
- * in order to learn what `K` means was the shape that said so.
- */
-export function actionFor(key: string, status: Status): CardAction | null {
-  const offered = STATUS_ACTIONS[status];
-  const candidates = KEY_ACTIONS[key.toLowerCase()] ?? [];
-  return candidates.find((action) => offered.includes(action)) ?? null;
-}
 
 export interface WallpaperCardProps {
   wallpaper: Wallpaper;
   /**
    * One entry point rather than a callback per action.
    *
-   * The card owns the Status-to-action mapping below, so a host cannot hand it
-   * a set of handlers that disagrees with what the Status offers — a Review
+   * The card renders its buttons from `STATUS_ACTIONS`, so a host cannot hand
+   * it a set of handlers that disagrees with what the Status offers — a Review
    * passing only `onKeep` and `onReject` would be silently correct until a Kept
    * row appeared in front of it. And #125's direct keys act on the selected
    * card with no button pressed at all, so the host needs an entry that is not
@@ -177,7 +41,7 @@ export interface WallpaperCardProps {
    * row it acted on — the toast wants a filename, the IPC call an id — and the
    * card is holding both.
    */
-  onAction: (action: CardAction, wallpaper: Wallpaper) => void;
+  onAction: (action: TransitionAction, wallpaper: Wallpaper) => void;
   /**
    * Review's hover treatment: the image scales and the overlay fades, each
    * declaring `will-change` for the one property it animates.
@@ -705,10 +569,10 @@ export const WallpaperCard = memo(function WallpaperCard({
           </div>
 
           {/*
-            One button per action the Status offers, off the table above rather
+            One button per action the Status offers, off `STATUS_ACTIONS` rather
             than off a branch of its own. The branch is what the card used to
-            carry, and #125 is what makes the difference matter: the direct keys
-            read that table, so a card whose buttons came from somewhere else
+            carry, and #125 is what makes the difference matter: the keymap
+            reads that table, so a card whose buttons came from somewhere else
             could offer a curator one set with the mouse and another with the
             keyboard.
           */}

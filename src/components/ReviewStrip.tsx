@@ -1,16 +1,16 @@
-import {
-  ACTION_CONTROLS,
-  actionFor,
-  STATUS_ACTIONS,
-  type CardAction,
-} from "@/components/WallpaperCard";
 import { useCropPreview } from "@/components/CropPreview";
 import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
-import { densityKeyStep, useDensityWheel } from "@/components/density";
+import { useDensityWheel } from "@/components/density";
+import { answerKey, type ListingSurface } from "@/components/keymap";
 import {
   usePublishedSelection,
   type SelectionHandle,
 } from "@/components/selection";
+import {
+  ACTION_CONTROLS,
+  STATUS_ACTIONS,
+  type TransitionAction,
+} from "@/components/transitions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +40,12 @@ import {
   type Ref,
 } from "react";
 
+/**
+ * What the strip tells the keymap about itself, which is only what it is: one
+ * line of wallpapers, so Up and Down walk it by one, and `Enter` opens from
+ * anywhere but a button.
+ */
+const STRIP = { kind: "strip" } as const satisfies ListingSurface;
 
 /**
  * How tall a filmstrip entry is at each density step, in pixels, and the step it
@@ -130,7 +136,7 @@ export interface ReviewStripProps {
    * removal, the published patch and the toast — rather than a second
    * implementation that happens to agree (ADR 0023).
    */
-  onAction: (action: CardAction, wallpaper: Wallpaper) => void;
+  onAction: (action: TransitionAction, wallpaper: Wallpaper) => void;
   /** The curator asking to look at a wallpaper properly: a click on the hero, or `Enter`. */
   onOpen?: (wallpaper: Wallpaper) => void;
   /**
@@ -282,91 +288,48 @@ export function ReviewStrip({
   // below reaches this by bubbling, whichever control the curator is standing
   // on. The lightbox binds on `window` for the same reason and cannot here,
   // since Review's grid is the other layout and would answer the same keys.
+  //
+  // On this element rather than on `window` for the grid's reason as well: a
+  // strip on a view the shell is only hiding must not answer keys meant for the
+  // view in front of it (ADR 0019). What a key means is the keymap's, prevention
+  // included, and it is the keymap the grid reads: `K` and `Delete` do exactly
+  // what they do on a card, so no surface can offer the curator one set with the
+  // mouse and another with the keyboard (ADR 0022, #286).
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    // The density keys, ahead of the `Shift` guard: `+` arrives with `Shift`
-    // held on most layouts. On this element rather than on `window`, like the
-    // grid's: a strip on a view the shell is only hiding must not answer keys
-    // meant for the view in front of it (ADR 0019).
-    const by = densityKeyStep(event);
-    if (by !== undefined) {
-      event.preventDefault();
-      moveStep(by);
-      return;
-    }
-
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey)
-      return;
-    if (index === -1 || !selected) return;
-
-    // The direct keys, before the movement keys and resolved against the Status
-    // by the shared `actionFor` beside `STATUS_ACTIONS` in `WallpaperCard.tsx`: `K` and `Delete` do exactly what they do on
-    // a card, and a key the Status has no action for does nothing at all. One
-    // action vocabulary in the app, so no surface can offer the curator one set
-    // with the mouse and another with the keyboard (ADR 0019, ADR 0022).
-    const action = actionFor(event.key, selected.status);
-    if (action) {
-      event.preventDefault();
-      onAction(action, selected);
-      return;
-    }
-
-    // `C` raises the crop preview over the hero and lowers it again. Before the
-    // movement keys and after the transitions, because it is neither: it is a
-    // question about the wallpaper on screen rather than a decision about it or
-    // a step away from it. A toggle rather than a hold, so it stays up while the
-    // curator arrows through the worklist (#266).
-    if (event.key === "c" || event.key === "C") {
-      event.preventDefault();
-      if (!event.repeat) toggleCrop();
-      return;
-    }
-
-    // `Enter` opens the lightbox, from the same entry point a click on the hero
-    // reaches — but not from a button, whose own activation `Enter` already is.
-    // Answering it there would be a keep with the lightbox opening over the
-    // wallpaper it just removed.
-    if (event.key === "Enter") {
-      if (
-        event.target instanceof HTMLElement &&
-        event.target.closest("button")
-      ) {
-        return;
-      }
-      event.preventDefault();
-      onOpen?.(selected);
-      return;
-    }
-
-    let next: number;
-    switch (event.key) {
-      // All four arrows walk the queue. The filmstrip is one line of wallpapers
-      // however it is laid out, so there is no second axis for Up and Down to
-      // mean anything else on — and a curator sweeping a worklist should not
-      // have to notice which pair of keys this surface chose.
-      case "ArrowRight":
-      case "ArrowDown":
-        next = Math.min(index + 1, wallpapers.length - 1);
+    const intent = answerKey(event, {
+      surface: STRIP,
+      selected,
+      index,
+      length: wallpapers.length,
+    });
+    switch (intent?.kind) {
+      case "density":
+        moveStep(intent.by);
         break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        next = Math.max(index - 1, 0);
+      case "act":
+        onAction(intent.action, intent.wallpaper);
         break;
-      case "Home":
-        next = 0;
+      // The press is a question about the wallpaper on screen rather than a
+      // decision about it or a step away from it (#266).
+      case "crop":
+        toggleCrop();
         break;
-      case "End":
-        next = wallpapers.length - 1;
+      // A held `C`: answered, and toggling nothing.
+      case "held":
         break;
+      // The same entry point a click on the hero reaches.
+      case "open":
+        onOpen?.(intent.wallpaper);
+        break;
+      case "move":
+        moveTo(intent.to);
+        break;
+      // Every intent the keymap can hand this surface is answered above, so
+      // only an unanswered key reaches here, and a binding newly given to this
+      // surface fails to compile until it is (#286).
       default:
-        return;
+        intent satisfies undefined;
     }
-
-    // Answered even when the selection does not move, and saying so is
-    // load-bearing: Rank stays mounted under `display: none` with its vote
-    // listener live on `window`, and it stands down on `defaultPrevented`
-    // (ADR 0015 as amended, ADR 0019).
-    event.preventDefault();
-    moveTo(next);
   };
 
   return (

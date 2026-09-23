@@ -1,6 +1,6 @@
 import type { RejectDestination } from "@/components/RejectDestination";
 import { NO_ORIGIN_REASON, useToaster } from "@/components/ToastSurface";
-import type { CardAction } from "@/components/WallpaperCard";
+import type { TransitionAction } from "@/components/transitions";
 import { useAppEvent, useAppEvents } from "@/context/AppEventsContext";
 import { client, isStaleRow, type Status, type Wallpaper } from "@/lib/client";
 import {
@@ -19,7 +19,7 @@ import {
  * does not: that carries the wallpaper and the backend's own sentence, and all
  * four of these reach the curator through the same `failed` row.
  */
-const FAILURE_LOG: Record<CardAction, string> = {
+const FAILURE_LOG: Record<TransitionAction, string> = {
   keep: "Failed to keep wallpaper:",
   "make-active": "Failed to unkeep wallpaper:",
   reject: "Failed to move wallpaper:",
@@ -110,7 +110,7 @@ export interface WallpaperRows {
    * What the transition reads is latched in a ref instead, the way
    * `useBackendEvents` latches its handlers.
    */
-  perform: (action: CardAction, wallpaper: Wallpaper) => void;
+  perform: (action: TransitionAction, wallpaper: Wallpaper) => void;
 }
 
 /**
@@ -166,7 +166,7 @@ export function useWallpaperRows({
   });
 
   /** The one IPC call each action is. */
-  const call = (action: CardAction, id: number): Promise<Wallpaper> => {
+  const call = (action: TransitionAction, id: number): Promise<Wallpaper> => {
     switch (action) {
       case "keep":
         return client.keepWallpaper(id);
@@ -194,7 +194,7 @@ export function useWallpaperRows({
    * failure handling included. `ToastSurface` keeps the copy, the `once()`
    * double-press guard and the slot precedence; only the call left it.
    */
-  const toast = (action: CardAction, was: Wallpaper, wrote: Wallpaper) => {
+  const toast = (action: TransitionAction, was: Wallpaper, wrote: Wallpaper) => {
     switch (action) {
       case "keep":
         show({
@@ -231,7 +231,7 @@ export function useWallpaperRows({
     }
   };
 
-  const run = async (action: CardAction, wallpaper: Wallpaper) => {
+  const run = async (action: TransitionAction, wallpaper: Wallpaper) => {
     // The cohort ADR 0009's migration left with no Origin, refused with no round
     // trip because `origin_path` is on the DTO for exactly this. It lives on the
     // one path every trigger goes through — the card's button, the grid's `R`,
@@ -329,7 +329,7 @@ export function useWallpaperRows({
   // Stable, and the two Undo closures above name it while it is still in its
   // temporal dead zone — which is fine, because they are called from a toast
   // long after this render finished.
-  const perform = useCallback((action: CardAction, wallpaper: Wallpaper) => {
+  const perform = useCallback((action: TransitionAction, wallpaper: Wallpaper) => {
     void latest.current(action, wallpaper);
   }, []);
 

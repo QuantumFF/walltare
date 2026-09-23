@@ -1,48 +1,18 @@
 /**
- * The density gesture: Ctrl and the wheel, and the plus and minus keys, read the
- * same way by every surface that has a density (#264).
+ * The density gesture's wheel half: Ctrl and the wheel, read the same way by
+ * every surface that has a density (#264).
  *
  * Two surfaces answer it. The grid moves a column count and Review's strip moves
  * its filmstrip's height, but what counts as "in" and "out", and how the webview's
  * own zoom is refused, is one rule. It sits here, the way `selection.ts` holds the
- * cursor, so the strip does not import a grid to learn what `+` means.
+ * cursor, so the strip does not import a grid to learn what a wheel means. The
+ * plus and minus keys are the gesture's other half, and they live in the keymap
+ * beside every other key those surfaces answer (#286).
  *
  * What each surface does with a step stays its own. This module turns an event
  * into a step and nothing else.
  */
-import { useEffect, type KeyboardEvent, type RefObject } from "react";
-
-/**
- * Which way each key moves the density: in towards fewer, larger things, or out
- * towards more, smaller ones.
- *
- * Four keys for two directions, because both of the obvious ones need their
- * unshifted twin. `+` is `Shift` and `=` on most layouts, so a curator reaching
- * for it without the shift lands on `=`; `_` is the other half of the same pair
- * for `-`. The numeric keypad reports its own two as `+` and `-`, so it is
- * already covered.
- */
-const DENSITY_KEYS: Record<string, number> = {
-  "+": 1,
-  "=": 1,
-  "-": -1,
-  _: -1,
-};
-
-/**
- * The step a keypress asks for, or `undefined` when it is not a density key.
- *
- * `Shift` is allowed and the other modifiers are not. `+` arrives holding
- * `Shift` on most layouts, so a surface has to ask this before its own guard
- * against the app's chords, and every chord the shell answers is a `Ctrl` one:
- * `Ctrl` and `+` is the webview's own zoom and not the curator's density.
- */
-export function densityKeyStep(
-  event: KeyboardEvent<HTMLElement>,
-): number | undefined {
-  if (event.ctrlKey || event.altKey || event.metaKey) return undefined;
-  return DENSITY_KEYS[event.key];
-}
+import { useEffect, type RefObject } from "react";
 
 /**
  * Ctrl and the wheel over `target`, changing the density rather than the page's

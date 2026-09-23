@@ -1,4 +1,5 @@
-import { WallpaperCard, type CardAction } from "@/components/WallpaperCard";
+import type { TransitionAction } from "@/components/transitions";
+import { WallpaperCard } from "@/components/WallpaperCard";
 import { client, type Wallpaper } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -12,7 +13,7 @@ import { mockCommand } from "./ipc-mocks";
 
 afterEach(cleanup);
 
-let asked: Array<{ action: CardAction; id: number }>;
+let asked: Array<{ action: TransitionAction; id: number }>;
 let restores: number[];
 /** The wallpapers a click asked to look closer at, in order (#134). */
 let opened: number[];

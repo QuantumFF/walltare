@@ -1,17 +1,20 @@
-import {
-  ACTION_CONTROLS,
-  actionFor,
-  printedKey,
-  STATUS_ACTIONS,
-  type CardAction,
-} from "@/components/WallpaperCard";
 import { useCropPreview } from "@/components/CropPreview";
 import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
+import {
+  answerKey,
+  printedKey,
+  type ListingSurface,
+} from "@/components/keymap";
 import {
   useSelection,
   type SelectionHandle,
   type WallpaperSelection,
 } from "@/components/selection";
+import {
+  ACTION_CONTROLS,
+  STATUS_ACTIONS,
+  type TransitionAction,
+} from "@/components/transitions";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -107,6 +110,13 @@ const NOTHING: WallpaperSelection = {
   selectId: () => {},
 };
 const CLOSED = () => NOTHING;
+
+/**
+ * What the lightbox tells the keymap about itself: which surface it is, and so
+ * which keys are its. It walks with `←` and `→` alone, since one wallpaper at a
+ * time has no rows for Up and Down to move by.
+ */
+const LIGHTBOX = { kind: "lightbox" } as const satisfies ListingSurface;
 
 /**
  * Whether a lightbox is up, and the two gestures that change that.
@@ -303,7 +313,7 @@ export interface LightboxProps {
    * `STATUS_ACTIONS` offers — and the wallpaper travels back with the action
    * because the page answers about the row it acted on (#140).
    */
-  onAction: (action: CardAction, wallpaper: Wallpaper) => void;
+  onAction: (action: TransitionAction, wallpaper: Wallpaper) => void;
 }
 
 /**
@@ -357,9 +367,10 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
    * ADR 0022 has this surface render the grid's selection, so a step has no
    * second cursor to keep in sync and no arithmetic of its own at the ends:
    * `moveTo` clamps into the list, which is what makes `←` on the first
-   * wallpaper do nothing rather than wrap to the last. The keys and the arrow
-   * buttons both come through here, so "the buttons make the movement the keys
-   * make" is one function rather than two that happen to agree.
+   * wallpaper do nothing rather than wrap to the last. The arrow buttons come
+   * through here, and `←` and `→` reach the same `moveTo` with the index the
+   * keymap stepped to, so "the buttons make the movement the keys make" is one
+   * clamp rather than two that happen to agree.
    */
   const step = useCallback((by: number) => moveTo(index + by), [index, moveTo]);
 
@@ -393,47 +404,48 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   // `defaultPrevented` is the stand-down this listener makes, in the other
   // direction. An element inside the lightbox that ever answers one of these
   // itself marks the event, and this stops behind it.
+  //
+  // What a key means is the keymap's, prevention included: `K`, `Delete` and
+  // `R` do exactly what they do on a card, and `C` answers off the same stored
+  // toggle the Review strip does, so this surface answers the curator's
+  // question about their screen rather than sending them back to the strip to
+  // ask it (ADR 0022, #266, #286). `Enter` is not one of its keys, because it is
+  // the key that opened this.
   useEffect(() => {
     if (!open || !wallpaper) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
-        return;
+      const intent = answerKey(event, {
+        surface: LIGHTBOX,
+        selected: wallpaper,
+        index,
+        length,
+      });
+      switch (intent?.kind) {
+        case "act":
+          onAction(intent.action, intent.wallpaper);
+          break;
+        case "crop":
+          toggleCrop();
+          break;
+        case "move":
+          moveTo(intent.to);
+          break;
+        // A held `C`: answered, and toggling nothing.
+        case "held":
+          break;
+        // Every intent the keymap can hand this surface is answered above, so
+        // only an unanswered key reaches here, and a binding newly given to
+        // this surface fails to compile until it is (#286).
+        default:
+          intent satisfies undefined;
       }
-
-      // The direct keys, before the movement keys and resolved against the
-      // Status by the grid's own `actionFor`: `K`, `Delete` and `R` do exactly
-      // what they do on a card, and a key the Status has no action for does
-      // nothing at all. `Enter` is nowhere in that table and gets no branch of
-      // its own, because it is the key that opened this.
-      const action = actionFor(event.key, wallpaper.status);
-      if (action) {
-        event.preventDefault();
-        onAction(action, wallpaper);
-        return;
-      }
-
-      // `C` raises the crop preview over the picture and lowers it again, the
-      // same key off the same stored toggle the Review strip answers — so this
-      // surface answers the curator's question about their screen rather than
-      // sending them back to the strip to ask it (#266).
-      if (event.key === "c" || event.key === "C") {
-        event.preventDefault();
-        if (!event.repeat) toggleCrop();
-        return;
-      }
-
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      // Answered at the ends too, where the clamp makes it a no-op: the key
-      // belongs to this surface whether or not the selection moves.
-      event.preventDefault();
-      step(event.key === "ArrowLeft" ? -1 : 1);
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, wallpaper, step, onAction, toggleCrop]);
+  }, [open, wallpaper, index, length, moveTo, onAction, toggleCrop]);
 
   // The picture's box: what the picture is drawn in, what the crop bars are
   // percentages of, and what the row shrink-wraps to.

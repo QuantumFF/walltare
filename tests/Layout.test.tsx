@@ -1,4 +1,5 @@
 import App from "@/App";
+import { shortcutLines, type ShortcutLine } from "@/components/keymap";
 import type { Settings, Wallpaper } from "@/lib/client";
 import {
   act,
@@ -637,6 +638,21 @@ test("a keystroke typed into a text field navigates nowhere", async () => {
   expect(showingView()).toBe("rank");
 });
 
+/** The rows the shortcuts dialog prints under one heading, as keys and words. */
+function rowsUnder(dialog: HTMLElement, heading: string): ShortcutLine[] {
+  const title = Array.from(dialog.querySelectorAll("h3")).find(
+    (h3) => h3.textContent === heading,
+  );
+  if (!title) throw new Error(`no group headed ${heading}`);
+  const list = title.nextElementSibling as HTMLElement;
+  return Array.from(list.children).map((row) => ({
+    keys: Array.from(row.querySelectorAll("kbd")).map(
+      (kbd) => kbd.textContent ?? "",
+    ),
+    action: row.querySelector("dt")?.textContent ?? "",
+  }));
+}
+
 test("? opens a dialog listing every binding the epic defines", async () => {
   await openApp();
   expect(screen.queryByRole("dialog")).toBeNull();
@@ -646,69 +662,57 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   const dialog = screen.getByRole("dialog");
   expect(dialog.textContent).toContain("Keyboard shortcuts");
 
-  // Four the shell binds, and the rest it does not: the arrows are Rank's,
-  // Escape is the Settings page's own, F8 is the toast viewport's own hotkey,
-  // Ctrl+Z presses the Undo #112 mounts, and the eleven in the middle are read
-  // by the grid container while focus is inside it. A shortcut nobody can find
-  // is a shortcut nobody uses, and a listed key nothing reads is worse still —
-  // is what this assertion is for: the list is copy, and copy that drifts from
-  // what the app binds is the failure the dialog exists to prevent.
-  const keys = Array.from(dialog.querySelectorAll("kbd")).map(
-    (el) => el.textContent,
-  );
-  expect(keys).toEqual([
-    "Ctrl",
-    "1",
-    "Ctrl",
-    "2",
-    "Ctrl",
-    "3",
-    "Ctrl",
-    ",",
-    "←",
-    "→",
-    "←",
-    "→",
-    "↑",
-    "↓",
-    "Home",
-    "End",
-    "Enter",
-    "K",
-    "Delete",
-    "R",
-    "+",
-    "-",
-    // The crop preview, listed on both surfaces that answer it and on neither
-    // of the grids, which is the distinction the two lines are written to make
-    // (#266).
-    "C",
-    "C",
-    "Esc",
-    "Esc",
-    "Ctrl",
-    "Z",
-    "F8",
-    "?",
+  // Every group, as the rows it prints. The shell's groups are its own copy —
+  // four bindings it answers, and the rest it does not: the arrows are Rank's,
+  // Escape is the Settings page's own, F8 is the toast viewport's own hotkey and
+  // Ctrl+Z presses the Undo #112 mounts. A shortcut nobody can find is a
+  // shortcut nobody uses, and a listed key nothing reads is worse still.
+  expect(
+    Array.from(dialog.querySelectorAll("h3")).map((h3) => h3.textContent),
+  ).toEqual([
+    "Go to",
+    "Rank",
+    "Wallpaper grid and strip",
+    "Lightbox",
+    "Settings",
+    "Notifications",
+    "Help",
   ]);
-  for (const action of ["Rank", "Review", "Library", "Settings", "Undo"]) {
-    expect(dialog.textContent).toContain(action);
-  }
+  expect(rowsUnder(dialog, "Go to")).toEqual([
+    { keys: ["Ctrl", "1"], action: "Rank" },
+    { keys: ["Ctrl", "2"], action: "Review" },
+    { keys: ["Ctrl", "3"], action: "Library" },
+    { keys: ["Ctrl", ","], action: "Settings" },
+  ]);
+  expect(rowsUnder(dialog, "Rank")).toEqual([
+    { keys: ["←"], action: "Pick the wallpaper on the left" },
+    { keys: ["→"], action: "Pick the wallpaper on the right" },
+  ]);
 
-  // The grid's keys say what they do to the selected wallpaper, and the two the
-  // lightbox adds are the two that are its alone: it walks and acts with the
-  // grid's own keys, so `Enter` and its Escape are the whole of what it
-  // contributes (ADR 0022).
-  expect(dialog.textContent).toContain("Keep the selected wallpaper");
-  expect(dialog.textContent).toContain("Reject the selected wallpaper");
-  expect(dialog.textContent).toContain("Restore the selected wallpaper");
-  expect(dialog.textContent).toContain("Open the selected wallpaper");
-  expect(dialog.textContent).toContain("Close, back to the grid");
-  // And `C` says where it works, because the heading above one of the two lines
-  // names the grid as well and the bars are not offered there (#266).
-  expect(dialog.textContent).toContain(
-    "Show what your screen would crop, in the strip",
+  // The listing surfaces' rows are the keymap's, read off the table the grid,
+  // the strip and the lightbox classify their keys against — so the list is
+  // asserted against the bindings rather than against a third copy of them,
+  // and `keymap.test.ts` asserts that every line it prints is a key something
+  // answers (#286). The lightbox adds its Escape, which is Radix's and no key
+  // of the keymap's.
+  expect(rowsUnder(dialog, "Wallpaper grid and strip")).toEqual(
+    shortcutLines("listing"),
   );
+  expect(rowsUnder(dialog, "Lightbox")).toEqual([
+    ...shortcutLines("lightbox"),
+    { keys: ["Esc"], action: "Close, back to the grid" },
+  ]);
+
+  expect(rowsUnder(dialog, "Settings")).toEqual([
+    { keys: ["Esc"], action: "Close, back to where you were" },
+  ]);
+  expect(rowsUnder(dialog, "Notifications")).toEqual([
+    { keys: ["Ctrl", "Z"], action: "Undo, on the toast offering it" },
+    { keys: ["F8"], action: "Move focus to the notifications" },
+  ]);
+  expect(rowsUnder(dialog, "Help")).toEqual([
+    { keys: ["?"], action: "This list" },
+  ]);
 
   // It is a dialog rather than a page, so it closes and leaves the curator
   // exactly where they were.

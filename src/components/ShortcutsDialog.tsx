@@ -1,3 +1,4 @@
+import { shortcutLines, type ShortcutLine } from "@/components/keymap";
 import { Kbd } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
@@ -14,31 +15,27 @@ import { Dialog } from "radix-ui";
  * can find is a shortcut nobody uses, and this dialog is the one place the whole
  * set is written down (ADR 0015).
  *
- * The grid's eleven are read by the grid container's own `keydown` and by nothing
+ * The two listing groups are not written here at all. They are the keymap's
+ * lines, read out of the table the grid, the strip and the lightbox classify
+ * their keys against, so the list cannot name a key none of them answers or miss
+ * one they do (#286). The keymap says why each line reads as it does — why `←`
+ * and `→` are listed for the grid and not again for the lightbox, and why `C`
+ * is listed twice. What the lightbox adds by hand is its Escape, which is
+ * Radix's `DismissableLayer` and no key of the keymap's.
+ *
+ * The grid's keys are read by the grid container's own `keydown` and by nothing
  * above it, so they fire only while focus is inside a grid. That is the dividing
  * line ADR 0019 draws — global shortcuts live in the shell's handler, view-local
  * keys live on the element that owns the focus — and it is why `←` and `→` are
  * listed twice: in a grid they move the selection, and they reach Rank only from
- * outside one. Review mounts that grid today and the library page mounts the
- * same one (#79), so the heading names the grid rather than either page — and
- * Review's strip beside it, which answers the same keys off the same tables
- * (#265). The two vertical arrows are the only line where the two surfaces
- * differ, because a strip has no second row to move into.
- *
- * The lightbox contributes little of its own, and that is ADR 0022 showing
- * through rather than a gap: it walks with the grid's own `←` and `→` and acts
- * with the grid's `K`, `Delete` and `R`, so what is its alone is the Escape that
- * closes it, the `Enter` that opens it, and the `C` it shares with the strip.
- * `←` and `→` are already listed twice, for Rank and for the grid; a third copy
- * saying the same thing about a third surface would make the list longer
- * without making it truer.
- *
- * `C` is the one binding listed twice with the *same* action written two ways,
- * because the difference is which surface answers it. The strip's line says so
- * out loud: the heading above it names the grid as well, and the crop preview is
- * not offered over a grid of thirty thumbnails (#266).
+ * outside one. Review mounts that grid and the library page mounts the same one
+ * (#79), so the heading names the grid rather than either page — and Review's
+ * strip beside it, which answers the same keys off the same table (#265).
  */
-const GROUPS = [
+const GROUPS: readonly {
+  heading: string;
+  bindings: readonly ShortcutLine[];
+}[] = [
   {
     heading: "Go to",
     bindings: [
@@ -55,38 +52,11 @@ const GROUPS = [
       { keys: ["→"], action: "Pick the wallpaper on the right" },
     ],
   },
-  {
-    heading: "Wallpaper grid and strip",
-    bindings: [
-      { keys: ["←"], action: "Select the wallpaper before this one" },
-      { keys: ["→"], action: "Select the wallpaper after this one" },
-      { keys: ["↑"], action: "Select the wallpaper a row up, or the one before" },
-      { keys: ["↓"], action: "Select the wallpaper a row down, or the one after" },
-      { keys: ["Home"], action: "Select the first wallpaper" },
-      { keys: ["End"], action: "Select the last wallpaper" },
-      { keys: ["Enter"], action: "Open the selected wallpaper" },
-      {
-        keys: ["K"],
-        action: "Keep the selected wallpaper, or make a Kept one Active",
-      },
-      { keys: ["Delete"], action: "Reject the selected wallpaper" },
-      { keys: ["R"], action: "Restore the selected wallpaper" },
-      // The density, which Ctrl and the wheel do as well. Only the keys are
-      // listed, because this is a list of keyboard shortcuts and a mouse
-      // gesture in it would be the one entry the curator cannot press. Both
-      // stop at the bounds of the tab they are on (#264).
-      { keys: ["+"], action: "Fewer, larger wallpapers" },
-      { keys: ["-"], action: "More, smaller wallpapers" },
-      // The strip's alone, and said so: the bars are not offered over a grid of
-      // thirty thumbnails, where they would be noise rather than an answer
-      // (#266).
-      { keys: ["C"], action: "Show what your screen would crop, in the strip" },
-    ],
-  },
+  { heading: "Wallpaper grid and strip", bindings: shortcutLines("listing") },
   {
     heading: "Lightbox",
     bindings: [
-      { keys: ["C"], action: "Show what your screen would crop" },
+      ...shortcutLines("lightbox"),
       { keys: ["Esc"], action: "Close, back to the grid" },
     ],
   },
@@ -105,7 +75,7 @@ const GROUPS = [
     heading: "Help",
     bindings: [{ keys: ["?"], action: "This list" }],
   },
-] as const;
+];
 
 /**
  * The shortcut list, opened by `?` and mounted in the shell.

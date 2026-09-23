@@ -1,3 +1,4 @@
+import type { TransitionAction } from "@/components/transitions";
 import { Progress } from "@/components/ui/progress";
 import {
   Toast,
@@ -34,9 +35,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-
-/** The four Status transitions, by the name the control that makes them carries. */
-type TransitionAction = "keep" | "reject" | "restore" | "make-active";
 
 /**
  * What a caller hands the shell after it has acted, and the whole of the API:

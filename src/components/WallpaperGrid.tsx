@@ -1,9 +1,7 @@
-import {
-  actionFor,
-  WallpaperCard,
-  type CardAction,
-} from "@/components/WallpaperCard";
-import { densityKeyStep, useDensityWheel } from "@/components/density";
+import { WallpaperCard } from "@/components/WallpaperCard";
+import { useDensityWheel } from "@/components/density";
+import { answerKey } from "@/components/keymap";
+import type { TransitionAction } from "@/components/transitions";
 import {
   usePublishedSelection,
   type SelectionHandle,
@@ -636,7 +634,7 @@ export interface WallpaperGridProps {
    * so the name is all a screen reader gets on the way in (ADR 0019).
    */
   label: string;
-  onAction: (action: CardAction, wallpaper: Wallpaper) => void;
+  onAction: (action: TransitionAction, wallpaper: Wallpaper) => void;
   /** Review's hover treatment. See `WallpaperCardProps.animated`. */
   animated?: boolean;
   /**
@@ -1016,115 +1014,44 @@ function Grid({
   // page's scale. See `useDensityWheel`, which Review's strip reads too.
   useDensityWheel(gridRef, onDensityStep);
 
+  // The keys, on this container rather than on `window`: they fire only while
+  // focus is inside the grid, which is the dividing line ADR 0019 draws and the
+  // reason nothing here reaches Rank. Global shortcuts live in the shell's
+  // handler; view-local keys live on the element that owns the focus. What a
+  // key means is the keymap's, prevention included (#286).
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    // Every chord the shell answers is a `Ctrl` one and nothing here may eat
-    // those; `Ctrl` and `+` is the webview's own zoom and not this grid's.
-    const chord = event.ctrlKey || event.altKey || event.metaKey;
-
-    // The density keys, ahead of the `Shift` half of the guard below rather than
-    // behind it. `+` is `Shift` and `=` on most layouts, so a curator pressing
-    // the key this gesture is named for arrives holding a modifier, and a guard
-    // written for the app's chords would send them away.
-    const by = densityKeyStep(event);
-    if (by !== undefined) {
-      event.preventDefault();
-      onDensityStep(by);
-      return;
-    }
-
-    if (chord || event.shiftKey) return;
-    const last = wallpapers.length - 1;
-    if (index === -1 || !selected) return;
-
-    // The direct keys, before the movement keys and on this container rather
-    // than on `window`: they fire only while focus is inside the grid, which is
-    // the dividing line ADR 0019 draws and the reason nothing here reaches Rank.
-    // Global shortcuts live in the shell's handler; view-local keys live on the
-    // element that owns the focus.
-    //
-    // A single keypress rejects, with no confirm and no modifier. ADR 0009
-    // deleted the confirm dialog and put act-then-undo in its place, so the
-    // safety is ADR 0017's toast and the `Ctrl+Z` that presses its Undo — and
-    // focus stays here while that toast is up, so the next card is already
-    // selected. It does mean a stray `Delete` on a focused grid moves a file,
-    // which ADR 0019 wrote down as the cost rather than as an oversight.
-    // The same entry a card's own buttons go through, so a key and a click take
-    // one path — the origin-less refusal included, which the host's `perform`
-    // holds once rather than once per trigger (ADR 0023).
-    const action = actionFor(event.key, selected.status);
-    if (action) {
-      event.preventDefault();
-      onAction(action, selected);
-      return;
-    }
-
-    // `Enter` opens the lightbox on the selection the two surfaces share, and
-    // it arrives at the same `onOpen` a click on the cell does: one host
-    // handler for the gesture, so the key and the mouse cannot open different
-    // things (ADR 0022, #138).
-    //
-    // Only from the cell itself. A cell's overlay buttons are still buttons and
-    // `Enter` on a focused one activates it, so the keypress that keeps a
-    // wallpaper bubbles through here on its way up — and answering it would be
-    // a keep with the lightbox opening over the card it emptied, which is the
-    // same two-answers-to-one-press the buttons' `stopPropagation` refuses for
-    // the mouse.
-    //
-    // Nothing is prevented either way, deliberately: that activation is the
-    // default action this handler would otherwise cancel, and a cell has no
-    // default action of its own to suppress.
-    if (event.key === "Enter") {
-      if (event.target === focus.nodeAt(index)) onOpen?.(selected);
-      return;
-    }
-
-    let next: number;
-    switch (event.key) {
-      // Left and Right walk the list rather than stopping at the visual row
-      // edge. The rows are a wrapping of one sequence, and a sweep reads it as
-      // one: stopping at the edge would mean the only way past card 4 of a
-      // five-column grid is Down and then Home, four times a row.
-      case "ArrowRight":
-        next = Math.min(index + 1, last);
+    const intent = answerKey(event, {
+      surface: { kind: "grid", columns, cell: () => focus.nodeAt(index) },
+      selected,
+      index,
+      length: wallpapers.length,
+    });
+    switch (intent?.kind) {
+      case "density":
+        onDensityStep(intent.by);
         break;
-      case "ArrowLeft":
-        next = Math.max(index - 1, 0);
+      // The same entry a card's own buttons go through, so a key and a click
+      // take one path — the origin-less refusal included, which the host's
+      // `perform` holds once rather than once per trigger (ADR 0023). Focus
+      // stays here while the toast is up, so the next card is already selected.
+      case "act":
+        onAction(intent.action, intent.wallpaper);
         break;
-      // Up and Down do move by the row, and do nothing when there is no card in
-      // that column of the next row. Clamping to the last card instead would
-      // make Down mean two different things depending on how full the last row
-      // happens to be.
-      //
-      // The column count and not the plan, in every layout. Under masonry the
-      // card that number lands on is usually the one below and is not obliged to
-      // be, since a tall card makes its column take fewer of them — and reading
-      // the plan here is the version where Down means one thing in the grid and
-      // another in masonry. #255 asks for navigation that works identically in
-      // every layout, and one rule over one list is what that is.
-      case "ArrowDown":
-        next = index + columns > last ? index : index + columns;
+      // The same `onOpen` a click on the cell reaches: one host handler for the
+      // gesture, so the key and the mouse cannot open different things
+      // (ADR 0022, #138).
+      case "open":
+        onOpen?.(intent.wallpaper);
         break;
-      case "ArrowUp":
-        next = index - columns < 0 ? index : index - columns;
+      case "move":
+        moveTo(intent.to);
         break;
-      case "Home":
-        next = 0;
-        break;
-      case "End":
-        next = last;
-        break;
+      // Every intent the keymap can hand this surface is answered above, so
+      // only an unanswered key reaches here, and a binding newly given to this
+      // surface fails to compile until it is (#286).
       default:
-        return;
+        intent satisfies undefined;
     }
-
-    // Answered here even when the selection does not move, and saying so is
-    // load-bearing. Rank stays mounted under `display: none` with its vote
-    // listener live on `window`, and it stands down on `defaultPrevented`: an
-    // arrow that reached it from a focused grid would record a permanent
-    // Comparison between two wallpapers the curator cannot see (ADR 0015 as
-    // amended, ADR 0019).
-    event.preventDefault();
-    moveTo(next);
   };
 
   return (
