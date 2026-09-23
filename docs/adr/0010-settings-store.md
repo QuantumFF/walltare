@@ -72,6 +72,21 @@ later is a match arm rather than a data migration.
 > `Settings::default()`, so absent and default-valued read the same to every
 > caller.
 
+> **Amended by [#281](https://github.com/QuantumFF/walltare/issues/281),
+> 2026-09-23.** Still no data migration, but no longer only a match arm. A key
+> whose values are a closed list — every key but the two Written paths and the
+> two Resolutions, `screen` and `minimum_resolution` — declares that list once, as a `Vocabulary`: each value beside the
+> spelling the column stores. The parse takes exactly those spellings and the
+> refusal names exactly those, so the two cannot disagree; before, every such
+> key listed its values twice, once in a hand-written parse and once in the
+> sentence beside it, and nothing checked one against the other. An enum-valued
+> key declares its type through `vocabulary!`, which writes its `Serialize` from
+> the same spellings, so a value a read sends is always one a write takes back.
+> Adding a key is now its constant, its `Settings` field, its default, one line
+> each in `resolve` and `is_default`, and its vocabulary if it has one. The
+> spellings are strict, so the numeric presets take `4` and `10`, which is what
+> `String(value)` writes, and refuse `4.0` and `+10`.
+
 `review_limit` is deliberately not a key. Nobody has asked to change 50, and
 the library page may retire the review list's limit entirely.
 
