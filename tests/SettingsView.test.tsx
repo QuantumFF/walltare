@@ -258,7 +258,7 @@ const destinationLine = () =>
 function sectionNamed(heading: string): HTMLElement {
   const found = Array.from(
     document.querySelectorAll<HTMLElement>('[data-slot="settings-section"]'),
-  ).find((section) => section.querySelector("h2")?.textContent === heading);
+  ).find((section) => section.querySelector("h3")?.textContent === heading);
   if (!found) throw new Error(`no settings section headed ${heading}`);
   return found;
 }
@@ -266,9 +266,9 @@ function sectionNamed(heading: string): HTMLElement {
 const browseIn = (section: HTMLElement) =>
   within(section).getByRole("button", { name: "Browse" });
 const sectionHeadings = () =>
-  Array.from(document.querySelectorAll('[data-slot="settings-section"] h2')).map(
-    (el) => el.textContent,
-  );
+  Array.from(
+    document.querySelectorAll('[data-slot="settings-section"] h3'),
+  ).map((el) => el.textContent);
 
 /** Type a Written path, one `change` the way a field reports one. */
 async function type(value: string) {
@@ -351,11 +351,51 @@ test("the page is one column of eleven sections, in first-run order", async () =
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: eleven groups of one or two controls
+  // assert — and the width is the decision: eleven sections of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
-  const column = document.querySelector('[data-slot="settings-section"]')
-    ?.parentElement as HTMLElement;
-  expect(column.className).toContain("max-w-2xl");
+  const column = document
+    .querySelector('[data-slot="settings-section"]')
+    ?.closest(".max-w-2xl");
+  expect(column).not.toBeNull();
+});
+
+test("the sections sit in four groups, and the jump row scrolls to each", async () => {
+  await openSettingsFromLibrary();
+
+  const groups = Array.from(
+    document.querySelectorAll('[data-slot="settings-group"]'),
+  ).map((group) => ({
+    title: group.querySelector("h2")?.textContent,
+    sections: Array.from(
+      group.querySelectorAll('[data-slot="settings-section"] h3'),
+    ).map((heading) => heading.textContent),
+  }));
+  expect(groups).toEqual([
+    { title: "Folders", sections: ["Library root", "Reject destination"] },
+    {
+      title: "Display",
+      sections: ["Appearance", "Screen", "Minimum resolution"],
+    },
+    {
+      title: "Curation",
+      sections: [
+        "Evaluated threshold",
+        "Startup view",
+        "Review worklist",
+        "Review ordering",
+      ],
+    },
+    { title: "Maintenance", sections: ["Thumbnails", "Missing files"] },
+  ]);
+
+  const nav = screen.getByRole("navigation", { name: "Settings groups" });
+  const maintenance = screen.getByRole("region", { name: "Maintenance" });
+  let scrolled = 0;
+  maintenance.scrollIntoView = () => {
+    scrolled += 1;
+  };
+  fireEvent.click(within(nav).getByRole("button", { name: "Maintenance" }));
+  expect(scrolled).toBe(1);
 });
 
 test("the bar names the page and the way out of it", async () => {
@@ -481,8 +521,19 @@ test("a first run leads with the prompt and nothing that is meaningless yet", as
   // not found yet (ADR 0033).
   expect(sectionHeadings()).toEqual(["Library root"]);
 
-  const column = sectionNamed("Library root").parentElement as HTMLElement;
+  const column = sectionNamed("Library root").closest(
+    ".max-w-2xl",
+  ) as HTMLElement;
   expect(column.firstElementChild).toBe(screen.getByRole("status"));
+
+  // Still inside its group, so the page's headings go h1, h2, h3 without a
+  // gap, and with no jump row: there is one group to jump to.
+  expect(
+    sectionNamed("Library root").closest('[data-slot="settings-group"]'),
+  ).not.toBeNull();
+  expect(
+    screen.queryByRole("navigation", { name: "Settings groups" }),
+  ).toBeNull();
 
   // And the one section that reads something on mount is not here to read it:
   // the cache is certainly empty on the launch that has never scanned, so this
@@ -623,7 +674,7 @@ test("the section holds a field, a Browse button and the button that scans", asy
   await openSettingsFromLibrary();
 
   const section = sectionNamed("Library root");
-  expect(section.querySelector("h2")?.textContent).toBe("Library root");
+  expect(section.querySelector("h3")?.textContent).toBe("Library root");
   expect(section.contains(scanInput())).toBe(true);
   expect(section.contains(browseIn(section))).toBe(true);
   expect(section.contains(scanButton())).toBe(true);
@@ -1022,7 +1073,7 @@ test("the section holds a field, a Browse button and one status line", async () 
   await openSettingsFromLibrary();
 
   const section = sectionNamed("Reject destination");
-  expect(section.querySelector("h2")?.textContent).toBe("Reject destination");
+  expect(section.querySelector("h3")?.textContent).toBe("Reject destination");
   expect(section.contains(destinationInput())).toBe(true);
   expect(section.contains(browseIn(section))).toBe(true);
   // One line, and nothing beside it: there is no count to print here and
@@ -1326,7 +1377,7 @@ test("the section offers three palettes, with one of them always chosen", async 
   await openSettingsFromLibrary();
 
   const section = sectionNamed("Appearance");
-  expect(section.querySelector("h2")?.textContent).toBe("Appearance");
+  expect(section.querySelector("h3")?.textContent).toBe("Appearance");
   // A radio group and not a row of toggles: `theme` has no "none" to hold, so
   // the primitive that cannot express one is the correct one (ADR 0020).
   expect(within(section).getByRole("radiogroup")).not.toBeNull();
@@ -1477,7 +1528,7 @@ async function typeSize(label: string, width: string, height: string) {
 test("the screen starts on the detected monitor, and the line says so", async () => {
   await openSettingsFromLibrary();
 
-  expect(screenSection().querySelector("h2")?.textContent).toBe("Screen");
+  expect(screenSection().querySelector("h3")?.textContent).toBe("Screen");
   expect(sizeIn("Screen")).toEqual(["3840", "2160"]);
   // The one default on this page a curator could not otherwise recover, which
   // is why it is printed rather than left to the empty settings table to imply
@@ -1583,9 +1634,7 @@ test("a size that is not one is refused before it is written", async () => {
 
   // The boundary itself is a size, so the rule stops exactly where `u32` does.
   await typeSize("Screen", "4294967295", "1440");
-  expect(settingWrites).toEqual([
-    { key: "screen", value: "4294967295x1440" },
-  ]);
+  expect(settingWrites).toEqual([{ key: "screen", value: "4294967295x1440" }]);
 });
 
 test("a blur that changed nothing writes nothing", async () => {
@@ -1652,7 +1701,7 @@ test("an overridden screen still names the monitor it can be changed back to", a
 test("the minimum resolution starts on the screen, and the line names it", async () => {
   await openSettingsFromLibrary();
 
-  expect(minimumSection().querySelector("h2")?.textContent).toBe(
+  expect(minimumSection().querySelector("h3")?.textContent).toBe(
     "Minimum resolution",
   );
   expect(sizeIn("Minimum")).toEqual(["3840", "2160"]);
@@ -1879,7 +1928,7 @@ test("the section offers three confidences, with Balanced chosen to begin with",
   await openSettingsFromLibrary();
 
   const section = evaluatedSection();
-  expect(section.querySelector("h2")?.textContent).toBe("Evaluated threshold");
+  expect(section.querySelector("h3")?.textContent).toBe("Evaluated threshold");
   // A radio group and not a number field: σ is the app's own uncertainty scale
   // and a curator typing 6.5 into it is guessing at a unit nothing on the page
   // can explain, which is the rule the epic already set for the worklist size.
@@ -2011,7 +2060,7 @@ test("the section is one line and two buttons", async () => {
   await openSettingsFromLibrary();
 
   const section = thumbnails();
-  expect(section.querySelector("h2")?.textContent).toBe("Thumbnails");
+  expect(section.querySelector("h3")?.textContent).toBe("Thumbnails");
   expect(section.contains(cacheLine())).toBe(true);
   expect(
     within(section)
@@ -2155,7 +2204,11 @@ test("the question keeps the numbers it opened with", async () => {
   await click(clearButton());
 
   cacheReading = cacheSize({ bytes: 96_400_000, files: 344 });
-  await emit("pregen-complete", { generated: 1204, failed: 0, cancelled: false });
+  await emit("pregen-complete", {
+    generated: 1204,
+    failed: 0,
+    cancelled: false,
+  });
 
   // A pass finishing behind the overlay refreshes the size and clears the
   // running pass, and either would rewrite the sentence under the curator while
@@ -2223,7 +2276,11 @@ test("the size is read on mount and when a pass ends, and never per wallpaper", 
   expect(cacheLine()?.textContent).toBe("48 MB cached · 3 of 1,204 generated");
 
   cacheReading = cacheSize({ bytes: 96_400_000, files: 344 });
-  await emit("pregen-complete", { generated: 1204, failed: 0, cancelled: false });
+  await emit("pregen-complete", {
+    generated: 1204,
+    failed: 0,
+    cancelled: false,
+  });
 
   // And the end of a pass is the moment the number on the line is furthest from
   // the truth, which is why it is one of the three that spends the walk.
@@ -2267,7 +2324,7 @@ test("the section is a button and nothing else until it is pressed", async () =>
   await openSettingsFromLibrary();
 
   const section = missingSection();
-  expect(section.querySelector("h2")?.textContent).toBe("Missing files");
+  expect(section.querySelector("h3")?.textContent).toBe("Missing files");
   // No line, because nothing has been checked. A count from a previous visit
   // would be a claim about a filesystem that has moved on, and the app keeps
   // none.

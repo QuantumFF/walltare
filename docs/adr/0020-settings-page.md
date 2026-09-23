@@ -63,6 +63,19 @@ last.
 > the ordinary page: first-run need first, maintenance last, five sections from
 > the moment there is a library to be about.
 
+> **Amended by [#303](https://github.com/QuantumFF/walltare/pull/303),
+> 2026-09-23.** Eleven sections, in four named groups: **Folders** (Library
+> root, Reject destination), **Display** (Appearance, Screen, Minimum
+> resolution), **Curation** (Evaluated threshold, Startup view, Review
+> worklist, Review ordering) and **Maintenance** (Thumbnails, Missing files).
+> The order is untouched; the groups only name runs of it. Eleven headings in
+> one column had become a wall to scroll, so each group is a bordered card
+> with an `h2` over its sections' `h3`s, and a row of jump buttons sticks to
+> the top of the scroll container so it survives the first jump. On a boot
+> landing the Library root still stands alone, inside its Folders card so the
+> headings do not skip a level, and the jump row is absent because there is
+> one group.
+
 Sections rather than a flat list of label-and-control rows. The ticket called
 four groups of one or two controls thin, and it would be, except the two path
 items are each a field, a Browse button, and a status line under them. In a flat
