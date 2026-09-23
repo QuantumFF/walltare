@@ -223,10 +223,8 @@ fn cancel_pregen(state: tauri::State<'_, Pregen>) {
 /// written down. ADR 0020 reads it on mount, on `pregen-complete` and after a
 /// clear, never per progress event.
 #[tauri::command]
-fn get_cache_size(
-    thumbnails: tauri::State<'_, ThumbnailCache>,
-) -> Result<thumbnails::CacheSize, error::AppError> {
-    thumbnails.size()
+async fn get_cache_size(app: AppHandle) -> Result<thumbnails::CacheSize, error::AppError> {
+    off_main_thread(app, |app| app.state::<ThumbnailCache>().size()).await
 }
 
 /// Throws the whole thumbnail cache away, and does not start it building again.
@@ -234,18 +232,20 @@ fn get_cache_size(
 /// Clearing is a rebuild rather than a way to reclaim disk: the next launch
 /// refills it, because the pass has no opt-out (ADR 0012).
 #[tauri::command]
-fn clear_cache(
-    pregen: tauri::State<'_, Pregen>,
-    db: tauri::State<'_, Db>,
-    thumbnails: tauri::State<'_, ThumbnailCache>,
-) -> Result<(), error::AppError> {
-    // Before anything is deleted, so a pass is not writing files into the
-    // directory this is about to empty. It stands down between wallpapers and
-    // this does not wait for it, so it can still finish the wallpaper it is on;
-    // what gets deleted in which order around exactly that is
-    // [`ThumbnailCache::clear`]'s, and written down there.
-    pregen.cancel();
-    thumbnails.clear(&db)
+async fn clear_cache(app: AppHandle) -> Result<(), error::AppError> {
+    off_main_thread(app, |app| {
+        let pregen = app.state::<Pregen>();
+        let db = app.state::<Db>();
+        let thumbnails = app.state::<ThumbnailCache>();
+        // Before anything is deleted, so a pass is not writing files into the
+        // directory this is about to empty. It stands down between wallpapers and
+        // this does not wait for it, so it can still finish the wallpaper it is on;
+        // what gets deleted in which order around exactly that is
+        // [`ThumbnailCache::clear`]'s, and written down there.
+        pregen.cancel();
+        thumbnails.clear(&db)
+    })
+    .await
 }
 
 /// How many Eligible wallpapers have no file behind them, for the Settings
@@ -262,11 +262,12 @@ fn clear_cache(
 /// filesystem work at all, and the card's own answer to a missing file is the
 /// `wallpaper://` request it was already making (ADR 0032).
 #[tauri::command]
-fn count_missing_files(
-    state: tauri::State<'_, Db>,
-) -> Result<missing::MissingFiles, error::AppError> {
-    let paths = state.read(missing::eligible_paths)?;
-    Ok(missing::count_missing(&paths))
+async fn count_missing_files(app: AppHandle) -> Result<missing::MissingFiles, error::AppError> {
+    off_main_thread(app, |app| {
+        let paths = app.state::<Db>().read(missing::eligible_paths)?;
+        Ok(missing::count_missing(&paths))
+    })
+    .await
 }
 
 /// Where a Written path points, and whether a folder is there.
@@ -308,8 +309,11 @@ fn expand_path(input: String) -> Result<Expanded, error::AppError> {
 /// typing their way to `~/pics/rejected` does not leave a folder behind for
 /// every prefix on the way.
 #[tauri::command]
-fn check_reject_destination(written: String) -> Result<reject_destination::Check, error::AppError> {
-    reject_destination::check(&written)
+async fn check_reject_destination(
+    written: String,
+    app: AppHandle,
+) -> Result<reject_destination::Check, error::AppError> {
+    off_main_thread(app, move |_| reject_destination::check(&written)).await
 }
 
 #[tauri::command]
@@ -403,12 +407,15 @@ fn unkeep_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, e
 /// the middle of it. It is one `rename` of one file that the curator is waiting
 /// on, rather than a walk of the whole library (ADR 0039).
 #[tauri::command]
-fn move_wallpaper(
+async fn move_wallpaper(
     id: i64,
     destination_folder: String,
-    state: tauri::State<Db>,
+    app: AppHandle,
 ) -> Result<db::Wallpaper, error::AppError> {
-    state.write(|conn| soft_reject::reject(conn, id, &destination_folder))
+    off_main_thread(app, move |app| {
+        soft_reject::reject_in(&app.state::<Db>(), id, &destination_folder)
+    })
+    .await
 }
 
 /// Undoes a soft reject and answers with the row it wrote: the file is back at
@@ -422,8 +429,27 @@ fn move_wallpaper(
 /// Holds the connection across the move back, for [`move_wallpaper`]'s reason:
 /// the ordering is that one run backwards, and it is the same single `rename`.
 #[tauri::command]
-fn restore_wallpaper(id: i64, state: tauri::State<Db>) -> Result<db::Wallpaper, error::AppError> {
-    state.write(|conn| soft_reject::restore(conn, id))
+async fn restore_wallpaper(id: i64, app: AppHandle) -> Result<db::Wallpaper, error::AppError> {
+    off_main_thread(app, move |app| {
+        soft_reject::restore_in(&app.state::<Db>(), id)
+    })
+    .await
+}
+
+/// Runs a command's body on the blocking pool rather than the thread it was
+/// invoked on.
+///
+/// A synchronous `#[tauri::command]` runs on the main thread in Tauri v2, so a
+/// command that walks the disk freezes the window for as long as the disk
+/// takes. The commands that touch the filesystem are `async` and hand their
+/// body here; the lock rules are the body's, unchanged (ADR 0039).
+async fn off_main_thread<T: Send + 'static>(
+    app: AppHandle,
+    work: impl FnOnce(&AppHandle) -> Result<T, error::AppError> + Send + 'static,
+) -> Result<T, error::AppError> {
+    tauri::async_runtime::spawn_blocking(move || work(&app))
+        .await
+        .map_err(|e| error::AppError::Io(format!("the command's worker stopped: {e}")))?
 }
 
 /// What the curator reads when their database was written by a newer walltare.

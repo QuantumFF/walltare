@@ -70,6 +70,13 @@ pub fn reject(
 pub fn restore(conn: &Connection, wallpaper_id: i64) -> Result<Wallpaper, AppError>;
 ```
 
+> **Amended 2026-09-23.** The interface is now `reject_in(db: &Db, …)` and
+> `restore_in(db: &Db, …)`, so the module can stage a cross-device copy with
+> the connection released before it takes the lock (see ADR 0039's amendment).
+> The `&Connection` forms survive as `#[cfg(test)]` wrappers over the same
+> locked half; the transaction, guard, `UPDATE` and ordering are still behind
+> the interface.
+
 Behind them: the transaction, the guard, the `UPDATE`, the choreography, the row
 read. The five helpers and `MAX_COLLISION_SUFFIXES` go private inside, and
 `resolve_destination_dir_with` stays `#[cfg(test)]` — the module keeps the

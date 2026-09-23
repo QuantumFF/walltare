@@ -29,6 +29,18 @@
 //! [`reject`] and [`restore`], and the transaction, the guard, the `UPDATE` and
 //! the choreography are all behind them.
 //!
+//! **A copy across filesystems is staged before the lock is taken.** A
+//! `rename` cannot cross a device, so a reject onto another drive used to
+//! `fs::copy` the whole file under the connection mutex, queuing every command
+//! and every `wallpaper://` request behind it. [`reject_in`] and [`restore_in`]
+//! now read the row, and when the source and the destination folder are on
+//! different devices, copy the file to a dotfile beside where it will land
+//! ([`Staged`]) with the connection released. Inside the lock the ordering is
+//! unchanged — the row is still written first and the file still moves last —
+//! and the move is a same-device `rename` of the staged copy plus the unlink
+//! of the source. A staged copy the transition did not spend is removed when
+//! it drops, so a refusal or a failed move leaves nothing behind (ADR 0039).
+//!
 //! Rows come from [`db::get_wallpaper`] and go back through it after the commit.
 //! `db.rs` still owns the row: its shape, its Status, its listings, and the two
 //! transitions that only write a Status.
@@ -53,10 +65,40 @@ const MAX_COLLISION_SUFFIXES: u32 = 1000;
 /// columns the move rewrote (ADR 0023). It is read after the commit, through the
 /// same [`db::get_wallpaper`] the guard above used, for the reason
 /// `WALLPAPER_COLUMNS` is one copy.
+pub fn reject_in(
+    db: &crate::Db,
+    wallpaper_id: i64,
+    destination_folder: &str,
+) -> Result<Wallpaper, AppError> {
+    let row = db.read(|conn| db::get_wallpaper(conn, wallpaper_id))?;
+    let staged = if row.status.may_become(Status::Rejected) {
+        let source = PathBuf::from(&row.path);
+        resolve_destination_dir(&source, destination_folder)
+            .ok()
+            .and_then(|dir| Staged::if_cross_device(&source, &dir))
+            .transpose()?
+    } else {
+        None
+    };
+    db.write(|conn| reject_with(conn, wallpaper_id, destination_folder, staged.as_ref()))
+}
+
+/// [`reject_in`] without the staging, for tests that hold a bare connection.
+#[cfg(test)]
 pub fn reject(
     conn: &Connection,
     wallpaper_id: i64,
     destination_folder: &str,
+) -> Result<Wallpaper, AppError> {
+    reject_with(conn, wallpaper_id, destination_folder, None)
+}
+
+/// The locked half of a reject: the guard, the `UPDATE`, the move, the commit.
+fn reject_with(
+    conn: &Connection,
+    wallpaper_id: i64,
+    destination_folder: &str,
+    staged: Option<&Staged>,
 ) -> Result<Wallpaper, AppError> {
     let tx = conn.unchecked_transaction()?;
     let row = db::get_wallpaper(&tx, wallpaper_id)?;
@@ -97,7 +139,7 @@ pub fn reject(
         rusqlite::params![Status::Rejected, dest_str, dest_name, wallpaper_id],
     )?;
 
-    move_file(&source, &dest_path)?;
+    finish_move(&source, &dest_path, staged)?;
     tx.commit()?;
     db::get_wallpaper(conn, wallpaper_id)
 }
@@ -115,7 +157,35 @@ pub fn reject(
 /// hide either a stale id or a control the UI left enabled. So is one rejected
 /// before the Origin was recorded — nothing can say where its file came from,
 /// which is the cohort Rejected stays terminal for.
+pub fn restore_in(db: &crate::Db, wallpaper_id: i64) -> Result<Wallpaper, AppError> {
+    let row = db.read(|conn| db::get_wallpaper(conn, wallpaper_id))?;
+    let staged = match (row.status, &row.origin_path) {
+        (Status::Rejected, Some(origin)) => {
+            let source = PathBuf::from(&row.path);
+            match Path::new(origin).parent() {
+                Some(dir) if source.is_file() && std::fs::create_dir_all(dir).is_ok() => {
+                    Staged::if_cross_device(&source, dir).transpose()?
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    db.write(|conn| restore_with(conn, wallpaper_id, staged.as_ref()))
+}
+
+/// [`restore_in`] without the staging, for tests that hold a bare connection.
+#[cfg(test)]
 pub fn restore(conn: &Connection, wallpaper_id: i64) -> Result<Wallpaper, AppError> {
+    restore_with(conn, wallpaper_id, None)
+}
+
+/// The locked half of a Restore: the guard, the `UPDATE`, the move, the commit.
+fn restore_with(
+    conn: &Connection,
+    wallpaper_id: i64,
+    staged: Option<&Staged>,
+) -> Result<Wallpaper, AppError> {
     let tx = conn.unchecked_transaction()?;
     let row = db::get_wallpaper(&tx, wallpaper_id)?;
 
@@ -180,7 +250,7 @@ pub fn restore(conn: &Connection, wallpaper_id: i64) -> Result<Wallpaper, AppErr
         rusqlite::params![Status::Active, dest_str, dest_name, wallpaper_id],
     )?;
 
-    move_file(&source, &dest_path)?;
+    finish_move(&source, &dest_path, staged)?;
     tx.commit()?;
     db::get_wallpaper(conn, wallpaper_id)
 }
@@ -269,6 +339,94 @@ fn unique_destination(dir: &Path, filename: &str) -> Result<PathBuf, AppError> {
         "{} already holds {MAX_COLLISION_SUFFIXES} files named like {filename:?}",
         dir.display()
     )))
+}
+
+/// A copy of a wallpaper's file, made with the connection released, sitting in
+/// the folder it is about to be moved into under a name nothing else uses.
+///
+/// Dropping it removes the copy. After a successful [`finish_move`] the copy
+/// has been renamed away and the removal finds nothing, so every path that did
+/// not spend it — a refused transition, a failed `UPDATE`, a failed move —
+/// cleans up by leaving scope.
+struct Staged {
+    source: PathBuf,
+    temp: PathBuf,
+}
+
+impl Staged {
+    /// Stages `source` into `dir` when a `rename` between them would cross a
+    /// device, and answers `None` when a plain `rename` will do.
+    fn if_cross_device(source: &Path, dir: &Path) -> Option<Result<Self, AppError>> {
+        (!same_device(source, dir)).then(|| Self::copy(source, dir))
+    }
+
+    /// Copies `source` into `dir` under a dotfile name with no image extension,
+    /// so neither a scan nor a file manager takes it for a wallpaper.
+    fn copy(source: &Path, dir: &Path) -> Result<Self, AppError> {
+        let name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| AppError::InvalidPath(source.display().to_string()))?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let temp = dir.join(format!(
+            ".{name}.walltare-staging-{}-{nanos}",
+            std::process::id()
+        ));
+        let staged = Self {
+            source: source.to_path_buf(),
+            temp,
+        };
+        // On failure `staged` drops here and removes whatever part was written.
+        std::fs::copy(source, &staged.temp)?;
+        Ok(staged)
+    }
+}
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.temp);
+    }
+}
+
+#[cfg(unix)]
+fn same_device(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev(),
+        // Unknowable here; the locked move's own fallback still copes.
+        _ => true,
+    }
+}
+
+#[cfg(not(unix))]
+fn same_device(_: &Path, _: &Path) -> bool {
+    true
+}
+
+/// The move at the bottom of both transitions. With a staged copy of this very
+/// source in this very folder, it is a same-device `rename` of the copy and the
+/// unlink of the source; otherwise — nothing staged, or the row moved between
+/// the staging read and the lock — it is [`move_file`].
+fn finish_move(source: &Path, dest: &Path, staged: Option<&Staged>) -> Result<(), AppError> {
+    let Some(staged) = staged.filter(|s| s.source == source && s.temp.parent() == dest.parent())
+    else {
+        return move_file(source, dest);
+    };
+    std::fs::rename(&staged.temp, dest)?;
+    match std::fs::remove_file(source) {
+        // The source went on its own after the guard saw it. The landed copy
+        // is then the only one, so it stays, and the row about to commit
+        // names it; removing it here would lose the wallpaper outright.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(dest);
+            Err(e.into())
+        }
+        Ok(()) => Ok(()),
+    }
 }
 
 /// Moves a file, falling back to copy-then-delete across filesystems and
@@ -1201,5 +1359,123 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(insert_new_wallpapers(&conn, &found).unwrap().is_empty());
         assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_staged_copy_is_renamed_into_place_and_the_source_unlinked() {
+        // The cross-device path, minus the second device: the copy is made
+        // before the lock, and the locked move is a rename of it.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        std::fs::write(tmp.path().join("far.jpg"), b"FAR").unwrap();
+        insert_new_wallpapers(&conn, &[tmp.path().join("far.jpg")]).unwrap();
+        let id = conn.last_insert_rowid();
+        let source = tmp.path().join("far.jpg");
+        let dest_dir = resolve_destination_dir(&source, "rejected").unwrap();
+
+        let staged = Staged::copy(&source, &dest_dir).unwrap();
+        assert_eq!(entries(&dest_dir).len(), 1, "the staged copy is there");
+        let landed = reject_with(&conn, id, "rejected", Some(&staged)).unwrap();
+        drop(staged);
+
+        assert_eq!(std::fs::read(&landed.path).unwrap(), b"FAR");
+        assert!(!source.exists());
+        assert_eq!(entries(&dest_dir), vec!["far.jpg".to_string()]);
+        assert_eq!(status_of(&conn, id), "rejected");
+    }
+
+    #[test]
+    fn a_staged_copy_the_transition_refused_is_cleaned_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "stay.jpg");
+        let source = tmp.path().join("stay.jpg");
+        let dest_dir = resolve_destination_dir(&source, "rejected").unwrap();
+        // A row already claims the path the UPDATE would write, so
+        // UNIQUE(path) refuses the transition with the copy staged.
+        insert_new_wallpapers(&conn, &[dest_dir.join("stay.jpg")]).unwrap();
+
+        let staged = Staged::copy(&source, &dest_dir).unwrap();
+        assert!(reject_with(&conn, id, "rejected", Some(&staged)).is_err());
+        drop(staged);
+
+        assert!(source.is_file());
+        assert!(
+            entries(&dest_dir).is_empty(),
+            "got {:?}",
+            entries(&dest_dir)
+        );
+        assert_eq!(status_of(&conn, id), "active");
+    }
+
+    #[test]
+    fn a_source_gone_before_the_unlink_keeps_the_landed_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        let dest_dir = tmp.path().join("dest");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        let source = src_dir.join("a.jpg");
+        std::fs::write(&source, b"A").unwrap();
+        let staged = Staged::copy(&source, &dest_dir).unwrap();
+        // The source goes before the move reaches it, so there is nothing to unlink.
+        std::fs::remove_file(&source).unwrap();
+
+        finish_move(&source, &dest_dir.join("a.jpg"), Some(&staged)).unwrap();
+        drop(staged);
+
+        assert_eq!(entries(&dest_dir), vec!["a.jpg".to_string()]);
+    }
+
+    #[test]
+    fn a_staged_restore_lands_on_the_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        std::fs::write(tmp.path().join("back.jpg"), b"BACK").unwrap();
+        insert_new_wallpapers(&conn, &[tmp.path().join("back.jpg")]).unwrap();
+        let id = conn.last_insert_rowid();
+        let rejected = PathBuf::from(reject(&conn, id, "rejected").unwrap().path);
+
+        let origin_dir = PathBuf::from(origin_path_of(&conn, id).unwrap())
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let staged = Staged::copy(&rejected, &origin_dir).unwrap();
+        let back = restore_with(&conn, id, Some(&staged)).unwrap();
+        drop(staged);
+
+        assert_eq!(std::fs::read(&back.path).unwrap(), b"BACK");
+        assert!(!rejected.exists());
+        assert_eq!(
+            entries(tmp.path()),
+            vec!["back.jpg".to_string(), "rejected".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_db_entry_points_reject_and_restore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "x.jpg");
+        let db = crate::Db::new(conn);
+
+        let out = reject_in(&db, id, "rejected").unwrap();
+        assert!(PathBuf::from(&out.path).is_file());
+        let back = restore_in(&db, id).unwrap();
+        assert!(PathBuf::from(&back.path).is_file());
+        assert!(entries(&tmp.path().join("rejected")).is_empty());
     }
 }

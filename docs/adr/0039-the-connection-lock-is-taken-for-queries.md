@@ -167,6 +167,29 @@ It is also the cheap case: one `rename` of one file, on a path the curator is
 waiting on anyway, rather than a walk of the whole library on a path where
 nobody asked for anything. Both commands say so where they are defined.
 
+> **Amended 2026-09-23 (off-main-thread filesystem commands).** "One `rename`"
+> was not true across devices: `move_file` fell back to `fs::copy` on `EXDEV`,
+> so a reject onto another drive copied the whole file under the mutex.
+> `soft_reject::reject_in(db, …)` and `restore_in(db, …)` now take the `Db`,
+> read the row, and when source and destination folder are on different
+> devices copy the file to a dotfile in the destination folder (`Staged`)
+> with the connection released. Inside `Db::write` the ADR 0003 ordering is
+> unchanged — row first, file last, one transaction — and the move is a
+> same-device `rename` of the staged copy plus the unlink of the source.
+> `Staged` removes its copy on drop, so a refused or failed transition leaves
+> nothing behind. If the row moved between the staging read and the lock, the
+> staged copy does not match and the old `move_file` runs, fallback and all.
+> The exception is now what it claimed to be: the lock is held across one
+> rename and one unlink.
+>
+> The same change makes the filesystem-heavy commands — `count_missing_files`,
+> `get_cache_size`, `clear_cache`, `check_reject_destination`,
+> `move_wallpaper`, `restore_wallpaper` — `async` and runs their bodies on
+> `tauri::async_runtime::spawn_blocking`, because a sync command runs on the
+> main thread in Tauri v2 and froze the window for as long as the disk took.
+> `start_scan` already walked on its own thread. The bodies, and so every
+> lock rule above, are unchanged; the invoke arguments are unchanged too.
+
 ### `synchronous = NORMAL` beside `journal_mode = WAL`
 
 Set in `db::open`, after the from-the-future guard for the reason
