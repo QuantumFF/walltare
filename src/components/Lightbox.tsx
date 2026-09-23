@@ -218,10 +218,10 @@ export function useLightbox(grid: SelectionHandle | null): LightboxControls {
   // It also notes whether the focus it opened from was drawn, which is how the
   // curator arrived: `Enter` on a card is keyboard focus and a click on one is
   // not. A ref, because nothing renders from it.
-  const openedFromVisibleFocus = useRef(false);
+  const openedWithVisibleFocus = useRef(false);
   const openOn = useCallback(
     (subject: Wallpaper) => {
-      openedFromVisibleFocus.current =
+      openedWithVisibleFocus.current =
         document.activeElement?.matches(":focus-visible") ?? false;
       grid?.selection().selectId(subject.id);
       setOpenEverywhere(true);
@@ -237,14 +237,21 @@ export function useLightbox(grid: SelectionHandle | null): LightboxControls {
   // grid's own layout effect answers it (ADR 0019, ADR 0022).
   //
   // The focus goes back drawn only if it left drawn. A card's overlay reveals on
-  // `:focus-visible`, and a close is a focus moved by script, which WebKit draws
-  // whenever the last focus was not a click — and the lightbox's own surface
-  // taking the focus is not one. Left to that guess, a lightbox opened with the
-  // mouse hands back a card with its overlay pinned open under a pointer that is
-  // nowhere near it, and Escape is a keypress that would draw it too.
+  // `:focus-visible`, and a close is a focus moved by script, which WebKitGTK
+  // draws whenever the last focus was not a click — and the lightbox's own
+  // surface taking the focus is not one. Left to that guess, a lightbox opened
+  // with the mouse hands back a card with its overlay pinned open under a
+  // pointer that is nowhere near it, and newer WebKit takes the Escape that
+  // closed it as a reason to draw it anyway.
+  //
+  // It is how the lightbox was opened that counts, not how it was used: opened
+  // with a click and walked with the arrows, it still hands back a card with no
+  // overlay, and the next arrow in the grid draws it.
   const close = useCallback(() => {
     setOpenEverywhere(false);
-    grid?.focusSelection(openedFromVisibleFocus.current);
+    grid?.focusSelection({
+      focusVisible: openedWithVisibleFocus.current,
+    });
   }, [grid, setOpenEverywhere]);
 
   // The destination change, and the one close that hands nothing back: `Ctrl+2`

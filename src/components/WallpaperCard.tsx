@@ -183,9 +183,9 @@ export interface WallpaperCardProps {
  * Its design is #44's prototype at ADR 0019's corrections: a dense
  * `aspect-video` card with the Score badge top right, the Status pill top left,
  * and the actions in a bottom overlay revealed by `group-hover` and by keyboard
- * focus on the card or inside it. #254's prototype is what the two uncropped layouts wear
- * on top of that: no border and no rounding once the card is handed a box, and a
- * ring on the selected one.
+ * focus on the card or inside it. #254's prototype is what the two uncropped
+ * layouts wear on top of that: no border and no rounding once the card is
+ * handed a box, and a ring on the selected one.
  *
  * It carries no hover shadow, deliberately. A wheel scroll holds the pointer
  * still while cards stream underneath, so every card that passes fires

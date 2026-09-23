@@ -50,15 +50,24 @@ model rather than two.
 The selected card reveals its overlay through `group-focus-within`, which is the
 same reveal a hover gives.
 
-> **Amended 2026-09-23.** The reveal is now drawn focus only:
-> `group-focus-visible` for the cell and `group-has-[:focus-visible]` for its
-> buttons. `focus-within` also answered to focus a mouse left behind, so a card
-> whose button was clicked, or whose lightbox had just closed, kept its overlay
-> open after the pointer left. The lightbox's close is a focus moved by script,
-> which WebKit draws unless the last focus was a click, so the lightbox records
-> whether the focus it opened from was drawn and hands the card back with
-> `focus({ focusVisible })` to match: `Enter` then `Escape` reveals the card,
-> and a click then `Escape` does not.
+> **Amended by [#299](https://github.com/QuantumFF/walltare/pull/299),
+> 2026-09-23.** The reveal is now drawn focus only: `group-focus-visible` for
+> the cell and `group-has-[:focus-visible]` for its buttons. `focus-within` also
+> answered to focus a mouse left behind, so a card whose button was clicked, or
+> whose lightbox had just closed, kept its overlay open after the pointer left.
+> The lightbox's close is a focus moved by script, which WebKit draws unless the
+> last focus was a click, so the lightbox records whether the focus it opened
+> from was drawn and hands the card back with `focus({ focusVisible })` to
+> match: `Enter` then `Escape` reveals the card, and a click then `Escape` does
+> not.
+>
+> It is how the lightbox was opened that counts, not how it was used. Opened
+> with a click and walked with its arrows, it hands back the card it ended on
+> with no overlay, where `focus-within` revealed it; the next arrow in the grid
+> draws it. And WebKitGTK 2.52 keeps "the last focus was a click" through a
+> keypress, so the first arrow after clicking a card's button lands an undrawn
+> focus and the overlay reveals from the second. Newer WebKit resets that on
+> keydown, which closes the gap without anything here changing.
 
 Moving the selection to an index outside the virtual window means asking the
 virtualiser to scroll it in first, so focus moves in a layout effect after the
@@ -77,6 +86,15 @@ layer to promote on either trigger. The plan under "If the grid ever janks"
 stands unchanged. Review's card still animates, but a keyboard selection moves
 one card at a time under a deliberate keypress, which is not the streaming wheel
 gesture [ADR 0007](0007-review-card-layer-promotion.md) measured.
+
+> **Amended by [#299](https://github.com/QuantumFF/walltare/pull/299),
+> 2026-09-23.** The trigger is now `group-focus-visible` and
+> `group-has-[:focus-visible]` rather than `group-focus-within`, and the
+> argument carries over. The second is a `:has()` selector, which asks the
+> engine to re-check a focused element's ancestors when its focus changes. That
+> happens on the two cards a keypress moves between and on a click, never on a
+> card a wheel pass slides under the pointer, so it adds nothing to the gesture
+> ADR 0006 and ADR 0007 priced. `:hover` is unchanged.
 
 ### The selection acts with direct keys, and Enter opens the lightbox
 
