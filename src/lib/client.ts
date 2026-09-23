@@ -388,20 +388,20 @@ export interface VoteOutcome {
   stats: Stats;
 }
 
-/** Payload of the `scan-progress` event (lib.rs ScanProgress) */
+/** Payload of the `scan-progress` event (scan.rs Progress) */
 export interface ScanProgress {
   scanned: number;
   added: number;
 }
 
-/** Payload of the `scan-complete` event (lib.rs ScanComplete) */
+/** Payload of the `scan-complete` event (scan.rs Complete) */
 export interface ScanComplete {
   added_count: number;
-  /** Images the walk found, new or already known. See lib.rs ScanComplete. */
+  /** Images the walk found, new or already known. See scan.rs Complete. */
   scanned_count: number;
 }
 
-/** Payload of the `scan-failed` event (lib.rs ScanFailed) */
+/** Payload of the `scan-failed` event (scan.rs Failed) */
 export interface ScanFailed {
   message: string;
 }

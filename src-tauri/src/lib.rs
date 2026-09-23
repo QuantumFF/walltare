@@ -5,6 +5,7 @@ mod paths;
 mod pregen;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod reject_destination;
+mod scan;
 mod scanner;
 mod serving;
 mod settings;
@@ -15,7 +16,6 @@ mod thumbnails;
 mod voting;
 mod window_state;
 
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -25,28 +25,6 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use pregen::Pregen;
 use thumbnails::ThumbnailCache;
-
-const SCAN_CHUNK_SIZE: usize = 256;
-
-#[derive(Clone, Serialize)]
-struct ScanProgress {
-    scanned: u64,
-    added: u64,
-}
-
-#[derive(Clone, Serialize)]
-struct ScanComplete {
-    added_count: u64,
-    /// Files the walk found, whether or not they were new. Without this the UI
-    /// cannot tell "this folder has no images" from "everything here is already
-    /// in your library", and reports the second as the first.
-    scanned_count: u64,
-}
-
-#[derive(Clone, Serialize)]
-struct ScanFailed {
-    message: String,
-}
 
 /// The one SQLite connection, reachable only for the length of a query.
 ///
@@ -193,7 +171,7 @@ fn get_stats(state: tauri::State<'_, Db>) -> Result<voting::Stats, error::AppErr
 fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
     // Before the guard below, so a malformed path costs the curator nothing and
     // leaves no scan running.
-    let expanded = paths::expand(&path)?;
+    let root = scan::LibraryRoot::expand(&path)?;
 
     if app.state::<ScanRunning>().0.swap(true, Ordering::SeqCst) {
         return Err(error::AppError::InvalidTransition(
@@ -203,192 +181,37 @@ fn start_scan(path: String, app: AppHandle) -> Result<(), error::AppError> {
 
     std::thread::spawn(move || {
         let _running = ScanGuard(app.clone());
-
-        // The whole of what this scan does to the library, if the root is not
-        // walkable: nothing. The wallpapers an earlier scan found stay in the
-        // library, per `CONTEXT.md`, and the message says so.
-        let Ok(root) = canonical_scan_root(&expanded) else {
-            let _ = app.emit(
-                "scan-failed",
-                ScanFailed {
-                    message: unwalkable_root(&expanded),
-                },
-            );
-            return;
-        };
-
-        // A running pre-generation pass stands down, and does not hold up the
-        // scan while it does. Its work list is a snapshot that the rows this
-        // scan is about to insert make stale; the frontend restarts the pass on
-        // `scan-complete`, which is what puts the new files at the head of the
-        // queue (ADR 0012). Placed after the root resolves, and not on the IPC
-        // thread as it used to be, so a scan that never starts cancels nothing:
-        // nothing restarts the pass on `scan-failed`, so a mistyped folder would
-        // otherwise retire the launch pass for the rest of the session.
-        app.state::<Pregen>().cancel();
-
-        let files = scanner::collect_images(std::slice::from_ref(&root));
-        let mut scanned: u64 = 0;
-        let mut added: u64 = 0;
-        let mut failure: Option<String> = None;
-
-        for chunk in files.chunks(SCAN_CHUNK_SIZE) {
-            let result = app
-                .state::<Db>()
-                .write(|conn| db::insert_new_wallpapers(conn, chunk));
-            match result {
-                Ok(new_rows) => {
-                    added += new_rows.len() as u64;
-                    record_dimensions_of(&app, &new_rows);
-                }
-                Err(e) => {
-                    // Surface it instead of only printing: a silent failure looks
-                    // to the user exactly like an empty folder.
-                    failure = Some(e.to_string());
-                    break;
-                }
-            }
-            scanned += chunk.len() as u64;
-            let _ = app.emit("scan-progress", ScanProgress { scanned, added });
-        }
-
-        match failure {
-            Some(message) => {
-                let _ = app.emit("scan-failed", ScanFailed { message });
-            }
-            None => {
-                let _ = app.emit(
-                    "scan-complete",
-                    ScanComplete {
-                        added_count: added,
-                        scanned_count: scanned,
-                    },
-                );
-            }
-        }
+        scan::run(&app.state::<Db>(), root, &ScanEvents(&app));
     });
     Ok(())
 }
 
-/// Reads each newly scanned file's pixel dimensions and writes them to its row.
-///
-/// Between the chunk's insert and the next one, and in three steps rather than
-/// one: the insert under the connection, the header reads with it released, then
-/// the writes (ADR 0039). A chunk is `SCAN_CHUNK_SIZE` files, so holding the
-/// lock across the reads would queue every command and every `wallpaper://`
-/// request behind that many file opens on whatever drive the Library root sits
-/// on.
-///
-/// Only the rows this chunk actually inserted, which is what makes a rescan of a
-/// warm library cost nothing: `INSERT OR IGNORE` hands back the new rows alone,
-/// and a wallpaper already in the library already has its dimensions or is the
-/// pre-generation pass's to backfill (ADR 0044).
-///
-/// A file whose dimensions cannot be read is left with NULL in both columns and
-/// nothing else happens: the scan does not fail over it, and the pass that
-/// decodes it later is where a broken source is counted and reported (ADR 0034).
-/// A write that fails is logged rather than surfaced — the dimensions are
-/// backfillable and the wallpapers are in the library either way.
-fn record_dimensions_of(app: &AppHandle, new_rows: &[db::Added]) {
-    let measured = measure_new_rows(new_rows);
-    if measured.is_empty() {
-        return;
+/// The real scan report: the three events the frontend listens for, and the
+/// pre-generation pass standing down once the scan has really begun.
+struct ScanEvents<'a>(&'a AppHandle);
+
+impl scan::Report for ScanEvents<'_> {
+    fn began(&self) {
+        // A running pre-generation pass stands down, and does not hold up the
+        // scan while it does. Its work list is a snapshot that the rows this
+        // scan is about to insert make stale; the frontend restarts the pass on
+        // `scan-complete`, which is what puts the new files at the head of the
+        // queue (ADR 0012). Only once the root resolves, which is what
+        // `scan::run` guarantees by calling this where it does (ADR 0034).
+        self.0.state::<Pregen>().cancel();
     }
-    if let Err(e) = app
-        .state::<Db>()
-        .write(|conn| db::record_dimensions_batch(conn, &measured))
-    {
-        eprintln!("scan could not record pixel dimensions: {e}");
+
+    fn progress(&self, progress: scan::Progress) {
+        let _ = self.0.emit("scan-progress", progress);
     }
-}
 
-/// The filesystem half of [`record_dimensions_of`]: every new row whose file
-/// gave up its dimensions, and nothing about the ones that did not.
-///
-/// Split out for the reason [`unwalkable_root`] is a function of its own — the
-/// half worth asserting on needs no running Tauri app. Which files a scan
-/// measures and which it leaves NULL is the whole of the behaviour; the write
-/// beside it is one batched `UPDATE`.
-fn measure_new_rows(new_rows: &[db::Added]) -> Vec<(i64, u32, u32)> {
-    new_rows
-        .iter()
-        .filter_map(|row| {
-            scanner::dimensions(&row.path).map(|(width, height)| (row.id, width, height))
-        })
-        .collect()
-}
-
-/// What the curator reads when a scan's Library root is not a folder it can
-/// walk: deleted since it was set, unmounted, or a file where a folder was.
-///
-/// A pure function so the copy is testable, the way [`refusal_message`] is. It
-/// names where the app looked and what did not happen, because the second half
-/// is the one the curator cannot see: `CONTEXT.md` says the wallpapers an
-/// earlier scan found stay in the library regardless of where the Library root
-/// points now, and a curator whose drive is unmounted otherwise reads an empty
-/// scan as the app having forgotten their library (ADR 0034).
-///
-/// It is a sentence rather than a path because it travels on `scan-failed`,
-/// whose toast prints the backend message verbatim under `Couldn't finish the
-/// scan` (ADR 0021).
-fn unwalkable_root(expanded: &Path) -> String {
-    let where_it_looked = expanded.display();
-    let head = if expanded.is_dir() {
-        // The directory check passed and the canonicalization did not, which is
-        // exotic: a symlink loop, or a component that stopped being readable
-        // between the two calls.
-        format!("walltare couldn't read the folder at {where_it_looked}.")
-    } else {
-        format!("There's no folder at {where_it_looked}.")
-    };
-    format!(
-        "{head} Nothing was scanned, and every wallpaper already in your library is still in it."
-    )
-}
-
-/// Expands a Written path, checks it is a directory, then canonicalizes it.
-///
-/// That order is the whole point. Expanding first is what makes `~/pics` and
-/// `$XDG_PICTURES_DIR/walls` scannable at all, and canonicalizing last is what
-/// keeps `~/pics`, `$HOME/pics` and `/home/me/./pics` from reaching three
-/// libraries: stored paths are compared as strings, so `UNIQUE(path)` would see
-/// the same file three times.
-///
-/// The two halves are called separately in production — the expansion on the IPC
-/// thread and the rest on the scan's own, so each failure lands on the surface
-/// that suits it (see [`start_scan`]). This composes them for the tests, which
-/// are about the composition.
-#[cfg(test)]
-fn scan_root(path: &str) -> Result<PathBuf, error::AppError> {
-    canonical_scan_root(&paths::expand(path)?)
-}
-
-/// [`scan_root`] with the environment passed in, for the tests.
-///
-/// Same reason as [`paths::expand_with`]: the `~` case needs a known `HOME`, and
-/// cargo runs tests as threads in one process, so mutating the environment would
-/// race every other test in the crate. `soft_reject`'s tests reach
-/// `resolve_destination_dir_with` for the same reason.
-#[cfg(test)]
-fn scan_root_with(
-    path: &str,
-    lookup: impl Fn(&str) -> Option<String>,
-) -> Result<PathBuf, error::AppError> {
-    canonical_scan_root(&paths::expand_with(path, lookup)?)
-}
-
-/// Everything after expansion: the directory check, then canonicalization.
-fn canonical_scan_root(expanded: &Path) -> Result<PathBuf, error::AppError> {
-    if !expanded.is_dir() {
-        return Err(error::AppError::InvalidPath(expanded.display().to_string()));
+    fn complete(&self, complete: scan::Complete) {
+        let _ = self.0.emit("scan-complete", complete);
     }
-    // A hard error rather than a fallback to the un-canonicalized path. The
-    // check above has already passed, so this only fires in exotic cases, and
-    // storing the un-canonicalized string there is exactly the duplicate library
-    // the canonicalization exists to prevent.
-    expanded
-        .canonicalize()
-        .map_err(|_| error::AppError::InvalidPath(expanded.display().to_string()))
+
+    fn failed(&self, failed: scan::Failed) {
+        let _ = self.0.emit("scan-failed", failed);
+    }
 }
 
 /// Starts generating the `small` and `medium` of every wallpaper that is short
@@ -977,112 +800,6 @@ mod tests {
     }
 
     #[test]
-    fn a_scan_root_is_canonicalized_so_one_library_keeps_one_spelling() {
-        let dir = tempfile::tempdir().unwrap();
-        let pics = dir.path().join("pics");
-        std::fs::create_dir(&pics).unwrap();
-
-        let written = format!("{}/./pics", dir.path().display());
-        assert_eq!(scan_root(&written).unwrap(), pics.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn a_written_scan_root_expands_before_it_is_checked() {
-        // `~/pics` is a template rather than a path, so `is_dir()` on the
-        // unexpanded string fails — the reason the parameter is a `String`.
-        //
-        // `HOME` is a stand-in home folder rather than the real one, so nothing
-        // here reads the process environment.
-        let home = tempfile::tempdir().unwrap();
-        let pics = home.path().join("pics");
-        std::fs::create_dir(&pics).unwrap();
-
-        let home_value = home.path().to_str().unwrap().to_string();
-        let root = scan_root_with("~/pics", |name| {
-            (name == "HOME").then(|| home_value.clone())
-        })
-        .unwrap();
-
-        assert_eq!(root, pics.canonicalize().unwrap());
-    }
-
-    #[test]
-    fn a_relative_scan_root_still_resolves_against_the_working_directory() {
-        // What keeps `./test-wallpapers` working in development. `src` is this
-        // crate's own source folder, and cargo runs tests from the crate root.
-        let expected = std::env::current_dir().unwrap().join("src");
-        assert_eq!(
-            scan_root("./src").unwrap(),
-            expected.canonicalize().unwrap()
-        );
-    }
-
-    #[test]
-    fn a_scan_root_naming_an_unset_variable_fails_with_the_variable_in_it() {
-        // The message reaches the user verbatim, so it is the assertion.
-        let err = scan_root("$WALLTARE_NO_SUCH_VARIABLE/pics").unwrap_err();
-        assert!(
-            matches!(err, error::AppError::InvalidPathSyntax(ref m)
-                if m == "unknown environment variable WALLTARE_NO_SUCH_VARIABLE"),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn a_library_root_that_is_gone_says_where_it_looked_and_what_survived() {
-        // The sentence a curator whose drive is unmounted reads. Both halves are
-        // load-bearing: the path, because it is the thing to fix, and the second
-        // sentence, because `CONTEXT.md` says the wallpapers an earlier scan
-        // found stay in the library and nothing else on screen says so.
-        let dir = tempfile::tempdir().unwrap();
-        let gone = dir.path().join("unplugged");
-
-        let message = unwalkable_root(&gone);
-
-        assert!(message.starts_with("There's no folder at "), "{message}");
-        assert!(message.contains(&gone.display().to_string()), "{message}");
-        assert!(
-            message.contains("every wallpaper already in your library is still in it"),
-            "{message}"
-        );
-    }
-
-    #[test]
-    fn a_library_root_that_is_there_and_will_not_resolve_reads_as_unreadable() {
-        // The exotic half of `canonical_scan_root`: the directory check passed
-        // and the canonicalization did not. Telling that curator there is no
-        // folder there would be a lie they can see out of the window.
-        let dir = tempfile::tempdir().unwrap();
-
-        let message = unwalkable_root(dir.path());
-
-        assert!(
-            message.starts_with("walltare couldn't read the folder at "),
-            "{message}"
-        );
-        assert!(
-            message.contains("every wallpaper already in your library is still in it"),
-            "{message}"
-        );
-    }
-
-    #[test]
-    fn a_scan_root_that_is_not_a_directory_is_an_invalid_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.jpg");
-        std::fs::write(&file, b"").unwrap();
-
-        for input in [file, dir.path().join("nope")] {
-            let written = input.display().to_string();
-            let err = scan_root(&written).unwrap_err();
-            assert!(
-                matches!(err, error::AppError::InvalidPath(_)),
-                "{written} gave {err:?}"
-            );
-        }
-    }
-
-    #[test]
     fn expand_path_answers_where_a_written_path_points_and_what_is_there() {
         let dir = tempfile::tempdir().unwrap();
         let written = dir.path().display().to_string();
@@ -1126,82 +843,5 @@ mod tests {
         let json = serde_json::to_value(expand_path(written.clone()).unwrap()).unwrap();
         assert_eq!(json["resolved"], written);
         assert_eq!(json["exists"], true);
-    }
-
-    /// One chunk of a scan, as `start_scan` runs it: the insert, the header
-    /// reads with the connection released, then the writes. The thread, the
-    /// events and the Library root are `start_scan`'s and need a running Tauri
-    /// app; which wallpapers come out with dimensions is this.
-    fn scan_a_chunk(conn: &rusqlite::Connection, files: &[std::path::PathBuf]) -> Vec<db::Added> {
-        let added = db::insert_new_wallpapers(conn, files).unwrap();
-        db::record_dimensions_batch(conn, &measure_new_rows(&added)).unwrap();
-        added
-    }
-
-    /// Writes a PNG of the given size, the way a curator's export tool would.
-    fn write_png(path: &std::path::Path, width: u32, height: u32) {
-        image::DynamicImage::ImageRgba8(image::RgbaImage::new(width, height))
-            .save_with_format(path, image::ImageFormat::Png)
-            .unwrap();
-    }
-
-    #[test]
-    fn a_scan_records_the_dimensions_of_every_file_it_can_read() {
-        // ADR 0044's first half. The walk reads names rather than bytes, so a
-        // zero-byte `.jpg` and a download that stopped halfway are wallpapers
-        // like any other: they come through with NULL dimensions and the files
-        // beside them are measured, because a scan that failed over a bad file
-        // would lose the library behind it (ADR 0034).
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        db::init_schema(&conn).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let ultrawide = dir.path().join("ultrawide.png");
-        write_png(&ultrawide, 5120, 2160);
-        let empty = dir.path().join("empty.jpg");
-        std::fs::write(&empty, b"").unwrap();
-
-        let added = scan_a_chunk(&conn, &[ultrawide, empty]);
-
-        assert_eq!(added.len(), 2);
-        assert_eq!(
-            testing::dimensions_of(&conn, added[0].id),
-            (Some(5120), Some(2160))
-        );
-        assert_eq!(testing::dimensions_of(&conn, added[1].id), (None, None));
-    }
-
-    #[test]
-    fn a_rescan_measures_the_files_it_has_never_seen_and_no_others() {
-        // What makes a rescan of a warm library cost nothing: `INSERT OR IGNORE`
-        // hands back the new rows alone, so the header reads are one per new
-        // file rather than one per wallpaper in the library (ADR 0044).
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        db::init_schema(&conn).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let first = dir.path().join("first.png");
-        write_png(&first, 1920, 1080);
-        let first_id = scan_a_chunk(&conn, std::slice::from_ref(&first))[0].id;
-
-        // The curator re-exports the first at a different size and adds a
-        // second, then scans again.
-        write_png(&first, 800, 600);
-        let second = dir.path().join("second.png");
-        write_png(&second, 2560, 1440);
-
-        let added = scan_a_chunk(&conn, &[first, second]);
-
-        assert_eq!(added.len(), 1);
-        assert_eq!(
-            testing::dimensions_of(&conn, added[0].id),
-            (Some(2560), Some(1440))
-        );
-        // The row already in the library still says what it was scanned at. The
-        // re-export moved the file's mtime, so its thumbnails have stopped being
-        // fresh and the pre-generation pass will decode it again and correct
-        // this — the scan is not where that is fixed (ADR 0044).
-        assert_eq!(
-            testing::dimensions_of(&conn, first_id),
-            (Some(1920), Some(1080))
-        );
     }
 }
