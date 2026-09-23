@@ -5,6 +5,7 @@ Rust/Tauri backend, React/shadcn frontend.
 
 use bun instead of npm and bunx instead of npx.
 Don't prematurely close an issue. Make sure it makes it on main through a PR or a direct commit if told to.
+use medium effort level for code-review subagents.
 
 ## Domain
 
