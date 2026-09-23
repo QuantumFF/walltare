@@ -4,12 +4,15 @@
 //! `start_pregen` and `cancel_pregen` stay in the command surface; everything
 //! they set in motion lives here.
 //!
-//! The warming does not. What a wallpaper is owed, how it is generated, which
-//! failures are written down and what that does to the bytes in memory are all
-//! [`ThumbnailCache`]'s (#280), and this module asks it for the work list and
-//! then for one wallpaper at a time. Every wallpaper goes through
-//! [`crate::serving`]'s worker pool, behind every `wallpaper://` request the
-//! curator is waiting for (#232, ADR 0012's amendment). The thread this module
+//! The work list is in [`work_list`](mod@work_list): which wallpapers the pass
+//! owes something, what each is owed, and the order it reaches them in. It
+//! asks [`ThumbnailCache`] for the rows and for which cache files are on disk.
+//!
+//! The warming does not live here. How a wallpaper is generated, which failures
+//! are written down and what that does to the bytes in memory are all
+//! [`ThumbnailCache`]'s (#280), and this module hands it one wallpaper at a
+//! time. Every wallpaper goes through [`crate::serving`]'s worker pool, behind
+//! every `wallpaper://` request the curator is waiting for (#232, ADR 0012's amendment). The thread this module
 //! owns reads the list, waits, and counts.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,6 +24,10 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::serving::ImageWorkers;
 use crate::thumbnails::{self, Pending, ThumbnailCache, Warmed};
 use crate::{error, Db};
+
+mod work_list;
+
+pub use work_list::work_list;
 
 /// How far through its work list the pre-generation pass is.
 ///
@@ -142,7 +149,7 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
     let db = app.state::<Db>();
     let cache = app.state::<ThumbnailCache>();
 
-    let work = match cache.work_list(&db) {
+    let work = match work_list(&db, &cache) {
         Ok(work) => work,
         Err(e) => {
             eprintln!("pre-generation could not read the library: {e}");
@@ -466,8 +473,7 @@ mod tests {
         /// What the next pass would be handed, which is the question "is this
         /// wallpaper retried" is actually asking.
         fn work_list(&self) -> Vec<i64> {
-            self.thumbnails
-                .work_list(&self.db)
+            super::work_list(&self.db, &self.thumbnails)
                 .unwrap()
                 .into_iter()
                 .map(|p| p.wallpaper_id)

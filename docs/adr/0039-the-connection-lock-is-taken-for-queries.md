@@ -107,6 +107,13 @@ connection before the second one starts.
 > `pregen::run` calls it. Both halves are private to the thumbnail cache module;
 > the split, the release between them and the test with no connection anywhere
 > are unchanged.
+>
+> **Amended by [#309](https://github.com/QuantumFF/walltare/pull/309),
+> 2026-09-23.** The work list is the pass's again: `pregen::work_list(db, cache)`
+> takes the rows from `ThumbnailCache::candidates`, puts them in the order above
+> with a Rust sort rather than an `ORDER BY`, and runs the filesystem half with
+> the connection released, asking `ThumbnailCache::cached` which files are on
+> disk. The split, the release and the connection-free test are unchanged.
 
 **Nothing about the list's contents or its order changes.** Every ADR 0012
 amendment still holds exactly as written: the Rejected tail group from ADR 0016,
