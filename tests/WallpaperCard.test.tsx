@@ -221,6 +221,21 @@ test("the overlay reads the comparison count, and for a Rejected card the folder
   );
 });
 
+test("a card rejected in place names no folder, because its file went nowhere", async () => {
+  // A reject of a missing file keeps the path and records it as the Origin
+  // (ADR 0050). `now in photos/` would name the folder the file is missing from.
+  await mount(
+    rejected({
+      comparisons_count: 14,
+      path: "/library/photos/wall-1.jpg",
+      origin_path: "/library/photos/wall-1.jpg",
+    }),
+  );
+
+  const line = screen.getByText("14 comparisons");
+  expect(line.getAttribute("title")).toBeNull();
+});
+
 test("the dimming of a Rejected card sits on the image and not on the card", async () => {
   await mount(rejected());
 

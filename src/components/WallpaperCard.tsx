@@ -240,7 +240,13 @@ export const WallpaperCard = memo(function WallpaperCard({
   // two columns here, because "unknown means both are unknown" is ADR 0044's
   // rule and the badge is not the place it gets restated.
   const size = dimensionsOf(wallpaper);
-  const folder = rejected ? containingFolder(wallpaper.path) : "";
+  // No folder for a reject in place, whose path is still its Origin: the file
+  // was already missing and went nowhere, so `now in photos/` would name the
+  // folder it is missing from (ADR 0050).
+  const folder =
+    rejected && wallpaper.path !== wallpaper.origin_path
+      ? containingFolder(wallpaper.path)
+      : "";
   /**
    * Whether the picture failed to arrive, which is how this card learns its
    * file is gone.
