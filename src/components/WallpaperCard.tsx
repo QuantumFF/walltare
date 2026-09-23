@@ -8,14 +8,13 @@ import {
 import type { PlannedBox } from "@/lib/layout-plan";
 import {
   counted,
-  dimensionsOf,
   FILE_IS_GONE,
-  isEvaluated,
   readableSize,
   score,
   STATUS_LABEL,
   UNDERSIZED,
 } from "@/lib/copy";
+import { dimensionsOf, isEvaluated } from "@/lib/wallpaper";
 import {
   STATUS_ACTIONS,
   type TransitionAction,
@@ -237,7 +236,7 @@ export const WallpaperCard = memo(function WallpaperCard({
   // exactly this: the frontend can refuse without asking the backend.
   const restorable = wallpaper.origin_path !== null;
   // The Dimensions as one size, for the undersized badge's tooltip, and `null`
-  // for a row nothing has measured. Read through `copy.ts` rather than off the
+  // for a row nothing has measured. Read through `wallpaper.ts` rather than off the
   // two columns here, because "unknown means both are unknown" is ADR 0044's
   // rule and the badge is not the place it gets restated.
   const size = dimensionsOf(wallpaper);

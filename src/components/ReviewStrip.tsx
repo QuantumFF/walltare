@@ -22,15 +22,8 @@ import {
   type Resolution,
   type Wallpaper,
 } from "@/lib/client";
-import {
-  FILE_IS_GONE,
-  isEvaluated,
-  score,
-  dimensionsOf,
-  isUndersized,
-  readableSize,
-  UNDERSIZED,
-} from "@/lib/copy";
+import { FILE_IS_GONE, score, readableSize, UNDERSIZED } from "@/lib/copy";
+import { dimensionsOf, isEvaluated, isUndersized } from "@/lib/wallpaper";
 import type { Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { ImageOff } from "lucide-react";

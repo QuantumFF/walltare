@@ -137,29 +137,6 @@ export function score(wallpaper: Wallpaper): string {
 }
 
 /**
- * CONTEXT.md's Evaluated, per wallpaper: σ below the threshold the curator set.
- *
- * The threshold is a setting and not a constant, because how many Comparisons
- * make a Score trustworthy is the curator's call (ADR 0046). It is passed in
- * rather than read here so this stays a pure function of a row and a number —
- * and so the caller is obliged to have the same row the backend counted
- * `evaluated_count` against (`WHERE status IN ('active', 'kept') AND
- * rating_sigma < ?`). The two comparisons are the same comparison, which is why
- * the headline and the badges cannot drift apart.
- *
- * A Score badge dims until a wallpaper reaches the threshold, and that is the
- * whole of what the app says about confidence: no second number and no bands, so
- * there is one definition to disagree with rather than two (ADR 0013, ADR 0019).
- *
- * A wallpaper in no Comparison is never Evaluated at any offered threshold — it
- * still holds the starting σ of 8.333 — so the dimmed badge and `Unrated` agree
- * without either checking the other.
- */
-export function isEvaluated(wallpaper: Wallpaper, threshold: number): boolean {
-  return wallpaper.rating_sigma < threshold;
-}
-
-/**
  * A size as the curator reads it: `3840 × 2160`, with the multiplication sign
  * rather than the `x` the settings column holds.
  *
@@ -184,21 +161,6 @@ export function readableSize({ width, height }: Resolution): string {
  * phrasing, wherever it is printed.
  */
 export const UNDERSIZED = "Undersized";
-
-/**
- * A wallpaper's Dimensions as one size, or `null` while nothing has read them.
- *
- * The two columns are NULL together and set together — they are written in one
- * statement and read off one file — so the pair is one fact and this is the one
- * place that says so (ADR 0044). Both readers want the pair rather than either
- * half: the comparison below needs two numbers and the badge's tooltip prints
- * two numbers, and each of them re-deriving "unknown means both" is a second
- * copy of a rule that can only ever be wrong in the same way.
- */
-export function dimensionsOf(wallpaper: Wallpaper): Resolution | null {
-  const { width, height } = wallpaper;
-  return width === null || height === null ? null : { width, height };
-}
 
 /**
  * What the crop preview says it is answering about, and how much it costs:
@@ -234,32 +196,4 @@ export function cropCaption(screen: Resolution, plan: CropPlan | null): string {
   return percent === 0
     ? `${size} · under 1% of the ${axis} is cut`
     : `${size} · ${percent}% of the ${axis} is cut`;
-}
-
-/**
- * CONTEXT.md's undersized: a wallpaper whose Dimensions fall below the Minimum
- * resolution.
- *
- * Below on either axis, rather than by a count of pixels. The question the
- * curator is asking is whether the file covers their screen, and a 3840x1080
- * ultrawide holds more pixels than a 2560x1440 while leaving half of a 4K
- * desktop for the upscaler to invent.
- *
- * **A wallpaper whose Dimensions nothing has read is not undersized.** That is
- * ADR 0044's rule, and it is one rule for both readers: no badge on the card,
- * and out of the filter rather than counted either way. `dimensionsOf` above is
- * where the unread row is recognised, so this reads as the comparison it is.
- *
- * The minimum arrives as an argument rather than being read from the settings
- * store here, because this file reaches nothing: the card is handed a boolean
- * and the library page holds the setting, which is what keeps a badge and a
- * filter that must agree reading one comparison.
- */
-export function isUndersized(
-  wallpaper: Wallpaper,
-  minimum: Resolution,
-): boolean {
-  const size = dimensionsOf(wallpaper);
-  if (size === null) return false;
-  return size.width < minimum.width || size.height < minimum.height;
 }

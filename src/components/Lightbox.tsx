@@ -22,10 +22,10 @@ import {
   FILE_IS_GONE,
   FILE_IS_GONE_DETAIL,
   grouped,
-  isEvaluated,
   score,
   STATUS_LABEL,
 } from "@/lib/copy";
+import { isEvaluated } from "@/lib/wallpaper";
 import type { Box } from "@/lib/layout-plan";
 import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
 import { Dialog } from "radix-ui";
@@ -630,8 +630,8 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
                       {/*
                         The Score, written as every surface showing one writes
                         it, with the same solid-means-Evaluated dimming the card
-                        carries. Both read `score` and `isEvaluated` out of
-                        `copy.ts`, so there is one definition of confidence in
+                        carries. Both read `score` out of `copy.ts` and `isEvaluated` out of
+                        `wallpaper.ts`, so there is one definition of confidence in
                         the app rather than one per surface (ADR 0013) — and both
                         read it against the curator's threshold, which is the
                         number the Rank headline counted with (ADR 0046).

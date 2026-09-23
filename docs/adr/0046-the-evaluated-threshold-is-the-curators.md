@@ -26,7 +26,7 @@ disagree.
 **Two readers, one answer.** The Rank headline prints `n / m Evaluated` off
 `voting.rs`'s `SELECT COUNT(*) … WHERE rating_sigma < 4.0`. Every Score badge in
 the Library, in Review, on the strip's hero and in the Lightbox goes solid off
-`copy.ts`'s `isEvaluated`. These are the same claim about the same rows made on
+`wallpaper.ts`'s `isEvaluated`. These are the same claim about the same rows made on
 two sides of the IPC, and the epic's own user story is that they move together.
 
 ## Decision

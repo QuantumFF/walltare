@@ -16,7 +16,7 @@ import {
   type Resolution,
   type Wallpaper,
 } from "@/lib/client";
-import { isUndersized } from "@/lib/copy";
+import { isUndersized, shapeOf } from "@/lib/wallpaper";
 import {
   NOTHING_MOUNTED,
   densityColumns,
@@ -376,30 +376,6 @@ export function rowHeight(
     cardRatio: CARD_ASPECT.ratio,
     unmeasuredHeight: UNMEASURED_ROW,
   });
-}
-
-/**
- * A wallpaper's shape, as height over width, or `null` while the app has not
- * read its Dimensions.
- *
- * Named for the wallpaper's own shape rather than for the card's, because
- * `UniformRow.cardRatio` next door is the other thing: the one shape every card
- * is cropped to. A layout reads exactly one of the two, and which one it reads
- * is the whole of what separates the plans.
- *
- * `null` and not a guess, because the guess belongs to the layout rather than to
- * the row: a plan that draws uncropped answers for an unknown shape with the one
- * the uniform grid crops to, and a plan that crops never asks. CONTEXT.md is
- * what makes that the rule — a wallpaper whose Dimensions have not been read has
- * none rather than a guess (ADR 0044).
- *
- * Exported for its test, the way `rowHeight` above is: the arithmetic is
- * otherwise reachable only through a mounted grid whose every box measures zero.
- */
-export function shapeOf(wallpaper: Wallpaper): number | null {
-  const { width, height } = wallpaper;
-  if (width === null || height === null || width <= 0) return null;
-  return height / width;
 }
 
 /**
