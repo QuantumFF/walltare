@@ -67,7 +67,7 @@ const strip = () =>
  */
 const heroBox = () => {
   const node = reviewView().querySelector(
-    '[data-slot="review-hero"]',
+    '[data-slot="hero"]',
   ) as HTMLElement | null;
   if (!node) return null;
   return {
@@ -101,7 +101,7 @@ const heroScore = () =>
 
 const heroPicture = () =>
   reviewView().querySelector(
-    '[data-slot="review-hero-picture"]',
+    '[data-slot="hero-picture"]',
   ) as HTMLImageElement | null;
 
 /** Every filmstrip entry, in the order it draws them. */
@@ -467,7 +467,7 @@ test("a click on the hero opens the lightbox and is not a keep or a reject", asy
   await openStrip([wallpaper(4, { filename: "keeper.jpg" })]);
 
   await click(
-    reviewView().querySelector('[data-slot="review-hero"]') as HTMLElement,
+    reviewView().querySelector('[data-slot="hero"]') as HTMLElement,
   );
 
   expect(screen.getByRole("dialog", { name: "keeper.jpg" })).toBeTruthy();
@@ -620,9 +620,11 @@ test("a filmstrip entry whose file is gone says so, and the hero agrees", async 
   expect(
     inReview().getByRole("option", { name: "vanished.jpg, File is gone" }),
   ).toBeTruthy();
+  // One line on the hero, as on the card: the cause is the lightbox's second
+  // line, where there is room for it.
   expect(
-    reviewView().querySelector('[data-slot="review-hero-gone"]'),
-  ).not.toBeNull();
+    reviewView().querySelector('[data-slot="hero-gone"]')?.textContent,
+  ).toBe("File is gone");
 });
 
 test("closing the lightbox puts focus back on the strip", async () => {

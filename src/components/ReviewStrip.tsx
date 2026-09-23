@@ -4,7 +4,8 @@ import {
   STATUS_ACTIONS,
   type CardAction,
 } from "@/components/WallpaperCard";
-import { CropPreview, useCropPreview } from "@/components/CropPreview";
+import { useCropPreview } from "@/components/CropPreview";
+import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
 import { densityKeyStep, useDensityWheel } from "@/components/density";
 import {
   usePublishedSelection,
@@ -27,13 +28,12 @@ import {
   readableSize,
   UNDERSIZED,
 } from "@/lib/copy";
-import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
+import type { Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { ImageOff } from "lucide-react";
 import {
   memo,
   useCallback,
-  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -56,8 +56,8 @@ import {
  * seeing what is coming: a strip that grew with the window would take the space
  * from the one wallpaper the page exists to show. The hero gets everything left
  * over, and it gets it from the browser rather than from arithmetic here, since
- * the area is measured. That makes this number the strip's own business and
- * nothing the hero has to know (ADR 0027).
+ * the area is measured (`usePictureBox`). That makes this number the strip's
+ * own business and nothing the hero has to know (ADR 0027).
  *
  * Not persisted, the same as the grid's zoom.
  */
@@ -93,7 +93,7 @@ const ENTRY_RING = { px: 2, className: "ring-2" };
  * between the three, less the filmstrip at its starting step. The filmstrip is
  * read off its own constants rather than written in as a number, so changing
  * the zoom range moves this with it. It is a fallback and not a measurement: the
- * moment a browser lays the box out, the observer below replaces it.
+ * moment a browser lays the box out, `usePictureBox`'s measurement replaces it.
  *
  * Not an edge case. happy-dom reports every rect as zero, and ADR 0015 keeps
  * this view mounted under `display: none` while another one is showing, which
@@ -245,64 +245,21 @@ export function ReviewStrip({
       : false;
   const heroSize = selected ? dimensionsOf(selected) : null;
 
-  // The hero's area as last measured, and the box the picture is drawn in. The
-  // last non-zero measurement is kept, so a view the shell has hidden — which
-  // zeroes the box — keeps the size it had rather than painting nothing on the
-  // way back (ADR 0015).
-  const heroRef = useRef<HTMLDivElement>(null);
-  const [area, setArea] = useState<Box>(UNMEASURED_AREA);
-
-  useLayoutEffect(() => {
-    const node = heroRef.current;
-    if (!node) return;
-    const measure = () => {
-      const { width, height } = node.getBoundingClientRect();
-      if (width <= 0 || height <= 0) return;
-      setArea((held) =>
-        held.width === width && held.height === height
-          ? held
-          : { width, height },
-      );
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  /**
-   * The picture's box: exactly the wallpaper's own shape, as large as the area
-   * allows.
-   *
-   * Computed rather than declared in CSS, and the arithmetic is
-   * `@/lib/layout-plan`'s rather than this file's — which is what keeps it
-   * reachable for #266's crop preview, and drivable by a test in a runner that
-   * lays nothing out. See `fittedBox` for why a box that declares only an
-   * `aspect-ratio` collapses.
-   */
-  const hero = fittedBox(
-    area,
-    ratioOf(selected?.width ?? null, selected?.height ?? null),
+  // The box the hero is drawn in: exactly the wallpaper's own shape, as large as
+  // the area under it allows. The measuring and the arithmetic are the picture
+  // module's, so the lightbox fits its picture by the same rule; what the strip
+  // supplies is the area and what it is taken to be before anything measures it
+  // (#279).
+  const { area: heroArea, box: hero } = usePictureBox(
+    selected,
+    UNMEASURED_AREA,
   );
 
-  // Whether a `medium` has painted since this strip was mounted, which is the
-  // whole question the placeholder answers: a step has the outgoing picture to
-  // hold, and the first wallpaper has nothing. The same arrangement the lightbox
-  // makes, and for ADR 0006's reason — a cold cache is 386ms mean and 1962ms
-  // worst, and the `small` the filmstrip is already showing costs no request.
-  const [arrived, setArrived] = useState(false);
-  // Whether the picture failed to arrive, which is how this surface learns the
-  // file is gone — the same answer off the same request the card and the
-  // lightbox read, so no two of them can disagree about one wallpaper
-  // (ADR 0032). Reset per wallpaper, because the `<img>` has no `key` and keeps
-  // painting the outgoing picture while the next one decodes.
-  const [gone, setGone] = useState(false);
-
-  // The bars, and the press that raises them. Held in the settings store rather
-  // than here, so they are still up on the next launch and so the lightbox
-  // opening over this hero shows the same preview rather than a second one
-  // (#266).
-  const crop = useCropPreview();
+  // The press that raises the bars. Held in the settings store rather than
+  // here, so they are still up on the next launch and so the lightbox opening
+  // over this hero shows the same preview rather than a second one; the hero
+  // reads the same toggle to draw them (#266).
+  const { toggle: toggleCrop } = useCropPreview();
 
   // Which of `FILMSTRIP_HEIGHTS` the filmstrip is drawn at. In is larger, the
   // same direction the grid's zoom runs.
@@ -318,13 +275,6 @@ export function ReviewStrip({
 
   // Ctrl and the wheel anywhere over the strip, read the way the grid reads it.
   useDensityWheel(stripRef, moveStep);
-
-  // In a layout effect and not a passive one: the `<img>`'s `src` changes in the
-  // same commit, and a reset that lands a frame later paints "File is gone" over
-  // the outgoing picture on the way to a wallpaper that is perfectly fine.
-  useLayoutEffect(() => {
-    setGone(false);
-  }, [selected?.id]);
 
   // One handler for the whole strip rather than one on the filmstrip, because
   // focus does not stay on the filmstrip: pressing Keep with the pointer lands
@@ -367,7 +317,7 @@ export function ReviewStrip({
     // curator arrows through the worklist (#266).
     if (event.key === "c" || event.key === "C") {
       event.preventDefault();
-      if (!event.repeat) crop.toggle();
+      if (!event.repeat) toggleCrop();
       return;
     }
 
@@ -446,78 +396,35 @@ export function ReviewStrip({
           Out of the flow, the picture takes no space, the box shrinks to what is
           left, and the observer refits the picture to it. */}
       <div
-        ref={heroRef}
+        ref={heroArea}
         data-slot="review-hero-area"
         className="relative min-h-0 flex-1"
       >
         <div className="absolute inset-0 flex items-center justify-center">
           {selected && (
-            <div
-              data-slot="review-hero"
-              // The box, at exactly the wallpaper's own ratio. In pixels rather
-              // than as an `aspect-ratio` because the latter collapses here, and
-              // because #266's crop bars are percentages of this box — see
-              // `fittedBox`.
-              style={{ width: hero.width, height: hero.height }}
-              className="relative cursor-zoom-in overflow-hidden rounded-lg bg-muted"
+            <HeroPicture
+              wallpaper={selected}
+              box={hero}
+              // A frame the picture fills, the same as the filmstrip under it:
+              // only the 16:9 guess for a wallpaper whose Dimensions nothing has
+              // read is ever cropped by it (ADR 0044).
+              fit="cover"
+              // One line, on the page's own muted ground, which is also what a
+              // gone file leaves showing (ADR 0032).
+              gone={
+                <>
+                  <ImageOff
+                    className="h-8 w-8 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <span className="text-sm font-medium text-muted-foreground">
+                    {FILE_IS_GONE}
+                  </span>
+                </>
+              }
+              className="cursor-zoom-in rounded-lg bg-muted"
               onClick={() => onOpen?.(selected)}
-            >
-              {!arrived && (
-                // The first frame, and the reason arriving here never shows an
-                // empty box: the filmstrip's own `small` is already in the memory
-                // cache under ADR 0016's `max-age=300`, so this is one element and
-                // no request. Nothing announces it — the picture over it is named.
-                <img
-                  data-slot="review-hero-placeholder"
-                  src={wallpaperImageUrl(selected.id, "small")}
-                  alt=""
-                  className="absolute inset-0 h-full w-full object-cover"
-                />
-              )}
-              <img
-                data-slot="review-hero-picture"
-                src={wallpaperImageUrl(selected.id, "medium")}
-                alt={selected.filename}
-                // No `key`, deliberately: an `<img>` whose `src` changes keeps
-                // painting the image it has until the new one decodes, so the
-                // outgoing wallpaper holds the frame for the whole of a step. A
-                // fresh element per wallpaper remounts with nothing painted, which
-                // is a held arrow key strobing to black (ADR 0022).
-                onLoad={() => {
-                  setArrived(true);
-                  setGone(false);
-                }}
-                // `error` counts as arrival too, for ADR 0006's reason: a
-                // thumbnail held in front of a picture that is never coming is the
-                // spinner that never resolves.
-                onError={() => {
-                  setArrived(true);
-                  setGone(true);
-                }}
-                // `object-cover` inside a box of the picture's own ratio crops
-                // nothing: the box *is* the picture's shape, so there is no
-                // letterboxing for #266's bars to measure.
-                className="absolute inset-0 h-full w-full object-cover"
-              />
-              {/* What the Screen would cut off, over the picture it would cut it
-                off. The hero's box is exactly the wallpaper's own ratio, which
-                is what makes the bars percentages of the picture rather than of
-                letterboxing around it — see `fittedBox`.
-
-                Not drawn over a wallpaper whose file is gone: the panel below
-                says there is no picture, and bars over it would be a claim about
-                one. */}
-              {crop.on && !gone && <CropPreview wallpaper={selected} />}
-              {gone && (
-                <div
-                  data-slot="review-hero-gone"
-                  className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-muted text-muted-foreground"
-                >
-                  <ImageOff className="h-8 w-8" aria-hidden />
-                  <span className="text-sm font-medium">{FILE_IS_GONE}</span>
-                </div>
-              )}
-            </div>
+            />
           )}
         </div>
       </div>

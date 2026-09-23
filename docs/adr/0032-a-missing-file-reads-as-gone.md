@@ -103,6 +103,17 @@ Unlike the card's, this state resets per wallpaper. The `<img>` has no `key`
 reset the message would sit over a picture that is still painted and stay there
 for a wallpaper that loads fine.
 
+> **Amended by [#279](https://github.com/QuantumFF/walltare/issues/279),
+> 2026-09-23.** The panel belongs to the picture module the lightbox and the
+> Review strip share, which decides when it shows; each surface words it, so the
+> lightbox keeps these two lines and the strip's hero its one. It sits in the
+> picture's box after the two images rather than in a grid cell, and still
+> covers the failed request with no z-index while the row stays where it was.
+> The reset per
+> wallpaper is keyed on the wallpaper's id rather than done in an effect: the
+> lightbox's passive effect showed the message for a frame on the way to a
+> wallpaper that loads fine. See ADR 0022's amendment.
+
 ### Gone is distinguishable from generating because generating says nothing
 
 A thumbnail still on its way is the plain card frame with nothing in it, which

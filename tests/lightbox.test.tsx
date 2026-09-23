@@ -1,4 +1,5 @@
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
+import { fittedBox } from "@/lib/layout-plan";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
@@ -97,19 +98,15 @@ const toastTitle = () =>
   document.querySelector("[data-slot='toast'] [data-slot='toast-title']")
     ?.textContent ?? null;
 
-/** The `medium`: the picture this surface exists to show. */
-function picture(): HTMLImageElement {
-  return document.querySelector(
-    '[data-slot="lightbox-picture"]',
-  ) as HTMLImageElement;
-}
-
 /**
- * The card's `small`, painted behind the `medium` until that one arrives, or
- * `null` once it has.
+ * The `medium`: the picture this surface exists to show. The picture module's
+ * own, so its phases are `HeroPicture.test.tsx`'s to pin; this file asks only
+ * that the lightbox shows one, and what the surface around it does (#279).
  */
-function placeholder(): HTMLImageElement | null {
-  return document.querySelector('[data-slot="lightbox-placeholder"]');
+function picture(): HTMLImageElement {
+  return screen
+    .getByRole("dialog")
+    .querySelector('[data-slot="hero-picture"]') as HTMLImageElement;
 }
 
 /** Every image request the surface has out, in the order they paint. */
@@ -171,7 +168,7 @@ async function failed(element: Element) {
 
 /** The panel that says the file is gone, or `null` when the picture arrived. */
 const gonePanel = () =>
-  document.querySelector('[data-slot="lightbox-gone"]') as HTMLElement | null;
+  document.querySelector('[data-slot="hero-gone"]') as HTMLElement | null;
 
 /**
  * Land on Review with its grid up, and focus the first card the way Tab does.
@@ -559,65 +556,33 @@ test("the arrow buttons make the movement the keys make", async () => {
   expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
 });
 
-test("a first open paints the card's small behind the medium", async () => {
+test("every open paints the card's small behind the medium, not only the first", async () => {
   await enterReview();
   await press("Enter");
 
-  // Behind, and not beside: the two sit in one grid cell fitted against the
-  // same rectangle, and the order they are in the DOM is the order they paint.
-  // So what the curator opens onto is a blurry version of the picture they
-  // pressed rather than an empty box or a spinner, and it costs no request —
-  // the card painted that `small` a moment ago (ADR 0022).
+  // What the curator opens onto is the `small` the card was showing, scaled up
+  // behind the `medium` while that one arrives (ADR 0022). The phases are the
+  // picture module's; what is this surface's is that it hands over the
+  // wallpaper the card showed.
   expect(pictures()).toEqual([
     wallpaperImageUrl(7, "small"),
     wallpaperImageUrl(7, "medium"),
   ]);
-  // Announced by nothing. It is the same picture as the `medium` over it, and
-  // that one is already named by the filename.
-  expect(placeholder()?.getAttribute("alt")).toBe("");
 
   await loaded(picture());
+  expect(pictures()).toEqual([wallpaperImageUrl(7, "medium")]);
 
-  expect(placeholder()).toBeNull();
-});
-
-test("a step holds the outgoing picture until the next one has loaded", async () => {
-  await enterReview(threeRows());
+  // A close takes the picture with the dialog, so a re-open has nothing painted
+  // to hold and the placeholder is back. Nothing in the lightbox resets it; the
+  // picture is mounted again (#279).
+  await press("Escape");
   await press("Enter");
-  const element = picture();
-  await loaded(element);
 
-  await press("ArrowRight");
-
-  // The same element with a new `src`, which is the whole mechanism: an `<img>`
-  // keeps painting the image it has until the new one decodes. A `key` per
-  // wallpaper remounts it with nothing painted, which is the prototype's held
-  // arrow key strobing to black at a median 376KB a frame.
-  expect(picture()).toBe(element);
-  expect(picture().getAttribute("src")).toBe(wallpaperImageUrl(8, "medium"));
-  // And nothing is standing in front of it. The `small` is for the open where
-  // there is no outgoing frame to hold; putting the arriving wallpaper's
-  // thumbnail behind the outgoing picture would show around the edges of it.
-  expect(placeholder()).toBeNull();
+  expect(pictures()).toEqual([
+    wallpaperImageUrl(7, "small"),
+    wallpaperImageUrl(7, "medium"),
+  ]);
 });
-
-test("neither neighbour's medium is requested on a step", async () => {
-  await enterReview(threeRows());
-  await press("Enter");
-  await loaded(picture());
-
-  await press("ArrowRight");
-
-  // One request on the surface, for the wallpaper being looked at. Stepping
-  // back is already free under ADR 0016's `max-age=300`, so only the forward
-  // edge would ever pay, and a speculative request goes into the one pipeline
-  // ADR 0012 gave a dedicated thread to keep clear (ADR 0022).
-  expect(pictures()).toEqual([wallpaperImageUrl(8, "medium")]);
-});
-
-// The action set, one test per Status. Driven by the wallpaper alone: nothing
-// below hands the lightbox an argument about which page it was opened from, and
-// there is none to hand it (ADR 0009's transition table, ADR 0022).
 
 test("an Active wallpaper offers Keep and Reject, with the key on each button", async () => {
   await enterReview();
@@ -1040,38 +1005,54 @@ test("closing after a sweep focuses the card the selection ended on", async () =
   );
 });
 
+test("a portrait whose Dimensions nothing has read gets a row the picture's width once it loads", async () => {
+  await enterReview([
+    wallpaper(7, { filename: "unread.jpg", width: null, height: null }),
+  ]);
+  await press("Enter");
+
+  // The decoded `medium` is the one thing that knows the shape, and happy-dom
+  // decodes nothing, so the test says what it would have decoded to.
+  const element = picture();
+  Object.defineProperty(element, "naturalWidth", { value: 1080 });
+  Object.defineProperty(element, "naturalHeight", { value: 1920 });
+  await loaded(element);
+
+  // The row shrink-wraps the picture rather than the 16:9 guess, which is what
+  // the lightbox did before the picture was shared and what #44 asked for. At
+  // this width it is under the floor, so the read-out is what drops
+  // (ADR 0022, ADR 0044).
+  expect(Number.parseFloat(row().style.width)).toBeCloseTo(
+    fittedBox({ width: 1216, height: 680 }, 1080 / 1920).width,
+  );
+  expect(readOut()).toBeNull();
+});
+
 // A file that has gone. The lightbox is where a missing file is most visible,
 // and ADR 0022 left it as a broken image on the grounds that Restore's own
 // `FileMissing` sentence was the actionable part. It is not: a stranger's
 // library changes underneath the app constantly, and a broken image reads as
 // the app breaking rather than as their own file going (#200, ADR 0032).
-
-test("a picture that will not load says the file is gone, and why", async () => {
-  await enterReview();
-  await press("Enter");
-
-  expect(gonePanel()).toBeNull();
-
-  await failed(picture());
-
-  const panel = gonePanel() as HTMLElement;
-  expect(panel.textContent).toContain("File is gone");
-  // The second line, which the card has no room for. It names the cause,
-  // because that is the half the curator cannot see: nothing in the app moved
-  // the file.
-  expect(panel.textContent).toContain(
-    "It was moved or deleted outside walltare. Nothing here has changed.",
-  );
-  // And the thumbnail is not held up in front of a picture that is never
-  // coming, which would be the spinner that never resolves (ADR 0006).
-  expect(placeholder()).toBeNull();
-});
+//
+// The panel itself, its reset on a step and the crop preview it hides are the
+// picture module's, and `HeroPicture.test.tsx` pins them once for both
+// surfaces. What is left here is what the lightbox does around a gone picture
+// (#279).
 
 test("a gone picture keeps the row, its read-out and its actions", async () => {
   await enterReview();
   await press("Enter");
 
   await failed(picture());
+
+  // Two lines, where the card and the strip have one. The second names the
+  // cause, because that is the half the curator cannot see: nothing in the app
+  // moved the file (ADR 0032).
+  const panel = gonePanel() as HTMLElement;
+  expect(panel.textContent).toContain("File is gone");
+  expect(panel.textContent).toContain(
+    "It was moved or deleted outside walltare. Nothing here has changed.",
+  );
 
   // Everything the curator could act on stays where it was: the row is
   // positioned over the picture rather than after it, so the panel covers the
@@ -1080,34 +1061,6 @@ test("a gone picture keeps the row, its read-out and its actions", async () => {
   expect(readOut().textContent).toBe("/library/first.jpg");
   expect(actions()).toEqual(["Keep K", "Reject Del"]);
   expect(screen.getByRole("dialog", { name: "first.jpg" })).toBeTruthy();
-});
-
-test("stepping off a gone wallpaper leaves the message behind", async () => {
-  await enterReview(threeRows());
-  await press("Enter");
-  await failed(picture());
-  expect(gonePanel()).not.toBeNull();
-
-  await press("ArrowRight");
-
-  // The `<img>` has no `key`, so it is the same element with a new `src`
-  // (ADR 0022). Without a reset per wallpaper the message would sit over the
-  // outgoing picture and stay there for a wallpaper that loads fine.
-  expect(gonePanel()).toBeNull();
-
-  await loaded(picture());
-  expect(gonePanel()).toBeNull();
-});
-
-test("stepping onto a second gone wallpaper says so again", async () => {
-  await enterReview(threeRows());
-  await press("Enter");
-  await failed(picture());
-
-  await press("ArrowRight");
-  await failed(picture());
-
-  expect(gonePanel()?.textContent).toContain("File is gone");
 });
 
 test("a card that reads as gone opens onto a lightbox that says the same", async () => {
