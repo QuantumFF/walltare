@@ -58,6 +58,7 @@ const RETURN_LABEL: Record<View, string> = {
   rank: "Rank",
   review: "Review",
   library: "Library",
+  discover: "Discover",
   settings: "Settings",
 };
 

@@ -1,3 +1,4 @@
+import { DiscoverPrototype } from "@/components/discover-prototype/DiscoverPrototype";
 import { LibraryView } from "@/components/LibraryView";
 import { RankView } from "@/components/RankView";
 import { ReviewView } from "@/components/ReviewView";
@@ -51,6 +52,8 @@ const TABS = [
   { view: "rank", label: "Rank" },
   { view: "review", label: "Review" },
   { view: "library", label: "Library" },
+  // PROTOTYPE (#324)
+  { view: "discover", label: "Discover" },
 ] as const;
 
 type TabView = (typeof TABS)[number]["view"];
@@ -67,6 +70,8 @@ function viewBody(view: TabView): ReactNode {
       return <ReviewView />;
     case "library":
       return <LibraryView />;
+    case "discover":
+      return <DiscoverPrototype />;
   }
 }
 
@@ -258,6 +263,7 @@ const NAVIGATION_KEYS: Record<string, View> = {
   "1": "rank",
   "2": "review",
   "3": "library",
+  "4": "discover",
   ",": "settings",
 };
 

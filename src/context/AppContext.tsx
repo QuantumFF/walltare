@@ -28,7 +28,8 @@ import React, {
  * as four names, because that is the relationship between the two types: the
  * startup view is every destination except the one boot reaches on its own.
  */
-export type View = StartupView | "settings";
+// PROTOTYPE: "discover" added for #324.
+export type View = StartupView | "settings" | "discover";
 
 /**
  * What `get_pair` needs before Rank can draw anything (`voting.rs:74`), and so
