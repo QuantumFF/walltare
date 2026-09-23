@@ -67,3 +67,11 @@ the key survives the round trip.
 The key sits in `walltare.db`, so a copy of the database for debugging carries
 it. Anyone sharing the file should delete the row first, or regenerate the key
 afterwards.
+
+> **Amended by [ADR 0054](0054-the-backend-refuses-what-wallhaven-would-ignore.md),
+> 2026-09-24.** The key is written by `set_wallhaven_key(key)`, not
+> `set_setting`. The check has to wait on the network and report "couldn't
+> verify", and `set_setting` is sync and answers with `Settings` alone. The new
+> command answers `{ settings, verified }`, and an empty key still removes the
+> row. The remembered filters also grow beyond purity and categories to include
+> `sorting`, `order` and `top_range`, all recorded by a successful search.
