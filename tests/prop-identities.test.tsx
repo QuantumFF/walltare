@@ -78,6 +78,8 @@ function selection(): WallpaperSelection {
   return gridHandle.selection();
 }
 
+async function noFetch() {}
+
 /**
  * The library page's shape, reduced to what the identities this is about hang
  * off — the rows-and-transitions module, and the grid holding the cursor —
@@ -90,8 +92,6 @@ function selection(): WallpaperSelection {
  * (ADR 0027), and since #264 both are handed one answer that `useDensity`
  * resolved — which is what the one-subscription test below now pins.
  */
-async function noFetch() {}
-
 function Page({ list }: { list: Wallpaper[] }) {
   const [, forceRender] = useReducer((renders: number) => renders + 1, 0);
   rerender = forceRender;
