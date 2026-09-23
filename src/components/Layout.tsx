@@ -15,7 +15,8 @@ import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { ScanRunProvider, useScanOutcome } from "@/context/ScanRunContext";
 import { client } from "@/lib/client";
 import { cn } from "@/lib/utils";
-import { Images, Settings as SettingsIcon } from "lucide-react";
+import appIcon from "@/assets/app-icon.png";
+import { Settings as SettingsIcon } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -222,7 +223,7 @@ function Chrome() {
           data-tauri-drag-region
           className="flex items-center gap-2 text-sm font-semibold tracking-tight"
         >
-          <Images className="h-4 w-4" aria-hidden />
+          <img src={appIcon} alt="" className="h-4 w-4" draggable={false} />
           walltare
         </div>
 
