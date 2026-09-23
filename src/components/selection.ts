@@ -79,9 +79,9 @@ export interface WallpaperSelection {
   moveTo: (index: number) => void;
   /**
    * Select a wallpaper by id, whether or not the list holds it yet. Review's
-   * failure handler is the caller: it re-inserts the card it removed
-   * optimistically, by which time the selection has already moved on to the
-   * next wallpaper (ADR 0022).
+   * failure handler and its Undo are the callers: each re-inserts the card it
+   * removed optimistically, by which time the selection has already moved on to
+   * the next wallpaper (ADR 0022).
    */
   selectId: (id: number) => void;
 }
@@ -114,7 +114,15 @@ export interface WallpaperSelection {
  * repo's TypeScript ships, hence the widening. The platform's own three states
  * are the ones meant: drawn, not drawn, and absent for the engine's guess.
  */
-export type FocusRequest = FocusOptions & { focusVisible?: boolean };
+export type FocusRequest = FocusOptions & {
+  focusVisible?: boolean;
+  /**
+   * `false` to focus the selection where it stands; see `focusSelection`. The
+   * surface's own field, which `focus()` is handed along with the rest and
+   * ignores.
+   */
+  reveal?: boolean;
+};
 
 export interface SelectionHandle {
   /**
@@ -125,6 +133,13 @@ export interface SelectionHandle {
    * engine has to guess about, and WebKitGTK guesses visible whenever the last
    * focus was not a click — so a caller that knows how the curator got here
    * says so rather than leaving it to the guess. Left out, the guess stands.
+   *
+   * `reveal: false` focuses it where it stands instead, and leaves the scroll
+   * alone: its entry when it has a node, and the surface's container when the
+   * window has scrolled it away — the same answer the surface gives a wheel
+   * that moved the window and not the selection. A keyboard hand-off is the
+   * caller, returning the curator to a page whose scroll position is theirs
+   * (ADR 0047).
    */
   focusSelection: (request?: FocusRequest) => void;
   /** Hear about it whenever the published selection is replaced. */
@@ -380,7 +395,8 @@ export function usePublishedSelection(
   // One request and not a counter: two requests in a row want the same entry
   // focused, and once the asking and the answering are in one place a request
   // already outstanding is already asking for it (ADR 0029). The later one's
-  // drawing is the one kept.
+  // drawing is the one kept, and a reveal outranks a request that would leave
+  // the scroll alone.
   const focusRequestRef = useRef<FocusRequest | null>(null);
   // The commit the request is answered on. Setting a ref renders nothing, and
   // the effect that reads it runs on a render — so the ask schedules one. Its
@@ -391,7 +407,11 @@ export function usePublishedSelection(
   const [published] = useState(createPublication);
   const [handle] = useState<SelectionHandle>(() => ({
     focusSelection: (request = {}) => {
-      focusRequestRef.current = request;
+      const outstanding = focusRequestRef.current;
+      const reveal =
+        request.reveal !== false ||
+        (outstanding !== null && outstanding.reveal !== false);
+      focusRequestRef.current = { ...request, reveal };
       askedForFocus();
     },
     subscribe: published.subscribe,
@@ -485,6 +505,20 @@ export function usePublishedSelection(
     if (target === null || index === -1) {
       container.current?.focus(request ?? undefined);
       focusedRef.current = null;
+      focusRequestRef.current = null;
+      return;
+    }
+
+    // A request to come back without moving the page, which is the wheel's
+    // answer above made on purpose: the entry if it has a node, and the
+    // container if the window has scrolled it away, either one without
+    // scrolling. The next arrow moves the selection, and that is a reveal.
+    if (request?.reveal === false) {
+      (nodeAt(index) ?? container.current)?.focus({
+        ...request,
+        preventScroll: true,
+      });
+      focusedRef.current = target;
       focusRequestRef.current = null;
       return;
     }

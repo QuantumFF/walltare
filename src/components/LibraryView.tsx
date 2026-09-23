@@ -18,7 +18,10 @@ import {
 } from "@/components/ui/select";
 import { useApp } from "@/context/AppContext";
 import { useAppEvent, useRefetchWhenShown } from "@/context/AppEventsContext";
-import { useKeyboardHandoff } from "@/context/KeyboardHandoffContext";
+import {
+  useKeyboardHandoff,
+  useKeyboardSurface,
+} from "@/context/KeyboardHandoffContext";
 import {
   client,
   type LibraryLayout,
@@ -370,6 +373,8 @@ export function LibraryView() {
    */
   const [grid, setGrid] = useState<SelectionHandle | null>(null);
   const lightbox = useLightbox(grid);
+  // And where a hand-off to this page lands (ADR 0047).
+  useKeyboardSurface("library", grid);
 
   // Whether the ordering's list was opened with the pointer, which decides where
   // the focus goes when it closes. Radix puts it back on the trigger, which is

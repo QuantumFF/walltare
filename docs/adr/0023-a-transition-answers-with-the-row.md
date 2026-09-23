@@ -83,6 +83,18 @@ row says where it belongs in an ordering by Score, so a wallpaper that just
 became Active still arrives with Review's next fetch. The bound is position, not
 ignorance.
 
+> **Amended by [#298](https://github.com/QuantumFF/walltare/pull/298),
+> 2026-09-23.** One wallpaper that just became Active is placed without a fetch:
+> the one an Undo of Review's own keep or reject brought back. The rule's bound
+> is position, and that card is the one case where the position is known — the
+> place its optimistic removal emptied a moment ago. The patch reducer still
+> never inserts; `run` puts the card back once the inverse has landed and its row
+> belongs in the list again, with the selection on it. The place is recorded as
+> the card's neighbours, not only its index, because the list can move before
+> the Undo — a second reject landing, or a refetch reordering the worklist — and
+> an index read off the old list names somewhere else in the new one
+> ([#PRNUM](https://github.com/QuantumFF/walltare/pull/PRNUM)).
+
 ### One module owns a page's rows and every transition on them
 
 ```ts
@@ -142,6 +154,15 @@ and becomes what its doc claims: copy plus two slots.
 [ADR 0017](0017-one-toast-at-a-time.md)'s "no view holds toast state of its own"
 survives untouched, because the copy table, the `once()` double-press guard and
 the slot precedence all stay there. Only the IPC call leaves.
+
+> **Amended by [#298](https://github.com/QuantumFF/walltare/pull/298),
+> 2026-09-23.** The closures are built inside the module rather than by the page,
+> and they call the transition through the latched `latest` rather than through
+> `perform`: `latest.current("restore", wrote, vacancy)`. The third argument is
+> where the optimistic removal took the card from, which `perform`'s two-argument
+> signature — the one the grid and the lightbox are handed — has no room for, and
+> is what lets the Undo put the card back (see the amendment above). An Undo is
+> still the same transition a card's button makes.
 
 The rejected request carries `renamed: boolean` in place of the surface
 re-deriving it with `basename(finalPath) !== filename`. That is a fact about

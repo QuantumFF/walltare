@@ -1062,8 +1062,6 @@ function Grid({
       // Reachable programmatically and not by Tab. The cells hold the tab stop;
       // this is where focus lands when there is no cell left to hold it.
       tabIndex={-1}
-      // Where a hand-off gives the keyboard back (`KeyboardHandoffContext`).
-      data-keyboard-surface
       onKeyDown={handleKeyDown}
       onFocus={handleFocus}
       onBlur={handleBlur}

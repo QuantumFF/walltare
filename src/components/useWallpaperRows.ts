@@ -26,6 +26,24 @@ const FAILURE_LOG: Record<TransitionAction, string> = {
   restore: "Failed to restore wallpaper:",
 };
 
+/**
+ * Where an optimistic removal took a card from, which is what puts it back.
+ *
+ * Its neighbours, and not only an index. The list moves between the removal and
+ * the put-back — a second reject lands while the first is in flight, or a
+ * refetch reorders the worklist while the Undo is still up — and an index read
+ * off the old list names a different place in the new one. "After the card it
+ * followed", or failing that "before the card that followed it", survives both.
+ */
+interface Vacancy {
+  /** The id of the card it came after, or `null` when it was first. */
+  after: number | null;
+  /** The id of the card it came before, or `null` when it was last. */
+  before: number | null;
+  /** Its index, for when both neighbours have gone as well. */
+  at: number;
+}
+
 export interface WallpaperRowsOptions {
   /**
    * Whether a row of this Status still belongs in the list this page is showing.
@@ -58,18 +76,18 @@ export interface WallpaperRowsOptions {
   owe: () => void;
   /**
    * Review's optimistic removal, and how the selection comes back if the write
-   * fails.
+   * fails or is undone.
    *
    * Absent means nothing is optimistic, which is Library: that page keeps every
    * row it fetched, so there is no removal to undo and the published patch is
    * the only thing that edits a row.
    *
    * An object rather than a boolean, because the re-insert and the selection
-   * restore only exist together. The removal advanced the selection, and under
-   * ADR 0022 the lightbox *is* that selection, so a failed reject would
-   * otherwise leave the picture on wallpaper N+1 while the error toast names
-   * wallpaper N. Bundling them means there is no way to ask for an optimistic
-   * removal without saying how the selection comes back.
+   * coming back with it only exist together. The removal advanced the
+   * selection, and under ADR 0022 the lightbox *is* that selection, so a failed
+   * reject would otherwise leave the picture on wallpaper N+1 while the error
+   * toast names wallpaper N. Bundling them means there is no way to ask for an
+   * optimistic removal without saying how the selection comes back.
    *
    * `selectId` alone and not the whole `WallpaperSelection`, whose shape is its
    * own open question (#162).
@@ -152,8 +170,9 @@ export function useWallpaperRows({
   //
   // Nothing is ever inserted here. The guard is what says so, and the reason is
   // position: an ordering by Score cannot be read off a row, so a wallpaper that
-  // just became Active arrives with the page's next fetch — unless it is an Undo
-  // of this page's own optimistic removal, which knows its slot (see `toast`).
+  // just became Active arrives with the page's next fetch. The one card that
+  // comes back sooner is an Undo of this page's own optimistic removal, and it is
+  // `run` that puts it back, into the vacancy it left — not this reducer.
   useAppEvent((event) => {
     if (event.type !== "status-changed") return;
     const { wallpaper } = event;
@@ -193,26 +212,28 @@ export function useWallpaperRows({
    * The two Undos are closures over the transition, so an Undo is the same
    * transition a card's own button makes — the removal, the patch, the toast and
    * the failure handling included. `ToastSurface` keeps the copy, the `once()`
-   * double-press guard and the slot precedence; only the call left it.
+   * double-press guard and which toast wins the shell's one slot; only the call
+   * left it.
    *
-   * `removedFrom` is where the optimistic removal took the card from, and the
-   * Undo carries it so that the inverse can put the card back there. Nothing
-   * else could: the patch never inserts, because a row cannot say where it
-   * belongs in an ordering by Score — but the slot the curator just emptied is
-   * an answer to exactly that.
+   * `vacancy` is where the optimistic removal took the card from, and the Undo
+   * carries it so that the inverse can put the card back there. Nothing else
+   * could: the patch never inserts, because a row cannot say where it belongs
+   * in an ordering by Score — but the place the curator just emptied is an
+   * answer to exactly that. So an Undo calls the transition through `latest`
+   * rather than through `perform`, which takes no vacancy (ADR 0023 as amended).
    */
   const toast = (
     action: TransitionAction,
     was: Wallpaper,
     wrote: Wallpaper,
-    removedFrom: number,
+    vacancy: Vacancy | null,
   ) => {
     switch (action) {
       case "keep":
         show({
           kind: "kept",
           filename: was.filename,
-          undo: () => void latest.current("make-active", wrote, removedFrom),
+          undo: () => void latest.current("make-active", wrote, vacancy),
         });
         return;
       case "make-active":
@@ -230,7 +251,7 @@ export function useWallpaperRows({
           renamed: wrote.filename !== was.filename,
           relativeDestination: destination.relative,
           finalPath: wrote.path,
-          undo: () => void latest.current("restore", wrote, removedFrom),
+          undo: () => void latest.current("restore", wrote, vacancy),
         });
         return;
       case "restore":
@@ -246,14 +267,14 @@ export function useWallpaperRows({
   /**
    * One transition, whole.
    *
-   * `putBackAt` is an Undo's: the slot the transition it inverts removed the
-   * card from, or `-1` for every other press. A landed inverse whose row belongs
-   * here again goes back into that slot, with the selection on it.
+   * `refill` is an Undo's: the vacancy the transition it inverts left, or
+   * `null` for every other press. A landed inverse whose row belongs here again
+   * goes back into it, with the selection on it.
    */
   const run = async (
     action: TransitionAction,
     wallpaper: Wallpaper,
-    putBackAt = -1,
+    refill: Vacancy | null = null,
   ) => {
     // The cohort ADR 0009's migration left with no Origin, refused with no round
     // trip because `origin_path` is on the DTO for exactly this. It lives on the
@@ -269,13 +290,11 @@ export function useWallpaperRows({
       return;
     }
 
-    // Where the row sat, or `-1` when this page is not optimistic or is not
+    // Where the row sat, or `null` when this page is not optimistic or is not
     // holding it. An Undo pressed after the card has already gone is the second
     // case, and it must not re-insert on failure at a position it never had.
-    const removedFrom = optimistic
-      ? (rows?.findIndex((w) => w.id === wallpaper.id) ?? -1)
-      : -1;
-    if (removedFrom !== -1) {
+    const vacancy = optimistic ? vacancyOf(wallpaper) : null;
+    if (vacancy) {
       setRows((prev) => prev?.filter((w) => w.id !== wallpaper.id) ?? prev);
     }
 
@@ -289,11 +308,11 @@ export function useWallpaperRows({
       // in place under the cursor, but a virtualised grid may reorder it or
       // filter it out from under the click, and a card that vanishes is not a
       // confirmation (ADR 0016, ADR 0017).
-      toast(action, wallpaper, wrote, removedFrom);
-      if (belongs(wrote.status)) restore(putBackAt, wrote);
+      toast(action, wallpaper, wrote, vacancy);
+      if (belongs(wrote.status)) putBack(refill, wrote);
     } catch (error) {
       console.error(FAILURE_LOG[action], error);
-      restore(removedFrom, wallpaper);
+      putBack(vacancy, wallpaper);
       show({
         kind: "failed",
         action,
@@ -306,6 +325,17 @@ export function useWallpaperRows({
       // (ADR 0017 as amended by ADR 0025).
       if (isStaleRow(error)) owe();
     }
+  };
+
+  /** The vacancy removing this card would leave, or `null` if it is not held. */
+  const vacancyOf = (wallpaper: Wallpaper): Vacancy | null => {
+    const at = rows?.findIndex((w) => w.id === wallpaper.id) ?? -1;
+    if (!rows || at === -1) return null;
+    return {
+      after: rows[at - 1]?.id ?? null,
+      before: rows[at + 1]?.id ?? null,
+      at,
+    };
   };
 
   /**
@@ -322,12 +352,20 @@ export function useWallpaperRows({
    * longer has it — and the call is what makes this true as well when the curator
    * stepped on while the write was in flight.
    */
-  const restore = (removedFrom: number, wallpaper: Wallpaper) => {
-    if (removedFrom === -1 || !optimistic) return;
+  const putBack = (vacancy: Vacancy | null, wallpaper: Wallpaper) => {
+    if (!vacancy || !optimistic) return;
     setRows((prev) => {
       if (!prev || prev.some((w) => w.id === wallpaper.id)) return prev;
+      const follows = prev.findIndex((w) => w.id === vacancy.after);
+      const precedes = prev.findIndex((w) => w.id === vacancy.before);
+      let at: number;
+      if (vacancy.after === null) at = 0;
+      else if (follows !== -1) at = follows + 1;
+      else if (vacancy.before === null) at = prev.length;
+      else if (precedes !== -1) at = precedes;
+      else at = Math.min(vacancy.at, prev.length);
       const next = [...prev];
-      next.splice(Math.min(removedFrom, next.length), 0, wallpaper);
+      next.splice(at, 0, wallpaper);
       return next;
     });
     optimistic.selectId(wallpaper.id);

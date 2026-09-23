@@ -340,8 +340,6 @@ export function ReviewStrip({
       // the tab stop; this is where focus lands when there is no entry left to
       // hold it.
       tabIndex={-1}
-      // Where a hand-off gives the keyboard back (`KeyboardHandoffContext`).
-      data-keyboard-surface
       onKeyDown={handleKeyDown}
       onFocus={handleFocus}
       onBlur={handleBlur}

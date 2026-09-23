@@ -12,6 +12,7 @@ import {
   mockBootedApp,
   mockTransitions,
   openApp,
+  pointerClick,
   press,
   servingRows,
   settings,
@@ -92,6 +93,12 @@ async function enterGrid() {
     inReview().getAllByRole("gridcell")[0].focus();
   });
 }
+
+/** Every card in the grid, in order, by the accessible name each carries. */
+const cardNames = () =>
+  inReview()
+    .getAllByRole("gridcell")
+    .map((cell) => cell.getAttribute("aria-label"));
 
 /** The card holding the selection, by the accessible name it carries. */
 const selectedCard = () =>
@@ -975,15 +982,15 @@ test("an Undo puts the card back where it was, and the selection with it", async
   // card it took out optimistically comes back in the slot it left rather than
   // with the next fetch.
   expect(toast()?.title).toBe("Restored reject-me.jpg");
-  expect(
-    inReview()
-      .getAllByRole("gridcell")
-      .map((cell) => cell.getAttribute("aria-label")),
-  ).toEqual(["before.jpg, Active", "reject-me.jpg, Active", "after.jpg, Active"]);
+  expect(cardNames()).toEqual([
+    "before.jpg, Active",
+    "reject-me.jpg, Active",
+    "after.jpg, Active",
+  ]);
   expect(selectedCard()).toBe("reject-me.jpg, Active");
 });
 
-test("a keep's Undo puts the card back too", async () => {
+test("a keep's Undo puts the card back too, from the toast's button", async () => {
   await openReview([
     wallpaper(4, { filename: "keeper.jpg" }),
     wallpaper(5, { filename: "next.jpg" }),
@@ -993,14 +1000,56 @@ test("a keep's Undo puts the card back too", async () => {
   await press("k");
   expect(inReview().queryByAltText("keeper.jpg")).toBeNull();
 
+  // With the pointer, so the toast's hand-off is what brings the focus back to
+  // the grid, and it lands on the card the selection came back to.
+  await pointerClick(screen.getByRole("button", { name: "Undo" }));
+
+  expect(cardNames()).toEqual(["keeper.jpg, Active", "next.jpg, Active"]);
+  expect(selectedCard()).toBe("keeper.jpg, Active");
+});
+
+test("an Undo puts the card back beside its neighbour, when the list moved meanwhile", async () => {
+  await openReview([
+    wallpaper(5, { filename: "first.jpg" }),
+    wallpaper(6, { filename: "second.jpg" }),
+    wallpaper(7, { filename: "third.jpg" }),
+  ]);
+  const moves = new Map<unknown, ReturnType<typeof deferred<Wallpaper>>>();
+  mockCommand("move_wallpaper", (args) => {
+    const move = deferred<Wallpaper>();
+    moves.set(args.id, move);
+    return move.promise;
+  });
+  mockCommand("restore_wallpaper", (args) =>
+    wrote(args, { status: "active" }),
+  );
+
+  // Two rejects in flight at once: the second card, and then the first while
+  // the second's write is still out. The second lands last, so its toast is the
+  // one up.
+  await enterGrid();
+  await press("ArrowRight");
+  await press("Delete");
+  await press("ArrowLeft");
+  await press("Delete");
+  expect(cardNames()).toEqual(["third.jpg, Active"]);
+  await act(async () => {
+    moves.get(5)?.resolve(
+      rejectedTo({ id: 5 }, "/library/rejected/first.jpg"),
+    );
+  });
+  await act(async () => {
+    moves.get(6)?.resolve(
+      rejectedTo({ id: 6 }, "/library/rejected/second.jpg"),
+    );
+  });
+  expect(toast()?.title).toBe("Rejected second.jpg");
+
   await press("z", { ctrlKey: true });
 
-  expect(
-    inReview()
-      .getAllByRole("gridcell")
-      .map((cell) => cell.getAttribute("aria-label")),
-  ).toEqual(["keeper.jpg, Active", "next.jpg, Active"]);
-  expect(selectedCard()).toBe("keeper.jpg, Active");
+  // Index 1 of the list it left is past `third.jpg` in the list it comes back
+  // to. The card it came before is still there, and that is where it goes.
+  expect(cardNames()).toEqual(["second.jpg, Active", "third.jpg, Active"]);
 });
 
 test("a key that fails puts the card back, and the selection with it", async () => {

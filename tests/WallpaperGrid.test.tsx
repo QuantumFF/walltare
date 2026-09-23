@@ -767,6 +767,29 @@ test("a focus request reveals a card with no node before focusing it", async () 
   expect(document.activeElement).toBe(cell(400));
 });
 
+test("a request not to reveal focuses the grid where it stands", async () => {
+  await mountWindowed(cards(400));
+  await act(async () => {
+    selection().selectId(400);
+  });
+  expect(mounted(400)).toBe(false);
+
+  // A keyboard hand-off's ask: the curator's scroll position is theirs, so the
+  // window stays where it is and the container takes the focus in the card's
+  // place, the way it does after a wheel scrolled the selection away (ADR 0047).
+  await act(async () => {
+    gridHandle?.focusSelection({ reveal: false });
+  });
+  await browserReportsScroll();
+  expect(mounted(400)).toBe(false);
+  expect(document.activeElement).toBe(grid());
+
+  // The keys are answered from there, and the next one is a reveal.
+  await press("ArrowLeft");
+  await browserReportsScroll();
+  expect(document.activeElement).toBe(cell(399));
+});
+
 test("R on a row with no Origin reaches the host, the same as its button does", async () => {
   await mount(mixed());
   await enterGrid();

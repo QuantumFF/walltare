@@ -168,6 +168,7 @@ rows exist, and only it forces a refetch.
 > not a row" is no longer true, so the bound is the one Review always had:
 > nothing in a row says where it belongs in an ordering by Score, so a wallpaper
 > that just became Active arrives with the next fetch rather than being placed.
+> ADR 0023 records the one exception, an Undo of Review's own removal.
 >
 > `score-changed` is untouched, again.
 
@@ -277,6 +278,12 @@ so arrow keys work inside the bar and nowhere else.
 > the one place a reject fires from, and disable `?` where the shortcut list is
 > most wanted. Any future layered surface that wants this handler off owes a
 > reason.
+
+> **Amended by [ADR 0047](0047-a-pressed-control-hands-the-keyboard-back.md),
+> 2026-09-23.** `Ctrl+Tab` and `Ctrl+Shift+Tab` walk the tabs in a ring, the way
+> a browser walks its own, and from Settings step onto the first tab and the
+> last. They are this handler's, suppressed in a text field like the rest, and
+> they hand the keyboard to the page they land on, as `Ctrl+1/2/3` now do.
 
 **Amended by [ADR 0019](0019-library-card-affordance.md).** Two corrections to
 the paragraphs above.

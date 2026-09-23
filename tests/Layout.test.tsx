@@ -759,6 +759,47 @@ test("Ctrl+Tab hands the arrows to the page it lands on", async () => {
   );
 });
 
+test("Ctrl+2 from an open lightbox hands the arrows to the page it lands on", async () => {
+  await openApp();
+  await press("3", { target: window, ctrlKey: true });
+  await press("Enter");
+  expect(screen.getByRole("dialog", { name: "lowest.jpg" })).toBeTruthy();
+
+  // The page is inert under the lightbox at the commit the ask belongs to, and
+  // the lightbox closes a commit later. The hand-off waits for it rather than
+  // giving up, so the focus does not end on `body`.
+  await press("2", { ctrlKey: true });
+  expect(showingView()).toBe("review");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(document.activeElement?.getAttribute("aria-label")).toBe(
+    "lowest.jpg, Active",
+  );
+});
+
+test("Ctrl+Tab under the shortcuts dialog leaves the focus in the dialog", async () => {
+  await openApp();
+  await press("?", { target: window });
+  const dialog = screen.getByRole("dialog");
+  expect(dialog.contains(document.activeElement)).toBe(true);
+
+  await press("Tab", { ctrlKey: true });
+  expect(showingView()).toBe("review");
+  expect(dialog.contains(document.activeElement)).toBe(true);
+});
+
+test("change in Settings leaves the caret in the field it names", async () => {
+  await openApp();
+  await click(tab("Review"));
+
+  // A button in the page's bar, pressed with the pointer — but one that puts
+  // the focus somewhere itself, so no hand-off takes it back off the field.
+  await pointerClick(screen.getByRole("button", { name: "change in Settings" }));
+  expect(showingView()).toBe("settings");
+  expect(document.activeElement?.tagName).toBe("INPUT");
+  await flush();
+  expect(document.activeElement?.tagName).toBe("INPUT");
+});
+
 test("Ctrl+, opens Settings and records where the curator was", async () => {
   await openApp();
   await click(tab("Library"));
