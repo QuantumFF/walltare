@@ -78,9 +78,75 @@ export function Section({
 }) {
   return (
     <section ref={ref} data-slot="settings-section" className="space-y-3">
-      <h2 className="text-sm font-medium text-foreground">{heading}</h2>
+      <h3 className="text-sm font-medium text-foreground">{heading}</h3>
       {children}
     </section>
+  );
+}
+
+/**
+ * The groups the sections are gathered under, in page order. Twelve sections in
+ * one flat column read as a wall; five named groups give the page something to
+ * scan and the jump row something to point at. The section order inside and
+ * across groups is ADR 0020's first-run-first, maintenance-last order,
+ * unchanged.
+ */
+const GROUPS = [
+  { id: "folders", title: "Folders" },
+  { id: "appearance", title: "Appearance" },
+  { id: "curation", title: "Curation" },
+  { id: "behaviour", title: "Startup & Review" },
+  { id: "maintenance", title: "Maintenance" },
+] as const;
+
+type GroupId = (typeof GROUPS)[number]["id"];
+
+function groupElementId(id: GroupId) {
+  return `settings-group-${id}`;
+}
+
+/** One group: a heading, and its sections in a bordered card divided by rules. */
+function SettingsGroup({ id, children }: { id: GroupId; children: ReactNode }) {
+  const title = GROUPS.find((group) => group.id === id)!.title;
+  const headingId = `${groupElementId(id)}-heading`;
+  return (
+    <section
+      id={groupElementId(id)}
+      aria-labelledby={headingId}
+      className="scroll-mt-4 space-y-3"
+    >
+      <h2
+        id={headingId}
+        className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+      >
+        {title}
+      </h2>
+      <div className="divide-y rounded-lg border bg-card [&>*]:p-4">
+        {children}
+      </div>
+    </section>
+  );
+}
+
+/** A row of links to each group, so the bottom of the page is one click away. */
+function GroupNav() {
+  return (
+    <nav aria-label="Settings groups" className="flex flex-wrap gap-1">
+      {GROUPS.map((group) => (
+        <Button
+          key={group.id}
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            document
+              .getElementById(groupElementId(group.id))
+              ?.scrollIntoView({ block: "start", behavior: "smooth" })
+          }
+        >
+          {group.title}
+        </Button>
+      ))}
+    </nav>
   );
 }
 
@@ -472,50 +538,37 @@ export function SettingsView() {
             the Library root is first on both the landing and the ordinary page,
             so nothing the curator learned where the field was moves once they
             have a library (ADR 0020, ADR 0032). */}
-        <LibraryRootSection />
-
-        {/* Withheld on a boot landing, which is the one thing ADR 0020's
-            four-plus-a-slot shape got wrong. Its argument against hiding them
-            was a page that grows sections after a scan — and it does not: the
-            boot rule takes a curator whose scan filled the library off this page
-            entirely, and the one place sections do appear in place is a Retry
-            that read, where the rest of the page arriving is it recovering
-            alongside the fault leaving (ADR 0033).
-
-            Missing files is last for the rule that put Thumbnails next to
-            last. It is the most maintenance-shaped thing on the page — a
-            question nobody asks until something looks wrong — and putting it
-            under the Library root, where it is about the same folder, would sit
-            a filesystem walk between a first-run curator and the Scan button
-            that is the only thing they need (ADR 0032). */}
-        {!landing && (
+        {landing ? (
+          <LibraryRootSection />
+        ) : (
           <>
-            <RejectDestinationSection />
-            <AppearanceSection />
-            {/* The two sizes sit with Appearance rather than with the
-                maintenance pair below, because they are the same kind of thing:
-                what the app looks like and what it is being curated for. Screen
-                first and Minimum resolution under it, because the second's
-                default is the first (ADR 0020, ADR 0032). */}
-            <ScreenSection />
-            <MinimumResolutionSection />
-            {/* Under the two sizes, because it is neither a size nor maintenance:
-                the sizes say what the app is being curated for and this says
-                how sure it has to be before it will say so. It is the one
-                setting on the page that changes what a word in the app means
-                rather than what the app looks like (ADR 0046). */}
-            <EvaluatedSection />
-            {/* The three preferences about how the app runs rather than how it
-                looks, after the threshold and before the maintenance pair.
-                Startup view first because it is about the whole app and the two
-                under it are about one page; the worklist before the ordering
-                because how long a session is comes before which end of the
-                ranking it comes off (#259). */}
-            <StartupViewSection />
-            <ReviewWorklistSection />
-            <ReviewOrderingSection />
-            <ThumbnailsSection />
-            <MissingFilesSection />
+            <GroupNav />
+            <SettingsGroup id="folders">
+              <LibraryRootSection />
+              <RejectDestinationSection />
+            </SettingsGroup>
+            <SettingsGroup id="appearance">
+              <AppearanceSection />
+            </SettingsGroup>
+            {/* What the app is being curated for, and how sure it has to be
+                before it says a wallpaper was Evaluated (ADR 0032, ADR 0046). */}
+            <SettingsGroup id="curation">
+              <ScreenSection />
+              <MinimumResolutionSection />
+              <EvaluatedSection />
+            </SettingsGroup>
+            {/* How the app runs rather than how it looks (#259). */}
+            <SettingsGroup id="behaviour">
+              <StartupViewSection />
+              <ReviewWorklistSection />
+              <ReviewOrderingSection />
+            </SettingsGroup>
+            {/* Maintenance last: questions nobody asks until something looks
+                wrong (ADR 0020, ADR 0032). */}
+            <SettingsGroup id="maintenance">
+              <ThumbnailsSection />
+              <MissingFilesSection />
+            </SettingsGroup>
           </>
         )}
       </div>
