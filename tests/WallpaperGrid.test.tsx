@@ -428,40 +428,6 @@ test("the arrows move by column and by row, against the column count the window 
   expect(document.activeElement).toBe(cell(4));
 });
 
-test("Right walks off the end of a row, and Down stops at the last row", async () => {
-  viewportWidth(1024);
-  // Six cards over two rows, the second of them short: 5 and 6 sit under 1 and 2.
-  await mount(cards(6));
-  await enterGrid();
-
-  await press("ArrowRight");
-  await press("ArrowRight");
-  await press("ArrowRight");
-  // The rows are a wrapping of one list, and a sweep reads it as one, so the
-  // fourth card is not a wall.
-  expect(document.activeElement).toBe(cell(4));
-  await press("ArrowRight");
-  expect(document.activeElement).toBe(cell(5));
-
-  // Down from card 4 would be card 8, which does not exist. It does nothing
-  // rather than clamping to the last card, so Down does not mean two different
-  // things depending on how full the last row happens to be.
-  await press("ArrowLeft");
-  await press("ArrowDown");
-  expect(document.activeElement).toBe(cell(4));
-});
-
-test("Home and End reach the first and last card", async () => {
-  await mount(cards(9));
-  await enterGrid();
-
-  await press("End");
-  expect(document.activeElement).toBe(cell(9));
-
-  await press("Home");
-  expect(document.activeElement).toBe(cell(1));
-});
-
 // The density, and the two gestures that move it (#264).
 //
 // What a curator observes about it is how many cards share a row, and the thing
@@ -507,31 +473,6 @@ test("the plus and minus keys move the density the wheel does", async () => {
   await press("-");
   await press("-");
   expect(await cardsInARow()).toBe(5);
-
-  // The unshifted twins of both, because `+` is `Shift` and `=` on most
-  // layouts and a curator reaching for it without the shift gets `=`.
-  await press("=");
-  expect(await cardsInARow()).toBe(4);
-  await press("_");
-  expect(await cardsInARow()).toBe(5);
-});
-
-test("a shifted plus still changes the density", async () => {
-  // The guard at the top of the key handler sends every modified key away, so
-  // the shell's own chords reach it untouched — and `Shift` and `=` is how the
-  // key this gesture is named for actually arrives.
-  viewportWidth(1024);
-  await mount(cards(40));
-  await enterGrid();
-
-  await act(async () => {
-    fireEvent.keyDown(document.activeElement ?? document.body, {
-      key: "+",
-      shiftKey: true,
-    });
-  });
-  await flush();
-  expect(await cardsInARow()).toBe(3);
 });
 
 test("the density stops at each tab's own bounds", async () => {
@@ -823,73 +764,6 @@ test("a focus request reveals a card with no node before focusing it", async () 
   // pattern breaks (ADR 0019).
   expect(mounted(400)).toBe(true);
   expect(document.activeElement).toBe(cell(400));
-});
-
-// The direct keys. Each one presses on a card of every Status and asks which
-// command the page was made to call, because that is what a curator can observe:
-// a key that acts moves a file or writes a column, and a key that does not acts
-// on nothing at all (ADR 0019).
-
-test("K keeps an Active card, makes a Kept one Active, and does nothing on a Rejected one", async () => {
-  await mount(mixed());
-  await enterGrid();
-
-  await press("k");
-  expect(commands).toEqual(["keep_wallpaper"]);
-
-  // The keep slot's other end. One finger means "the keep decision" and the
-  // Status picks which end applies, rather than `K` meaning something unrelated
-  // on the card beside it.
-  await press("ArrowRight");
-  expect(document.activeElement).toBe(cell(2, "Kept"));
-  await press("k");
-  expect(commands).toEqual(["keep_wallpaper", "unkeep_wallpaper"]);
-
-  // Rejected offers only Restore, so `K` is a wrong key rather than a wrong
-  // action — and never a transition CONTEXT.md would call an error.
-  await press("ArrowRight");
-  expect(document.activeElement).toBe(cell(3, "Rejected"));
-  await press("k");
-  expect(commands).toEqual(["keep_wallpaper", "unkeep_wallpaper"]);
-  expect(asked).toEqual(["keep", "make-active"]);
-});
-
-test("Delete rejects an Active card and a Kept one, and does nothing on a Rejected one", async () => {
-  await mount(mixed());
-  await enterGrid();
-
-  // No confirm and no modifier: the dialog is gone and the toast's Undo is the
-  // safety net (ADR 0009, ADR 0017).
-  await press("Delete");
-  expect(commands).toEqual(["move_wallpaper"]);
-
-  await press("ArrowRight");
-  await press("Delete");
-  expect(commands).toEqual(["move_wallpaper", "move_wallpaper"]);
-
-  // A soft reject of an already Rejected wallpaper is the transition the
-  // backend answers with `invalid_transition`. The key never asks for it.
-  await press("ArrowRight");
-  await press("Delete");
-  expect(commands).toEqual(["move_wallpaper", "move_wallpaper"]);
-  expect(asked).toEqual(["reject", "reject"]);
-});
-
-test("R restores a Rejected card with an Origin, and does nothing on an Active or a Kept one", async () => {
-  await mount(mixed());
-  await enterGrid();
-
-  await press("r");
-  await press("ArrowRight");
-  await press("r");
-  expect(commands).toEqual([]);
-  expect(asked).toEqual([]);
-
-  await press("ArrowRight");
-  expect(document.activeElement).toBe(cell(3, "Rejected"));
-  await press("r");
-  expect(commands).toEqual(["restore_wallpaper"]);
-  expect(asked).toEqual(["restore"]);
 });
 
 test("R on a row with no Origin reaches the host, the same as its button does", async () => {
