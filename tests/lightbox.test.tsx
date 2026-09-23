@@ -733,6 +733,42 @@ test("keeping or rejecting in Review advances to the next wallpaper", async () =
   expect(row().textContent).toContain("1 / 1");
 });
 
+test("a scan finishing under an open lightbox on Review leaves it on the same wallpaper", async () => {
+  // A scan adds rows and never removes one, so the wallpaper on screen is still
+  // in the list the refetch brings back and the selection's id still resolves.
+  // That is only the whole of it while the refetch replaces the rows under the
+  // surface: tearing the surface down for a spinner took the grid's handle with
+  // it, and an emptied handle is ADR 0022's rule for closing (#285).
+  await enterReview(threeRows());
+  await press("Enter");
+  await press("ArrowRight");
+  expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
+  expect(row().textContent).toContain("2 / 3");
+
+  // Held in flight, because the frame this is about is the one where the fetch
+  // has gone out and not come back. A fetch that answers at once lands inside
+  // the same `act` as the one that sent it, and nothing ever renders between.
+  const refetch = deferred<Wallpaper[]>();
+  mockCommand("list_wallpapers", () => refetch.promise);
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 1, scanned_count: 4 });
+  });
+  await flush();
+  expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
+
+  reviewRows = [
+    ...reviewRows,
+    wallpaper(10, { filename: "fourth.jpg", path: "/library/fourth.jpg" }),
+  ];
+  await act(async () => {
+    refetch.resolve(reviewRows.map((wallpaper) => ({ ...wallpaper })));
+  });
+  await flush();
+
+  expect(screen.getByRole("dialog", { name: "second.jpg" })).toBeTruthy();
+  expect(row().textContent).toContain("2 / 4");
+});
+
 test("rejecting in Library under All keeps the same wallpaper up, with its new actions", async () => {
   mockCommand("move_wallpaper", (args) =>
     rejectedTo(args, "/library/rejected/one.jpg"),

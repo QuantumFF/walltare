@@ -59,6 +59,8 @@ const LAYOUTS: Array<{ value: ReviewLayout; label: string; Icon: LucideIcon }> =
   ];
 
 export function ReviewView() {
+  // Whether a fetch is out, which is what the Refresh button reads. It is not
+  // what decides whether the surface is drawn — see `firstLoad` below.
   const [loading, setLoading] = useState(true);
   const { setView, settings, saveSetting } = useApp();
   /**
@@ -121,6 +123,18 @@ export function ReviewView() {
     optimistic: { selectId },
   });
   const wallpapers = rows ?? [];
+  // The spinner's whole condition: a fetch is out and there is nothing to show
+  // while it is. Every later fetch has rows on screen already, and it replaces
+  // them where they stand, the way Library's does — so the surface drawing them
+  // outlives the fetch, and with it the cursor, the density and the handle an
+  // open lightbox is reading (#285). Refresh's own spin is what says a refetch
+  // is in flight.
+  //
+  // `rows` and not a flag of this page's own, because `null` is already "no
+  // fetch has landed" (`useWallpaperRows`). A first fetch that failed leaves it
+  // there, so the empty state is what shows once it has given up, as it always
+  // was.
+  const firstLoad = loading && rows === null;
 
   // The grid, once it has mounted, and the whole of what this page knows about
   // the selection. The cursor is the grid's since #230, so nothing here holds it
@@ -144,9 +158,10 @@ export function ReviewView() {
    * and not state: it is written in a click handler and read by the next mount,
    * and nothing renders from it.
    *
-   * Spent on arrival, so it only ever answers for the swap that wrote it. A
-   * refetch or an emptied list that remounts the surface later must not put the
-   * selection back on a wallpaper the curator has since moved off.
+   * Spent on arrival, so it only ever answers for the swap that wrote it. An
+   * emptied list that refills and remounts the surface later must not put the
+   * selection back on a wallpaper the curator has since moved off. A refetch
+   * remounts nothing, so it needs no handover at all (#285).
    */
   const handOver = useRef<number | null>(null);
   const resumeOn = handOver.current;
@@ -318,14 +333,21 @@ export function ReviewView() {
       {header}
 
       {/* One branch rather than an early return, because the lightbox below has
-          to outlive it. A `library-scanned` refetch puts this page back in its
-          loading state while the curator is looking at a wallpaper, and an
-          early return would unmount the open dialog — leaving the shell holding
-          an `inert` nothing would ever take back. ADR 0022 reads that rescan as
-          needing no handling, which is only true while a refetch cannot tear
-          the surface down. */}
-      {loading ? (
-        <div className="flex flex-1 items-center justify-center">
+          to outlive it: an early return would unmount an open dialog, leaving
+          the shell holding an `inert` nothing would ever take back.
+
+          The branch is the first load and nothing later. A refetch — Refresh,
+          or a `library-scanned` one landing while the curator is looking at a
+          wallpaper — keeps the populated surface mounted and hands it the new
+          rows, which is what makes ADR 0022's reading true: a rescan adds rows
+          and cannot remove the one on screen, so it needs no handling. It used
+          to swap the surface for this spinner, which dropped the grid's handle,
+          and an emptied handle is the lightbox's rule for closing (#285). */}
+      {firstLoad ? (
+        <div
+          data-slot="review-loading"
+          className="flex flex-1 items-center justify-center"
+        >
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
       ) : (

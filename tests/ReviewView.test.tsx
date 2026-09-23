@@ -76,6 +76,10 @@ const destinationLine = () =>
     "[data-slot='reject-destination']",
   ) as HTMLElement | null;
 
+/** The body's spinner, which is only ever the first load's (#285). */
+const loader = () =>
+  reviewView().querySelector('[data-slot="review-loading"]');
+
 const refreshButton = () =>
   inReview().getByRole("button", { name: /refresh/i }) as HTMLButtonElement;
 
@@ -229,6 +233,46 @@ test("neither half of the gesture moves the selection", async () => {
   expect(selectedCard()).toBe("wall-3.jpg, Active");
   await press("-");
   expect(selectedCard()).toBe("wall-3.jpg, Active");
+});
+
+test("Refresh keeps the cursor on the same wallpaper and the density where it was", async () => {
+  // Both are the grid's own state since #230 and #264, so they last exactly as
+  // long as the grid does. A refetch replaces the rows under it rather than the
+  // grid itself, which is how Library has always answered one (#285).
+  //
+  // The refetch answers with fresh objects for the same wallpapers, because
+  // that is what the backend sends: the id is what the selection tracks, not
+  // the object it came in.
+  const worklist = Array.from({ length: 20 }, (_, i) => wallpaper(i + 1));
+  reviewed = worklist;
+  let fetches = 0;
+  mockCommand("list_wallpapers", () => {
+    fetches++;
+    return worklist.map((row) => ({ ...row }));
+  });
+  await openOnReview();
+  await enterGrid();
+  await zoom(-100);
+  await press("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  expect(selectedCard()).toBe("wall-4.jpg, Active");
+
+  await click(refreshButton());
+  expect(fetches).toBe(2);
+
+  // The tab stop is the selection, and it did not move.
+  const selected = inReview().getByRole("gridcell", {
+    name: "wall-4.jpg, Active",
+  });
+  expect(selected.tabIndex).toBe(0);
+
+  // And two cards to a row is still two, which is the step the wheel left it on
+  // rather than the three this page starts on.
+  await act(async () => {
+    selected.focus();
+  });
+  expect(await cardsInARow()).toBe(2);
 });
 
 test("a card changes no shadow on hover, so a wheel scroll stays smooth", async () => {
@@ -583,11 +627,11 @@ test("the list can't be refetched while a fetch is in flight", async () => {
 
   await openOnReview();
 
-  // While loading the body is a spinner and Refresh is disabled. The control
-  // lives in the bar this page owns below the chrome, which holds its height in
-  // every state, so `disabled` is what keeps a second fetch out rather than the
-  // button being absent.
-  expect(reviewView().querySelector(".animate-spin")).not.toBeNull();
+  // While the first fetch is out the body is a spinner and Refresh is disabled.
+  // The control lives in the bar this page owns below the chrome, which holds
+  // its height in every state, so `disabled` is what keeps a second fetch out
+  // rather than the button being absent.
+  expect(loader()).not.toBeNull();
   expect(refreshButton().disabled).toBe(true);
 
   await act(async () => {
@@ -596,9 +640,14 @@ test("the list can't be refetched while a fetch is in flight", async () => {
   expect(refreshButton().disabled).toBe(false);
   await click(refreshButton());
 
+  // A refetch is the button's to show, spinning and disabled, and the rows it
+  // is replacing stay where they are until it lands — the spinner is for the
+  // one fetch that has nothing to show while it is out (#285).
   expect(fetches).toBe(2);
   expect(refreshButton().disabled).toBe(true);
-  expect(inReview().queryByAltText("a.jpg")).toBeNull();
+  expect(refreshButton().querySelector(".animate-spin")).not.toBeNull();
+  expect(loader()).toBeNull();
+  expect(inReview().queryByAltText("a.jpg")).not.toBeNull();
 
   await act(async () => {
     second.resolve([]);
