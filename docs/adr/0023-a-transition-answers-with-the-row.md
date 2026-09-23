@@ -93,7 +93,7 @@ ignorance.
 > the card's neighbours, not only its index, because the list can move before
 > the Undo — a second reject landing, or a refetch reordering the worklist — and
 > an index read off the old list names somewhere else in the new one
-> ([#PRNUM](https://github.com/QuantumFF/walltare/pull/PRNUM)).
+> ([#301](https://github.com/QuantumFF/walltare/pull/301)).
 
 ### One module owns a page's rows and every transition on them
 

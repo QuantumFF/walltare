@@ -35,7 +35,7 @@ element marked `data-keyboard-surface`, and inside it its roving tab stop, or th
 surface itself when nothing holds the stop yet. On Rank and on Settings there is
 no surface, and letting go is the whole of it.
 
-> **Amended by [#PRNUM](https://github.com/QuantumFF/walltare/pull/PRNUM),
+> **Amended by [#301](https://github.com/QuantumFF/walltare/pull/301),
 > 2026-09-23.** The hand-off no longer finds the surface in the DOM or focuses
 > its tab stop itself. That walked past [ADR 0029](0029-the-grid-owns-the-focus.md)'s
 > one way in from outside, the surface's handle, and past the reveal-before-focus
@@ -60,7 +60,7 @@ no surface, and letting go is the whole of it.
 | `Ctrl+Tab`, `Ctrl+Shift+Tab`, `Ctrl+1/2/3` | always |
 | Settings' ways out — the gear, Back, Escape | always |
 
-> **Amended by [#PRNUM](https://github.com/QuantumFF/walltare/pull/PRNUM),
+> **Amended by [#301](https://github.com/QuantumFF/walltare/pull/301),
 > 2026-09-23.** A `PageBar` button marked `data-moves-focus` does not ask either,
 > because it puts the focus somewhere itself: "change in Settings" puts the caret
 > in the Reject destination field, and the hand-off's blur only missed it because
@@ -86,7 +86,7 @@ card taking the focus would be focus stolen rather than handed over.
 and a toast's Undo is pressed from there, so a hand-off into an inert page does
 nothing rather than pulling focus off the lightbox.
 
-> **Amended by [#PRNUM](https://github.com/QuantumFF/walltare/pull/PRNUM),
+> **Amended by [#301](https://github.com/QuantumFF/walltare/pull/301),
 > 2026-09-23.** It re-lands when the page's surface is *replaced* — a new handle
 > registered — rather than on every DOM mutation under the page, which stole the
 > focus from anything else that took it, a dialog's focus trap included.
