@@ -517,9 +517,7 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
     "Rejected",
   ]);
   expect(
-    filters
-      .getAllByRole("button", { pressed: true })
-      .map((el) => el.textContent),
+    filters.getAllByRole("button", { pressed: true }).map((el) => el.textContent),
   ).toEqual(["All"]);
   expect(bar.getByLabelText("Order by").textContent).toBe("Score, high to low");
   // And the layout control beside them, opening on the grid — the layout the
@@ -528,7 +526,9 @@ test("Library draws the shared card in the shared grid, under the bar's two cont
   // second one arriving beside it per layout (#262, #263).
   const layouts = within(bar.getByRole("group", { name: "Layout" }));
   expect(
-    layouts.getAllByRole("button").map((el) => el.getAttribute("aria-label")),
+    layouts
+      .getAllByRole("button")
+      .map((el) => el.getAttribute("aria-label")),
   ).toEqual(["Grid", "Masonry", "Justified"]);
   expect(
     layouts
@@ -797,9 +797,7 @@ test("change in Settings leaves the caret in the field it names", async () => {
 
   // A button in the page's bar, pressed with the pointer — but one that puts
   // the focus somewhere itself, so no hand-off takes it back off the field.
-  await pointerClick(
-    screen.getByRole("button", { name: "change in Settings" }),
-  );
+  await pointerClick(screen.getByRole("button", { name: "change in Settings" }));
   expect(showingView()).toBe("settings");
   expect(document.activeElement?.tagName).toBe("INPUT");
   await flush();

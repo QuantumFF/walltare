@@ -340,6 +340,47 @@ test("every line the dialog lists is a key its surfaces answer", () => {
   }
 });
 
+// A page's table is read after the shared one, so a key both bind on the same
+// surface would never reach the page's action. Every page's table is checked.
+test("no page table binds a key the shared table answers on the same surface", () => {
+  const pages = { STATUS_KEYS } as const;
+  for (const [name, table] of Object.entries(pages)) {
+    for (const binding of table.bindings) {
+      for (const on of binding.on) {
+        for (const key of binding.keys) {
+          // A key the shared table answers is answered with no page table at
+          // all: an empty one leaves only the shared keys to answer.
+          const shared = answerKey(
+            {
+              key,
+              shiftKey: false,
+              ctrlKey: false,
+              altKey: false,
+              metaKey: false,
+              repeat: false,
+              target: on === "grid" ? cell : elsewhere,
+              preventDefault: () => {},
+            },
+            {
+              surface: surfaceOf(on),
+              selected: wallpaper(1),
+              index: 5,
+              length: 12,
+            },
+            { bindings: [], offers: () => [] },
+          );
+          expect({ name, on, key, shared }).toEqual({
+            name,
+            on,
+            key,
+            shared: undefined,
+          });
+        }
+      }
+    }
+  }
+});
+
 // A button carries the key that fires it, read off the same table, so a
 // rebinding takes the print with it (#140).
 test("each transition's button prints the key the keymap answers it by", () => {

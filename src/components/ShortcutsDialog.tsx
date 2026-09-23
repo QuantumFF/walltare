@@ -40,7 +40,8 @@ import { Dialog } from "radix-ui";
  * What those surfaces do to the selected item is the page's since #336, so the
  * listing groups are built with the action table of the page the dialog opened
  * over: `K`, `Delete` and `R` over Library and Review, and Discover's own keys
- * over Discover.
+ * over Discover. The listing heading still names wallpapers; #339 rewords it
+ * when Discover's rows join the list.
  */
 function groupsFor(actions: AnyActionTable): readonly {
   heading: string;

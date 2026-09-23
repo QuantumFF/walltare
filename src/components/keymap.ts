@@ -108,7 +108,7 @@ type Does =
 export type ShortcutGroup = "listing" | "lightbox";
 
 /** What a key is bound to and how it is written down, in either table. */
-interface Printed {
+interface BoundKey {
   /** The `event.key` values it answers to, compared without case. */
   keys: readonly string[];
   /** How the shortcuts dialog prints it. */
@@ -121,7 +121,7 @@ interface Printed {
   listed: Partial<Record<ShortcutGroup, string>>;
 }
 
-interface Binding extends Printed {
+interface Binding extends BoundKey {
   does: Does;
 }
 
@@ -129,7 +129,7 @@ interface Binding extends Printed {
  * One key of a page's action table: the actions it names, of which the first
  * the selected item offers is the one it fires.
  */
-export interface ActionBinding<A extends string> extends Printed {
+export interface ActionBinding<A extends string> extends BoundKey {
   act: readonly A[];
 }
 
@@ -245,7 +245,9 @@ const BINDINGS = [
     on: LISTINGS,
     listed: { listing: "Select the last wallpaper" },
   },
-  // Not the lightbox's: `Enter` is the key that opened it (ADR 0022).
+  // Not the lightbox's: `Enter` is the key that opened it (ADR 0022). Its line
+  // and the dialog's heading still say "wallpaper" above rows that are now the
+  // page's own; #339 rewords them when Discover's rows join the list.
   {
     keys: ["Enter"],
     printed: "Enter",
@@ -411,7 +413,7 @@ function intentOf<T, A extends string>(
   // Compared without case, so a curator with Caps Lock on still keeps and still
   // restores.
   const key = event.key.toLowerCase();
-  const answers = (entry: Printed) =>
+  const answers = (entry: BoundKey) =>
     entry.on.includes(surface.kind) &&
     entry.keys.some((bound) => bound.toLowerCase() === key);
   const binding = TABLE.find(answers);
@@ -545,7 +547,7 @@ type PlainButton = Extract<Does, string>;
 function bindingOf(
   action: string,
   actions: AnyActionTable | undefined,
-): Printed | undefined {
+): BoundKey | undefined {
   return actions
     ? actions.bindings.find(({ act }) => act.includes(action))
     : TABLE.find(({ does }) => does === action);
@@ -571,7 +573,7 @@ export function shortcutLines(
   actions: AnyActionTable,
 ): ShortcutLine[] {
   const opens = TABLE.findIndex(({ does }) => does === "open") + 1;
-  const ordered: readonly Printed[] = [
+  const ordered: readonly BoundKey[] = [
     ...TABLE.slice(0, opens),
     ...actions.bindings,
     ...TABLE.slice(opens),

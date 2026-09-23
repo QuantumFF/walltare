@@ -380,7 +380,10 @@ export function uniformRowHeight({
   unmeasuredHeight,
 }: UniformRow): number {
   const cards = width - 2 * padding - gap * (columns - 1);
-  if (cards <= 0) return unmeasuredHeight;
+  // The caption joins the fallback too: a hidden view's rows are estimated
+  // rather than absent (ADR 0015), and an estimate short by a caption per row is
+  // a window that mounts the wrong cards when the view is shown again.
+  if (cards <= 0) return unmeasuredHeight + captionHeight;
   return (cards / columns) * cardRatio + captionHeight;
 }
 

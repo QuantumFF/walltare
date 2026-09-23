@@ -7,6 +7,7 @@ import {
   type ListingSurface,
 } from "@/components/keymap";
 import {
+  NO_SELECTION,
   useSelection,
   type SelectionHandle,
   type Selection,
@@ -100,14 +101,7 @@ const UNMEASURED_PICTURE: Box = { width: 1216, height: 680 };
  */
 const WHOLE = (selection: Selection) => selection;
 const HAS_WALLPAPER = (selection: Selection) => selection.item !== null;
-const NOTHING: Selection = {
-  item: null,
-  index: -1,
-  length: 0,
-  moveTo: () => {},
-  selectId: () => {},
-};
-const CLOSED = () => NOTHING;
+const CLOSED = (): Selection => NO_SELECTION;
 
 /**
  * What the lightbox tells the keymap about itself: which surface it is, and so
