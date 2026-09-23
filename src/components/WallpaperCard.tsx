@@ -8,14 +8,13 @@ import {
 import type { PlannedBox } from "@/lib/layout-plan";
 import {
   counted,
-  dimensionsOf,
   FILE_IS_GONE,
-  isEvaluated,
   readableSize,
   score,
   STATUS_LABEL,
   UNDERSIZED,
 } from "@/lib/copy";
+import { dimensionsOf, isEvaluated } from "@/lib/wallpaper";
 import {
   STATUS_ACTIONS,
   type TransitionAction,

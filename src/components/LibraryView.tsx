@@ -31,15 +31,11 @@ import {
   type StatusFilter,
 } from "@/lib/client";
 // The words for a Status, from the file that holds the app's phrasings, so the
-// empty state and the card's own pill spell them alike — and the one comparison
-// behind the badge and the control below, so the two cannot disagree about which
-// wallpapers are undersized.
-import {
-  isUndersized,
-  readableSize,
-  STATUS_LABEL,
-  UNDERSIZED,
-} from "@/lib/copy";
+// empty state and the card's own pill spell them alike.
+import { readableSize, STATUS_LABEL, UNDERSIZED } from "@/lib/copy";
+// The one comparison behind the badge and the control below, so the two cannot
+// disagree about which wallpapers are undersized.
+import { isUndersized } from "@/lib/wallpaper";
 import {
   Filter,
   Images,

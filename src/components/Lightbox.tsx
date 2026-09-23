@@ -22,10 +22,10 @@ import {
   FILE_IS_GONE,
   FILE_IS_GONE_DETAIL,
   grouped,
-  isEvaluated,
   score,
   STATUS_LABEL,
 } from "@/lib/copy";
+import { isEvaluated } from "@/lib/wallpaper";
 import type { Box } from "@/lib/layout-plan";
 import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
 import { Dialog } from "radix-ui";
