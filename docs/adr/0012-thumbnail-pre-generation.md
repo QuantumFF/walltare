@@ -159,6 +159,28 @@ serialize on that mutex rather than racing. The `Option` is the running state,
 so there is no separate `ScanRunning`-style bool, and dropping the entry is
 what clears it.
 
+> **Amended by [#287](https://github.com/QuantumFF/walltare/issues/287),
+> 2026-09-23.** The state's shape stands, and so do the per-run flag, the
+> supervisor, the join under the mutex and the cancel that never waits. What
+> changed is the last sentence: **the `Option` is the latest run, not the
+> running one, and nothing clears it.** The pass used to clear its own entry as
+> its thread ended, through a guard that reached the slot through the
+> `AppHandle` and took it with a `try_lock`, because the successor joining that
+> thread holds the mutex while it does. That guard had nothing to protect.
+> Nothing in the app asks whether a pass is running; once a run has finished,
+> `cancel_pregen`, Clear thumbnail cache and a scan all set a flag nothing
+> reads; and the next start's join returns at once. It was also never quite
+> true: a run that ended before the supervisor installed it lost the
+> `try_lock` to that supervisor and left its entry anyway. With the guard gone
+> the pass's thread holds nothing of the slot, so `Pregen::start` takes the
+> run as a closure and the whole of this paragraph is exercised by unit tests
+> without a Tauri app. The scan's `ScanRunning` bool stays a bool, since a
+> second scan is refused rather than queued; it moved into `scan.rs` as
+> `scan::Running`, and its guard holds the flag's `Arc` rather than an
+> `AppHandle`. The two are not merged, because refusing and replacing are
+> different answers to a second start and one mechanism for both would be the
+> harder to read of the two.
+
 `cancel_pregen` and `start_scan` both set the current run's flag and return.
 Neither waits. Joining on the IPC thread would block for up to one wallpaper's
 decode, and neither has a correctness reason to wait: a scan running alongside
