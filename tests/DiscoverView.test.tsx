@@ -1,9 +1,10 @@
 import { DiscoverView } from "@/components/DiscoverView";
-import type {
-  AppError,
-  SearchPage,
-  SearchParams,
-  MarkedResult,
+import {
+  WALLHAVEN_COLOURS,
+  type AppError,
+  type SearchPage,
+  type SearchParams,
+  type MarkedResult,
 } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -78,7 +79,7 @@ function failure(kind: AppError["kind"], message: string): Promise<never> {
 const cards = () => screen.queryAllByRole("gridcell");
 const pageCount = () =>
   document.querySelector('[data-slot="page-count"]')?.textContent ?? null;
-const ratioPill = () => screen.getByLabelText("Ratio");
+const ratioPill = () => screen.getByLabelText(/^Ratio: /);
 
 async function chooseRatio(name: string) {
   await press("Enter", { target: ratioPill() });
@@ -427,7 +428,8 @@ test("Ctrl and the wheel move through Discover's two to five a row", async () =>
 // The filter pills (#340). Each one opens a menu, and every change is a new
 // search with it.
 
-const pill = (name: string) => screen.getByLabelText(name);
+/** A pill, by what it filters: its name also says what it is set to. */
+const pill = (name: string) => screen.getByLabelText(new RegExp(`^${name}: `));
 // Named by the way it runs, so a screen reader hears the state and not a label.
 const orderPill = () =>
   screen.getByRole("button", { name: /^(Descending|Ascending)$/ });
@@ -457,6 +459,7 @@ test("the Sort pill offers all seven sortings, and a choice searches with it", a
   expect(searches[1].sorting).toBe("views");
   expect(searches[1].top_range).toBeUndefined();
   expect(pill("Sort").textContent).toBe("Views");
+  expect(pill("Sort").getAttribute("aria-label")).toBe("Sort: Views");
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
@@ -558,7 +561,7 @@ test("the Colour pill offers Wallhaven's 29 and can be cleared", async () => {
   expect(swatches).toHaveLength(30);
   expect(swatches[0]).toBe("Any colour");
   expect(new Set(swatches.slice(1)).size).toBe(29);
-  await click(screen.getByRole("menuitemradio", { name: "#424153" }));
+  await click(screen.getByRole("menuitemradio", { name: "Slate (#424153)" }));
 
   expect(searches[1].colors).toBe("424153");
   expect(pill("Colour").textContent).toBe("Colour");
@@ -642,4 +645,107 @@ test("scrolling collapses the header into a sticky strip, and the top expands it
   expect(header().dataset.collapsed).toBe("true");
   await scrollTo(0);
   expect(header().dataset.collapsed).toBe("false");
+});
+
+test("the colours are exactly the ones the backend accepts", async () => {
+  // Two copies of one list, and a colour in only one of them is either never
+  // offered or refused when chosen.
+  const rust = await Bun.file(
+    new URL("../src-tauri/src/wallhaven.rs", import.meta.url),
+  ).text();
+  const list = /const COLOURS: \[&str; 29\] = \[([^\]]*)\]/.exec(rust)?.[1];
+  expect(list).toBeDefined();
+  const backend = [...(list ?? "").matchAll(/"([0-9a-f]{6})"/g)].map(
+    ([, hex]) => hex,
+  );
+  expect(backend).toEqual([...WALLHAVEN_COLOURS]);
+});
+
+test("the arrows walk the swatches as a grid of eight a row", async () => {
+  await renderInApp(<DiscoverView />);
+  await openPill("Colour");
+  const swatches = screen
+    .getAllByRole("menuitemradio")
+    .filter((o) => o.hasAttribute("aria-label"));
+  const focused = () => swatches.indexOf(document.activeElement as HTMLElement);
+  await act(async () => {
+    swatches[0].focus();
+  });
+
+  await press("ArrowRight");
+  expect(focused()).toBe(1);
+  await press("ArrowDown");
+  expect(focused()).toBe(9);
+  await press("ArrowLeft");
+  expect(focused()).toBe(8);
+  await press("ArrowDown");
+  await press("ArrowDown");
+  expect(focused()).toBe(24);
+  // The last row holds five, so Down from past its end lands on the last one.
+  await press("ArrowUp");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  expect(focused()).toBe(21);
+  await press("ArrowDown");
+  expect(focused()).toBe(28);
+
+  // Up out of the top row is Any colour.
+  await act(async () => {
+    swatches[3].focus();
+  });
+  await press("ArrowUp");
+  expect(document.activeElement?.textContent).toBe("Any colour");
+});
+
+test("a resize while collapsed measures the expanded header again", async () => {
+  const observers: ResizeObserverCallback[] = [];
+  const Real = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      observers.push(callback);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  try {
+    await renderInApp(<DiscoverView />);
+    const scroller = document.querySelector(
+      '[data-slot="discover-page"]',
+    ) as HTMLElement;
+    const header = document.querySelector(
+      '[data-slot="discover-header"]',
+    ) as HTMLElement;
+    // happy-dom lays nothing out, so the header says how tall it is: the
+    // strip's height collapsed, and the expanded one the pills wrap to.
+    let expanded = 200;
+    Object.defineProperty(header, "offsetHeight", {
+      get: () => (header.dataset.collapsed === "true" ? 44 : expanded),
+    });
+    await act(async () => {
+      scroller.scrollTop = 600;
+      fireEvent.scroll(scroller);
+    });
+    expect(header.dataset.collapsed).toBe("true");
+    expect(header.style.marginBottom).toBe("156px");
+
+    // A narrower window wraps the pills onto another row.
+    expanded = 240;
+    await act(async () => {
+      for (const callback of observers) {
+        callback(
+          [{ contentRect: { width: 800 } } as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+      }
+    });
+
+    expect(header.dataset.collapsed).toBe("true");
+    expect(header.style.marginBottom).toBe("196px");
+  } finally {
+    globalThis.ResizeObserver = Real;
+  }
 });

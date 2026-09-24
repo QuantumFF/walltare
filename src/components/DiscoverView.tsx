@@ -13,6 +13,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSwatchGrid,
   DropdownMenuSwatchItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -42,6 +43,7 @@ import {
   type SearchParams,
   type Sorting,
   type TopRange,
+  WALLHAVEN_COLOURS,
 } from "@/lib/client";
 import { bytes } from "@/lib/copy";
 import { cn } from "@/lib/utils";
@@ -119,41 +121,45 @@ const PURITIES: { value: keyof Purity; label: string }[] = [
 ];
 
 /**
- * Wallhaven's 29 colours, the only values its `colors` parameter takes, in its
- * own palette's order. Mirrors `wallhaven::COLOURS`, which refuses anything
- * else (ADR 0054).
+ * What each of Wallhaven's colours is called, for the swatch that has no text
+ * of its own. The hex goes beside it, since a name for `#cc6633` is a guess.
  */
-const COLOURS = [
-  "660000",
-  "990000",
-  "cc0000",
-  "cc3333",
-  "ea4c88",
-  "993399",
-  "663399",
-  "333399",
-  "0066cc",
-  "0099cc",
-  "66cccc",
-  "77cc33",
-  "669900",
-  "336600",
-  "666600",
-  "999900",
-  "cccc33",
-  "ffff00",
-  "ffcc33",
-  "ff9900",
-  "ff6600",
-  "cc6633",
-  "996633",
-  "663300",
-  "000000",
-  "999999",
-  "cccccc",
-  "ffffff",
-  "424153",
-];
+const COLOUR_NAMES: Record<string, string> = {
+  "660000": "Maroon",
+  "990000": "Dark red",
+  cc0000: "Red",
+  cc3333: "Brick red",
+  ea4c88: "Pink",
+  "993399": "Purple",
+  "663399": "Violet",
+  "333399": "Indigo",
+  "0066cc": "Blue",
+  "0099cc": "Sky blue",
+  "66cccc": "Teal",
+  "77cc33": "Lime",
+  "669900": "Olive green",
+  "336600": "Dark green",
+  "666600": "Olive",
+  "999900": "Mustard",
+  cccc33: "Citron",
+  ffff00: "Yellow",
+  ffcc33: "Gold",
+  ff9900: "Orange",
+  ff6600: "Dark orange",
+  cc6633: "Copper",
+  "996633": "Brown",
+  "663300": "Dark brown",
+  "000000": "Black",
+  "999999": "Grey",
+  cccccc: "Light grey",
+  ffffff: "White",
+  "424153": "Slate",
+};
+
+/** `Maroon (#660000)`: a swatch, as a screen reader says it. */
+function colourName(colour: string): string {
+  return `${COLOUR_NAMES[colour] ?? "Colour"} (#${colour})`;
+}
 
 /** The Colour pill's value for Any colour, which no colour is spelled as. */
 const ANY_COLOUR = "any";
@@ -234,7 +240,7 @@ interface Asked extends DiscoverFilters {
   q: string;
   /** `null` is Any ratio. */
   ratio: string | null;
-  /** One of `COLOURS`, or `null` for Any colour. */
+  /** One of `WALLHAVEN_COLOURS`, or `null` for Any colour. */
   colour: string | null;
 }
 
@@ -351,6 +357,30 @@ export function DiscoverView() {
     const reserve = Math.max(0, expandedHeight.current - STRIP_HEIGHT);
     setReserved(at > reserve ? reserve : null);
   }, []);
+
+  // A resize while collapsed can rewrap the expanded pills, and the height kept
+  // from before would move the Results when the header next expands. So the
+  // header expands for one layout, which is measured before it paints, and
+  // collapses again from the new height. A width of zero is the shell hiding
+  // the view, which says nothing about the layout it will show with.
+  const remeasure = useRef(false);
+  useEffect(() => {
+    const node = scroller.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width === 0) return;
+      if (header.current?.dataset.collapsed !== "true") return;
+      remeasure.current = true;
+      setReserved(null);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    if (reserved !== null || !remeasure.current) return;
+    remeasure.current = false;
+    followScroll();
+  }, [reserved, followScroll]);
 
   const search = useCallback(async (next: Asked) => {
     const call = ++latest.current;
@@ -523,7 +553,7 @@ export function DiscoverView() {
             >
               <SelectTrigger
                 {...ratioHandOff.trigger}
-                aria-label="Ratio"
+                aria-label={`Ratio: ${pillLabel(asked.ratio)}`}
                 size="sm"
                 className="shrink-0 rounded-full text-xs"
               >
@@ -729,7 +759,7 @@ function Pill({
     <DropdownMenu>
       <DropdownMenuTrigger
         {...handOff.trigger}
-        aria-label={name}
+        aria-label={`${name}: ${label}`}
         className={PILL}
       >
         {swatch && (
@@ -903,16 +933,16 @@ function ColourPill({ asked, onChange }: PillProps) {
           Any colour
         </DropdownMenuRadioItem>
         <DropdownMenuSeparator />
-        <div className="grid grid-cols-8 gap-1 p-1">
-          {COLOURS.map((colour) => (
+        <DropdownMenuSwatchGrid columns={8}>
+          {WALLHAVEN_COLOURS.map((colour) => (
             <DropdownMenuSwatchItem
               key={colour}
               value={colour}
               colour={`#${colour}`}
-              aria-label={`#${colour}`}
+              aria-label={colourName(colour)}
             />
           ))}
-        </div>
+        </DropdownMenuSwatchGrid>
       </DropdownMenuRadioGroup>
     </Pill>
   );

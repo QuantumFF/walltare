@@ -221,6 +221,21 @@ export type Order = "desc" | "asc";
 export type TopRange = "1d" | "3d" | "1w" | "1M" | "3M" | "6M" | "1y";
 
 /**
+ * Mirrors wallhaven::COLOURS: Wallhaven's 29 colours, the only values its
+ * `colors` parameter takes, in its own palette's order and without the `#`.
+ * The backend refuses anything else (ADR 0054), and a test holds the two lists
+ * equal.
+ */
+// prettier-ignore
+export const WALLHAVEN_COLOURS = [
+  "660000", "990000", "cc0000", "cc3333", "ea4c88", "993399", "663399",
+  "333399", "0066cc", "0099cc", "66cccc", "77cc33", "669900", "336600",
+  "666600", "999900", "cccc33", "ffff00", "ffcc33", "ff9900", "ff6600",
+  "cc6633", "996633", "663300", "000000", "999999", "cccccc", "ffffff",
+  "424153",
+] as const;
+
+/**
  * Mirrors settings::Categories: which of Wallhaven's categories a search takes.
  * At least one is on, or the backend refuses the search.
  */

@@ -60,19 +60,6 @@ function DropdownMenuContent({
 const ITEM =
   "relative flex cursor-default items-center gap-1.5 rounded-md py-1 pr-2 pl-7 text-xs outline-hidden select-none focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
 
-function DropdownMenuItem({
-  className,
-  ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Item>) {
-  return (
-    <DropdownMenuPrimitive.Item
-      data-slot="dropdown-menu-item"
-      className={cn(ITEM, className)}
-      {...props}
-    />
-  )
-}
-
 function DropdownMenuCheckboxItem({
   className,
   children,
@@ -153,6 +140,65 @@ function DropdownMenuSwatchItem({
   )
 }
 
+/*
+ * The swatches' grid, walked in two dimensions: Left and Right along a row, Up
+ * and Down by a row. Radix walks a menu as one column, so its own Up and Down
+ * would step one swatch at a time, and Left and Right would do nothing.
+ *
+ * Caught in the capture phase, before the item's own roving focus sees the
+ * key. Up from the top row leaves the grid for the item above it, and a step
+ * that would land past either end stays where it is.
+ */
+function DropdownMenuSwatchGrid({
+  columns,
+  className,
+  style,
+  ...props
+}: React.ComponentProps<"div"> & { columns: number }) {
+  const step = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const by = {
+      ArrowLeft: -1,
+      ArrowRight: 1,
+      ArrowUp: -columns,
+      ArrowDown: columns,
+    }[event.key]
+    if (by === undefined) return
+    const swatches = Array.from(
+      event.currentTarget.querySelectorAll<HTMLElement>(
+        '[data-slot="dropdown-menu-swatch-item"]'
+      )
+    )
+    const at = swatches.indexOf(event.target as HTMLElement)
+    if (at === -1) return
+    event.preventDefault()
+    event.stopPropagation()
+    const to = at + by
+    if (to >= 0 && to < swatches.length) {
+      swatches[to].focus()
+    } else if (event.key === "ArrowDown" && at < swatches.length - 1) {
+      // A short last row: Down from above its end lands on the last swatch.
+      swatches[swatches.length - 1].focus()
+    } else if (event.key === "ArrowUp") {
+      const menu = event.currentTarget.closest('[role="menu"]')
+      const items = Array.from(
+        menu?.querySelectorAll<HTMLElement>(
+          '[role^="menuitem"]:not([data-disabled])'
+        ) ?? []
+      )
+      items[items.indexOf(swatches[0]) - 1]?.focus()
+    }
+  }
+  return (
+    <div
+      data-slot="dropdown-menu-swatch-grid"
+      onKeyDownCapture={step}
+      className={cn("grid gap-1 p-1", className)}
+      style={{ ...style, gridTemplateColumns: `repeat(${columns}, 1fr)` }}
+      {...props}
+    />
+  )
+}
+
 function DropdownMenuLabel({
   className,
   ...props
@@ -186,11 +232,11 @@ export {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSwatchGrid,
   DropdownMenuSwatchItem,
   DropdownMenuTrigger,
 }
