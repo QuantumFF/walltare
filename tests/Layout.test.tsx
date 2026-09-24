@@ -865,8 +865,23 @@ test("over Discover, the shortcuts list names the grid's keys and none of the St
     ]),
   );
   expect(dialog.textContent).not.toContain("Reject the selected wallpaper");
-  // Nothing opens a Result yet (#345), so Enter is not listed there.
-  expect(dialog.textContent).not.toContain("Open the selection");
+  // Enter opens a Result in the lightbox (#345), so it is listed there.
+  expect(rowsUnder(dialog, "Grid and strip")).toContainEqual({
+    keys: ["Enter"],
+    action: "Open the selection",
+  });
+  // In the lightbox, P and D are the Result on screen, and say so (#345).
+  expect(rowsUnder(dialog, "Lightbox")).toEqual(
+    expect.arrayContaining([
+      { keys: ["P"], action: "Pick the Result on screen, or unpick it" },
+      { keys: ["D"], action: "Download the Result on screen" },
+    ]),
+  );
+  expect(
+    rowsUnder(dialog, "Lightbox").some(({ action }) =>
+      action.includes("Picks"),
+    ),
+  ).toBe(false);
 });
 
 test("Ctrl+1, Ctrl+2 and Ctrl+3 reach Rank, Review and Library", async () => {

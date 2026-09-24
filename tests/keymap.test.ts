@@ -1,4 +1,5 @@
 import {
+  RESULT_KEYS,
   STATUS_KEYS,
   answerKey,
   printedKey,
@@ -8,7 +9,7 @@ import {
   type ListingSurface,
 } from "@/components/keymap";
 import type { TransitionAction } from "@/components/transitions";
-import type { Status, Wallpaper } from "@/lib/client";
+import type { MarkedResult, Status, Wallpaper } from "@/lib/client";
 import { expect, test } from "bun:test";
 import { wallpaper } from "./fixtures";
 
@@ -345,7 +346,7 @@ test("every line the dialog lists is a key its surfaces answer", () => {
 // A page's table is read after the shared one, so a key both bind on the same
 // surface would never reach the page's action. Every page's table is checked.
 test("no page table binds a key the shared table answers on the same surface", () => {
-  const pages = { STATUS_KEYS } as const;
+  const pages = { STATUS_KEYS, RESULT_KEYS } as const;
   for (const [name, table] of Object.entries(pages)) {
     for (const binding of table.bindings) {
       for (const on of binding.on) {
@@ -419,4 +420,45 @@ test("C goes unanswered on a lightbox that offers no crop preview", () => {
   );
   expect(intent).toBeUndefined();
   expect(prevented).toBe(false);
+});
+
+// Discover's keys (#344, #345). `Enter` opens a Result, and in the lightbox
+// `P` and `D` act on the Result on screen, while `Escape` is the lightbox's own
+// way out rather than the Picks' Clear.
+test("on Discover, Enter opens, and the lightbox answers P and D but not Escape", () => {
+  const selected = { id: "qrow67", mark: "unmarked" } as MarkedResult;
+  const press = (key: string, surface: ListingSurface) =>
+    answerKey(
+      {
+        key,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        repeat: false,
+        target: surface.kind === "grid" ? cell : elsewhere,
+        preventDefault: () => {},
+      },
+      { surface, selected, index: 5, length: 12 },
+      RESULT_KEYS,
+    );
+  const grid = surfaceOf("grid");
+  const lightbox: ListingSurface = { kind: "lightbox", crop: false };
+
+  expect(press("Enter", grid)).toEqual({ kind: "open", item: selected });
+  expect(press("p", lightbox)).toEqual({
+    kind: "act",
+    action: "pick",
+    item: selected,
+  });
+  expect(press("d", lightbox)).toEqual({
+    kind: "act",
+    action: "download",
+    item: selected,
+  });
+  expect(press("Escape", lightbox)).toBeUndefined();
+  expect(shortcutLines("listing", RESULT_KEYS)).toContainEqual({
+    keys: ["Enter"],
+    action: "Open the selection",
+  });
 });

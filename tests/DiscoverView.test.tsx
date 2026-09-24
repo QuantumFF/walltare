@@ -23,11 +23,13 @@ import {
   currentView,
   flush,
   mockBootedApp,
+  openApp,
   press,
   renderInApp,
   settings,
   stats,
   viewportWidth,
+  wallpaper,
 } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
@@ -402,24 +404,6 @@ test("the ratio goes back to the Screen's when Discover mounts again", async () 
 
   expect(searches.map((s) => s.ratios)).toEqual([["16x9"], ["21x9"], ["16x9"]]);
   expect(ratioPill().textContent).toBe("16:9 · Screen");
-});
-
-test("Enter on a card opens nothing yet, and is left to the page", async () => {
-  await renderInApp(<DiscoverView />);
-  await act(async () => {
-    (cards()[0] as HTMLElement).focus();
-  });
-
-  const event = new KeyboardEvent("keydown", {
-    key: "Enter",
-    bubbles: true,
-    cancelable: true,
-  });
-  await act(async () => {
-    cards()[0].dispatchEvent(event);
-  });
-
-  expect(event.defaultPrevented).toBe(false);
 });
 
 test("Ctrl and the wheel move through Discover's two to five a row", async () => {
@@ -1640,4 +1624,325 @@ test("a Pick a later search marks is no longer counted or sent", async () => {
   expect(tray()?.textContent).toContain("1 picked");
   await click(within(tray()!).getByRole("button", { name: /^Download/ }));
   expect(downloads).toEqual([["jedzym"]]);
+});
+
+// The lightbox (#345). Library's shell over a Result: the `lg` thumbnail under
+// the full file from `w.wallhaven.cc`, the facts in two lines, and Pick and
+// Download on the row (ADR 0022, ADR 0055).
+
+/** The lightbox, or `null` when none is up. */
+const lightbox = () => screen.queryByRole("dialog");
+const lightboxRow = () =>
+  document.querySelector('[data-slot="lightbox-row"]') as HTMLElement;
+const identity = () =>
+  document.querySelector('[data-slot="lightbox-identity"]')?.textContent ??
+  null;
+const readOut = () =>
+  document.querySelector('[data-slot="lightbox-readout"]')?.textContent ??
+  null;
+const heroPicture = () =>
+  document.querySelector<HTMLImageElement>('[data-slot="hero-picture"]');
+const heroPlaceholder = () =>
+  document.querySelector<HTMLImageElement>('[data-slot="hero-placeholder"]');
+const heroBox = () =>
+  document.querySelector('[data-slot="hero"]') as HTMLElement;
+/** The counter under the arrows: `2 / 3`. */
+const position = () =>
+  within(lightboxRow()).queryByText(/^\d+ \/ \d+$/)?.textContent ?? null;
+/** Every image in the document loaded from Wallhaven's full-file host. */
+const fullFiles = () =>
+  [...document.querySelectorAll("img")]
+    .map((img) => img.getAttribute("src") ?? "")
+    .filter((src) => src.startsWith("https://w.wallhaven.cc/"));
+const rowButton = (name: RegExp) =>
+  within(lightboxRow()).queryByRole("button", { name });
+
+async function openOn(card: Element) {
+  await focusCard(card);
+  await press("Enter");
+}
+
+test("Enter opens the cursor's Result in the lightbox, and Escape closes it back to the card", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  await focusCard(first);
+  await press("ArrowRight");
+
+  await press("Enter");
+
+  expect(lightbox()).not.toBeNull();
+  expect(identity()).toContain("wallhaven-jedzym");
+
+  await press("Escape");
+
+  expect(lightbox()).toBeNull();
+  expect(document.activeElement).toBe(second);
+});
+
+test("a click on a card's picture opens it too, and a click on its buttons does not", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+
+  await click(pickButton(first)!);
+  expect(lightbox()).toBeNull();
+
+  await click(picture(second));
+  expect(identity()).toContain("wallhaven-jedzym");
+});
+
+test("the lightbox draws the lg thumbnail under the full file, shaped by the Dimensions", async () => {
+  answer = () => ({
+    ...page([]),
+    results: [
+      result("qrow67", { dimension_x: 3440, dimension_y: 1440 }),
+      result("jedzym"),
+    ],
+  });
+  await renderInApp(<DiscoverView />);
+  // The cards only ever draw `lg`, and never touch the full-file host.
+  expect(fullFiles()).toEqual([]);
+
+  await openOn(cards()[0]);
+
+  // Never blank: the card's own thumbnail paints until the full file loads.
+  expect(heroPlaceholder()?.getAttribute("src")).toBe(
+    "https://th.wallhaven.cc/lg/qr/qrow67.jpg",
+  );
+  expect(heroPicture()?.getAttribute("src")).toBe(
+    "https://w.wallhaven.cc/full/qr/wallhaven-qrow67.png",
+  );
+  // Both drawn in a box of the file's own shape, not the thumbnail's 16:9.
+  const { width, height } = heroBox().style;
+  expect(parseFloat(width) / parseFloat(height)).toBeCloseTo(3440 / 1440, 2);
+
+  await act(async () => {
+    fireEvent.load(heroPicture()!);
+  });
+  expect(heroPlaceholder()).toBeNull();
+});
+
+test("← and → walk the grid's cursor with a counter, loading only the Result stepped to", async () => {
+  answer = () => page(["qrow67", "jedzym", "x8m1pd"]);
+  await renderInApp(<DiscoverView />);
+  const [, , third] = cards();
+
+  await openOn(cards()[0]);
+  expect(position()).toBe("1 / 3");
+  expect(fullFiles()).toEqual([
+    "https://w.wallhaven.cc/full/qr/wallhaven-qrow67.png",
+  ]);
+
+  await press("ArrowRight");
+  expect(position()).toBe("2 / 3");
+  // Nothing prefetched on either side: the one full file asked for is the one
+  // on screen.
+  expect(fullFiles()).toEqual([
+    "https://w.wallhaven.cc/full/je/wallhaven-jedzym.png",
+  ]);
+
+  await click(screen.getByRole("button", { name: "Next Result" }));
+  expect(position()).toBe("3 / 3");
+  // Clamped at the end, as Library's is.
+  await press("ArrowRight");
+  expect(position()).toBe("3 / 3");
+  expect(identity()).toContain("wallhaven-x8m1pd");
+
+  await press("Escape");
+  // The grid's own cursor is what was walked.
+  expect(document.activeElement).toBe(third);
+});
+
+test("the row reads the identity line and the facts, and a narrow picture drops the facts first", async () => {
+  answer = () => ({
+    ...page([]),
+    results: [
+      result("qrow67", { views: 19_368, favorites: 231 }),
+      // A phone wallpaper far taller than it is wide, whose picture is
+      // narrower than the row's floor.
+      result("tall01", {
+        dimension_x: 1080,
+        dimension_y: 4800,
+        resolution: "1080x4800",
+        favorites: 1,
+        views: 12,
+      }),
+    ],
+  });
+  await renderInApp(<DiscoverView />);
+
+  await openOn(cards()[0]);
+
+  expect(identity()).toBe("wallhaven-qrow67 · 3840×2160 · 10 MB");
+  expect(readOut()).toBe("anime · 231 favourites · 19.4k views");
+  // The dialog is named by the Result it shows.
+  expect(lightbox()?.getAttribute("aria-labelledby")).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: /wallhaven-qrow67/ })).toBeTruthy();
+
+  await press("ArrowRight");
+
+  expect(identity()).toBe("wallhaven-tall01 · 1080×4800 · 10 MB");
+  expect(readOut()).toBeNull();
+});
+
+test("Pick P and Download D act on the Result in the lightbox", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+
+  await openOn(first);
+  const pick = rowButton(/^Pick/)!;
+  expect(pick.querySelector("kbd")?.textContent).toBe("P");
+  expect(rowButton(/^Download/)?.querySelector("kbd")?.textContent).toBe("D");
+
+  await click(pick);
+  expect(tray()?.textContent).toContain("1 picked");
+  expect(rowButton(/^Pick/)?.getAttribute("aria-pressed")).toBe("true");
+
+  // `P` from the picture unpicks it, and picks it again.
+  await press("p");
+  expect(tray()).toBeNull();
+  await press("P");
+  expect(tray()?.textContent).toContain("1 picked");
+
+  // `D` in here is the Result on screen, and leaves the other Picks alone.
+  await press("ArrowRight");
+  await press("d");
+  expect(downloads).toEqual([["jedzym"]]);
+  expect(tray()?.textContent).toContain("1 picked");
+  // The row follows the file the way the card's caption does.
+  expect(rowButton(/^Download/)).toBeNull();
+  expect(lightboxRow().textContent).toContain("Downloading");
+  expect(caption(second)).toContain("Downloading");
+
+  await press("ArrowLeft");
+  await click(rowButton(/^Download/)!);
+  expect(downloads).toEqual([["jedzym"], ["qrow67"]]);
+  expect(tray()).toBeNull();
+});
+
+test("a marked Result's lightbox shows its mark in place of Pick and Download", async () => {
+  withLibraryRoot();
+  answer = () => ({
+    ...page([]),
+    results: [
+      result("inlib1", { mark: "in_library" }),
+      result("rejct1", { mark: "rejected" }),
+    ],
+  });
+  await renderInApp(<DiscoverView />);
+
+  await openOn(cards()[0]);
+
+  expect(rowButton(/^Pick/)).toBeNull();
+  expect(rowButton(/^Download/)).toBeNull();
+  expect(
+    lightboxRow().querySelector('[data-slot="result-mark"]')?.textContent,
+  ).toBe("In library");
+  // Nor do the keys reach for what the row does not offer.
+  expect(await answered("d", lightbox()!)).toBe(false);
+  expect(await answered("p", lightbox()!)).toBe(false);
+  expect(downloads).toEqual([]);
+
+  await press("ArrowRight");
+  expect(
+    lightboxRow().querySelector('[data-slot="result-mark"]')?.textContent,
+  ).toBe("You rejected this");
+});
+
+test("Escape with Picks closes the lightbox and keeps the Picks", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+  await focusCard(first);
+  await press("p");
+  expect(tray()?.textContent).toContain("1 picked");
+
+  await press("Enter");
+  expect(lightbox()).not.toBeNull();
+  await press("Escape");
+
+  expect(lightbox()).toBeNull();
+  expect(tray()?.textContent).toContain("1 picked");
+  expect(document.activeElement).toBe(first);
+});
+
+test("the pages behind the lightbox are inert, and a toast shows over it", async () => {
+  mockCommand("get_settings", () => settings({ library_root: "/pics" }));
+  mockCommand("wallhaven_download", () =>
+    failure("invalid_path", "The library root /pics is not there"),
+  );
+  // The app boots on Rank, which draws a pair before Discover is reached.
+  mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
+  await openApp();
+  await press("4", { target: window, ctrlKey: true });
+  const container = document.querySelector('[data-slot="view"]')
+    ?.parentElement as HTMLElement;
+  expect(container.hasAttribute("inert")).toBe(false);
+
+  await openOn(cards()[0]);
+  expect(container.hasAttribute("inert")).toBe(true);
+
+  await press("d");
+  expect(lightbox()).not.toBeNull();
+  expect(toast()?.title).toBe("Couldn't download");
+  const viewport = document.querySelector('[data-slot="toast-viewport"]');
+  expect(container.contains(viewport)).toBe(false);
+
+  await click(within(lightbox()!).getByRole("button", { name: "Close" }));
+  expect(lightbox()).toBeNull();
+  expect(container.hasAttribute("inert")).toBe(false);
+});
+
+test("a JPEG Result's full file is the .jpg on w.wallhaven.cc", async () => {
+  answer = () => ({
+    ...page([]),
+    results: [result("jedzym", { file_type: "image/jpeg" })],
+  });
+  await renderInApp(<DiscoverView />);
+
+  await openOn(cards()[0]);
+
+  expect(heroPicture()?.getAttribute("src")).toBe(
+    "https://w.wallhaven.cc/full/je/wallhaven-jedzym.jpg",
+  );
+});
+
+test("with no Library root, D in the lightbox opens the root's field instead", async () => {
+  const asked: { focus: string | null } = { focus: null };
+  function FocusProbe() {
+    asked.focus = useApp().focus;
+    return null;
+  }
+  await renderInApp(
+    <>
+      <FocusProbe />
+      <DiscoverView />
+    </>,
+  );
+
+  await openOn(cards()[0]);
+  // The row says what is missing where Pick and Download would be.
+  expect(rowButton(/^Download/)).toBeNull();
+  expect(rowButton(/choose a library root/i)).not.toBeNull();
+
+  await press("d");
+
+  expect(downloads).toEqual([]);
+  expect(currentView()).toBe("settings");
+  expect(asked.focus).toBe("library_root");
+  // Changing destination closes the lightbox (ADR 0015).
+  expect(lightbox()).toBeNull();
+});
+
+test("the Close button puts the focus back on the card the cursor is on", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+
+  await openOn(first);
+  await press("ArrowRight");
+  await click(within(lightbox()!).getByRole("button", { name: "Close" }));
+
+  expect(lightbox()).toBeNull();
+  expect(document.activeElement).toBe(second);
 });

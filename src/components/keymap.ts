@@ -152,12 +152,6 @@ export interface ActionBinding<A extends string> extends BoundKey {
 export interface ActionTable<T, A extends string> {
   bindings: readonly ActionBinding<A>[];
   offers: (item: T) => readonly A[];
-  /**
-   * `false` on a page where `Enter` opens nothing yet, which leaves the key
-   * unanswered and off the shortcuts list, so the list never names a key the
-   * page does not answer. Absent is a page that opens its items.
-   */
-  opens?: false;
 }
 
 /**
@@ -372,25 +366,35 @@ export type ResultAction =
  * `RESULT_KEYS` is the one with no Picks, which is also what the shortcuts
  * dialog prints, since its lines are the keys and not the rule.
  *
- * `Enter` opens nothing until the lightbox does (#345), so `opens` is `false`
- * until then, and the shortcuts dialog lists nothing the grid does not answer.
+ * **In the lightbox, `P` and `D` are the Result on screen** (#345), which is
+ * what the Pick and Download buttons under the picture fire. The lightbox is
+ * handed `RESULT_KEYS` whatever the tray holds, so there `D` is always the
+ * Result's own Download: the curator opened one Result to decide about it, and
+ * a key printed on its button that took the tray instead would be the button
+ * lying. `Escape` stays the grid's, because in the lightbox it is the way out
+ * (ADR 0022), and Picks gathered before opening one survive closing it.
  */
 const RESULT_BINDINGS: readonly ActionBinding<ResultAction>[] = [
   {
     keys: ["p"],
     printed: "P",
     act: ["pick"],
-    on: ["grid"],
-    listed: { listing: "Pick the selected Result, or unpick it" },
+    on: ["grid", "lightbox"],
+    listed: {
+      listing: "Pick the selected Result, or unpick it",
+      lightbox: "Pick the Result on screen, or unpick it",
+    },
   },
   {
     keys: ["d"],
     printed: "D",
     act: ["download-picks", "download"],
-    on: ["grid"],
+    on: ["grid", "lightbox"],
     listed: {
       listing:
         "Download your Picks, or the selected Result when there are none",
+      // Not the Picks in here: the lightbox is handed `RESULT_KEYS`.
+      lightbox: "Download the Result on screen",
     },
   },
   // Printed as ARIA and the dialog spell it, and as `Esc` on a button, the way
@@ -410,7 +414,6 @@ const unmarked = (result: MarkedResult) => result.mark === "unmarked";
 export const RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
   bindings: RESULT_BINDINGS,
   offers: (result) => (unmarked(result) ? ["pick", "download"] : []),
-  opens: false,
 };
 
 const PICKING_RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
@@ -419,7 +422,6 @@ const PICKING_RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
     unmarked(result)
       ? ["pick", "download-picks", "clear-picks"]
       : ["download-picks", "clear-picks"],
-  opens: false,
 };
 
 /**
@@ -559,7 +561,6 @@ function intentOf<T, A extends string>(
   }
 
   if (does === "open") {
-    if (actions.opens === false) return undefined;
     return opensFrom(event.target, surface)
       ? { kind: "open", item: selected }
       : undefined;
@@ -681,8 +682,6 @@ export function shortcutLines(
     ...TABLE.slice(opens),
   ];
   return ordered.flatMap((binding) => {
-    if (actions.opens === false && "does" in binding && binding.does === "open")
-      return [];
     const action = binding.listed[group];
     return action ? [{ keys: [binding.printed], action }] : [];
   });

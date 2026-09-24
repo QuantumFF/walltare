@@ -174,6 +174,10 @@ release that looks like it has a broken thumbnail pipeline.
       from `th.wallhaven.cc`. No card shows **Couldn't load preview** while
       the machine is online. See
       [ADR 0053](adr/0053-discover-thumbnails-load-straight-from-wallhaven.md).
+      Then press `Enter` on a card: the lightbox opens on its thumbnail, and
+      the full file from `w.wallhaven.cc` replaces it. Step with `→` a few
+      times; each Result sharpens the same way. See
+      [ADR 0055](adr/0055-discover-previews-the-full-file.md).
 - [ ] **Fonts render as Geist, not a fallback.** Geist is bundled, so this is a
       check that the bundled `.woff2` files loaded rather than a check that the
       network worked. Compare a heading against the specimen at
@@ -182,13 +186,13 @@ release that looks like it has a broken thumbnail pipeline.
       is easiest to spot on digits and on the letter `g`.
 - [ ] **The console reports no policy violations, across all five views.** Open
       the webview inspector, then walk Library → Lightbox → Rank → Review →
-      Discover → Settings, vote once, reject once, restore it, and run a scan. Nothing in
+      Discover → Discover's lightbox → Settings, vote once, reject once, restore it, and run a scan. Nothing in
       the console mentions Content Security Policy, `Refused to`, or a blocked
       URI.
 - [ ] **No remote origin is reachable.** In the inspector console, run
       `fetch('https://example.com')`, then `fetch('https://wallhaven.cc/api/v1/search')`.
-      Both must fail with a policy error: Discover's thumbnails are the one
-      remote source, and only through `<img>`. This is
+      Both must fail with a policy error: Discover's thumbnails and full files
+      are the only remote sources, and only through `<img>`. This is
       the check that the policy is doing anything at all.
 
 ## The release artifact and its checksums
