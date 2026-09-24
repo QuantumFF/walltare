@@ -198,6 +198,133 @@ export interface Resolution {
   height: number;
 }
 
+/**
+ * Mirrors settings::Sorting: all seven of Wallhaven's sort orders, spelled the
+ * way its `sorting` parameter takes them.
+ */
+export type Sorting =
+  | "date_added"
+  | "relevance"
+  | "random"
+  | "views"
+  | "favorites"
+  | "toplist"
+  | "hot";
+
+/** Mirrors settings::Order: which way a Wallhaven sort runs. */
+export type Order = "desc" | "asc";
+
+/**
+ * Mirrors settings::TopRange: how far back a toplist reaches. Only a toplist
+ * reads one, and the backend refuses it with any other sort (ADR 0054).
+ */
+export type TopRange = "1d" | "3d" | "1w" | "1M" | "3M" | "6M" | "1y";
+
+/**
+ * Mirrors settings::Categories: which of Wallhaven's categories a search takes.
+ * At least one is on, or the backend refuses the search.
+ */
+export interface Categories {
+  general: boolean;
+  anime: boolean;
+  people: boolean;
+}
+
+/**
+ * Mirrors settings::Purity. NSFW needs an API key, and without one the backend
+ * refuses a search asking for it.
+ */
+export interface Purity {
+  sfw: boolean;
+  sketchy: boolean;
+  nsfw: boolean;
+}
+
+/**
+ * Mirrors settings::DiscoverFilters: the five filters a successful search
+ * remembers, which Discover opens with. The ratio is not one of them — it goes
+ * back to the Screen's — and nothing here is written through `setSetting`: the
+ * backend records them when a search with them works (ADR 0054).
+ */
+export interface DiscoverFilters {
+  purity: Purity;
+  categories: Categories;
+  sorting: Sorting;
+  order: Order;
+  top_range: TopRange;
+}
+
+/** The filters with no row in the table, mirroring `DiscoverFilters::default`. */
+export const DEFAULT_DISCOVER_FILTERS: DiscoverFilters = {
+  purity: { sfw: true, sketchy: false, nsfw: false },
+  categories: { general: true, anime: true, people: true },
+  sorting: "date_added",
+  order: "desc",
+  top_range: "1M",
+};
+
+/**
+ * Mirrors wallhaven::SearchParams: every parameter Wallhaven's `/search` takes.
+ *
+ * `q` goes through verbatim, Wallhaven's own syntax included. The backend
+ * refuses with `bad_request` anything Wallhaven would silently drop: a ratio or
+ * resolution not shaped `WxH` (or `landscape`/`portrait` for a ratio), a colour
+ * outside its 29, and a `top_range` without the toplist sort (ADR 0054).
+ */
+export interface SearchParams {
+  q: string;
+  categories: Categories;
+  purity: Purity;
+  sorting: Sorting;
+  order: Order;
+  top_range?: TopRange;
+  atleast?: string;
+  resolutions?: string[];
+  ratios?: string[];
+  colors?: string;
+  page?: number;
+  seed?: string;
+}
+
+/**
+ * Mirrors wallhaven::SearchResult: one Result, as Wallhaven's search record has
+ * it, less the full file's `path` — which the backend keeps for the download
+ * that names it by id (ADR 0054).
+ */
+export interface SearchResult {
+  id: string;
+  url: string;
+  short_url: string;
+  views: number;
+  favorites: number;
+  source: string;
+  purity: string;
+  category: string;
+  dimension_x: number;
+  dimension_y: number;
+  resolution: string;
+  ratio: string;
+  file_size: number;
+  file_type: string;
+  created_at: string;
+  colors: string[];
+  /** On `th.wallhaven.cc`, the one remote origin the policy allows (ADR 0053). */
+  thumbs: { large: string; original: string; small: string };
+}
+
+/** Mirrors wallhaven::Page: one page of Results, and where it sits. */
+export interface SearchPage {
+  results: SearchResult[];
+  meta: {
+    current_page: number;
+    last_page: number;
+    per_page: number;
+    total: number;
+    /** The shuffle a random sort used, for its next page. */
+    seed: string | null;
+  };
+}
+
 /** Mirrors settings::Settings, which fills every gap in the table from its own defaults. */
 export interface Settings {
   theme: Theme;
@@ -295,6 +422,11 @@ export interface Settings {
    */
   evaluated_threshold: number;
   /**
+   * The filters Discover opens with, as the last successful search left them.
+   * Not a `SettingKey`: a search writes them, and nothing else can.
+   */
+  discover_filters: DiscoverFilters;
+  /**
    * What the monitor said, which is what `screen` reads as until the curator
    * overrides it.
    *
@@ -308,11 +440,16 @@ export interface Settings {
 /**
  * The keys `set_setting` takes, which is every setting and nothing else.
  *
- * `Settings` is what a read answers with, and one field on it is a readout
- * rather than a preference. Excluding it here is what stops a caller writing to
- * it and learning from a backend refusal at runtime.
+ * `Settings` is what a read answers with, and two fields on it are not the
+ * frontend's to write: the detected screen is a readout, and Discover's
+ * filters are remembered by the search that used them (ADR 0054). Excluding
+ * them here is what stops a caller writing to either and learning from a
+ * backend refusal at runtime.
  */
-export type SettingKey = Exclude<keyof Settings, "detected_screen">;
+export type SettingKey = Exclude<
+  keyof Settings,
+  "detected_screen" | "discover_filters"
+>;
 
 /**
  * The Screen to assume when nothing has said what the monitor is, mirroring
@@ -370,6 +507,7 @@ export const DEFAULT_SETTINGS: Settings = {
   review_layout: "grid",
   crop_preview: false,
   evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
+  discover_filters: DEFAULT_DISCOVER_FILTERS,
   detected_screen: FALLBACK_SCREEN,
 };
 
@@ -499,7 +637,8 @@ export type Command =
   | "move_wallpaper"
   | "restore_wallpaper"
   | "get_settings"
-  | "set_setting";
+  | "set_setting"
+  | "wallhaven_search";
 
 /**
  * What each command takes and what it answers with.
@@ -558,6 +697,7 @@ export interface BackendCommands {
     args: { key: SettingKey; value: string };
     answer: Settings;
   };
+  wallhaven_search: { args: { params: SearchParams }; answer: SearchPage };
 }
 
 /**
@@ -659,6 +799,14 @@ export type AppErrorKind =
   | "bad_request"
   | "not_enough_wallpapers"
   | "unknown_wallpaper"
+  /**
+   * Wallhaven could not be reached, timed out, or answered with something other
+   * than its JSON: a 5xx, a Cloudflare challenge. The message says which and is
+   * rendered verbatim, where the Results would be (ADR 0054).
+   */
+  | "network"
+  /** Wallhaven's rate limit. The message is the sentence, seconds included. */
+  | "rate_limited"
   | "io"
   | "db"
   | "image";
@@ -989,6 +1137,18 @@ export const client = {
    * The reject destination is not read.
    */
   rejectMissingFiles: (ids: number[]) => call("reject_missing_files", { ids }),
+
+  /**
+   * One page of a Wallhaven search, through the backend: the webview never
+   * talks to Wallhaven's API itself (ADR 0053). A search that answers is what
+   * remembers its filters, so a failed one leaves `discover_filters` as it was.
+   *
+   * Rejects with `bad_request` for a value Wallhaven would drop, `network` when
+   * it could not be reached or answered oddly, and `rate_limited` with the wait.
+   * Nothing is retried or cached.
+   */
+  searchWallhaven: (params: SearchParams) =>
+    call("wallhaven_search", { params }),
 
   /**
    * Hands `handler` every emission of one backend event, resolving with the

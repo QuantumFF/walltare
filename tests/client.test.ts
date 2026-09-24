@@ -19,6 +19,13 @@ const stored: Settings = {
   review_layout: "strip",
   crop_preview: true,
   evaluated_threshold: 3.0,
+  discover_filters: {
+    purity: { sfw: true, sketchy: true, nsfw: false },
+    categories: { general: false, anime: true, people: false },
+    sorting: "toplist",
+    order: "asc",
+    top_range: "1y",
+  },
   detected_screen: { width: 3840, height: 2160 },
 };
 

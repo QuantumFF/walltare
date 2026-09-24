@@ -1,5 +1,6 @@
 import App from "@/App";
 import {
+  RESULT_KEYS,
   STATUS_KEYS,
   shortcutLines,
   type ShortcutLine,
@@ -122,6 +123,11 @@ beforeEach(() => {
     scannedPaths.push(args.path);
     return null;
   });
+  // Discover searches on its first visit, and the ring below walks through it.
+  mockCommand("wallhaven_search", () => ({
+    results: [],
+    meta: { current_page: 1, last_page: 1, per_page: 24, total: 0, seed: null },
+  }));
 });
 
 const tab = (name: string) =>
@@ -418,15 +424,15 @@ test("leaving Settings by Escape or the gear hands the arrows to the page it ret
 test("the tab group is a tablist with one Tab stop, wherever the curator is", async () => {
   await openApp();
   expect(screen.getByRole("tablist").getAttribute("aria-label")).toBe("Views");
-  expect(allTabs().map((el) => el.tabIndex)).toEqual([0, -1, -1]);
+  expect(allTabs().map((el) => el.tabIndex)).toEqual([0, -1, -1, -1]);
 
   await click(tab("Library"));
-  expect(allTabs().map((el) => el.tabIndex)).toEqual([-1, -1, 0]);
+  expect(allTabs().map((el) => el.tabIndex)).toEqual([-1, -1, 0, -1]);
 
   await click(gear());
   // Nothing is selected on Settings, so the first tab holds the stop. A group
   // where every tab is -1 cannot be reached from the keyboard at all.
-  expect(allTabs().map((el) => el.tabIndex)).toEqual([0, -1, -1]);
+  expect(allTabs().map((el) => el.tabIndex)).toEqual([0, -1, -1, -1]);
 });
 
 test("the active tab is the filled one", async () => {
@@ -706,6 +712,51 @@ test("a first scan that turns up a single wallpaper lands on Library", async () 
   expect(showingView()).toBe("library");
 });
 
+test("Ctrl+4 reaches Discover, the fourth tab, which searches on its first visit", async () => {
+  let searches = 0;
+  mockCommand("wallhaven_search", () => {
+    searches++;
+    return {
+      results: [],
+      meta: { current_page: 1, last_page: 3, per_page: 24, total: 0, seed: null },
+    };
+  });
+  await openApp();
+  expect(allTabs().map((el) => el.textContent)).toEqual([
+    "Rank",
+    "Review",
+    "Library",
+    "Discover",
+  ]);
+  expect(searches).toBe(0);
+
+  await press("4", { target: window, ctrlKey: true });
+  expect(showingView()).toBe("discover");
+  expect(selectedTab()).toBe("Discover");
+  expect(searches).toBe(1);
+
+  // It stays mounted like the other tabs, so coming back searches nothing.
+  await press("3", { target: window, ctrlKey: true });
+  await press("4", { target: window, ctrlKey: true });
+  expect(showingView()).toBe("discover");
+  expect(hiddenViews()).toContain("library");
+  expect(searches).toBe(1);
+});
+
+test("over Discover, the shortcuts list names the grid's keys and none of the Status keys", async () => {
+  await openApp();
+  await press("4", { target: window, ctrlKey: true });
+
+  await press("?", { target: window });
+
+  const dialog = screen.getByRole("dialog");
+  expect(rowsUnder(dialog, "Grid and strip")).toEqual(
+    shortcutLines("listing", RESULT_KEYS),
+  );
+  expect(dialog.textContent).not.toContain("Reject the selected wallpaper");
+  expect(dialog.textContent).toContain("Open the selection");
+});
+
 test("Ctrl+1, Ctrl+2 and Ctrl+3 reach Rank, Review and Library", async () => {
   await openApp();
 
@@ -736,12 +787,14 @@ test("Ctrl+Tab and Ctrl+Shift+Tab walk the tabs in a ring", async () => {
   await next();
   expect(showingView()).toBe("library");
   await next();
+  expect(showingView()).toBe("discover");
+  await next();
   expect(showingView()).toBe("rank");
 
   await previous();
-  expect(showingView()).toBe("library");
+  expect(showingView()).toBe("discover");
   await previous();
-  expect(showingView()).toBe("review");
+  expect(showingView()).toBe("library");
 
   // Settings is not in the ring, so it leaves by the ends of it.
   await click(gear());
@@ -749,7 +802,7 @@ test("Ctrl+Tab and Ctrl+Shift+Tab walk the tabs in a ring", async () => {
   expect(showingView()).toBe("rank");
   await click(gear());
   await previous();
-  expect(showingView()).toBe("library");
+  expect(showingView()).toBe("discover");
 });
 
 test("Ctrl+Tab hands the arrows to the page it lands on", async () => {
@@ -882,7 +935,7 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   ).toEqual([
     "Go to",
     "Rank",
-    "Wallpaper grid and strip",
+    "Grid and strip",
     "Lightbox",
     "Settings",
     "Notifications",
@@ -892,6 +945,7 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     { keys: ["Ctrl", "1"], action: "Rank" },
     { keys: ["Ctrl", "2"], action: "Review" },
     { keys: ["Ctrl", "3"], action: "Library" },
+    { keys: ["Ctrl", "4"], action: "Discover" },
     { keys: ["Ctrl", ","], action: "Settings" },
     { keys: ["Ctrl", "Tab"], action: "Next tab" },
     { keys: ["Ctrl", "Shift", "Tab"], action: "Previous tab" },
@@ -907,7 +961,7 @@ test("? opens a dialog listing every binding the epic defines", async () => {
   // and `keymap.test.ts` asserts that every line it prints is a key something
   // answers (#286). The lightbox adds its Escape, which is Radix's and no key
   // of the keymap's.
-  expect(rowsUnder(dialog, "Wallpaper grid and strip")).toEqual(
+  expect(rowsUnder(dialog, "Grid and strip")).toEqual(
     shortcutLines("listing", STATUS_KEYS),
   );
   expect(rowsUnder(dialog, "Lightbox")).toEqual([

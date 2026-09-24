@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
@@ -28,6 +28,13 @@ const REVIEW_WORKLIST_SIZE: &str = "review_worklist_size";
 const STARTUP_VIEW: &str = "startup_view";
 const REVIEW_ORDERING: &str = "review_ordering";
 const EVALUATED_THRESHOLD: &str = "evaluated_threshold";
+// Discover's remembered filters. Written by a successful search and by nothing
+// else, so `set` refuses them like any unknown key (ADR 0054).
+const WALLHAVEN_PURITY: &str = "wallhaven_purity";
+const WALLHAVEN_CATEGORIES: &str = "wallhaven_categories";
+const WALLHAVEN_SORTING: &str = "wallhaven_sorting";
+const WALLHAVEN_ORDER: &str = "wallhaven_order";
+const WALLHAVEN_TOP_RANGE: &str = "wallhaven_top_range";
 
 /// The σ a wallpaper's rating has to fall below to count as Evaluated, unless
 /// the curator says otherwise.
@@ -68,7 +75,7 @@ pub const FALLBACK_SCREEN: Resolution = Resolution {
 /// read handed it. Anything else is a row someone edited by hand, and a
 /// forgiving parse would have to decide what `TRUE`, `+10` and `4.0` were each
 /// meant to be.
-trait Vocabulary: Copy {
+pub(crate) trait Vocabulary: Copy {
     /// What a refusal calls a value of this key, article included.
     const NOUN: &'static str;
 
@@ -113,6 +120,8 @@ fn listed(words: &[String]) -> String {
 /// `rename_all`. The frontend hands a value it read straight back to
 /// `set_setting`, so the spelling a read sends has to be one the parse takes,
 /// and a second declaration of it is a second place for the two to part.
+/// `Deserialize` is the parse, for the one command that takes these typed
+/// rather than as a column's string: `wallhaven_search`.
 macro_rules! vocabulary {
     (
         $(#[$attr:meta])*
@@ -144,6 +153,15 @@ macro_rules! vocabulary {
         impl Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 serializer.serialize_str(&self.spelling())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let text = String::deserialize(deserializer)?;
+                Self::parse(&text).ok_or_else(|| {
+                    serde::de::Error::custom(format!("{text:?} is not {}", Self::NOUN))
+                })
             }
         }
     };
@@ -366,6 +384,167 @@ vocabulary! {
     }
 }
 
+vocabulary! {
+    /// How Wallhaven orders a search: all seven of its own sort orders, spelled
+    /// the way its `sorting` parameter takes them.
+    pub enum Sorting: "a sort order" {
+        DateAdded => "date_added",
+        Relevance => "relevance",
+        Random => "random",
+        Views => "views",
+        Favorites => "favorites",
+        Toplist => "toplist",
+        Hot => "hot",
+    }
+}
+
+vocabulary! {
+    /// Which way a Wallhaven sort runs.
+    pub enum Order: "an order" {
+        Desc => "desc",
+        Asc => "asc",
+    }
+}
+
+vocabulary! {
+    /// How far back a toplist reaches, spelled as Wallhaven's `topRange` takes
+    /// it. Only a toplist reads one (ADR 0054).
+    pub enum TopRange: "a toplist range" {
+        OneDay => "1d",
+        ThreeDays => "3d",
+        OneWeek => "1w",
+        OneMonth => "1M",
+        ThreeMonths => "3M",
+        SixMonths => "6M",
+        OneYear => "1y",
+    }
+}
+
+/// Wallhaven's three-flag parameters, `categories` and `purity`, as the string
+/// of ones and zeros it takes: `100` is the first flag alone.
+///
+/// A set with no flag in it is not a value. Wallhaven reads `000` as its own
+/// default rather than as nothing, so a search asking for it would come back
+/// filtered by something the curator never chose (ADR 0054).
+fn flags(bits: [bool; 3]) -> String {
+    bits.iter().map(|&on| if on { '1' } else { '0' }).collect()
+}
+
+/// Every set of three flags that has at least one in it, as bits.
+fn every_nonempty_set() -> impl Iterator<Item = [bool; 3]> {
+    (1u8..8).map(|n| [n & 4 != 0, n & 2 != 0, n & 1 != 0])
+}
+
+/// Which of Wallhaven's categories a search takes.
+///
+/// Crosses the IPC as the three flags by name, and is stored as the `111`
+/// Wallhaven's own parameter spells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Categories {
+    pub general: bool,
+    pub anime: bool,
+    pub people: bool,
+}
+
+impl Categories {
+    fn bits(self) -> [bool; 3] {
+        [self.general, self.anime, self.people]
+    }
+
+    /// Whether the set names no category at all, which no search may ask for.
+    pub fn is_empty(self) -> bool {
+        self.bits() == [false; 3]
+    }
+}
+
+impl Vocabulary for Categories {
+    const NOUN: &'static str = "a set of categories";
+
+    fn values() -> impl Iterator<Item = Self> {
+        every_nonempty_set().map(|[general, anime, people]| Self {
+            general,
+            anime,
+            people,
+        })
+    }
+
+    fn spelling(self) -> String {
+        flags(self.bits())
+    }
+}
+
+/// Which of Wallhaven's purities a search takes: SFW, Sketchy and NSFW.
+///
+/// Crosses the IPC as the three flags by name, and is stored as the `100`
+/// Wallhaven's own parameter spells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Purity {
+    pub sfw: bool,
+    pub sketchy: bool,
+    pub nsfw: bool,
+}
+
+impl Purity {
+    fn bits(self) -> [bool; 3] {
+        [self.sfw, self.sketchy, self.nsfw]
+    }
+
+    /// Whether the set names no purity at all, which no search may ask for.
+    pub fn is_empty(self) -> bool {
+        self.bits() == [false; 3]
+    }
+}
+
+impl Vocabulary for Purity {
+    const NOUN: &'static str = "a set of purities";
+
+    fn values() -> impl Iterator<Item = Self> {
+        every_nonempty_set().map(|[sfw, sketchy, nsfw]| Self { sfw, sketchy, nsfw })
+    }
+
+    fn spelling(self) -> String {
+        flags(self.bits())
+    }
+}
+
+/// The filters Discover opens with: the five a successful search remembers.
+///
+/// The rest of a search describes what the curator is looking for right now,
+/// and the ratio goes back to the Screen's on each visit, so none of that is
+/// here (ADR 0054). `top_range` is kept while another sort is chosen, so going
+/// back to the toplist finds the range it had.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct DiscoverFilters {
+    pub purity: Purity,
+    pub categories: Categories,
+    pub sorting: Sorting,
+    pub order: Order,
+    pub top_range: TopRange,
+}
+
+impl Default for DiscoverFilters {
+    /// SFW only, every category, and Wallhaven's own default sort, newest
+    /// first, with its own default toplist range of a month: what the website
+    /// shows a visitor who has chosen nothing.
+    fn default() -> Self {
+        Self {
+            purity: Purity {
+                sfw: true,
+                sketchy: false,
+                nsfw: false,
+            },
+            categories: Categories {
+                general: true,
+                anime: true,
+                people: true,
+            },
+            sorting: Sorting::DateAdded,
+            order: Order::Desc,
+            top_range: TopRange::OneMonth,
+        }
+    }
+}
+
 /// A flag: the two spellings `String(boolean)` produces, and no others.
 impl Vocabulary for bool {
     const NOUN: &'static str = "a flag";
@@ -472,6 +651,11 @@ pub struct Settings {
     /// number (`CONTEXT.md`,
     /// [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
     pub evaluated_threshold: f64,
+    /// The filters Discover opens with, as the last successful search left them.
+    ///
+    /// Not keys `set` takes: a search writes them through [`remember`], so a
+    /// filter nobody searched with is never remembered (ADR 0054).
+    pub discover_filters: DiscoverFilters,
     /// What the monitor said, which is what [`Settings::screen`] reads as until
     /// the curator overrides it.
     ///
@@ -514,6 +698,7 @@ impl Settings {
             // What Evaluated meant while it was a constant, so nothing moves for
             // a curator who ignores the control.
             evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
+            discover_filters: DiscoverFilters::default(),
             detected_screen: detected.screen,
         }
     }
@@ -555,12 +740,68 @@ pub fn set(
     without.remove(key);
     let without = resolve(&without, detected);
 
-    if is_default(key, value, &without)? {
-        // The only reset the app has, and the reason most keys need no control:
-        // typing `./rejected` back into the field would otherwise write a row
-        // identical to the default and break the property the store rests on.
-        // `get` fills gaps from the defaults, so absent and default-valued read
-        // the same to every caller.
+    let default = is_default(key, value, &without)?;
+    write_row(conn, key, value, default)?;
+    get(conn, detected)
+}
+
+/// Records the filters a search just succeeded with, as the ones Discover opens
+/// with next time.
+///
+/// Its own entry rather than five `set` calls, because these keys are not the
+/// frontend's to write: a filter is remembered once a search with it has
+/// worked, and not before (ADR 0054). Each still follows the store's rule that
+/// a row equal to its default is no row at all.
+pub fn remember(conn: &Connection, filters: &DiscoverFilters) -> Result<(), AppError> {
+    let defaults = DiscoverFilters::default();
+    let rows = [
+        (
+            WALLHAVEN_PURITY,
+            filters.purity.spelling(),
+            filters.purity == defaults.purity,
+        ),
+        (
+            WALLHAVEN_CATEGORIES,
+            filters.categories.spelling(),
+            filters.categories == defaults.categories,
+        ),
+        (
+            WALLHAVEN_SORTING,
+            filters.sorting.spelling(),
+            filters.sorting == defaults.sorting,
+        ),
+        (
+            WALLHAVEN_ORDER,
+            filters.order.spelling(),
+            filters.order == defaults.order,
+        ),
+        (
+            WALLHAVEN_TOP_RANGE,
+            filters.top_range.spelling(),
+            filters.top_range == defaults.top_range,
+        ),
+    ];
+    for (key, value, default) in rows {
+        write_row(conn, key, &value, default)?;
+    }
+    Ok(())
+}
+
+/// The remembered filters alone, for the search that has to know which toplist
+/// range to keep when it was not handed one.
+pub fn discover_filters(conn: &Connection) -> Result<DiscoverFilters, AppError> {
+    Ok(resolve_filters(&stored(conn)?))
+}
+
+/// Writes one row, or deletes it when `value` is what the key means with no row.
+///
+/// The delete is the only reset the app has, and the reason most keys need no
+/// control: typing `./rejected` back into the field would otherwise write a row
+/// identical to the default and break the property the store rests on. `get`
+/// fills gaps from the defaults, so absent and default-valued read the same to
+/// every caller.
+fn write_row(conn: &Connection, key: &str, value: &str, default: bool) -> Result<(), AppError> {
+    if default {
         conn.execute(
             "DELETE FROM settings WHERE key = ?1",
             rusqlite::params![key],
@@ -572,7 +813,7 @@ pub fn set(
             rusqlite::params![key, value],
         )?;
     }
-    get(conn, detected)
+    Ok(())
 }
 
 /// Every row in the table, under the key it was written with.
@@ -623,9 +864,24 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         crop_preview: read(stored, CROP_PREVIEW, bool::parse).unwrap_or(defaults.crop_preview),
         evaluated_threshold: read(stored, EVALUATED_THRESHOLD, Threshold::parse)
             .map_or(defaults.evaluated_threshold, |threshold| threshold.0),
+        discover_filters: resolve_filters(stored),
         // Never read off the table: it is what the monitor said, and the table
         // holds what the curator said.
         detected_screen: detected.screen,
+    }
+}
+
+/// The remembered filters out of the stored rows, each falling back to its
+/// default the way every other key does.
+fn resolve_filters(stored: &HashMap<String, String>) -> DiscoverFilters {
+    let defaults = DiscoverFilters::default();
+    DiscoverFilters {
+        purity: read(stored, WALLHAVEN_PURITY, Purity::parse).unwrap_or(defaults.purity),
+        categories: read(stored, WALLHAVEN_CATEGORIES, Categories::parse)
+            .unwrap_or(defaults.categories),
+        sorting: read(stored, WALLHAVEN_SORTING, Sorting::parse).unwrap_or(defaults.sorting),
+        order: read(stored, WALLHAVEN_ORDER, Order::parse).unwrap_or(defaults.order),
+        top_range: read(stored, WALLHAVEN_TOP_RANGE, TopRange::parse).unwrap_or(defaults.top_range),
     }
 }
 
@@ -782,6 +1038,7 @@ mod tests {
                 review_layout: ReviewLayout::Grid,
                 crop_preview: false,
                 evaluated_threshold: 4.0,
+                discover_filters: DiscoverFilters::default(),
                 detected_screen: size(3840, 2160),
             }
         );
@@ -1776,5 +2033,124 @@ mod tests {
             evaluated_threshold(&conn).unwrap(),
             DEFAULT_EVALUATED_THRESHOLD
         );
+    }
+
+    fn toplist_of_anime_and_sketchy() -> DiscoverFilters {
+        DiscoverFilters {
+            purity: Purity {
+                sfw: true,
+                sketchy: true,
+                nsfw: false,
+            },
+            categories: Categories {
+                general: false,
+                anime: true,
+                people: false,
+            },
+            sorting: Sorting::Toplist,
+            order: Order::Asc,
+            top_range: TopRange::OneYear,
+        }
+    }
+
+    #[test]
+    fn discover_opens_on_sfw_every_category_and_the_newest_first() {
+        let conn = store();
+
+        let filters = get(&conn, detected()).unwrap().discover_filters;
+
+        assert!(filters.purity.sfw && !filters.purity.sketchy && !filters.purity.nsfw);
+        assert!(
+            filters.categories.general && filters.categories.anime && filters.categories.people
+        );
+        assert_eq!(filters.sorting, Sorting::DateAdded);
+        assert_eq!(filters.order, Order::Desc);
+        assert_eq!(filters.top_range, TopRange::OneMonth);
+    }
+
+    #[test]
+    fn remembered_filters_round_trip_as_wallhavens_own_spellings() {
+        let conn = store();
+
+        remember(&conn, &toplist_of_anime_and_sketchy()).unwrap();
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().discover_filters,
+            toplist_of_anime_and_sketchy()
+        );
+        assert_eq!(
+            discover_filters(&conn).unwrap(),
+            toplist_of_anime_and_sketchy()
+        );
+        let rows: HashMap<String, String> = stored(&conn).unwrap();
+        assert_eq!(rows["wallhaven_purity"], "110");
+        assert_eq!(rows["wallhaven_categories"], "010");
+        assert_eq!(rows["wallhaven_sorting"], "toplist");
+        assert_eq!(rows["wallhaven_order"], "asc");
+        assert_eq!(rows["wallhaven_top_range"], "1y");
+    }
+
+    #[test]
+    fn remembering_the_defaults_leaves_no_rows() {
+        let conn = store();
+        remember(&conn, &toplist_of_anime_and_sketchy()).unwrap();
+
+        remember(&conn, &DiscoverFilters::default()).unwrap();
+
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn the_remembered_filters_are_not_keys_set_setting_takes() {
+        // A filter is remembered once a search with it has worked, so the
+        // frontend has no way to write one on its own (ADR 0054).
+        let conn = store();
+        for key in [
+            "wallhaven_purity",
+            "wallhaven_categories",
+            "wallhaven_sorting",
+            "wallhaven_order",
+            "wallhaven_top_range",
+            "discover_filters",
+        ] {
+            let err = set(&conn, key, "100", detected()).unwrap_err();
+            assert!(matches!(err, AppError::BadRequest(_)), "{key}: {err:?}");
+        }
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn a_remembered_filter_row_that_will_not_read_is_the_default() {
+        let conn = store();
+        write_raw_row(&conn, "wallhaven_purity", "000");
+        write_raw_row(&conn, "wallhaven_categories", "1111");
+        write_raw_row(&conn, "wallhaven_sorting", "Toplist");
+        write_raw_row(&conn, "wallhaven_top_range", "1m");
+
+        assert_eq!(
+            get(&conn, detected()).unwrap().discover_filters,
+            DiscoverFilters::default()
+        );
+    }
+
+    #[test]
+    fn the_remembered_filters_cross_the_ipc_as_flags_by_name_and_spellings() {
+        let conn = store();
+        remember(&conn, &toplist_of_anime_and_sketchy()).unwrap();
+
+        let json = serde_json::to_value(get(&conn, detected()).unwrap()).unwrap();
+        let filters = &json["discover_filters"];
+
+        assert_eq!(
+            filters["purity"],
+            serde_json::json!({ "sfw": true, "sketchy": true, "nsfw": false })
+        );
+        assert_eq!(
+            filters["categories"],
+            serde_json::json!({ "general": false, "anime": true, "people": false })
+        );
+        assert_eq!(filters["sorting"], "toplist");
+        assert_eq!(filters["order"], "asc");
+        assert_eq!(filters["top_range"], "1y");
     }
 }

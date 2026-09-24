@@ -1,4 +1,9 @@
-import { STATUS_KEYS, type AnyActionTable } from "@/components/keymap";
+import { DiscoverView } from "@/components/DiscoverView";
+import {
+  RESULT_KEYS,
+  STATUS_KEYS,
+  type AnyActionTable,
+} from "@/components/keymap";
 import { LibraryView } from "@/components/LibraryView";
 import { RankView } from "@/components/RankView";
 import { ReviewView } from "@/components/ReviewView";
@@ -30,7 +35,7 @@ import {
 } from "react";
 
 /**
- * The three destinations that are tabs, in tab order — and the three the shell
+ * The four destinations that are tabs, in tab order — and the four the shell
  * keeps mounted.
  *
  * Each mounts on first visit and hides with `display: none` from then on, so
@@ -43,7 +48,9 @@ import {
  * is rendered DOM and fetched images rather than JSON.
  *
  * Rank earns it twice, because its prefetched pair is state rather than pixels
- * and a remount throws the pair away.
+ * and a remount throws the pair away. Discover earns it the same way: its pages
+ * of Results are API calls the curator chose to make, and a remount would spend
+ * them again against Wallhaven's rate limit (#339).
  *
  * Settings is deliberately not in here. It is a peer view that unmounts, so its
  * fields re-read the store instead of holding a stale copy (ADR 0015).
@@ -52,6 +59,7 @@ const TABS = [
   { view: "rank", label: "Rank" },
   { view: "review", label: "Review" },
   { view: "library", label: "Library" },
+  { view: "discover", label: "Discover" },
 ] as const;
 
 type TabView = (typeof TABS)[number]["view"];
@@ -60,14 +68,16 @@ type TabView = (typeof TABS)[number]["view"];
  * The action table the shortcuts dialog lists the grid's keys from, per view:
  * whatever the grid on that page acts on its items with (#336).
  *
- * Library and Review act on a Wallpaper's Status. Rank and Settings draw no
- * grid, and list the library's keys there as they always have, since that is
- * the grid a curator opening the list from either is most likely to reach next.
+ * Library and Review act on a Wallpaper's Status, and Discover on a Result.
+ * Rank and Settings draw no grid, and list the library's keys there as they
+ * always have, since that is the grid a curator opening the list from either is
+ * most likely to reach next.
  */
 const PAGE_ACTIONS: Record<View, AnyActionTable> = {
   rank: STATUS_KEYS,
   review: STATUS_KEYS,
   library: STATUS_KEYS,
+  discover: RESULT_KEYS,
   settings: STATUS_KEYS,
 };
 
@@ -83,6 +93,8 @@ function viewBody(view: TabView): ReactNode {
       return <ReviewView />;
     case "library":
       return <LibraryView />;
+    case "discover":
+      return <DiscoverView />;
   }
 }
 
@@ -101,7 +113,7 @@ function stepTab(from: number, by: 1 | -1): number {
 /**
  * The tab group: an ARIA tablist with a roving tabindex.
  *
- * There are no `tabpanel`s to point `aria-controls` at. Two of the three panels
+ * There are no `tabpanel`s to point `aria-controls` at. Three of the four panels
  * may not be in the tree yet — a view enters it on first visit — and Settings is
  * a peer view that is not a tab at all, so the panel relationship would be a
  * half-truth in both directions. Each view names itself with its own heading
@@ -274,6 +286,7 @@ const NAVIGATION_KEYS: Record<string, View> = {
   "1": "rank",
   "2": "review",
   "3": "library",
+  "4": "discover",
   ",": "settings",
 };
 

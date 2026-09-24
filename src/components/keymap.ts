@@ -30,7 +30,7 @@ import {
   STATUS_ACTIONS,
   type TransitionAction,
 } from "@/components/transitions";
-import type { Wallpaper } from "@/lib/client";
+import type { SearchResult, Wallpaper } from "@/lib/client";
 
 /**
  * Which surface is asking, and the two facts about it that change what a key
@@ -250,14 +250,14 @@ const BINDINGS = [
     listed: { listing: "Select the last wallpaper" },
   },
   // Not the lightbox's: `Enter` is the key that opened it (ADR 0022). Its line
-  // and the dialog's heading still say "wallpaper" above rows that are now the
-  // page's own; #339 rewords them when Discover's rows join the list.
+  // names no item, because what it opens is a Wallpaper on Library and Review
+  // and a Result on Discover (#339).
   {
     keys: ["Enter"],
     printed: "Enter",
     does: "open",
     on: LISTINGS,
-    listed: { listing: "Open the selected wallpaper" },
+    listed: { listing: "Open the selection" },
   },
   {
     keys: ["+", "="],
@@ -336,6 +336,18 @@ export const STATUS_KEYS: ActionTable<Wallpaper, TransitionAction> = {
     },
   ],
   offers: (wallpaper) => STATUS_ACTIONS[wallpaper.status],
+};
+
+/**
+ * The keys Discover acts on a Result with: none yet.
+ *
+ * `P` picks and `D` downloads, and each arrives with the ticket that gives it
+ * something to do (#343, #344). Until then the grid answers the shared keys
+ * alone, and the shortcuts dialog lists nothing it does not.
+ */
+export const RESULT_KEYS: ActionTable<SearchResult, never> = {
+  bindings: [],
+  offers: () => [],
 };
 
 /** The table read at run time, where one entry's literal types are no help. */

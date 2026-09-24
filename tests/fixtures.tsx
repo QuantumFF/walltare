@@ -6,6 +6,7 @@ import { KeyboardHandoffProvider } from "@/context/KeyboardHandoffContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { ScanRunProvider } from "@/context/ScanRunContext";
 import {
+  DEFAULT_DISCOVER_FILTERS,
   WORKLIST_SIZES,
   type BackendCommands,
   type CacheSize,
@@ -290,6 +291,9 @@ export function settings(over: Partial<Settings> = {}): Settings {
     // reads as: a test that wants a stricter or looser curator arranges it
     // (#260).
     evaluated_threshold: 4.0,
+    // Discover's filters with nothing remembered: a test that wants a search
+    // to have left others arranges them.
+    discover_filters: DEFAULT_DISCOVER_FILTERS,
     // What the monitor said, which no override moves: a test that overrides the
     // screen is arranging exactly the case where the two differ.
     detected_screen: DETECTED_SCREEN,

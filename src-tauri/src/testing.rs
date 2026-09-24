@@ -113,3 +113,217 @@ pub(crate) fn review_ids(conn: &Connection) -> Vec<i64> {
         .map(|w| w.id)
         .collect()
 }
+
+/// An answer the stub server gives: a status, its headers and a body, and how
+/// long to sit on it first.
+///
+/// Canned rather than computed, because what is worth testing on the other
+/// side is the code that reads a real HTTP answer — the 429's HTML, the
+/// challenge's headers, a body that is not JSON — and a fake transport would
+/// skip exactly that (ADR 0054).
+pub(crate) struct Canned {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: String,
+    delay: Option<std::time::Duration>,
+}
+
+impl Canned {
+    /// A 200 carrying `body` as JSON.
+    pub(crate) fn json(body: serde_json::Value) -> Self {
+        Self::json_status(200, body)
+    }
+
+    /// Any status carrying `body` as JSON.
+    pub(crate) fn json_status(status: u16, body: serde_json::Value) -> Self {
+        Self {
+            status,
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body: body.to_string(),
+            delay: None,
+        }
+    }
+
+    /// Any status carrying an HTML page, which is how Wallhaven's rate limit
+    /// and Cloudflare's challenge both answer.
+    pub(crate) fn html(status: u16, body: &str) -> Self {
+        Self {
+            status,
+            headers: vec![(
+                "Content-Type".to_string(),
+                "text/html; charset=UTF-8".to_string(),
+            )],
+            body: body.to_string(),
+            delay: None,
+        }
+    }
+
+    pub(crate) fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    /// Waits `delay` before answering, for a client's timeout to run out.
+    pub(crate) fn after(mut self, delay: std::time::Duration) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+}
+
+/// One request the stub received: its request line and its headers, as sent.
+#[derive(Clone, Debug)]
+pub(crate) struct Received {
+    pub line: String,
+    #[allow(dead_code)] // For the key ticket's "sent on API calls only".
+    pub headers: Vec<(String, String)>,
+}
+
+impl Received {
+    /// The path and query the request asked for, exactly as it crossed.
+    pub(crate) fn target(&self) -> &str {
+        self.line.split(' ').nth(1).unwrap_or("")
+    }
+}
+
+/// An HTTP server on a loopback port, in this process, answering each
+/// connection with the next [`Canned`] in turn and recording what it was
+/// asked.
+///
+/// On `std::net::TcpListener` rather than a server crate, because a stub that
+/// reads a request head and writes an answer is all a client test needs. One
+/// answer per connection, with `Connection: close`, so no keep-alive can carry a
+/// request past the answer meant for it. A request after the last canned answer
+/// gets a 500 rather than a hang.
+///
+/// Here rather than in `wallhaven.rs`'s tests because ADR 0054 puts it here:
+/// the `download` module's tests are its second caller, against the image
+/// hosts.
+pub(crate) struct Stub {
+    port: u16,
+    requests: std::sync::Arc<std::sync::Mutex<Vec<Received>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+pub(crate) fn stub(answers: Vec<Canned>) -> Stub {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::atomic::Ordering;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let thread = {
+        let requests = requests.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut answers = answers.into_iter();
+            for stream in listener.incoming() {
+                if stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                let Ok(mut stream) = stream else { continue };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut headers = Vec::new();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    let header = header.trim_end();
+                    if header.is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = header.split_once(':') {
+                        headers.push((name.trim().to_lowercase(), value.trim().to_string()));
+                    }
+                }
+                requests.lock().unwrap().push(Received {
+                    line: line.trim_end().to_string(),
+                    headers,
+                });
+
+                let answer = answers.next().unwrap_or_else(|| Canned {
+                    status: 500,
+                    headers: Vec::new(),
+                    body: "the stub has no answer left".to_string(),
+                    delay: None,
+                });
+                if let Some(delay) = answer.delay {
+                    std::thread::sleep(delay);
+                }
+                let mut head = format!("HTTP/1.1 {} Stub\r\n", answer.status);
+                for (name, value) in &answer.headers {
+                    head.push_str(&format!("{name}: {value}\r\n"));
+                }
+                head.push_str(&format!(
+                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    answer.body.len()
+                ));
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(answer.body.as_bytes());
+            }
+        })
+    };
+
+    Stub {
+        port,
+        requests,
+        stop,
+        thread: Some(thread),
+    }
+}
+
+impl Stub {
+    /// The base URL a client is constructed with to reach this stub.
+    pub(crate) fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// Every request received so far, in order.
+    pub(crate) fn requests(&self) -> Vec<Received> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl Drop for Stub {
+    /// Stops listening, so the port is closed once the stub is gone.
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wakes the accept loop, which sees the flag and returns.
+        let _ = std::net::TcpStream::connect(("127.0.0.1", self.port));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// A query-string value with its percent escapes and `+` spaces undone.
+pub(crate) fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'%' if at + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[at + 1..at + 3]).unwrap();
+                out.push(u8::from_str_radix(hex, 16).unwrap());
+                at += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                at += 1;
+            }
+            byte => {
+                out.push(byte);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap()
+}
