@@ -451,6 +451,13 @@ export interface Settings {
    */
   discover_filters: DiscoverFilters;
   /**
+   * Whether a Wallhaven API key is saved. The key itself never crosses into
+   * the webview: it is typed into Settings once and nothing sends it back, so
+   * this flag is all a read carries (ADR 0052). Not a `SettingKey`:
+   * `setWallhavenKey` writes the key, after checking it.
+   */
+  wallhaven_key_set: boolean;
+  /**
    * What the monitor said, which is what `screen` reads as until the curator
    * overrides it.
    *
@@ -472,7 +479,7 @@ export interface Settings {
  */
 export type SettingKey = Exclude<
   keyof Settings,
-  "detected_screen" | "discover_filters"
+  "detected_screen" | "discover_filters" | "wallhaven_key_set"
 >;
 
 /**
@@ -532,6 +539,7 @@ export const DEFAULT_SETTINGS: Settings = {
   crop_preview: false,
   evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
   discover_filters: DEFAULT_DISCOVER_FILTERS,
+  wallhaven_key_set: false,
   detected_screen: FALLBACK_SCREEN,
 };
 
@@ -662,7 +670,8 @@ export type Command =
   | "restore_wallpaper"
   | "get_settings"
   | "set_setting"
-  | "wallhaven_search";
+  | "wallhaven_search"
+  | "set_wallhaven_key";
 
 /**
  * What each command takes and what it answers with.
@@ -722,6 +731,18 @@ export interface BackendCommands {
     answer: Settings;
   };
   wallhaven_search: { args: { params: SearchParams }; answer: SearchPage };
+  set_wallhaven_key: { args: { key: string }; answer: KeySaved };
+}
+
+/**
+ * Mirrors wallhaven::KeySaved: every setting after a key was saved or removed,
+ * and whether Wallhaven could be asked about the key first. `verified` is
+ * `false` when the check could not reach Wallhaven or was rate-limited, and the
+ * key was stored anyway (ADR 0052).
+ */
+export interface KeySaved {
+  settings: Settings;
+  verified: boolean;
 }
 
 /**
@@ -831,6 +852,11 @@ export type AppErrorKind =
   | "network"
   /** Wallhaven's rate limit. The message is the sentence, seconds included. */
   | "rate_limited"
+  /**
+   * Wallhaven answered a search made with the saved API key with a 401.
+   * Discover says so and links to Settings; nothing falls back to anonymous.
+   */
+  | "key_rejected"
   | "io"
   | "db"
   | "image";
@@ -1173,6 +1199,18 @@ export const client = {
    */
   searchWallhaven: (params: SearchParams) =>
     call("wallhaven_search", { params }),
+
+  /**
+   * Saves a Wallhaven API key once one keyed search has not refused it, or
+   * removes the saved one when `key` is empty, and answers every setting and
+   * whether the check reached Wallhaven. The key goes one way: nothing ever
+   * sends it back (ADR 0052).
+   *
+   * Rejects with `bad_request` when Wallhaven answered the check with a 401,
+   * and the key is not stored. Offline or rate-limited, it is stored anyway and
+   * answers `verified: false`.
+   */
+  setWallhavenKey: (key: string) => call("set_wallhaven_key", { key }),
 
   /**
    * Hands `handler` every emission of one backend event, resolving with the

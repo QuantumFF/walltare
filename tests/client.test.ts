@@ -26,6 +26,7 @@ const stored: Settings = {
     order: "asc",
     top_range: "1y",
   },
+  wallhaven_key_set: true,
   detected_screen: { width: 3840, height: 2160 },
 };
 
@@ -609,6 +610,19 @@ describe("client seam", () => {
     expect(delivered).toBe(1);
     expect(seen).toEqual([{ scanned: 10, added: 3 }]);
     unlisten();
+  });
+
+  test("setWallhavenKey sends the key and answers the settings and the check", async () => {
+    let sent: string | undefined;
+    mockCommand("set_wallhaven_key", (args) => {
+      sent = args.key;
+      return { settings: stored, verified: false };
+    });
+
+    const saved = await client.setWallhavenKey("abc123");
+
+    expect(sent).toBe("abc123");
+    expect(saved).toEqual({ settings: stored, verified: false });
   });
 
   test("unlisten stops delivery", async () => {

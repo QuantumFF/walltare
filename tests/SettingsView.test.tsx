@@ -346,7 +346,7 @@ async function openSettingsFromLibrary() {
   expect(showingView()).toBe("settings");
 }
 
-test("the page is one column of twelve sections, in first-run order", async () => {
+test("the page is one column of thirteen sections, in first-run order", async () => {
   await openSettingsFromLibrary();
 
   // Missing files is last for the rule that put Thumbnails next to last:
@@ -368,13 +368,14 @@ test("the page is one column of twelve sections, in first-run order", async () =
     "Startup view",
     "Review worklist",
     "Review ordering",
+    "API key",
     "Download folder",
     "Thumbnails",
     "Missing files",
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: twelve sections of one or two controls
+  // assert — and the width is the decision: thirteen sections of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document
     .querySelector('[data-slot="settings-section"]')
@@ -408,7 +409,7 @@ test("the sections sit in five groups, and the jump row scrolls to each", async 
         "Review ordering",
       ],
     },
-    { title: "Wallhaven", sections: ["Download folder"] },
+    { title: "Wallhaven", sections: ["API key", "Download folder"] },
     { title: "Maintenance", sections: ["Thumbnails", "Missing files"] },
   ]);
 
@@ -677,6 +678,7 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
     "Startup view",
     "Review worklist",
     "Review ordering",
+    "API key",
     "Download folder",
     "Thumbnails",
     "Missing files",
@@ -688,7 +690,7 @@ test("neither block is up when boot found a library it could read", async () => 
 
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(sectionHeadings().length).toBe(12);
+  expect(sectionHeadings().length).toBe(13);
 });
 
 // The Library root section. Most of what follows came from `tests/ScanView.test.tsx`
@@ -2794,4 +2796,174 @@ test("a reject that would not run says so and can be pressed again", async () =>
   );
   expect(missingLine()?.className).toContain("text-destructive");
   expect(rejectButton()?.disabled).toBe(false);
+});
+
+// The API key section, first in the Wallhaven group: an entry field until a key
+// is saved, then "Key saved" with Replace and Remove, and never the key itself
+// (ADR 0052). The mocked `set_wallhaven_key` answers the way the backend does:
+// every setting with the flag in it, and whether the check reached Wallhaven.
+
+/** Every key the page handed `set_wallhaven_key`, in order. */
+let keyWrites: string[];
+
+function mockKeyCheck(verified: boolean) {
+  keyWrites = [];
+  mockCommand("set_wallhaven_key", (args) => {
+    keyWrites.push(args.key);
+    storedSettings = {
+      ...storedSettings,
+      wallhaven_key_set: args.key.trim() !== "",
+    };
+    return { settings: storedSettings, verified };
+  });
+}
+
+const keyInput = () =>
+  screen.queryByLabelText("Wallhaven API key") as HTMLInputElement | null;
+const keySection = () => sectionNamed("API key");
+const keyStatus = () =>
+  document.querySelector('[data-slot="wallhaven-key-status"]');
+
+async function typeKey(value: string) {
+  await act(async () => {
+    fireEvent.change(keyInput()!, { target: { value } });
+  });
+  await flush();
+}
+
+test("with no key saved the section explains what one unlocks and offers a field", async () => {
+  mockKeyCheck(true);
+  await openSettingsFromLibrary();
+
+  const section = keySection();
+  expect(
+    section.closest('[data-slot="settings-group"]')?.querySelector("h2")
+      ?.textContent,
+  ).toBe("Wallhaven");
+  expect(section.textContent).toContain("NSFW");
+  expect(section.textContent).toContain("blacklists");
+  // As text, not a link: the app opens no external pages.
+  const page = section.querySelector('[data-slot="wallhaven-key-page"]');
+  expect(page?.textContent).toBe("wallhaven.cc/settings/account");
+  expect(section.querySelector("a")).toBeNull();
+  expect(keyInput()).not.toBeNull();
+  expect(keyInput()!.type).toBe("password");
+  expect(within(section).queryByText("Key saved")).toBeNull();
+});
+
+test("saving a good key sends it once and the section says Key saved without it", async () => {
+  mockKeyCheck(true);
+  await openSettingsFromLibrary();
+
+  await typeKey("  abc123secret  ");
+  // Nothing on typing and nothing on blur: a save spends an API call.
+  await act(async () => {
+    fireEvent.blur(keyInput()!);
+  });
+  await flush();
+  expect(keyWrites).toEqual([]);
+
+  await click(within(keySection()).getByRole("button", { name: "Save" }));
+
+  expect(keyWrites).toEqual(["abc123secret"]);
+  expect(keyInput()).toBeNull();
+  const section = keySection();
+  expect(within(section).getByText("Key saved")).toBeTruthy();
+  expect(within(section).getByRole("button", { name: "Replace" })).toBe(
+    document.activeElement as HTMLElement,
+  );
+  expect(within(section).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(section.textContent).not.toContain("abc123secret");
+  expect(keyStatus()).toBeNull();
+});
+
+test("Enter in the field saves the key", async () => {
+  mockKeyCheck(true);
+  await openSettingsFromLibrary();
+  await typeKey("abc123secret");
+
+  await act(async () => {
+    fireEvent.submit(keyInput()!.closest("form")!);
+  });
+  await flush();
+
+  expect(keyWrites).toEqual(["abc123secret"]);
+});
+
+test("a key saved without reaching Wallhaven says it couldn't be verified", async () => {
+  mockKeyCheck(false);
+  await openSettingsFromLibrary();
+  await typeKey("abc123secret");
+
+  await click(within(keySection()).getByRole("button", { name: "Save" }));
+
+  expect(within(keySection()).getByText("Key saved")).toBeTruthy();
+  expect(keyStatus()?.textContent).toContain("Couldn't verify");
+  expect(keyStatus()?.className).not.toContain("text-destructive");
+});
+
+test("a key Wallhaven refuses is not saved and the field keeps it for fixing", async () => {
+  keyWrites = [];
+  mockCommand("set_wallhaven_key", (args) => {
+    keyWrites.push(args.key);
+    return Promise.reject({
+      kind: "bad_request",
+      message: "Wallhaven rejected that API key.",
+    });
+  });
+  await openSettingsFromLibrary();
+  await typeKey("typo");
+
+  expectConsoleError(/Failed to save the Wallhaven key/);
+  await click(within(keySection()).getByRole("button", { name: "Save" }));
+
+  expect(keyWrites).toEqual(["typo"]);
+  expect(keyInput()?.value).toBe("typo");
+  expect(within(keySection()).queryByText("Key saved")).toBeNull();
+  expect(keyStatus()?.textContent).toBe(
+    "Wallhaven rejected that key, so it wasn't saved.",
+  );
+  expect(keyStatus()?.className).toContain("text-destructive");
+});
+
+test("a saved key shows Key saved on arrival, and never the key", async () => {
+  mockKeyCheck(true);
+  storedSettings = settings({ wallhaven_key_set: true });
+  await openSettingsFromLibrary();
+
+  expect(within(keySection()).getByText("Key saved")).toBeTruthy();
+  expect(keyInput()).toBeNull();
+  expect(keyStatus()).toBeNull();
+});
+
+test("Replace brings the field back, saves the new key, and Cancel keeps the old", async () => {
+  mockKeyCheck(true);
+  storedSettings = settings({ wallhaven_key_set: true });
+  await openSettingsFromLibrary();
+
+  await click(within(keySection()).getByRole("button", { name: "Replace" }));
+  expect(document.activeElement).toBe(keyInput());
+  await click(within(keySection()).getByRole("button", { name: "Cancel" }));
+  expect(keyWrites).toEqual([]);
+  expect(within(keySection()).getByText("Key saved")).toBeTruthy();
+
+  await click(within(keySection()).getByRole("button", { name: "Replace" }));
+  await typeKey("newkey456");
+  await click(within(keySection()).getByRole("button", { name: "Save" }));
+
+  expect(keyWrites).toEqual(["newkey456"]);
+  expect(within(keySection()).getByText("Key saved")).toBeTruthy();
+});
+
+test("Remove deletes the key, and the field is back", async () => {
+  mockKeyCheck(true);
+  storedSettings = settings({ wallhaven_key_set: true });
+  await openSettingsFromLibrary();
+
+  await click(within(keySection()).getByRole("button", { name: "Remove" }));
+
+  // An empty key is the removal (ADR 0052).
+  expect(keyWrites).toEqual([""]);
+  expect(keyInput()).not.toBeNull();
+  expect(within(keySection()).queryByText("Key saved")).toBeNull();
 });

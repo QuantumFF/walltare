@@ -6,11 +6,13 @@ import {
   type SearchParams,
   type MarkedResult,
 } from "@/lib/client";
+import { useApp } from "@/context/AppContext";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   click,
   ctrlWheel,
+  currentView,
   flush,
   mockBootedApp,
   press,
@@ -545,6 +547,109 @@ test("the Purity pill ticks SFW and Sketchy, and NSFW waits for an API key", asy
   expect(nsfw.textContent).toContain("Add an API key in Settings");
   await click(nsfw);
   expect(searches).toHaveLength(2);
+});
+
+test("with a key saved, NSFW can be ticked and is searched with", async () => {
+  mockCommand("get_settings", () => settings({ wallhaven_key_set: true }));
+  await renderInApp(<DiscoverView />);
+
+  await openPill("Purity");
+  const nsfw = screen.getByRole("menuitemcheckbox", { name: "NSFW" });
+  expect(nsfw.getAttribute("aria-disabled")).toBeNull();
+  expect(nsfw.textContent).not.toContain("Add an API key");
+  await click(nsfw);
+
+  expect(searches[1].purity).toEqual({ sfw: true, sketchy: false, nsfw: true });
+  expect(pill("Purity").textContent).toBe("SFW + NSFW");
+});
+
+/** A control that removes the key the way Settings' Remove does. */
+function RemoveKey() {
+  const { saveWallhavenKey } = useApp();
+  return (
+    <button type="button" onClick={() => void saveWallhavenKey("")}>
+      Remove key
+    </button>
+  );
+}
+
+test("removing the key drops NSFW from the pills without searching again", async () => {
+  mockCommand("get_settings", () =>
+    settings({
+      wallhaven_key_set: true,
+      discover_filters: {
+        ...settings().discover_filters,
+        purity: { sfw: false, sketchy: true, nsfw: true },
+      },
+    }),
+  );
+  mockCommand("set_wallhaven_key", () => ({
+    settings: settings({ wallhaven_key_set: false }),
+    verified: true,
+  }));
+  await renderInApp(
+    <>
+      <RemoveKey />
+      <DiscoverView />
+    </>,
+  );
+  expect(pill("Purity").textContent).toBe("Sketchy + NSFW");
+
+  await click(screen.getByRole("button", { name: "Remove key" }));
+
+  expect(pill("Purity").textContent).toBe("Sketchy");
+  expect(searches).toHaveLength(1);
+  await click(orderPill());
+  expect(searches[1].purity).toEqual({
+    sfw: false,
+    sketchy: true,
+    nsfw: false,
+  });
+});
+
+test("a saved key Wallhaven rejects is said inline, with the way to Settings", async () => {
+  const message =
+    "Wallhaven rejected the saved API key. Replace or remove it in Settings.";
+  mockCommand("get_settings", () => settings({ wallhaven_key_set: true }));
+  answer = () => failure("key_rejected", message);
+
+  await renderInApp(<DiscoverView />);
+
+  expect(screen.getByRole("alert").textContent).toContain(message);
+  expect(cards()).toHaveLength(0);
+  // One search, and no anonymous one behind it.
+  expect(searches).toHaveLength(1);
+  expect(document.querySelectorAll("[data-slot='toast']")).toHaveLength(0);
+
+  await click(screen.getByRole("button", { name: "Open Settings" }));
+  expect(currentView()).toBe("settings");
+});
+
+test("a key rejected on Load more keeps the Results and offers Settings beside Retry", async () => {
+  mockCommand("get_settings", () => settings({ wallhaven_key_set: true }));
+  answer = (params) =>
+    params.page === 2
+      ? failure("key_rejected", "Wallhaven rejected the saved API key.")
+      : page(["qrow67", "jedzym"], 1, 3);
+  await renderInApp(<DiscoverView />);
+
+  await click(screen.getByRole("button", { name: "Load more" }));
+
+  expect(cards()).toHaveLength(2);
+  expect(screen.getByRole("alert").textContent).toContain(
+    "rejected the saved API key",
+  );
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  await click(screen.getByRole("button", { name: "Open Settings" }));
+  expect(currentView()).toBe("settings");
+});
+
+test("any other failure offers no way to Settings", async () => {
+  answer = () => failure("network", "Wallhaven took too long to answer.");
+
+  await renderInApp(<DiscoverView />);
+
+  expect(screen.queryByRole("button", { name: "Open Settings" })).toBeNull();
 });
 
 test("the Colour pill offers Wallhaven's 29 and can be cleared", async () => {

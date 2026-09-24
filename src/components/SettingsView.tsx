@@ -8,6 +8,7 @@ import {
   usePathField,
   type PathLineTone,
 } from "@/components/PathField";
+import { ApiKeySection } from "@/components/ApiKeySection";
 import {
   AppearanceSection,
   ReviewOrderingSection,
@@ -88,7 +89,7 @@ export function Section({
 }
 
 /**
- * The groups the sections are gathered under, in page order. Twelve sections
+ * The groups the sections are gathered under, in page order. Thirteen sections
  * in one flat column read as a wall; five named groups give the page something
  * to scan and the jump row something to point at. The section order is
  * ADR 0020's first-run-first, maintenance-last order, unchanged (ADR 0020, as
@@ -520,7 +521,7 @@ function DownloadFolderSection({ libraryRoot }: { libraryRoot: string }) {
 /**
  * The Settings page.
  *
- * One column at `max-w-2xl` holding twelve sections in five groups, in first-run order, a slot
+ * One column at `max-w-2xl` holding thirteen sections in five groups, in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
  * the way out (ADR 0020, ADR 0032).
  *
@@ -698,9 +699,11 @@ export function SettingsView() {
               <ReviewWorklistSection />
               <ReviewOrderingSection />
             </SettingsGroup>
-            {/* Where Discover's downloads land, before any exists. The API key
-                section joins it with #342. */}
+            {/* Everything Discover needs from the curator: the optional key
+                that unlocks NSFW and the account's blacklists, then where the
+                downloads land (#342, ADR 0052). */}
             <SettingsGroup id="wallhaven" groups={groups}>
+              <ApiKeySection />
               <DownloadFolderSection libraryRoot={typedRoot} />
             </SettingsGroup>
             {/* Maintenance last: questions nobody asks until something looks

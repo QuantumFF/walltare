@@ -35,6 +35,11 @@ const WALLHAVEN_CATEGORIES: &str = "wallhaven_categories";
 const WALLHAVEN_SORTING: &str = "wallhaven_sorting";
 const WALLHAVEN_ORDER: &str = "wallhaven_order";
 const WALLHAVEN_TOP_RANGE: &str = "wallhaven_top_range";
+// The Wallhaven API key, in plaintext. No row means anonymous. Written by
+// `store_wallhaven_key` once the key has been checked, never by `set`, and
+// never read back over the IPC: `Settings` carries only whether there is one
+// (ADR 0052, as amended by ADR 0054).
+const WALLHAVEN_API_KEY: &str = "wallhaven_api_key";
 
 /// The σ a wallpaper's rating has to fall below to count as Evaluated, unless
 /// the curator says otherwise.
@@ -656,6 +661,12 @@ pub struct Settings {
     /// Not keys `set` takes: a search writes them through [`remember`], so a
     /// filter nobody searched with is never remembered (ADR 0054).
     pub discover_filters: DiscoverFilters,
+    /// Whether a Wallhaven API key is saved, in place of the key itself.
+    ///
+    /// Derived from the key's row rather than read off one of its own, because
+    /// the key never crosses into the webview: it is typed into Settings once
+    /// and nothing sends it back (ADR 0052). Discover enables NSFW on it.
+    pub wallhaven_key_set: bool,
     /// What the monitor said, which is what [`Settings::screen`] reads as until
     /// the curator overrides it.
     ///
@@ -699,6 +710,8 @@ impl Settings {
             // a curator who ignores the control.
             evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
             discover_filters: DiscoverFilters::default(),
+            // Anonymous until a key is saved.
+            wallhaven_key_set: false,
             detected_screen: detected.screen,
         }
     }
@@ -731,6 +744,14 @@ pub fn set(
     value: &str,
     detected: Detected,
 ) -> Result<Settings, AppError> {
+    // The key has its own entry, which runs the check this one cannot wait
+    // on (ADR 0054).
+    if key == WALLHAVEN_API_KEY {
+        return Err(AppError::BadRequest(
+            "the Wallhaven API key is saved by set_wallhaven_key, which checks it first"
+                .to_string(),
+        ));
+    }
     // What this key would read as with its row gone, which is the one question
     // "is this the default" asks. Reading it off the table rather than off
     // `Settings::defaults` is what lets a default *be* another setting:
@@ -742,6 +763,46 @@ pub fn set(
 
     let default = is_default(key, value, &without)?;
     write_row(conn, key, value, default)?;
+    get(conn, detected)
+}
+
+/// The saved Wallhaven API key, or nothing when the curator is anonymous.
+///
+/// Read on every API call rather than held by the client, so a Replace or a
+/// Remove reaches the next search without a restart (ADR 0054).
+pub fn wallhaven_key(conn: &Connection) -> Result<Option<String>, AppError> {
+    Ok(stored(conn)?
+        .remove(WALLHAVEN_API_KEY)
+        .filter(|key| !key.is_empty()))
+}
+
+/// Saves a Wallhaven API key that has already been checked, or removes the
+/// saved one when `key` is empty, and returns every setting.
+///
+/// The check is the caller's, because it waits on the network and this runs
+/// under the database's lock. Removing the key also drops NSFW from the
+/// remembered filters, so the next search is not one the backend refuses: NSFW
+/// needs a key. When NSFW was the only purity remembered, the filters go back
+/// to the default SFW, since a search needs at least one.
+pub fn store_wallhaven_key(
+    conn: &Connection,
+    key: &str,
+    detected: Detected,
+) -> Result<Settings, AppError> {
+    let mut without = stored(conn)?;
+    without.remove(WALLHAVEN_API_KEY);
+    let default = is_default(WALLHAVEN_API_KEY, key, &resolve(&without, detected))?;
+    write_row(conn, WALLHAVEN_API_KEY, key, default)?;
+    if default {
+        let mut filters = discover_filters(conn)?;
+        if filters.purity.nsfw {
+            filters.purity.nsfw = false;
+            if filters.purity.is_empty() {
+                filters.purity = DiscoverFilters::default().purity;
+            }
+            remember(conn, &filters)?;
+        }
+    }
     get(conn, detected)
 }
 
@@ -865,6 +926,10 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         evaluated_threshold: read(stored, EVALUATED_THRESHOLD, Threshold::parse)
             .map_or(defaults.evaluated_threshold, |threshold| threshold.0),
         discover_filters: resolve_filters(stored),
+        // A flag derived from the key's row, and never the key (ADR 0052).
+        wallhaven_key_set: stored
+            .get(WALLHAVEN_API_KEY)
+            .is_some_and(|key| !key.is_empty()),
         // Never read off the table: it is what the monitor said, and the table
         // holds what the curator said.
         detected_screen: detected.screen,
@@ -930,6 +995,10 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         REVIEW_LAYOUT => Ok(ReviewLayout::written(value)? == without.review_layout),
         CROP_PREVIEW => Ok(bool::written(value)? == without.crop_preview),
         EVALUATED_THRESHOLD => Ok(Threshold::written(value)?.0 == without.evaluated_threshold),
+        // The key's default is no key, so the one value equal to it is the
+        // empty one, which is how Remove deletes the row. Any other value is a
+        // key, and `wallhaven_key_set` is what reads it back.
+        WALLHAVEN_API_KEY => Ok(value.is_empty() && !without.wallhaven_key_set),
         _ => Err(AppError::BadRequest(format!("unknown setting {key:?}"))),
     }
 }
@@ -1039,6 +1108,7 @@ mod tests {
                 crop_preview: false,
                 evaluated_threshold: 4.0,
                 discover_filters: DiscoverFilters::default(),
+                wallhaven_key_set: false,
                 detected_screen: size(3840, 2160),
             }
         );
@@ -2152,5 +2222,138 @@ mod tests {
         assert_eq!(filters["sorting"], "toplist");
         assert_eq!(filters["order"], "asc");
         assert_eq!(filters["top_range"], "1y");
+    }
+
+    const KEY: &str = "Zx9secretKEYvalue0123456789abcde";
+
+    #[test]
+    fn a_saved_key_reads_as_a_flag_and_never_as_the_key() {
+        let conn = store();
+
+        let settings = store_wallhaven_key(&conn, KEY, detected()).unwrap();
+
+        assert!(settings.wallhaven_key_set);
+        assert_eq!(wallhaven_key(&conn).unwrap().as_deref(), Some(KEY));
+        assert_eq!(stored(&conn).unwrap()["wallhaven_api_key"], KEY);
+        // The whole answer, as `get_settings` and `set_setting` send it, holds
+        // the flag and nothing of the key (ADR 0052).
+        let json = serde_json::to_value(get(&conn, detected()).unwrap()).unwrap();
+        assert_eq!(json["wallhaven_key_set"], true);
+        assert!(json.get("wallhaven_api_key").is_none(), "{json}");
+        assert!(!json.to_string().contains(KEY), "{json}");
+        let written =
+            serde_json::to_string(&set(&conn, "theme", "dark", detected()).unwrap()).unwrap();
+        assert!(!written.contains(KEY), "{written}");
+    }
+
+    #[test]
+    fn no_row_is_anonymous() {
+        let conn = store();
+
+        assert!(!get(&conn, detected()).unwrap().wallhaven_key_set);
+        assert_eq!(wallhaven_key(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn replacing_the_key_keeps_one_row_and_an_empty_key_deletes_it() {
+        let conn = store();
+        store_wallhaven_key(&conn, KEY, detected()).unwrap();
+
+        store_wallhaven_key(&conn, "another-key", detected()).unwrap();
+        assert_eq!(
+            wallhaven_key(&conn).unwrap().as_deref(),
+            Some("another-key")
+        );
+        assert_eq!(stored_rows(&conn), 1);
+
+        let settings = store_wallhaven_key(&conn, "", detected()).unwrap();
+        assert!(!settings.wallhaven_key_set);
+        assert_eq!(wallhaven_key(&conn).unwrap(), None);
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn the_key_is_not_a_key_set_setting_takes() {
+        // It is checked before it is stored, and `set` cannot wait on the
+        // network to do that (ADR 0054).
+        let conn = store();
+
+        let err = set(&conn, "wallhaven_api_key", KEY, detected()).unwrap_err();
+
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        assert_eq!(stored_rows(&conn), 0);
+        let err = set(&conn, "wallhaven_key_set", "true", detected()).unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+    }
+
+    #[test]
+    fn removing_the_key_drops_nsfw_from_the_remembered_filters() {
+        let conn = store();
+        store_wallhaven_key(&conn, KEY, detected()).unwrap();
+        let with_nsfw = DiscoverFilters {
+            purity: Purity {
+                sfw: true,
+                sketchy: true,
+                nsfw: true,
+            },
+            ..toplist_of_anime_and_sketchy()
+        };
+        remember(&conn, &with_nsfw).unwrap();
+
+        let settings = store_wallhaven_key(&conn, "", detected()).unwrap();
+
+        assert_eq!(
+            settings.discover_filters,
+            DiscoverFilters {
+                purity: Purity {
+                    sfw: true,
+                    sketchy: true,
+                    nsfw: false,
+                },
+                ..with_nsfw
+            }
+        );
+    }
+
+    #[test]
+    fn removing_the_key_when_nsfw_was_the_only_purity_goes_back_to_sfw() {
+        let conn = store();
+        store_wallhaven_key(&conn, KEY, detected()).unwrap();
+        remember(
+            &conn,
+            &DiscoverFilters {
+                purity: Purity {
+                    sfw: false,
+                    sketchy: false,
+                    nsfw: true,
+                },
+                ..DiscoverFilters::default()
+            },
+        )
+        .unwrap();
+
+        store_wallhaven_key(&conn, "", detected()).unwrap();
+
+        assert_eq!(discover_filters(&conn).unwrap(), DiscoverFilters::default());
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn replacing_the_key_leaves_nsfw_remembered() {
+        let conn = store();
+        store_wallhaven_key(&conn, KEY, detected()).unwrap();
+        let with_nsfw = DiscoverFilters {
+            purity: Purity {
+                sfw: true,
+                sketchy: false,
+                nsfw: true,
+            },
+            ..DiscoverFilters::default()
+        };
+        remember(&conn, &with_nsfw).unwrap();
+
+        store_wallhaven_key(&conn, "another-key", detected()).unwrap();
+
+        assert_eq!(discover_filters(&conn).unwrap(), with_nsfw);
     }
 }

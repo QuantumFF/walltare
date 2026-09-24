@@ -294,6 +294,9 @@ export function settings(over: Partial<Settings> = {}): Settings {
     // Discover's filters with nothing remembered: a test that wants a search
     // to have left others arranges them.
     discover_filters: DEFAULT_DISCOVER_FILTERS,
+    // Anonymous, which is an empty table: a test that wants a key saved
+    // arranges it.
+    wallhaven_key_set: false,
     // What the monitor said, which no override moves: a test that overrides the
     // screen is arranging exactly the case where the two differ.
     detected_screen: DETECTED_SCREEN,

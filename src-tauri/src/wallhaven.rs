@@ -21,7 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 use crate::settings::{
-    self, Categories, DiscoverFilters, Order, Purity, Sorting, TopRange, Vocabulary,
+    self, Categories, Detected, DiscoverFilters, Order, Purity, Settings, Sorting, TopRange,
+    Vocabulary,
 };
 use crate::Db;
 
@@ -98,7 +99,10 @@ impl SearchParams {
     /// Wallhaven fails silently: a malformed ratio is ignored and the search
     /// comes back unfiltered, and the curator reads it as filtered. So the
     /// refusal is here, before any call, where it can be said out loud.
-    fn check(&self) -> Result<(), AppError> {
+    ///
+    /// `keyed` is whether the search carries an API key, which is what NSFW
+    /// needs.
+    fn check(&self, keyed: bool) -> Result<(), AppError> {
         let refuse = |message: String| Err(AppError::BadRequest(message));
         if self.categories.is_empty() {
             return refuse("a search needs at least one category".to_string());
@@ -107,9 +111,9 @@ impl SearchParams {
             return refuse("a search needs at least one purity".to_string());
         }
         // NSFW needs a key, and anonymous `purity=001` answers zero Results
-        // rather than a 401. The key ticket lifts this once a key is saved; the
-        // frontend disables the control anyway, so this is the guard.
-        if self.purity.nsfw {
+        // rather than a 401. The frontend disables the control without one
+        // anyway, so this is the guard.
+        if self.purity.nsfw && !keyed {
             return refuse("NSFW Results need a Wallhaven API key".to_string());
         }
         if self.top_range.is_some() && self.sorting != Sorting::Toplist {
@@ -341,18 +345,13 @@ impl Wallhaven {
         }
     }
 
-    /// One page of a search, after [`SearchParams::check`] has passed it.
+    /// One page of a search, after [`SearchParams::check`] has passed it,
+    /// carrying `key` when there is one.
     ///
     /// Every Result on the page is recorded as served, so a download can name
     /// it by id.
-    pub fn search(&self, params: &SearchParams) -> Result<Page, AppError> {
-        params.check()?;
-        let mut request = self.agent.get(format!("{}/search", self.api));
-        for (key, value) in params.query() {
-            request = request.query(key, value);
-        }
-        let response = request.call().map_err(unreachable)?;
-        let answer: Answer = parse(response)?;
+    pub fn search(&self, params: &SearchParams, key: Option<&str>) -> Result<Page, AppError> {
+        let answer = self.fetch(params, key)?;
 
         let per_page = match &answer.meta.per_page {
             serde_json::Value::Number(n) => n.as_u64(),
@@ -390,6 +389,69 @@ impl Wallhaven {
         })
     }
 
+    /// Whether Wallhaven takes `key`, by one search made with it (ADR 0052).
+    ///
+    /// Search rather than `/settings`, which answers a bad key with a 404 that
+    /// reads as a missing endpoint. A 401 refuses the key as `BadRequest`, so
+    /// it is never stored. A search that could not be made at all, offline or
+    /// rate-limited, answers `false` rather than failing: the key is saved
+    /// anyway, and Settings says it couldn't be verified. The Results are not
+    /// recorded as served, since nobody is shown them.
+    pub fn verify_key(&self, key: &str) -> Result<bool, AppError> {
+        let filters = DiscoverFilters::default();
+        let probe = SearchParams {
+            q: String::new(),
+            categories: filters.categories,
+            purity: filters.purity,
+            sorting: filters.sorting,
+            order: filters.order,
+            top_range: None,
+            atleast: None,
+            resolutions: Vec::new(),
+            ratios: Vec::new(),
+            colors: None,
+            page: None,
+            seed: None,
+        };
+        match self.fetch(&probe, Some(key)) {
+            Ok(_) => Ok(true),
+            Err(AppError::KeyRejected(_)) => Err(AppError::BadRequest(
+                "Wallhaven rejected that API key. Check it on wallhaven.cc/settings/account"
+                    .to_string(),
+            )),
+            Err(AppError::Network(_) | AppError::RateLimited(_)) => Ok(false),
+            Err(other) => Err(other),
+        }
+    }
+
+    /// One call to `/search`, answered as the JSON it documents.
+    ///
+    /// The key goes in the `X-API-Key` header rather than the query string, so
+    /// it never sits in a URL that an error message might repeat. This is the
+    /// only request that carries it: the API is on `wallhaven.cc/api/v1`, and
+    /// thumbnails and files load from `th.` and `w.wallhaven.cc` without auth,
+    /// NSFW included (ADR 0052).
+    fn fetch(&self, params: &SearchParams, key: Option<&str>) -> Result<Answer, AppError> {
+        params.check(key.is_some())?;
+        let mut request = self.agent.get(format!("{}/search", self.api));
+        for (name, value) in params.query() {
+            request = request.query(name, value);
+        }
+        if let Some(key) = key {
+            request = request.header("X-API-Key", key);
+        }
+        let response = request.call().map_err(unreachable)?;
+        // Only a keyed call can be refused for its key. An anonymous 401 is
+        // not something the API documents, and reads as any other refusal.
+        if key.is_some() && response.status().as_u16() == 401 {
+            return Err(AppError::KeyRejected(
+                "Wallhaven rejected the saved API key. Replace or remove it in Settings."
+                    .to_string(),
+            ));
+        }
+        parse(response)
+    }
+
     /// What was served under `id`, or nothing when this process never served
     /// it. `wallhaven_download` resolves an id through this and refuses one it
     /// finds nothing for (#343).
@@ -419,7 +481,10 @@ pub fn search(
     client: &Wallhaven,
     params: &SearchParams,
 ) -> Result<Page<MarkedResult>, AppError> {
-    let page = client.search(params)?;
+    // Read on every call, so a Replace or a Remove in Settings reaches the next
+    // search without a restart (ADR 0054).
+    let key = db.read(settings::wallhaven_key)?;
+    let page = client.search(params, key.as_deref())?;
     let ids: Vec<&str> = page.results.iter().map(|r| r.id.as_str()).collect();
     let carriers = db.read(|conn| crate::db::wallhaven_carriers(conn, &ids))?;
     let page = Page {
@@ -454,6 +519,35 @@ pub fn search(
         )
     })?;
     Ok(page)
+}
+
+/// What saving a key answers with: every setting, and whether Wallhaven could
+/// be asked about the key before it was stored.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct KeySaved {
+    pub settings: Settings,
+    /// `false` when the check could not reach Wallhaven or was rate-limited,
+    /// and the key was stored anyway (ADR 0052).
+    pub verified: bool,
+}
+
+/// Saves the Wallhaven API key once one keyed search has not refused it, or
+/// removes it when `key` is empty (ADR 0052, as amended by ADR 0054).
+///
+/// The check runs before the database is touched, so the lock is never held
+/// across the network. Surrounding whitespace is a paste's, not the key's.
+/// Removing the key also drops NSFW from the remembered filters, which
+/// [`settings::store_wallhaven_key`] owns.
+pub fn set_key(
+    db: &Db,
+    client: &Wallhaven,
+    key: &str,
+    detected: Detected,
+) -> Result<KeySaved, AppError> {
+    let key = key.trim();
+    let verified = key.is_empty() || client.verify_key(key)?;
+    let settings = db.write(|conn| settings::store_wallhaven_key(conn, key, detected))?;
+    Ok(KeySaved { settings, verified })
 }
 
 /// A call that got no answer at all.
@@ -607,7 +701,7 @@ mod tests {
 
     fn refusal(params: SearchParams) -> String {
         let stub = testing::stub(vec![]);
-        match client(&stub).search(&params) {
+        match client(&stub).search(&params, None) {
             Err(AppError::BadRequest(message)) => {
                 assert!(stub.requests().is_empty(), "a refusal sent nothing");
                 message
@@ -620,7 +714,7 @@ mod tests {
     fn a_search_answers_the_results_less_their_path_and_the_paging() {
         let stub = testing::stub(vec![page_of(&["qrow67", "jedzym"], 1, 36)]);
 
-        let page = client(&stub).search(&plain()).unwrap();
+        let page = client(&stub).search(&plain(), None).unwrap();
 
         assert_eq!(page.results.len(), 2);
         assert_eq!(page.results[0].id, "qrow67");
@@ -649,12 +743,15 @@ mod tests {
         let stub = testing::stub(vec![page_of(&["qrow67"], 1, 2), page_of(&["jedzym"], 2, 2)]);
         let wallhaven = client(&stub);
 
-        wallhaven.search(&plain()).unwrap();
+        wallhaven.search(&plain(), None).unwrap();
         wallhaven
-            .search(&SearchParams {
-                page: Some(2),
-                ..plain()
-            })
+            .search(
+                &SearchParams {
+                    page: Some(2),
+                    ..plain()
+                },
+                None,
+            )
             .unwrap();
 
         assert_eq!(
@@ -674,18 +771,21 @@ mod tests {
         let stub = testing::stub(vec![page_of(&[], 1, 1)]);
 
         client(&stub)
-            .search(&SearchParams {
-                q: "like:qrow67 +tag".to_string(),
-                sorting: Sorting::Toplist,
-                top_range: Some(TopRange::OneYear),
-                atleast: Some("2560x1440".to_string()),
-                resolutions: vec!["3840x2160".to_string(), "2560x1440".to_string()],
-                ratios: vec!["16x9".to_string(), "landscape".to_string()],
-                colors: Some("424153".to_string()),
-                page: Some(3),
-                seed: Some("aB3dE9".to_string()),
-                ..plain()
-            })
+            .search(
+                &SearchParams {
+                    q: "like:qrow67 +tag".to_string(),
+                    sorting: Sorting::Toplist,
+                    top_range: Some(TopRange::OneYear),
+                    atleast: Some("2560x1440".to_string()),
+                    resolutions: vec!["3840x2160".to_string(), "2560x1440".to_string()],
+                    ratios: vec!["16x9".to_string(), "landscape".to_string()],
+                    colors: Some("424153".to_string()),
+                    page: Some(3),
+                    seed: Some("aB3dE9".to_string()),
+                    ..plain()
+                },
+                None,
+            )
             .unwrap();
 
         let request = &stub.requests()[0];
@@ -718,7 +818,7 @@ mod tests {
     fn an_empty_query_sends_no_q_and_no_optional_parameters() {
         let stub = testing::stub(vec![page_of(&[], 1, 1)]);
 
-        client(&stub).search(&plain()).unwrap();
+        client(&stub).search(&plain(), None).unwrap();
 
         assert_eq!(
             stub.requests()[0].target(),
@@ -813,7 +913,7 @@ mod tests {
             Canned::html(429, "<html>Too Many Requests</html>").header("Retry-After", "37")
         ]);
 
-        let err = client(&stub).search(&plain()).unwrap_err();
+        let err = client(&stub).search(&plain(), None).unwrap_err();
 
         let AppError::RateLimited(message) = err else {
             panic!("{err:?}");
@@ -825,7 +925,7 @@ mod tests {
     fn a_5xx_is_a_network_error_naming_the_status() {
         let stub = testing::stub(vec![Canned::json_status(503, serde_json::json!({}))]);
 
-        let err = client(&stub).search(&plain()).unwrap_err();
+        let err = client(&stub).search(&plain(), None).unwrap_err();
 
         let AppError::Network(message) = err else {
             panic!("{err:?}");
@@ -837,7 +937,7 @@ mod tests {
     fn a_cloudflare_challenge_is_a_network_error_saying_so() {
         let stub = testing::stub(vec![Canned::html(403, "<html>Just a moment...</html>")]);
 
-        let err = client(&stub).search(&plain()).unwrap_err();
+        let err = client(&stub).search(&plain(), None).unwrap_err();
 
         let AppError::Network(message) = err else {
             panic!("{err:?}");
@@ -851,7 +951,7 @@ mod tests {
             testing::stub(vec![Canned::html(503, "<html>Just a moment...</html>")
                 .header("cf-mitigated", "challenge")]);
 
-        let err = client(&stub).search(&plain()).unwrap_err();
+        let err = client(&stub).search(&plain(), None).unwrap_err();
 
         let AppError::Network(message) = err else {
             panic!("{err:?}");
@@ -863,7 +963,7 @@ mod tests {
     fn cloudflares_own_html_5xx_page_is_wallhaven_having_trouble() {
         let stub = testing::stub(vec![Canned::html(522, "<html>Connection timed out</html>")]);
 
-        let err = client(&stub).search(&plain()).unwrap_err();
+        let err = client(&stub).search(&plain(), None).unwrap_err();
 
         let AppError::Network(message) = err else {
             panic!("{err:?}");
@@ -876,7 +976,7 @@ mod tests {
     fn an_html_404_is_a_refusal_naming_its_status_and_not_a_challenge() {
         let stub = testing::stub(vec![Canned::html(404, "<html>Not Found</html>")]);
 
-        let err = client(&stub).search(&plain()).unwrap_err();
+        let err = client(&stub).search(&plain(), None).unwrap_err();
 
         let AppError::Network(message) = err else {
             panic!("{err:?}");
@@ -889,7 +989,7 @@ mod tests {
     fn a_body_that_is_not_the_documented_json_is_a_network_error() {
         let stub = testing::stub(vec![Canned::json(serde_json::json!({ "error": "nope" }))]);
 
-        let err = client(&stub).search(&plain()).unwrap_err();
+        let err = client(&stub).search(&plain(), None).unwrap_err();
 
         let AppError::Network(message) = err else {
             panic!("{err:?}");
@@ -908,7 +1008,7 @@ mod tests {
             },
         );
 
-        let err = wallhaven.search(&plain()).unwrap_err();
+        let err = wallhaven.search(&plain(), None).unwrap_err();
 
         let AppError::Network(message) = err else {
             panic!("{err:?}");
@@ -923,7 +1023,7 @@ mod tests {
         drop(stub);
         let wallhaven = Wallhaven::new(&base, API_TIMEOUTS);
 
-        let err = wallhaven.search(&plain()).unwrap_err();
+        let err = wallhaven.search(&plain(), None).unwrap_err();
 
         assert!(matches!(err, AppError::Network(_)), "{err:?}");
     }
@@ -1108,5 +1208,231 @@ mod tests {
         assert_eq!(params.ratios, ["16x9"]);
         assert_eq!(params.page, Some(2));
         assert!(params.atleast.is_none() && params.colors.is_none());
+    }
+
+    const KEY: &str = "Zx9secretKEYvalue0123456789abcde";
+
+    fn nsfw() -> Purity {
+        Purity {
+            sfw: true,
+            sketchy: false,
+            nsfw: true,
+        }
+    }
+
+    fn save_key(db: &Db, key: &str) {
+        db.write(|conn| settings::store_wallhaven_key(conn, key, Detected::default()))
+            .unwrap();
+    }
+
+    fn stored_key(db: &Db) -> Option<String> {
+        db.read(settings::wallhaven_key).unwrap()
+    }
+
+    #[test]
+    fn nsfw_is_allowed_with_a_key() {
+        let stub = testing::stub(vec![page_of(&["qrow67"], 1, 1)]);
+
+        let page = client(&stub)
+            .search(
+                &SearchParams {
+                    purity: nsfw(),
+                    ..plain()
+                },
+                Some(KEY),
+            )
+            .unwrap();
+
+        assert_eq!(page.results.len(), 1);
+        assert!(
+            stub.requests()[0].target().contains("purity=101"),
+            "{}",
+            stub.requests()[0].target()
+        );
+    }
+
+    #[test]
+    fn a_saved_key_goes_on_the_api_call_and_no_row_sends_none() {
+        let db = db();
+        let stub = testing::stub(vec![page_of(&[], 1, 1), page_of(&[], 1, 1)]);
+        let wallhaven = client(&stub);
+
+        search(&db, &wallhaven, &plain()).unwrap();
+        save_key(&db, KEY);
+        search(&db, &wallhaven, &plain()).unwrap();
+
+        let requests = stub.requests();
+        assert_eq!(requests[0].header("x-api-key"), None);
+        assert_eq!(requests[1].header("x-api-key"), Some(KEY));
+        // In a header and never in the URL, which an error could repeat.
+        assert!(
+            !requests[1].target().contains(KEY),
+            "{}",
+            requests[1].target()
+        );
+    }
+
+    #[test]
+    fn replace_and_remove_reach_the_next_search_without_a_new_client() {
+        let db = db();
+        let stub = testing::stub(vec![
+            page_of(&[], 1, 1),
+            page_of(&[], 1, 1),
+            page_of(&[], 1, 1),
+        ]);
+        let wallhaven = client(&stub);
+
+        save_key(&db, KEY);
+        search(&db, &wallhaven, &plain()).unwrap();
+        save_key(&db, "replacement");
+        search(&db, &wallhaven, &plain()).unwrap();
+        save_key(&db, "");
+        search(&db, &wallhaven, &plain()).unwrap();
+
+        let sent: Vec<Option<String>> = stub
+            .requests()
+            .iter()
+            .map(|r| r.header("x-api-key").map(str::to_string))
+            .collect();
+        assert_eq!(
+            sent,
+            [Some(KEY.to_string()), Some("replacement".to_string()), None]
+        );
+    }
+
+    #[test]
+    fn a_search_with_a_saved_key_may_ask_for_nsfw_and_without_one_may_not() {
+        let db = db();
+        let stub = testing::stub(vec![page_of(&["qrow67"], 1, 1)]);
+        let wallhaven = client(&stub);
+        let asking = SearchParams {
+            purity: nsfw(),
+            ..plain()
+        };
+
+        let err = search(&db, &wallhaven, &asking).unwrap_err();
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        assert!(stub.requests().is_empty());
+
+        save_key(&db, KEY);
+        search(&db, &wallhaven, &asking).unwrap();
+        assert_eq!(db.read(settings::discover_filters).unwrap().purity, nsfw());
+    }
+
+    #[test]
+    fn a_saved_key_that_gets_a_401_is_key_rejected_and_not_retried_anonymously() {
+        let db = db();
+        save_key(&db, KEY);
+        let stub = testing::stub(vec![Canned::json_status(
+            401,
+            serde_json::json!({ "error": "Unauthorized" }),
+        )]);
+
+        let err = search(&db, &client(&stub), &plain()).unwrap_err();
+
+        assert!(matches!(err, AppError::KeyRejected(_)), "{err:?}");
+        assert_eq!(stub.requests().len(), 1);
+        assert_eq!(
+            db.read(settings::discover_filters).unwrap(),
+            DiscoverFilters::default()
+        );
+    }
+
+    #[test]
+    fn an_anonymous_401_is_a_refusal_and_not_a_rejected_key() {
+        let stub = testing::stub(vec![Canned::json_status(401, serde_json::json!({}))]);
+
+        let err = client(&stub).search(&plain(), None).unwrap_err();
+
+        assert!(matches!(err, AppError::Network(_)), "{err:?}");
+    }
+
+    #[test]
+    fn saving_a_key_wallhaven_takes_stores_it_verified() {
+        let db = db();
+        let stub = testing::stub(vec![page_of(&["qrow67"], 1, 1)]);
+        let wallhaven = client(&stub);
+
+        let saved = set_key(&db, &wallhaven, KEY, Detected::default()).unwrap();
+
+        assert!(saved.verified);
+        assert!(saved.settings.wallhaven_key_set);
+        assert_eq!(stored_key(&db).as_deref(), Some(KEY));
+        // One keyed search, and nothing it found is on offer to a download.
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].target().starts_with("/search?"));
+        assert_eq!(requests[0].header("x-api-key"), Some(KEY));
+        assert_eq!(wallhaven.served("qrow67"), None);
+        // And the answer crosses without the key in it.
+        let json = serde_json::to_value(&saved).unwrap();
+        assert_eq!(json["verified"], true);
+        assert_eq!(json["settings"]["wallhaven_key_set"], true);
+        assert!(!json.to_string().contains(KEY), "{json}");
+    }
+
+    #[test]
+    fn a_key_that_gets_a_401_is_refused_and_not_stored() {
+        let db = db();
+        save_key(&db, "the-old-key");
+        let stub = testing::stub(vec![Canned::json_status(
+            401,
+            serde_json::json!({ "error": "Unauthorized" }),
+        )]);
+
+        let err = set_key(&db, &client(&stub), KEY, Detected::default()).unwrap_err();
+
+        assert!(matches!(err, AppError::BadRequest(_)), "{err:?}");
+        assert_eq!(stored_key(&db).as_deref(), Some("the-old-key"));
+    }
+
+    #[test]
+    fn a_key_checked_while_rate_limited_or_offline_is_stored_unverified() {
+        let limited = testing::stub(vec![
+            Canned::html(429, "<html>Too Many Requests</html>").header("Retry-After", "30")
+        ]);
+        let offline = testing::stub(vec![]);
+        let nowhere = offline.base();
+        drop(offline);
+
+        for wallhaven in [client(&limited), Wallhaven::new(&nowhere, API_TIMEOUTS)] {
+            let db = db();
+
+            let saved = set_key(&db, &wallhaven, KEY, Detected::default()).unwrap();
+
+            assert!(!saved.verified);
+            assert!(saved.settings.wallhaven_key_set);
+            assert_eq!(stored_key(&db).as_deref(), Some(KEY));
+        }
+    }
+
+    #[test]
+    fn an_empty_key_removes_the_saved_one_without_asking_wallhaven() {
+        let db = db();
+        save_key(&db, KEY);
+        let stub = testing::stub(vec![]);
+
+        let saved = set_key(&db, &client(&stub), "  ", Detected::default()).unwrap();
+
+        assert!(!saved.settings.wallhaven_key_set);
+        assert_eq!(stored_key(&db), None);
+        assert!(stub.requests().is_empty());
+    }
+
+    #[test]
+    fn a_pasted_key_is_stored_without_its_surrounding_whitespace() {
+        let db = db();
+        let stub = testing::stub(vec![page_of(&[], 1, 1)]);
+
+        set_key(
+            &db,
+            &client(&stub),
+            &format!(" {KEY}\n"),
+            Detected::default(),
+        )
+        .unwrap();
+
+        assert_eq!(stored_key(&db).as_deref(), Some(KEY));
+        assert_eq!(stub.requests()[0].header("x-api-key"), Some(KEY));
     }
 }

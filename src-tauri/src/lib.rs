@@ -404,6 +404,29 @@ async fn wallhaven_search(
     .await
 }
 
+/// Saves the Wallhaven API key after one keyed search, or removes it when `key`
+/// is empty, and answers every setting and whether the check reached Wallhaven.
+///
+/// Its own command rather than a `set_setting` key, because the check waits on
+/// the network: off the main thread, and a 401 refuses the key with
+/// `BadRequest` so it is never stored. A network failure or a 429 stores it
+/// anyway and answers `verified: false` (ADR 0052, as amended by ADR 0054).
+#[tauri::command]
+async fn set_wallhaven_key(
+    key: String,
+    app: AppHandle,
+) -> Result<wallhaven::KeySaved, error::AppError> {
+    off_main_thread(app, move |app| {
+        wallhaven::set_key(
+            &app.state::<Db>(),
+            &app.state::<wallhaven::Wallhaven>(),
+            &key,
+            *app.state::<settings::Detected>(),
+        )
+    })
+    .await
+}
+
 /// Every wallpaper matching a named filter, in a named ordering, at most `limit`
 /// of them.
 ///
@@ -696,7 +719,8 @@ pub fn run() {
             restore_wallpaper,
             get_settings,
             set_setting,
-            wallhaven_search
+            wallhaven_search,
+            set_wallhaven_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
