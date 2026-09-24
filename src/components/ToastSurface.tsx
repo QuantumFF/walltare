@@ -11,6 +11,11 @@ import {
 } from "@/components/ui/toast";
 import { Kbd } from "@/components/ui/kbd";
 import { useApp } from "@/context/AppContext";
+import {
+  useDownloadEnding,
+  useDownloadState,
+  type DownloadEnding,
+} from "@/context/DownloadRunContext";
 import { useHandOffOnPointerPress } from "@/context/KeyboardHandoffContext";
 import {
   useScanOutcome,
@@ -23,6 +28,7 @@ import { counted, grouped } from "@/lib/copy";
 import {
   isAppError,
   isStaleRow,
+  type DownloadProgress,
   type PregenProgress,
   type ScanProgress,
 } from "@/lib/client";
@@ -144,7 +150,14 @@ export type ToastRequest =
    * apply. `WallpaperCard`'s Restore is the `aria-disabled` control that raises
    * it, on any page that mounts a Rejected card.
    */
-  | { kind: "refused"; filename: string; reason: string };
+  | { kind: "refused"; filename: string; reason: string }
+  /**
+   * A download the backend refused at the click, before anything was queued:
+   * an id no search served, or a Download folder that cannot be used, with the
+   * sentence the Settings field prints for it (ADR 0051). Discover raises it,
+   * and a failure after the click is the batch's ending rather than this.
+   */
+  | { kind: "download-refused"; error: unknown };
 
 /** ADR 0019's sentence for the cohort that has no Origin to go back to. */
 export const NO_ORIGIN_REASON =
@@ -226,9 +239,27 @@ type Background =
    * counter.
    */
   | { run: string; kind: "scan"; progress: ScanProgress | null }
+  /**
+   * Discover's downloads, read off the download run like the scan off its own.
+   * `progress` is `null` until the first file is done, since there is no
+   * byte-level progress to say anything sooner (ADR 0054). It ranks between
+   * the two others: below the scan the curator asked for more recently in the
+   * common case and which rewrites the library, and above a pass nobody asked
+   * for, which it leaves running underneath rather than dropping (ADR 0051).
+   */
+  | { run: string; kind: "download"; progress: DownloadProgress | null }
   | { run: string; kind: "pregen"; progress: PregenProgress };
 
 type Pass = Extract<Background, { kind: "pregen" }>;
+
+/**
+ * ADR 0008's explanation for a Round that just moved backwards, which a scan's
+ * ending and a download batch's both carry: every wallpaper either of them adds
+ * has no comparisons yet.
+ */
+function backToRound(round: number): string {
+  return `Back to Round ${grouped(round)}. The new wallpapers have no comparisons yet.`;
+}
 
 /**
  * What the toast says about how a scan ended: ADR 0021's four `scan-*` rows.
@@ -262,7 +293,7 @@ function scanEnding(outcome: ScanOutcome): {
         description:
           outcome.backToRound === null
             ? undefined
-            : `Back to Round ${grouped(outcome.backToRound)}. The new wallpapers have no comparisons yet.`,
+            : backToRound(outcome.backToRound),
         pinned: false,
       };
     case "failed":
@@ -274,8 +305,42 @@ function scanEnding(outcome: ScanOutcome): {
   }
 }
 
+/**
+ * What the toast says about how a batch of downloads ended (ADR 0051).
+ *
+ * A batch where every file landed is news about the library and goes in eight
+ * seconds, with the Round line when the Round moved. Any failure pins, because
+ * ADR 0017 pins errors and a file that did not arrive is one the curator has
+ * to go back for; the first failure's sentence says why, and each failed card
+ * carries its own.
+ */
+function downloadEnding(ending: DownloadEnding): {
+  title: string;
+  description: string | undefined;
+  pinned: boolean;
+} {
+  if (ending.failed > 0) {
+    return {
+      title: `Couldn't download ${grouped(ending.failed)} of ${grouped(ending.total)}`,
+      description: ending.firstError ?? undefined,
+      pinned: true,
+    };
+  }
+  return {
+    title: `${counted(ending.landed, "wallpaper")} downloaded`,
+    description:
+      ending.backToRound === null ? undefined : backToRound(ending.backToRound),
+    pinned: false,
+  };
+}
+
 /** The one line the report shows, which is the phase the work is in. */
 function backgroundLine(work: Background): string {
+  if (work.kind === "download") {
+    if (!work.progress) return "Downloading…";
+    const { total, landed, failed } = work.progress;
+    return `Downloading… ${grouped(landed + failed)} of ${grouped(total)}`;
+  }
   if (work.kind === "pregen") {
     const { done, total } = work.progress;
     return `Preparing thumbnails… ${grouped(done)} of ${grouped(total)}`;
@@ -403,6 +468,7 @@ export function ToastSurface({
   // the part that is copy (ADR 0021). The transitions' own IPC left with the
   // Undo closures (ADR 0023), so nothing here calls the backend at all.
   const { state: scan } = useScanRun();
+  const downloads = useDownloadState();
   const [transient, setTransient] = useState<Transient | null>(null);
   /** The thumbnail pass, which is the half of the lower slot this file follows. */
   const [pass, setPass] = useState<Pass | null>(null);
@@ -556,6 +622,17 @@ export function ToastSurface({
             pinned: true,
           });
           return;
+
+        case "download-refused":
+          setTransient({
+            key,
+            prefix: "Couldn't download",
+            filename: "",
+            suffix: "",
+            description: backendMessage(request.error),
+            pinned: true,
+          });
+          return;
       }
     },
     // Nothing outside this component: every request now arrives holding
@@ -576,6 +653,11 @@ export function ToastSurface({
    */
   useScanOutcome((outcome) => {
     const { title, description, pinned } = scanEnding(outcome);
+    raise(title, description, pinned);
+  });
+
+  useDownloadEnding((ending) => {
+    const { title, description, pinned } = downloadEnding(ending);
     raise(title, description, pinned);
   });
 
@@ -657,7 +739,13 @@ export function ToastSurface({
   const background: Background | null =
     scan.running && scan.run !== null
       ? { run: `scan-${scan.run}`, kind: "scan", progress: scan.progress }
-      : pass;
+      : downloads.running
+        ? {
+            run: `download-${downloads.run}`,
+            kind: "download",
+            progress: downloads.progress,
+          }
+        : pass;
   const report =
     background &&
     background.run !== dismissed &&
@@ -785,6 +873,19 @@ export function ToastSurface({
                   }
                 />
               )}
+              {/* A batch has a total once its first file is done, so from then
+                  on the bar is a measurement rather than an animation. */}
+              {report.kind === "download" && report.progress && (
+                <Progress
+                  className="col-start-1 mt-2 h-1"
+                  aria-label="Download progress"
+                  value={Math.round(
+                    ((report.progress.landed + report.progress.failed) /
+                      report.progress.total) *
+                      100,
+                  )}
+                />
+              )}
 
               {/* Cancel lives on Settings, on the button that becomes it while a
                   pass runs (ADR 0020), so the report's one action is the route
@@ -792,16 +893,20 @@ export function ToastSurface({
                   `SettingKey` and Thumbnails is a section rather than a
                   setting. `preventDefault` keeps the report up — a `ToastAction`
                   is a `ToastClose` underneath, and "let me do something about
-                  it" is not "stop telling me". */}
-              <ToastAction
-                altText="Settings"
-                onClick={(event) => {
-                  event.preventDefault();
-                  setView("settings", { returnTo: view });
-                }}
-              >
-                Settings
-              </ToastAction>
+                  it" is not "stop telling me". A download has no cancel and
+                  nothing on Settings to do about it, so it offers no route
+                  there (ADR 0051). */}
+              {report.kind !== "download" && (
+                <ToastAction
+                  altText="Settings"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setView("settings", { returnTo: view });
+                  }}
+                >
+                  Settings
+                </ToastAction>
+              )}
 
               <ToastClose />
             </Toast>

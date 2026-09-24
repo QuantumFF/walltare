@@ -619,6 +619,39 @@ export interface PregenComplete {
 }
 
 /**
+ * How one file of a download went (download.rs Outcome): landed in the
+ * library, or failed with the backend's own sentence, which the card's tooltip
+ * and the batch's pinned ending print verbatim.
+ */
+export type DownloadOutcome =
+  | { kind: "landed" }
+  | { kind: "failed"; message: string };
+
+/**
+ * Payload of the `download-progress` event (download.rs Progress), after each
+ * file: the batch so far, and the Result just done. There is no byte-level
+ * progress (ADR 0054).
+ */
+export interface DownloadProgress {
+  total: number;
+  landed: number;
+  failed: number;
+  item: { wallhaven_id: string; outcome: DownloadOutcome };
+}
+
+/**
+ * Payload of the `download-complete` event (download.rs Complete), when the
+ * queue drains. `first_error` is the first failed file's sentence, `null`
+ * when every file landed.
+ */
+export interface DownloadComplete {
+  total: number;
+  landed: number;
+  failed: number;
+  first_error: string | null;
+}
+
+/**
  * Every event the backend emits, under the name it emits it with, mapped to
  * what rides on it.
  *
@@ -633,13 +666,15 @@ export interface BackendEvents {
   "scan-failed": ScanFailed;
   "pregen-progress": PregenProgress;
   "pregen-complete": PregenComplete;
+  "download-progress": DownloadProgress;
+  "download-complete": DownloadComplete;
 }
 
 /**
  * Every command the backend exposes, under the name `invoke` reaches it by.
  *
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
- * `BackendEvents` does above for the five event names: the one place in the
+ * `BackendEvents` does above for the seven event names: the one place in the
  * frontend where these 19 strings are written down. `client`'s methods below
  * reach them through `call`, the only caller in the app; the test suite's
  * `mockCommand` is the other reader, which is why the names are exported rather
@@ -671,7 +706,8 @@ export type Command =
   | "get_settings"
   | "set_setting"
   | "wallhaven_search"
-  | "set_wallhaven_key";
+  | "set_wallhaven_key"
+  | "wallhaven_download";
 
 /**
  * What each command takes and what it answers with.
@@ -732,6 +768,7 @@ export interface BackendCommands {
   };
   wallhaven_search: { args: { params: SearchParams }; answer: SearchPage };
   set_wallhaven_key: { args: { key: string }; answer: KeySaved };
+  wallhaven_download: { args: { ids: string[] }; answer: null };
 }
 
 /**
@@ -1211,6 +1248,20 @@ export const client = {
    * answers `verified: false`.
    */
   setWallhavenKey: (key: string) => call("set_wallhaven_key", { key }),
+
+  /**
+   * Queue Results for download by id, in order, and resolve once they are
+   * queued. The backend resolves each id from what it served, so the webview
+   * never names the URL whose bytes land in the library (ADR 0054). An id
+   * already queued is dropped.
+   *
+   * Rejects with `bad_request` for an id no search served, and with
+   * `invalid_path` or `invalid_path_syntax`, carrying the Settings field's own
+   * sentence, when the Download folder cannot be used. The files then arrive on
+   * `download-progress` and `download-complete`.
+   */
+  downloadWallhaven: (ids: string[]) =>
+    callSilent("wallhaven_download", { ids }),
 
   /**
    * Hands `handler` every emission of one backend event, resolving with the

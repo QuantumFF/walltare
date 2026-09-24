@@ -18,6 +18,7 @@ import {
   useKeyboardHandoff,
 } from "@/context/KeyboardHandoffContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
+import { DownloadRunProvider } from "@/context/DownloadRunContext";
 import { ScanRunProvider, useScanOutcome } from "@/context/ScanRunContext";
 import { client } from "@/lib/client";
 import { cn } from "@/lib/utils";
@@ -573,20 +574,23 @@ function Shell({
  * The scan run is outermost for the same kind of reason. The toast reports it,
  * the shell acts on how it ended, and Settings starts it and reads whether one
  * is running, so it sits above all three and above the view swap (ADR 0015).
+ * Discover's downloads sit just inside it for the toast's half of that.
  */
 export function Layout() {
   const [lightboxOpen, setLightboxOpen] = useState(false);
 
   return (
     <ScanRunProvider>
-      <KeyboardHandoffProvider lightboxOpen={lightboxOpen}>
-        <ToastSurface lightboxOpen={lightboxOpen}>
-          <Shell
-            lightboxOpen={lightboxOpen}
-            setLightboxOpen={setLightboxOpen}
-          />
-        </ToastSurface>
-      </KeyboardHandoffProvider>
+      <DownloadRunProvider>
+        <KeyboardHandoffProvider lightboxOpen={lightboxOpen}>
+          <ToastSurface lightboxOpen={lightboxOpen}>
+            <Shell
+              lightboxOpen={lightboxOpen}
+              setLightboxOpen={setLightboxOpen}
+            />
+          </ToastSurface>
+        </KeyboardHandoffProvider>
+      </DownloadRunProvider>
     </ScanRunProvider>
   );
 }

@@ -2,9 +2,16 @@ import { EmptyState } from "@/components/EmptyState";
 import { ItemGrid, type GridCell } from "@/components/ItemGrid";
 import { RESULT_CARD } from "@/components/grid-geometry";
 import { DIMMED_PICTURE } from "@/components/WallpaperCard";
-import { RESULT_KEYS } from "@/components/keymap";
+import {
+  RESULT_KEYS,
+  keyShortcut,
+  printedKey,
+  type ResultAction,
+} from "@/components/keymap";
 import type { SelectionHandle } from "@/components/selection";
+import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
+import { Kbd } from "@/components/ui/kbd";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -25,6 +32,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useApp } from "@/context/AppContext";
+import { useDownload } from "@/context/DownloadRunContext";
 import {
   useHandOffOnPointerPress,
   useKeyboardHandoff,
@@ -47,11 +55,14 @@ import {
   WALLHAVEN_COLOURS,
 } from "@/lib/client";
 import { bytes } from "@/lib/copy";
+import { useBackendEvents } from "@/lib/useBackendEvents";
 import { cn } from "@/lib/utils";
 import {
   ArrowDownWideNarrow,
   ArrowUpNarrowWide,
+  Check,
   ChevronDown,
+  Download,
   Heart,
   ImageOff,
   Loader2,
@@ -60,10 +71,13 @@ import {
   Settings as SettingsIcon,
 } from "lucide-react";
 import {
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -305,6 +319,48 @@ function failed(at: Failure["at"], error: unknown): Failure {
 }
 
 /**
+ * Where one Result's download has got to, as its caption says it (ADR 0051).
+ *
+ * Queued and Downloading are the page's reading of its own queue: the backend
+ * downloads one file at a time in the order it was asked, so the first of the
+ * page's queued ids is the one on the wire. Landed and Failed are what
+ * `download-progress` said about it.
+ */
+type CardDownload =
+  | { kind: "queued" }
+  | { kind: "downloading" }
+  | { kind: "landed" }
+  | { kind: "failed"; message: string };
+
+/** How a file ended, which is the part of a card's state the events set. */
+type Ended = Extract<CardDownload, { kind: "landed" | "failed" }>;
+
+/**
+ * What every card needs from the page to draw its caption: each Result's
+ * download, whether there is a Library root to download into, and the way to
+ * ask for one.
+ *
+ * A context rather than props through the grid's renderer, which stays a
+ * value per cell so the grid can hold its memo (#230). A few pages of cards
+ * re-render when a download moves, which is Review's scale.
+ */
+interface ResultDownloads {
+  states: Readonly<Record<string, CardDownload>>;
+  /** No Library root, so nothing can land and Download says so (ADR 0051). */
+  noRoot: boolean;
+  download: (result: MarkedResult) => void;
+}
+
+const ResultDownloadsContext = createContext<ResultDownloads>({
+  states: {},
+  noRoot: false,
+  download: () => {},
+});
+
+/** What a card with no Library root offers in place of Download. */
+const NO_ROOT = "Choose a library root to download";
+
+/**
  * Discover: Wallhaven's search, inside the app (#339).
  *
  * The header is a large search box that takes Wallhaven's own query syntax
@@ -332,6 +388,8 @@ export function DiscoverView() {
   const { view, settings, setView } = useApp();
   const showing = view === "discover";
   const keyed = settings.wallhaven_key_set;
+  const requestDownload = useDownload();
+  const { show } = useToaster();
 
   // Read once, so a Screen changed in Settings reaches Discover's ratio on the
   // next launch rather than re-searching the page under the curator.
@@ -481,6 +539,85 @@ export function DiscoverView() {
     scroller.current.scrollTop = scrollTop.current;
     followScroll();
   }, [showing, followScroll]);
+
+  // The page's downloads. `queue` is the ids this page has asked for and
+  // heard nothing back about, in the order asked; `ended` is how each file
+  // came out. A Result keeps its ending across searches, so a Result that
+  // failed still says so when it comes round again.
+  const [queue, setQueue] = useState<string[]>([]);
+  const [ended, setEnded] = useState<Record<string, Ended>>({});
+  const noRoot = settings.library_root === "";
+
+  const download = useCallback(
+    (result: MarkedResult) => {
+      // Refused up front: with no library there is nothing for a download to
+      // join, and the fix is one field away (ADR 0051).
+      if (noRoot) {
+        setView("settings", { focus: "library_root", returnTo: "discover" });
+        return;
+      }
+      if (result.mark !== "unmarked" || queue.includes(result.id)) return;
+      const { id } = result;
+      setQueue((q) => [...q, id]);
+      setEnded((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      requestDownload([id]).catch((error: unknown) => {
+        // A refusal at the click queued nothing, so the card goes back to
+        // offering Download and the reason is said where the click was.
+        setQueue((q) => q.filter((queued) => queued !== id));
+        show({ kind: "download-refused", error });
+      });
+    },
+    [noRoot, queue, requestDownload, setView, show],
+  );
+
+  useBackendEvents({
+    downloadProgress: ({ item: { wallhaven_id: id, outcome } }) => {
+      setQueue((q) => q.filter((queued) => queued !== id));
+      setEnded((prev) => ({
+        ...prev,
+        [id]:
+          outcome.kind === "landed"
+            ? { kind: "landed" }
+            : { kind: "failed", message: outcome.message },
+      }));
+      if (outcome.kind !== "landed") return;
+      // A landed file is a wallpaper carrying this id, so the card becomes an
+      // In library card, which is what the next search would mark it anyway.
+      setShown(
+        (prev) =>
+          prev && {
+            ...prev,
+            results: prev.results.map((r) =>
+              r.id === id ? { ...r, mark: "in_library" } : r,
+            ),
+          },
+      );
+    },
+    // Anything still waiting when the queue drains is something the backend
+    // never took up, and a card saying Queued forever would be a lie.
+    downloadComplete: () => setQueue([]),
+  });
+
+  const downloads = useMemo<ResultDownloads>(() => {
+    const states: Record<string, CardDownload> = { ...ended };
+    queue.forEach((id, at) => {
+      states[id] = { kind: at === 0 ? "downloading" : "queued" };
+    });
+    return { states, noRoot, download };
+  }, [ended, queue, noRoot, download]);
+
+  // `D` on the cursor, which is the card's own Download pressed by key.
+  const latestDownload = useRef(download);
+  useEffect(() => {
+    latestDownload.current = download;
+  });
+  const act = useCallback((action: ResultAction, result: MarkedResult) => {
+    if (action === "download") latestDownload.current(result);
+  }, []);
 
   const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
     null,
@@ -688,17 +825,19 @@ export function DiscoverView() {
               scale of a few pages of 24. Load more has no ceiling, so if a
               curator ever pages far enough for mount cost to matter, windowing
               against this page's scroller is the follow-up (ADR 0016). */}
-          <ItemGrid
-            ref={setGrid}
-            items={results}
-            label="Results from Wallhaven"
-            actions={RESULT_KEYS}
-            onAct={noAction}
-            card={RESULT_CARD}
-            density="discover"
-            className="gap-y-8 px-6 pb-8"
-            renderCard={renderResult}
-          />
+          <ResultDownloadsContext.Provider value={downloads}>
+            <ItemGrid
+              ref={setGrid}
+              items={results}
+              label="Results from Wallhaven"
+              actions={RESULT_KEYS}
+              onAct={act}
+              card={RESULT_CARD}
+              density="discover"
+              className="gap-y-8 px-6 pb-8"
+              renderCard={renderResult}
+            />
+          </ResultDownloadsContext.Provider>
 
           <div className="flex flex-col items-center gap-2 px-4 pb-24">
             {failure?.at === "more" ? (
@@ -1021,9 +1160,6 @@ function ColourPill({ asked, onChange }: PillProps) {
   );
 }
 
-/** Discover acts on no Result by key yet, so there is nothing for this to do. */
-function noAction(): void {}
-
 /** The grid's renderer: a value per prop, so the card's memo holds (#230). */
 function renderResult(
   result: MarkedResult,
@@ -1033,6 +1169,14 @@ function renderResult(
     <ResultCard result={result} cellIndex={cellIndex} selected={selected} />
   );
 }
+
+/** What a caption says for each state of a download, where Download would sit. */
+const DOWNLOAD_TEXT: Record<CardDownload["kind"], string> = {
+  queued: "Queued",
+  downloading: "Downloading",
+  landed: "Added to library",
+  failed: "Failed",
+};
 
 /** What a marked card's caption says, where Pick and Download would sit. */
 const MARK_TEXT: Record<Exclude<Mark, "unmarked">, string> = {
@@ -1050,6 +1194,13 @@ const MARK_TEXT: Record<Exclude<Mark, "unmarked">, string> = {
  * "In library" or "You rejected this" where Pick and Download go. It offers
  * neither: a duplicate is not downloaded, and changing one's mind about a
  * reject is a Restore in Library.
+ *
+ * An unmarked card's caption carries Download, and then follows its file:
+ * Queued, Downloading, and "Added to library", by which time the card is an
+ * In library card. A file that failed reads **Failed**, with the backend's
+ * sentence as its tooltip, and offers Download again. With no Library root,
+ * Download is "Choose a library root to download" instead, and takes the
+ * curator to that field (ADR 0051).
  *
  * The card is the grid's cell, wearing the role, the roving `tabindex` and the
  * position the grid finds it by (ADR 0019). Its shape is `RESULT_CARD`: the
@@ -1069,14 +1220,25 @@ const ResultCard = memo(function ResultCard({
   selected: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const mark = result.mark === "unmarked" ? null : MARK_TEXT[result.mark];
+  const { states, noRoot, download } = useContext(ResultDownloadsContext);
+  const handOffOnPointerPress = useHandOffOnPointerPress();
+  const state = states[result.id];
+  // A card whose file just landed is an In library card, and its caption says
+  // how it got there rather than repeating the mark.
+  const mark =
+    result.mark === "unmarked" || state?.kind === "landed"
+      ? null
+      : MARK_TEXT[result.mark];
+  const said = mark ?? (state ? DOWNLOAD_TEXT[state.kind] : null);
   const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
+  const offersDownload =
+    result.mark === "unmarked" && (!state || state.kind === "failed");
   return (
     <figure
       role="gridcell"
       tabIndex={selected ? 0 : -1}
       data-cell={cellIndex}
-      aria-label={mark ? `${facts}, ${mark}` : facts}
+      aria-label={said ? `${facts}, ${said}` : facts}
       className="group m-0 flex flex-col gap-2 rounded-xl outline-none"
     >
       <div
@@ -1098,7 +1260,7 @@ const ResultCard = memo(function ResultCard({
             "h-full w-full object-cover",
             // On the picture and not the card, as on a Rejected card in
             // Library, so the caption's mark stays readable.
-            mark && DIMMED_PICTURE,
+            result.mark !== "unmarked" && DIMMED_PICTURE,
             failed && "invisible",
           )}
         />
@@ -1125,13 +1287,78 @@ const ResultCard = memo(function ResultCard({
             {compact(result.favorites)} · {result.category}
           </p>
         </div>
-        {mark && (
+        {mark ? (
           <span
             data-slot="result-mark"
             className="shrink-0 text-muted-foreground"
           >
             {mark}
           </span>
+        ) : state && state.kind !== "failed" ? (
+          <span
+            data-slot="result-download"
+            className={cn(
+              "flex shrink-0 items-center gap-1",
+              state.kind === "landed"
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-muted-foreground",
+            )}
+          >
+            {state.kind === "downloading" && (
+              <Loader2 aria-hidden className="size-3 animate-spin" />
+            )}
+            {state.kind === "landed" && (
+              <Check aria-hidden className="size-3.5" />
+            )}
+            {DOWNLOAD_TEXT[state.kind]}
+          </span>
+        ) : (
+          offersDownload && (
+            // The pointer's press hands the keyboard back to the grid, so `D`
+            // still reaches the cursor after a click (ADR 0047).
+            <div
+              className="flex shrink-0 items-center gap-2"
+              onClick={handOffOnPointerPress}
+            >
+              {state?.kind === "failed" && (
+                <span
+                  data-slot="result-download"
+                  className="text-destructive"
+                  title={state.message}
+                >
+                  Failed
+                </span>
+              )}
+              {noRoot ? (
+                <Button
+                  variant="link"
+                  size="sm"
+                  // It puts the caret in the Library root field itself.
+                  data-moves-focus
+                  tabIndex={-1}
+                  className="h-7 px-0 text-xs"
+                  onClick={() => download(result)}
+                >
+                  {NO_ROOT}
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={`Download ${facts}`}
+                  aria-keyshortcuts={keyShortcut("download", RESULT_KEYS)}
+                  // The grid's cell is the tab stop, and `D` is how the
+                  // keyboard presses this (ADR 0019).
+                  tabIndex={-1}
+                  onClick={() => download(result)}
+                >
+                  <Download />
+                  Download
+                  <Kbd aria-hidden>{printedKey("download", RESULT_KEYS)}</Kbd>
+                </Button>
+              )}
+            </div>
+          )
         )}
       </figcaption>
     </figure>

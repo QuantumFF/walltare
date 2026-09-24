@@ -15,6 +15,8 @@
  */
 import { client } from "@/lib/client";
 import type {
+  DownloadComplete,
+  DownloadProgress,
   PregenComplete,
   PregenProgress,
   ScanComplete,
@@ -33,6 +35,8 @@ export interface BackendEventHandlers {
   scanFailed?: (payload: ScanFailed) => void;
   pregenProgress?: (payload: PregenProgress) => void;
   pregenComplete?: (payload: PregenComplete) => void;
+  downloadProgress?: (payload: DownloadProgress) => void;
+  downloadComplete?: (payload: DownloadComplete) => void;
 }
 
 type HandlerName = keyof BackendEventHandlers;
@@ -44,6 +48,8 @@ const HANDLER_NAMES = [
   "scanFailed",
   "pregenProgress",
   "pregenComplete",
+  "downloadProgress",
+  "downloadComplete",
 ] as const satisfies readonly HandlerName[];
 
 /**
@@ -51,7 +57,7 @@ const HANDLER_NAMES = [
  *
  * Written out rather than derived from a name map because each line is what
  * carries the payload type from `BackendEvents` to the handler — a loop over
- * the names would hand every handler the union of all five and need a cast to
+ * the names would hand every handler the union of all seven and need a cast to
  * get back what the caller already declared.
  *
  * Each reads its handler out of the ref at emission time. That is the point of
@@ -83,6 +89,14 @@ const SUBSCRIBE: {
   pregenComplete: (latest) =>
     client.subscribe("pregen-complete", (payload) =>
       latest.current.pregenComplete?.(payload),
+    ),
+  downloadProgress: (latest) =>
+    client.subscribe("download-progress", (payload) =>
+      latest.current.downloadProgress?.(payload),
+    ),
+  downloadComplete: (latest) =>
+    client.subscribe("download-complete", (payload) =>
+      latest.current.downloadComplete?.(payload),
     ),
 };
 
