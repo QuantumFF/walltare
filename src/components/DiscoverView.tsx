@@ -194,6 +194,8 @@ export function DiscoverView() {
   // The filters Discover opens with, read once: until the filter pills arrive
   // they are the remembered ones and nothing on the page changes them.
   const [filters] = useState(() => settings.discover_filters);
+  // Read once too, so a Screen changed in Settings reaches Discover's ratio on
+  // the next launch rather than re-searching the page under the curator.
   const [screen] = useState(() => screenRatio(settings.screen));
 
   const [draft, setDraft] = useState("");
@@ -424,6 +426,10 @@ export function DiscoverView() {
         )
       ) : shown ? (
         <>
+          {/* Unwindowed: every card is mounted, which is fine at Review's
+              scale of a few pages of 24. Load more has no ceiling, so if a
+              curator ever pages far enough for mount cost to matter, windowing
+              against this page's scroller is the follow-up (ADR 0016). */}
           <ItemGrid
             ref={setGrid}
             items={results}

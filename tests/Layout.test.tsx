@@ -743,6 +743,64 @@ test("Ctrl+4 reaches Discover, the fourth tab, which searches on its first visit
   expect(searches).toBe(1);
 });
 
+test("Discover's Results, scroll position and page count survive a trip to another tab", async () => {
+  const result = (id: string) => ({
+    id,
+    url: "",
+    short_url: "",
+    views: 1,
+    favorites: 1,
+    source: "",
+    purity: "sfw",
+    category: "general",
+    dimension_x: 3840,
+    dimension_y: 2160,
+    resolution: "3840x2160",
+    ratio: "1.78",
+    file_size: 1_000_000,
+    file_type: "image/jpeg",
+    created_at: "",
+    colors: [],
+    thumbs: { large: `lg/${id}`, original: "", small: "" },
+  });
+  let searches = 0;
+  mockCommand("wallhaven_search", (args) => {
+    searches++;
+    const page = args.params.page ?? 1;
+    return {
+      results: [result(`p${page}aaaa`), result(`p${page}bbbb`)],
+      meta: { current_page: page, last_page: 3, per_page: 24, total: 6, seed: null },
+    };
+  });
+  const discover = () =>
+    document.querySelector('[data-slot="discover-page"]') as HTMLElement;
+  const cards = () =>
+    discover().querySelectorAll('[role="gridcell"]').length;
+  const pageCount = () =>
+    discover().querySelector('[data-slot="page-count"]')?.textContent;
+
+  await openApp();
+  await press("4", { target: window, ctrlKey: true });
+  await click(screen.getByRole("button", { name: "Load more" }));
+  expect(cards()).toBe(4);
+  expect(pageCount()).toBe("Page 2 of 3");
+  discover().scrollTop = 240;
+  await act(async () => {
+    fireEvent.scroll(discover());
+  });
+
+  await press("3", { target: window, ctrlKey: true });
+  // `display: none` destroys the box and its offset in a real browser.
+  discover().scrollTop = 0;
+  await press("4", { target: window, ctrlKey: true });
+
+  expect(showingView()).toBe("discover");
+  expect(cards()).toBe(4);
+  expect(pageCount()).toBe("Page 2 of 3");
+  expect(discover().scrollTop).toBe(240);
+  expect(searches).toBe(2);
+});
+
 test("over Discover, the shortcuts list names the grid's keys and none of the Status keys", async () => {
   await openApp();
   await press("4", { target: window, ctrlKey: true });
@@ -754,7 +812,8 @@ test("over Discover, the shortcuts list names the grid's keys and none of the St
     shortcutLines("listing", RESULT_KEYS),
   );
   expect(dialog.textContent).not.toContain("Reject the selected wallpaper");
-  expect(dialog.textContent).toContain("Open the selection");
+  // Nothing opens a Result yet (#345), so Enter is not listed there.
+  expect(dialog.textContent).not.toContain("Open the selection");
 });
 
 test("Ctrl+1, Ctrl+2 and Ctrl+3 reach Rank, Review and Library", async () => {

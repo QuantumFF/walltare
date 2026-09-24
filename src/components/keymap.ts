@@ -152,6 +152,12 @@ export interface ActionBinding<A extends string> extends BoundKey {
 export interface ActionTable<T, A extends string> {
   bindings: readonly ActionBinding<A>[];
   offers: (item: T) => readonly A[];
+  /**
+   * `false` on a page where `Enter` opens nothing yet, which leaves the key
+   * unanswered and off the shortcuts list, so the list never names a key the
+   * page does not answer. Absent is a page that opens its items.
+   */
+  opens?: false;
 }
 
 /**
@@ -342,12 +348,15 @@ export const STATUS_KEYS: ActionTable<Wallpaper, TransitionAction> = {
  * The keys Discover acts on a Result with: none yet.
  *
  * `P` picks and `D` downloads, and each arrives with the ticket that gives it
- * something to do (#343, #344). Until then the grid answers the shared keys
- * alone, and the shortcuts dialog lists nothing it does not.
+ * something to do (#343, #344). Nor does `Enter` open a Result until the
+ * lightbox does (#345), so `opens` is `false` until then. Until then the grid
+ * answers the shared navigation and density keys alone, and the shortcuts
+ * dialog lists nothing it does not.
  */
 export const RESULT_KEYS: ActionTable<SearchResult, never> = {
   bindings: [],
   offers: () => [],
+  opens: false,
 };
 
 /** The table read at run time, where one entry's literal types are no help. */
@@ -476,6 +485,7 @@ function intentOf<T, A extends string>(
   }
 
   if (does === "open") {
+    if (actions.opens === false) return undefined;
     return opensFrom(event.target, surface)
       ? { kind: "open", item: selected }
       : undefined;
@@ -597,6 +607,8 @@ export function shortcutLines(
     ...TABLE.slice(opens),
   ];
   return ordered.flatMap((binding) => {
+    if (actions.opens === false && "does" in binding && binding.does === "open")
+      return [];
     const action = binding.listed[group];
     return action ? [{ keys: [binding.printed], action }] : [];
   });

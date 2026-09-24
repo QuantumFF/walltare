@@ -311,7 +311,7 @@ export const WALLPAPER_CARD: CardSpec = {
  * Discover's card: the same 16:9 picture with its facts in a caption under it,
  * two lines of `text-xs` and the `gap-2` above them (#339).
  *
- * `DiscoverCard` wears both, and this is how a reader of either finds the other.
+ * `ResultCard` in `DiscoverView` wears both, and this is how a reader of either finds the other.
  */
 export const RESULT_CARD: CardSpec = {
   ratio: 9 / 16,

@@ -20,8 +20,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
-use crate::settings::Vocabulary;
-use crate::settings::{self, Categories, DiscoverFilters, Order, Purity, Sorting, TopRange};
+use crate::settings::{
+    self, Categories, DiscoverFilters, Order, Purity, Sorting, TopRange, Vocabulary,
+};
 use crate::Db;
 
 /// Where Wallhaven's API lives. Tests point a client at the stub instead.
@@ -431,8 +432,10 @@ fn unexpected(what: &str) -> AppError {
 ///
 /// The order is the order the cases can be told apart in. A 429 carries an
 /// HTML body, so it is read off its status before any body is looked at. A
-/// Cloudflare challenge is HTML at a status Wallhaven itself would answer with
-/// JSON, so it is told apart from a plain 5xx by what it is made of.
+/// Cloudflare challenge says so in `cf-mitigated`, or is an HTML 403: the API
+/// answers a refusal of its own as JSON. Every other status is read off the
+/// status alone, since Cloudflare's own 5xx pages are HTML too and are still
+/// Wallhaven having trouble rather than a challenge.
 fn parse<T: serde::de::DeserializeOwned>(
     mut response: ureq::http::Response<ureq::Body>,
 ) -> Result<T, AppError> {
@@ -459,7 +462,7 @@ fn parse<T: serde::de::DeserializeOwned>(
 
     let html = header("content-type").is_some_and(|t| t.contains("text/html"));
     let challenged = header("cf-mitigated").is_some_and(|v| v.contains("challenge"));
-    if challenged || (html && status != 200) {
+    if challenged || (html && status == 403) {
         return Err(AppError::Network(
             "Wallhaven's Cloudflare check stopped the search.".to_string(),
         ));
@@ -794,6 +797,46 @@ mod tests {
             panic!("{err:?}");
         };
         assert!(message.contains("Cloudflare"), "{message}");
+    }
+
+    #[test]
+    fn a_challenge_named_in_its_header_is_the_cloudflare_error_at_any_status() {
+        let stub =
+            testing::stub(vec![Canned::html(503, "<html>Just a moment...</html>")
+                .header("cf-mitigated", "challenge")]);
+
+        let err = client(&stub).search(&plain()).unwrap_err();
+
+        let AppError::Network(message) = err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains("Cloudflare"), "{message}");
+    }
+
+    #[test]
+    fn cloudflares_own_html_5xx_page_is_wallhaven_having_trouble() {
+        let stub = testing::stub(vec![Canned::html(522, "<html>Connection timed out</html>")]);
+
+        let err = client(&stub).search(&plain()).unwrap_err();
+
+        let AppError::Network(message) = err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains("HTTP 522"), "{message}");
+        assert!(!message.contains("Cloudflare"), "{message}");
+    }
+
+    #[test]
+    fn an_html_404_is_a_refusal_naming_its_status_and_not_a_challenge() {
+        let stub = testing::stub(vec![Canned::html(404, "<html>Not Found</html>")]);
+
+        let err = client(&stub).search(&plain()).unwrap_err();
+
+        let AppError::Network(message) = err else {
+            panic!("{err:?}");
+        };
+        assert!(message.contains("HTTP 404"), "{message}");
+        assert!(!message.contains("Cloudflare"), "{message}");
     }
 
     #[test]

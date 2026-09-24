@@ -329,6 +329,36 @@ test("the Ratio pill offers the Screen's, the common ones and Any ratio", async 
   expect(searches[2].ratios).toBeUndefined();
 });
 
+test("the ratio goes back to the Screen's when Discover mounts again", async () => {
+  await renderInApp(<DiscoverView />);
+  await chooseRatio("21:9");
+  expect(ratioPill().textContent).toBe("21:9");
+  cleanup();
+
+  await renderInApp(<DiscoverView />);
+
+  expect(searches.map((s) => s.ratios)).toEqual([["16x9"], ["21x9"], ["16x9"]]);
+  expect(ratioPill().textContent).toBe("16:9 · Screen");
+});
+
+test("Enter on a card opens nothing yet, and is left to the page", async () => {
+  await renderInApp(<DiscoverView />);
+  await act(async () => {
+    (cards()[0] as HTMLElement).focus();
+  });
+
+  const event = new KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    cards()[0].dispatchEvent(event);
+  });
+
+  expect(event.defaultPrevented).toBe(false);
+});
+
 test("Ctrl and the wheel move through Discover's two to five a row", async () => {
   viewportWidth(1920);
   answer = () => page(Array.from({ length: 12 }, (_, i) => `r${i}0000`));
