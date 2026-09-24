@@ -176,7 +176,10 @@ release that looks like it has a broken thumbnail pipeline.
       [ADR 0053](adr/0053-discover-thumbnails-load-straight-from-wallhaven.md).
       At the starting three columns each card sharpens as its full file from
       `w.wallhaven.cc` lands; press `-` to four and the cards stay on the
-      thumbnail, with no blank card on the way in or out.
+      thumbnail, with no blank card on the way in or out. Press `+` to two:
+      the cards come out sharp at the wider size. Sweep the mouse across the
+      grid. No card flickers or shows another card's picture, and no picture
+      is drawn between rows.
       Then press `Enter` on a card: the lightbox opens on its thumbnail, and
       the full file from `w.wallhaven.cc` replaces it. Step with `→` a few
       times; each Result sharpens the same way. See

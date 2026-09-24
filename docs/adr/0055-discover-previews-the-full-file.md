@@ -88,3 +88,17 @@ render in a release build, and the console shows no violations.
 > 1–10 MB each. That's accepted in exchange for cards that show the detail
 > the page exists to judge. The "Only the lightbox loads it" decision and the
 > first consequence above are superseded to that extent.
+
+> **Amended 2026-09-24, again.** A card doesn't keep the full file as an
+> `<img>`. Kept that way, each card held its file decoded at full size, 33 MB
+> for 4K and 133 MB for 8K. A page of 24 ran WebKitGTK out of graphics memory.
+> It showed at two and three columns as cards flickering, a card briefly
+> drawing another card's picture, and pictures drawn between rows while the
+> mouse moved. So the `<img>` now only fetches the file and is never painted.
+> Once it has loaded, the file is decoded and drawn onto a canvas at the card's
+> size in device pixels, cropped as `object-cover` would, and the `<img>`
+> unmounts, as it also does when the fetch or the draw fails. Cards decode one
+> at a time. A shown card that settles more than 10% wider than it was drawn
+> at, from three columns to two, fetches the file and draws it again. That
+> fetch usually comes from WebKit's cache, but nothing guarantees it. A card
+> hidden at four and five columns never refetches.

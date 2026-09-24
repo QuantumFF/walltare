@@ -1648,7 +1648,7 @@ const ResultCard = memo(function ResultCard({
   full: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  // Whether the full file over the `lg` has loaded, and so is shown. Kept
+  // Whether the full file over the `lg` has been drawn, and so is shown. Kept
   // across a zoom out and back, as a Library card keeps its `medium`'s.
   const [sharp, setSharp] = useState(false);
   const controls = useContext(ResultControlsContext);
@@ -1698,22 +1698,17 @@ const ResultCard = memo(function ResultCard({
           onError={() => setFailed(true)}
           className={cn(pictureClassName, (failed || covered) && "invisible")}
         />
-        {/* Laid over the `lg` and shown once it has loaded, so a zoom in
+        {/* Laid over the `lg` and shown once it has been drawn, so a zoom in
             sharpens the card rather than blanking it. A full file that fails
-            leaves the `lg` showing, which is still the picture. */}
-        {full && !failed && (
-          <img
+            leaves the `lg` showing, which is still the picture. Kept mounted
+            but hidden at four and five once drawn, so a zoom back in shows it
+            at once. */}
+        {(full || sharp) && !failed && (
+          <SharpPicture
             src={fullFileUrl(result)}
-            alt=""
-            aria-hidden
-            loading="lazy"
-            decoding="async"
-            onLoad={() => setSharp(true)}
-            className={cn(
-              pictureClassName,
-              "pointer-events-none absolute inset-0",
-              !sharp && "opacity-0",
-            )}
+            className={pictureClassName}
+            shown={covered}
+            onDrawn={() => setSharp(true)}
           />
         )}
         {failed && (
@@ -1765,6 +1760,174 @@ const ResultCard = memo(function ResultCard({
     </figure>
   );
 });
+
+/**
+ * A card's full file, drawn once onto a canvas the card's size in device pixels
+ * (ADR 0055).
+ *
+ * The `<img>` is only the fetch, lazy like the `lg`'s and never painted. Once it
+ * has loaded, the file is decoded and drawn onto the canvas, cropped to the
+ * card's shape, and the `<img>` unmounts, so no card holds its file decoded at
+ * full size. It unmounts too when the fetch or the draw fails, and the `lg`
+ * stays the picture.
+ *
+ * Draws take turns (`drawTurn`), so a page whose files land together decodes
+ * one at a time. A shown card that settles wider than it was drawn at, from
+ * three columns to two, fetches and draws again. A hidden one at four and five
+ * does not, because only the `lg` shows there.
+ */
+function SharpPicture({
+  src,
+  className,
+  shown,
+  onDrawn,
+}: {
+  src: string;
+  className: string;
+  /**
+   * Whether the canvas is the card's picture: at three columns and fewer, once
+   * it has been drawn. It never is before then.
+   */
+  shown: boolean;
+  onDrawn: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Whether the `<img>` is mounted: until the first draw, and again while a
+  // wider card fetches the file to draw it at its new size.
+  const [fetching, setFetching] = useState(true);
+  // How many device pixels wide the canvas was last drawn at, 0 before then.
+  const drawnWidth = useRef(0);
+  // A loaded file waiting for the canvas to be laid out, as it is not while
+  // the shell hides the page, and drawn once it is.
+  const waiting = useRef<HTMLImageElement | null>(null);
+  // Read by the resize observer below, which outlives any one render.
+  const shownRef = useRef(shown);
+  useLayoutEffect(() => {
+    shownRef.current = shown;
+  });
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === "undefined") return;
+    // Judged once the size is quiet, so dragging the window wider draws once at
+    // the end rather than at every step.
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const observer = new ResizeObserver(() => {
+      clearTimeout(settle);
+      settle = setTimeout(() => {
+        if (waiting.current) {
+          queueDraw(waiting.current);
+          return;
+        }
+        const grown =
+          drawnWidth.current > 0 &&
+          devicePixelsOf(canvas).width > drawnWidth.current * REDRAW_GROWTH;
+        if (grown && shownRef.current) setFetching(true);
+      }, RESIZE_SETTLE_MS);
+    });
+    observer.observe(canvas);
+    return () => {
+      observer.disconnect();
+      clearTimeout(settle);
+    };
+  }, []);
+
+  // Whether the `<img>` is done with: drawn, or failed to be. Not while the
+  // canvas has no size to draw at.
+  const draw = async (image: HTMLImageElement): Promise<boolean> => {
+    const canvas = canvasRef.current;
+    if (!canvas) return true;
+    const { width, height } = devicePixelsOf(canvas);
+    if (width === 0) {
+      waiting.current = image;
+      return false;
+    }
+    waiting.current = null;
+    await image.decode();
+    const context = image.naturalWidth > 0 ? canvas.getContext("2d") : null;
+    if (!context) return true;
+    canvas.width = width;
+    canvas.height = height;
+    context.imageSmoothingQuality = "high";
+    // `object-cover`'s crop, done here so the canvas holds only what shows.
+    const scale = Math.max(
+      width / image.naturalWidth,
+      height / image.naturalHeight,
+    );
+    const sourceWidth = width / scale;
+    const sourceHeight = height / scale;
+    context.drawImage(
+      image,
+      (image.naturalWidth - sourceWidth) / 2,
+      (image.naturalHeight - sourceHeight) / 2,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      width,
+      height,
+    );
+    drawnWidth.current = width;
+    onDrawn();
+    return true;
+  };
+
+  // Drawn or not, the `<img>` goes once its turn is done with it, and a draw
+  // that throws still lets the next card's turn come.
+  function queueDraw(image: HTMLImageElement) {
+    drawTurn = drawTurn
+      .then(() => draw(image))
+      .catch(() => true)
+      .then((done) => {
+        if (done) setFetching(false);
+      });
+  }
+
+  return (
+    <>
+      <canvas
+        ref={canvasRef}
+        aria-hidden
+        className={cn(
+          className,
+          "pointer-events-none absolute inset-0",
+          !shown && "invisible",
+        )}
+      />
+      {fetching && (
+        <img
+          src={src}
+          alt=""
+          aria-hidden
+          loading="lazy"
+          decoding="async"
+          onLoad={(event) => queueDraw(event.currentTarget)}
+          onError={() => setFetching(false)}
+          className="pointer-events-none invisible absolute inset-0 h-full w-full"
+        />
+      )}
+    </>
+  );
+}
+
+/** How much wider than it was drawn a shown card grows before it draws again. */
+const REDRAW_GROWTH = 1.1;
+
+/** How long a card's size has to be quiet before a wider one draws again. */
+const RESIZE_SETTLE_MS = 150;
+
+/** The queue `SharpPicture` draws in, one full file at a time. */
+let drawTurn: Promise<void> = Promise.resolve();
+
+/** How many device pixels a canvas is laid out across. */
+function devicePixelsOf(canvas: HTMLCanvasElement) {
+  const box = canvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  return {
+    width: Math.round(box.width * ratio),
+    height: Math.round(box.height * ratio),
+  };
+}
 
 /**
  * How the offer looks on each surface that draws it: the card's caption, on
