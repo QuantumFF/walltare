@@ -1638,7 +1638,10 @@ const ResultCard = memo(function ResultCard({
         className={cn(
           "relative aspect-video overflow-hidden rounded-xl bg-card",
           // A Pick leaves the picture alone and says so on its Pick button.
-          "group-focus-visible:ring-2 group-focus-visible:ring-primary group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
+          // The focus ring is the keyboard's, and not drawn while the mouse
+          // put the cursor here (`data-pointed`): a `P` pressed over a card
+          // would otherwise have WebKit draw it as keyboard focus.
+          "not-in-data-pointed:group-focus-visible:ring-2 not-in-data-pointed:group-focus-visible:ring-primary not-in-data-pointed:group-focus-visible:ring-offset-2 not-in-data-pointed:group-focus-visible:ring-offset-background",
         )}
       >
         {/* Kept mounted after a failure, so a load that later succeeds can

@@ -399,6 +399,12 @@ function useCellWidth(
  * and that is the card selected. Once and not per frame, so a wheel pass moves
  * the focus at its end rather than across every card it slides by.
  *
+ * While the mouse is what put the cursor where it is, the grid wears
+ * `data-pointed`, so a card can leave off the keyboard's focus ring: a key
+ * pressed over a card the mouse focused makes the engine draw that focus as
+ * keyboard focus. An arrow key takes the attribute off. Set on the node rather
+ * than through state, so the mouse crossing a card renders nothing for it.
+ *
  * Touch and pen have no hover to follow; a tap is a click, which opens the
  * card. `undefined` when the host did not ask, so the grid carries no pointer
  * handlers at all.
@@ -415,6 +421,11 @@ function useFollowPointer(
   useEffect(() => {
     move.current = moveByPointer;
   });
+
+  const point = (cell: number) => {
+    if (grid.current) grid.current.dataset.pointed = "";
+    move.current(cell);
+  };
 
   // The cell of the grid under a point in the viewport, if there is one.
   const cellAt = (target: Element | null) => {
@@ -438,7 +449,7 @@ function useFollowPointer(
         const at = pointerAt.current;
         if (!at) return;
         const cell = cellAt(document.elementFromPoint(at.x, at.y));
-        if (cell !== null) move.current(cell);
+        if (cell !== null) point(cell);
       }, SCROLL_SETTLE_MS);
     };
     const onWheel = (event: WheelEvent) => {
@@ -471,7 +482,7 @@ function useFollowPointer(
       const cell = cellAt(
         event.target instanceof Element ? event.target : null,
       );
-      if (cell !== null) moveByPointer(cell);
+      if (cell !== null) point(cell);
     },
     onPointerLeave: () => {
       pointerAt.current = null;
@@ -612,6 +623,9 @@ function Grid<T extends Keyed, A extends string>({
         onOpen?.(intent.item);
         break;
       case "move":
+        // The keyboard has the cursor back, focus ring and all
+        // (`useFollowPointer`).
+        delete gridRef.current?.dataset.pointed;
         moveByKey(intent.to);
         break;
       // Every intent the keymap can hand this surface is answered above, so

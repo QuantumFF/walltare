@@ -2096,3 +2096,20 @@ test("a card draws a frame under the mouse, on a layer inside the picture", asyn
   expect(frame?.className).toContain("ring-inset");
   expect(frame?.parentElement?.className).toContain("overflow-hidden");
 });
+
+test("the keyboard's focus ring stays off a card the mouse chose, until an arrow key", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+  const grid = screen.getByRole("grid");
+  expect(picture(first).parentElement?.className).toContain(
+    "not-in-data-pointed:group-focus-visible:ring-2",
+  );
+
+  await hover(first);
+  expect(grid.hasAttribute("data-pointed")).toBe(true);
+  await press("p");
+  expect(grid.hasAttribute("data-pointed")).toBe(true);
+
+  await press("ArrowRight");
+  expect(grid.hasAttribute("data-pointed")).toBe(false);
+});
