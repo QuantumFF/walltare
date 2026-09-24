@@ -3,9 +3,8 @@ import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { useApp } from "@/context/AppContext";
-import type { Wallpaper } from "@/lib/client";
+import type { Resolution } from "@/lib/client";
 import { cropCaption } from "@/lib/copy";
-import { dimensionsOf } from "@/lib/wallpaper";
 import { cropToFill, ratioOf, type CropPlan } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { Crop } from "lucide-react";
@@ -64,8 +63,11 @@ export function CropPreviewToggle() {
 }
 
 export interface CropPreviewProps {
-  /** The wallpaper being looked at, for its Dimensions. */
-  wallpaper: Wallpaper;
+  /**
+   * The Dimensions of the picture being looked at, or `null` while nothing has
+   * read them.
+   */
+  dimensions: Resolution | null;
 }
 
 /**
@@ -90,7 +92,7 @@ export interface CropPreviewProps {
  * is what the curator says their display is, and the detected value is only what
  * it reads as until they say otherwise.
  */
-export function CropPreview({ wallpaper }: CropPreviewProps) {
+export function CropPreview({ dimensions: size }: CropPreviewProps) {
   const { settings } = useApp();
   const screen = settings.screen;
 
@@ -98,7 +100,6 @@ export function CropPreview({ wallpaper }: CropPreviewProps) {
   // 16:9 the layouts fall back to is a guess rather than a measurement — so this
   // says nothing instead of something wrong (CONTEXT.md, ADR 0044). The caption
   // still names the Screen, which is what makes the press answer at all.
-  const size = dimensionsOf(wallpaper);
   const plan: CropPlan | null =
     size === null
       ? null

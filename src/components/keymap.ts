@@ -45,11 +45,15 @@ import type { Wallpaper } from "@/lib/client";
  * The grid opens on `Enter` only from the selected cell itself, so it asks for
  * that cell. Lazily, because only `Enter` needs it and a query per arrow key
  * would be a query for nothing.
+ *
+ * The lightbox says whether it offers the crop preview, since #338 made that
+ * opt-in: Library's and Review's do, and a lightbox that does not leaves `C`
+ * alone rather than answering it with nothing.
  */
 export type ListingSurface =
   | { kind: "grid"; columns: number; cell: () => Element | null }
   | { kind: "strip" }
-  | { kind: "lightbox" };
+  | { kind: "lightbox"; crop: boolean };
 
 type SurfaceKind = ListingSurface["kind"];
 
@@ -454,8 +458,10 @@ function intentOf<T, A extends string>(
 
   // A toggle rather than a hold, so the bars stay up while the curator arrows
   // through the worklist, and once per press rather than per repeat (#266).
-  if (does === "crop")
+  if (does === "crop") {
+    if (surface.kind === "lightbox" && !surface.crop) return undefined;
     return event.repeat ? { kind: "held" } : { kind: "crop" };
+  }
 
   if (does === "open") {
     return opensFrom(event.target, surface)

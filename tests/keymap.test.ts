@@ -235,7 +235,9 @@ const CASES: Case[] = [
 function surfaceOf(on: Kind): ListingSurface {
   return on === "grid"
     ? { kind: "grid", columns: COLUMNS, cell: () => cell }
-    : { kind: on };
+    : on === "lightbox"
+      ? { kind: on, crop: true }
+      : { kind: on };
 }
 
 function describe(c: Case): string {
@@ -388,4 +390,33 @@ test("each transition's button prints the key the keymap answers it by", () => {
   expect(printedKey("make-active", STATUS_KEYS)).toBe("K");
   expect(printedKey("reject", STATUS_KEYS)).toBe("Del");
   expect(printedKey("restore", STATUS_KEYS)).toBe("R");
+});
+
+// The crop preview is opt-in on the lightbox since #338, and a lightbox that
+// leaves it out leaves `C` alone: unanswered, so unprevented.
+test("C goes unanswered on a lightbox that offers no crop preview", () => {
+  let prevented = false;
+  const intent = answerKey(
+    {
+      key: "c",
+      shiftKey: false,
+      ctrlKey: false,
+      altKey: false,
+      metaKey: false,
+      repeat: false,
+      target: elsewhere,
+      preventDefault: () => {
+        prevented = true;
+      },
+    },
+    {
+      surface: { kind: "lightbox", crop: false },
+      selected: wallpaper(1),
+      index: 5,
+      length: 12,
+    },
+    STATUS_KEYS,
+  );
+  expect(intent).toBeUndefined();
+  expect(prevented).toBe(false);
 });

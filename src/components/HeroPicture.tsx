@@ -1,7 +1,12 @@
 import { CropPreview, useCropPreview } from "@/components/CropPreview";
-import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
+import {
+  wallpaperImageUrl,
+  type Resolution,
+  type Wallpaper,
+} from "@/lib/client";
 import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
+import { dimensionsOf } from "@/lib/wallpaper";
 import {
   useCallback,
   useState,
@@ -9,9 +14,49 @@ import {
   type RefCallback,
 } from "react";
 
-/** A picture's decoded size, and the wallpaper it is the picture of. */
+/**
+ * What a hero picture is drawn from: two sources of one picture, and the
+ * Dimensions of the file they are pictures of.
+ *
+ * Not a Wallpaper, since #338. Discover's lightbox draws a Result, whose two
+ * sizes are Wallhaven's `lg` thumbnail and its full file rather than the
+ * `small` and `medium` a wallpaper is served at (ADR 0055), and whose id is a
+ * string. What the picture needs of either is the same five facts, so those
+ * are what it takes, and `wallpaperPicture` below reads them off a Wallpaper.
+ */
+export interface Picture {
+  /** Which item this is the picture of. A change is a step. */
+  id: string | number;
+  /** Painted under `full` until that has painted, and never requested twice. */
+  placeholder: string;
+  /** The picture itself. */
+  full: string;
+  /** The picture's accessible name. */
+  alt: string;
+  /**
+   * The file's Dimensions, or `null` while nothing has read them: what the
+   * box is shaped by and what the crop preview crops (ADR 0044).
+   */
+  dimensions: Resolution | null;
+}
+
+/**
+ * A wallpaper's picture, as the Review strip and Library's lightbox draw it:
+ * its `small` under its `medium`, both from `wallpaper://` (ADR 0022).
+ */
+export function wallpaperPicture(wallpaper: Wallpaper): Picture {
+  return {
+    id: wallpaper.id,
+    placeholder: wallpaperImageUrl(wallpaper.id, "small"),
+    full: wallpaperImageUrl(wallpaper.id, "medium"),
+    alt: wallpaper.filename,
+    dimensions: dimensionsOf(wallpaper),
+  };
+}
+
+/** A picture's decoded size, and the item it is the picture of. */
 interface NaturalSize {
-  id: number;
+  id: string | number;
   width: number;
   height: number;
 }
@@ -26,16 +71,17 @@ interface NaturalSize {
  * declares only an `aspect-ratio` collapses, and why the crop preview's bars
  * need a box that is exactly the picture.
  *
- * The ratio is the wallpaper's Dimensions. A wallpaper whose Dimensions nothing
+ * The ratio is the picture's Dimensions. A picture whose Dimensions nothing
  * has read has none, and gets the 16:9 guess every layout falls back to
  * (ADR 0044) — unless the surface hands `learnNaturalSize` to the picture's
- * `onNaturalSize`, in which case the decoded `medium`'s own shape replaces the
- * guess once it has loaded. That is opt-in because it moves the box after the
+ * `onNaturalSize`, in which case the decoded full source's own shape replaces
+ * the guess once it has loaded. That is opt-in because it moves the box after the
  * picture arrives: the lightbox wants it, since its row shrink-wraps the
  * picture and a portrait of unknown shape would otherwise get a 16:9 row
  * (ADR 0022); the strip does not, since its hero crops to the box and a box
  * that jumps on arrival would move the filmstrip's neighbours with it. A
- * `medium` is capped in width only, so its shape is the wallpaper's.
+ * `medium` is capped in width only, so its shape is the wallpaper's, and a
+ * Wallhaven full file is the file.
  *
  * The last non-zero measurement is kept, and `unmeasured` stands in until there
  * is one. Not an edge case: happy-dom reports every rect as zero, and ADR 0015
@@ -51,16 +97,16 @@ interface NaturalSize {
  * frame paints.
  */
 export function usePictureBox(
-  wallpaper: Wallpaper | null,
+  picture: Picture | null,
   unmeasured: Box,
 ): {
   area: RefCallback<HTMLElement>;
   box: Box;
-  learnNaturalSize: (id: number, size: Box) => void;
+  learnNaturalSize: (id: Picture["id"], size: Box) => void;
 } {
   const [measured, setMeasured] = useState<Box>(unmeasured);
-  // Keyed on the wallpaper it was decoded for, so a step never draws the next
-  // wallpaper in the last one's shape.
+  // Keyed on the item it was decoded for, so a step never draws the next item
+  // in the last one's shape.
   const [natural, setNatural] = useState<NaturalSize | null>(null);
 
   const area = useCallback((node: HTMLElement | null) => {
@@ -80,7 +126,7 @@ export function usePictureBox(
     return () => observer.disconnect();
   }, []);
 
-  const learnNaturalSize = useCallback((id: number, size: Box) => {
+  const learnNaturalSize = useCallback((id: Picture["id"], size: Box) => {
     // A decode that reports nothing is no shape; happy-dom reports every image
     // this way.
     if (size.width <= 0 || size.height <= 0) return;
@@ -93,22 +139,20 @@ export function usePictureBox(
     );
   }, []);
 
-  const known =
-    wallpaper && wallpaper.width !== null && wallpaper.height !== null;
+  const known = picture?.dimensions ?? null;
   const learned =
-    !known && wallpaper && natural?.id === wallpaper.id ? natural : null;
+    !known && picture && natural?.id === picture.id ? natural : null;
+  const shape = known ?? learned;
   const box = fittedBox(
     measured,
-    learned
-      ? ratioOf(learned.width, learned.height)
-      : ratioOf(wallpaper?.width ?? null, wallpaper?.height ?? null),
+    ratioOf(shape?.width ?? null, shape?.height ?? null),
   );
   return { area, box, learnNaturalSize };
 }
 
 export interface HeroPictureProps {
-  /** The wallpaper being shown. A change is a step, and the picture holds through it. */
-  wallpaper: Wallpaper;
+  /** The picture being shown. A change of `id` is a step, and the picture holds through it. */
+  picture: Picture;
   /** The box to draw it in, from `usePictureBox`. */
   box: Box;
   /**
@@ -123,7 +167,17 @@ export interface HeroPictureProps {
    */
   fit: "cover" | "contain";
   /**
-   * What the panel says when the file is gone: the words, the icon and their
+   * Whether the crop preview is offered over this picture, drawn while the
+   * stored toggle is up (#266).
+   *
+   * Opt-in since #338: the Review strip and Library's lightbox offer it, and
+   * Discover's lightbox leaves it out, since a Result is not yet anything the
+   * Screen would crop.
+   */
+  cropPreview?: boolean;
+  /**
+   * What the panel says when the full source fails to load, which for a
+   * wallpaper means its file is gone: the words, the icon and their
    * colours, since the strip sits on the page's theme and the lightbox on a
    * dark backdrop in both themes, and the lightbox has room for the second line
    * the strip's hero does without (ADR 0032). Where and when it shows is this
@@ -135,14 +189,14 @@ export interface HeroPictureProps {
   /** A press on the picture, which the Review strip opens the lightbox from. */
   onClick?: () => void;
   /**
-   * Told the `medium`'s decoded size when it loads, for `usePictureBox`'s
+   * Told the full source's decoded size when it loads, for `usePictureBox`'s
    * `learnNaturalSize`. Absent for a surface that keeps the 16:9 guess.
    */
-  onNaturalSize?: (id: number, size: Box) => void;
+  onNaturalSize?: (id: Picture["id"], size: Box) => void;
 }
 
 /**
- * One wallpaper, large: the Review strip's hero and the lightbox's picture.
+ * One picture, large: the Review strip's hero and the lightbox's picture.
  *
  * Everything about the picture itself is here and nowhere else, which is what
  * the two surfaces lost by each carrying a copy (#279). Their copies had drifted
@@ -153,18 +207,24 @@ export interface HeroPictureProps {
  * - **The load phases.** The `small` under the `medium` until the `medium` has
  *   painted, then the `medium`, or the gone panel if it never will.
  * - **When each phase resets.** The placeholder once per mount and the gone
- *   panel once per wallpaper, for the reasons beside each below.
+ *   panel once per picture, for the reasons beside each below.
  * - **The crop preview**, drawn over the picture while the stored toggle is up
- *   and not while the panel says there is no picture (#266).
+ *   and not while the panel says there is no picture (#266), for a surface
+ *   that offers it.
+ *
+ * The phases are named for a wallpaper's two sizes below, and are the same
+ * for any placeholder and full source: Discover's `lg` under its full file is
+ * this rule with Wallhaven's sizes in (ADR 0055).
  *
  * The measurement is `usePictureBox` above, in this module for the same reason.
  * Where the surfaces differ on purpose, the difference is a named input: `fit`,
- * `gone`, and whether to pass `onNaturalSize`.
+ * `cropPreview`, `gone`, and whether to pass `onNaturalSize`.
  */
 export function HeroPicture({
-  wallpaper,
+  picture,
   box,
   fit,
+  cropPreview = false,
   gone: goneNotice,
   className,
   onClick,
@@ -196,8 +256,8 @@ export function HeroPicture({
   // panel over a wallpaper that is fine; one reset in a layout effect never
   // painted it but still committed it. Keyed on the id, the render that steps is
   // the render that drops the panel.
-  const [goneId, setGoneId] = useState<number | null>(null);
-  const gone = goneId === wallpaper.id;
+  const [goneId, setGoneId] = useState<Picture["id"] | null>(null);
+  const gone = goneId === picture.id;
 
   // Whether the `<img>` is showing a failure, which is not the same question as
   // whether the panel is up. The panel goes the moment the wallpaper changes;
@@ -233,15 +293,15 @@ export function HeroPicture({
         // already named.
         <img
           data-slot="hero-placeholder"
-          src={wallpaperImageUrl(wallpaper.id, "small")}
+          src={picture.placeholder}
           alt=""
           className={cn("absolute inset-0 h-full w-full", fitClass)}
         />
       )}
       <img
         data-slot="hero-picture"
-        src={wallpaperImageUrl(wallpaper.id, "medium")}
-        alt={wallpaper.filename}
+        src={picture.full}
+        alt={picture.alt}
         // No `key`, deliberately: an `<img>` whose `src` changes keeps painting
         // the image it has until the new one decodes, so the outgoing wallpaper
         // holds the frame for the whole of a step. A fresh element per wallpaper
@@ -252,7 +312,7 @@ export function HeroPicture({
           setGoneId(null);
           setBroken(false);
           const { naturalWidth, naturalHeight } = event.currentTarget;
-          onNaturalSize?.(wallpaper.id, {
+          onNaturalSize?.(picture.id, {
             width: naturalWidth,
             height: naturalHeight,
           });
@@ -262,7 +322,7 @@ export function HeroPicture({
         // resolves. What it leaves is the panel below (ADR 0032).
         onError={() => {
           setArrived(true);
-          setGoneId(wallpaper.id);
+          setGoneId(picture.id);
           setBroken(true);
         }}
         // Not dimmed, whatever the card does to a Rejected one: both surfaces
@@ -279,7 +339,9 @@ export function HeroPicture({
       {/* What the Screen would cut off, over the picture it would cut it off.
           Not drawn over a wallpaper whose file is gone: the panel says there is
           no picture, and bars over it would be a claim about one (#266). */}
-      {cropOn && !gone && <CropPreview wallpaper={wallpaper} />}
+      {cropPreview && cropOn && !gone && (
+        <CropPreview dimensions={picture.dimensions} />
+      )}
       {gone && (
         // The file is gone, said where the picture would have been, in the
         // surface's own words (ADR 0032).

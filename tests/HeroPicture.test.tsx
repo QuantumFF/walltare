@@ -1,4 +1,8 @@
-import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
+import {
+  HeroPicture,
+  usePictureBox,
+  wallpaperPicture,
+} from "@/components/HeroPicture";
 import { wallpaperImageUrl, type Wallpaper } from "@/lib/client";
 import { fittedBox, ratioOf, type Box } from "@/lib/layout-plan";
 import { act, cleanup, fireEvent } from "@testing-library/react";
@@ -54,14 +58,16 @@ const NOTICE = "the stage's own notice";
 function Stage({ first, learns }: { first: Wallpaper; learns: boolean }) {
   const [shown, setShown] = useState<Wallpaper | null>(first);
   show = setShown;
-  const { area, box, learnNaturalSize } = usePictureBox(shown, AREA);
+  const picture = shown ? wallpaperPicture(shown) : null;
+  const { area, box, learnNaturalSize } = usePictureBox(picture, AREA);
   return (
     <div ref={area}>
-      {shown && (
+      {picture && (
         <HeroPicture
-          wallpaper={shown}
+          picture={picture}
           box={box}
           fit="contain"
+          cropPreview
           gone={<span>{NOTICE}</span>}
           onNaturalSize={learns ? learnNaturalSize : undefined}
         />
