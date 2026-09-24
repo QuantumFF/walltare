@@ -83,6 +83,9 @@ export function ApiKeySection() {
       setReplacing(false);
       setUnverified(!verified);
     } catch (err) {
+      // The one `bad_request` a save can answer is the key's own 401: the
+      // check's search is built from the default filters, so nothing else in
+      // it can be refused (`Wallhaven::verify_key`).
       setError(
         isAppError(err) && err.kind === "bad_request"
           ? KEY_REFUSED

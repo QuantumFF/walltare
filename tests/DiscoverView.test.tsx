@@ -573,6 +573,37 @@ function RemoveKey() {
   );
 }
 
+/** A control that saves a key the way Settings' Save does. */
+function SaveKey() {
+  const { saveWallhavenKey } = useApp();
+  return (
+    <button type="button" onClick={() => void saveWallhavenKey("abc123")}>
+      Save key
+    </button>
+  );
+}
+
+test("saving a key in the same session enables NSFW on Discover", async () => {
+  mockCommand("set_wallhaven_key", () => ({
+    settings: settings({ wallhaven_key_set: true }),
+    verified: true,
+  }));
+  await renderInApp(
+    <>
+      <SaveKey />
+      <DiscoverView />
+    </>,
+  );
+
+  await click(screen.getByRole("button", { name: "Save key" }));
+  await openPill("Purity");
+
+  const nsfw = screen.getByRole("menuitemcheckbox", { name: "NSFW" });
+  expect(nsfw.getAttribute("aria-disabled")).toBeNull();
+  await click(nsfw);
+  expect(searches[1].purity).toEqual({ sfw: true, sketchy: false, nsfw: true });
+});
+
 test("removing the key drops NSFW from the pills without searching again", async () => {
   mockCommand("get_settings", () =>
     settings({

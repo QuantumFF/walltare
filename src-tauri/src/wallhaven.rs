@@ -335,6 +335,11 @@ impl Wallhaven {
             // Every status is answered below, where a 429's `Retry-After` and a
             // challenge's HTML can still be read.
             .http_status_as_error(false)
+            // No redirect is followed. ureq strips only `Authorization` and
+            // `Cookie` on the way, so a redirect to another host would carry
+            // `X-API-Key` somewhere other than the API (ADR 0052). The API
+            // doesn't redirect, so a 3xx is an unexpected answer.
+            .max_redirects(0)
             .user_agent(concat!("walltare/", env!("CARGO_PKG_VERSION")))
             .build()
             .new_agent();
@@ -415,6 +420,8 @@ impl Wallhaven {
         };
         match self.fetch(&probe, Some(key)) {
             Ok(_) => Ok(true),
+            // The only `BadRequest` a save answers with, which is what the
+            // Settings section keys its "rejected that key" line on.
             Err(AppError::KeyRejected(_)) => Err(AppError::BadRequest(
                 "Wallhaven rejected that API key. Check it on wallhaven.cc/settings/account"
                     .to_string(),
@@ -1434,5 +1441,17 @@ mod tests {
 
         assert_eq!(stored_key(&db).as_deref(), Some(KEY));
         assert_eq!(stub.requests()[0].header("x-api-key"), Some(KEY));
+    }
+
+    #[test]
+    fn a_redirect_is_not_followed_so_the_key_goes_nowhere_else() {
+        let elsewhere = testing::stub(vec![page_of(&[], 1, 1)]);
+        let stub = testing::stub(vec![Canned::json_status(302, serde_json::json!({}))
+            .header("Location", &format!("{}/search", elsewhere.base()))]);
+
+        let err = client(&stub).search(&plain(), Some(KEY)).unwrap_err();
+
+        assert!(matches!(err, AppError::Network(_)), "{err:?}");
+        assert!(elsewhere.requests().is_empty());
     }
 }

@@ -998,7 +998,7 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         // The key's default is no key, so the one value equal to it is the
         // empty one, which is how Remove deletes the row. Any other value is a
         // key, and `wallhaven_key_set` is what reads it back.
-        WALLHAVEN_API_KEY => Ok(value.is_empty() && !without.wallhaven_key_set),
+        WALLHAVEN_API_KEY => Ok(value.is_empty()),
         _ => Err(AppError::BadRequest(format!("unknown setting {key:?}"))),
     }
 }
