@@ -178,6 +178,17 @@ moves the switch for, not the mechanism itself.
 still leaves focus where they put it (`:471-474`), and a handle call is still
 the one way in from outside.
 
+> **Amended by [#356](https://github.com/QuantumFF/walltare/pull/356),
+> 2026-09-24.** There is a second way in now, and only on a grid mounted with
+> `followPointer`, which today is Discover's. A mouse moved onto a card
+> (`moveByPointer`) takes the focus for it from anywhere except a field the
+> curator types in (`pointerMayTakeFocus`). It also takes it for the card
+> already selected, since that is the card the mouse is on. The rule still holds
+> for everything else that moves a selection: a list changing underneath, a
+> key, a page's request. A mouse is the curator pointing at the card they mean
+> to act on, and "elsewhere" is exactly what they have just stopped being. The
+> search box is the one exception, because a letter typed there is a letter.
+
 **Nothing reaches `CONTEXT.md`.** Focus is implementation. This is the same call
 ADRs 0015, 0017, 0019, 0021, 0022 and 0027 made about UI plumbing.
 

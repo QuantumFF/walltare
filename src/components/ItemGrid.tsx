@@ -26,6 +26,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type PointerEvent,
   type ReactNode,
   type Ref,
   type RefObject,
@@ -196,6 +197,16 @@ export interface ItemGridProps<T extends Keyed, A extends string> {
    * always did.
    */
   startOn?: T["id"] | null;
+  /**
+   * Whether the cursor follows the mouse: a pointer moved onto a card selects
+   * it, so the action keys act on the card under the mouse. Discover's grid,
+   * where the curator browses with the mouse and presses `P` or `D` over what
+   * they are looking at.
+   *
+   * See `useFollowPointer` for how, and for a still mouse the page scrolls
+   * under.
+   */
+  followPointer?: boolean;
 }
 
 /**
@@ -383,6 +394,112 @@ function useCellWidth(
 }
 
 /**
+ * The grid's cursor following the mouse (`followPointer`): the card the mouse
+ * is over becomes the selected one, through `moveByPointer`.
+ *
+ * Driven by `pointermove` and not by `pointerenter`, because engines disagree
+ * about whether a card a wheel pass slides under a still pointer was entered:
+ * WebKitGTK fired no `mouseover` across a whole wheel run (ADR 0041). So a
+ * wheel's scroll is followed on its own terms instead. Once it has been quiet
+ * for a moment, the card under where the mouse last was is the one it is over now,
+ * and that is the card selected. Once and not per frame, so a wheel pass moves
+ * the focus at its end rather than across every card it slides by.
+ *
+ * While the mouse is what put the cursor where it is, the grid wears
+ * `data-pointed`, so a card can leave off the keyboard's focus ring: a key
+ * pressed over a card the mouse focused makes the engine draw that focus as
+ * keyboard focus. An arrow key takes the attribute off. Set on the node rather
+ * than through state, so the mouse crossing a card renders nothing for it.
+ *
+ * Touch and pen have no hover to follow; a tap is a click, which opens the
+ * card. `undefined` when the host did not ask, so the grid carries no pointer
+ * handlers at all.
+ */
+function useFollowPointer(
+  grid: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  moveByPointer: (index: number) => void,
+) {
+  // Where the mouse last was over the grid, in the viewport, or `null` once it
+  // has left.
+  const pointerAt = useRef<{ x: number; y: number } | null>(null);
+  const move = useRef(moveByPointer);
+  useEffect(() => {
+    move.current = moveByPointer;
+  });
+
+  const point = (cell: number) => {
+    if (grid.current) grid.current.dataset.pointed = "";
+    move.current(cell);
+  };
+
+  // The cell of the grid under a point in the viewport, if there is one.
+  const cellAt = (target: Element | null) => {
+    const cell = target?.closest<HTMLElement>("[data-cell]");
+    return cell && grid.current?.contains(cell)
+      ? Number(cell.dataset.cell)
+      : null;
+  };
+
+  useEffect(() => {
+    if (!enabled) return;
+    // Armed by the wheel and not by any scroll: an arrow key's reveal scrolls
+    // too, and following that would put the cursor straight back under a
+    // mouse the curator had stopped using.
+    let armed = false;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const wait = () => {
+      clearTimeout(settle);
+      settle = setTimeout(() => {
+        armed = false;
+        const at = pointerAt.current;
+        if (!at) return;
+        const cell = cellAt(document.elementFromPoint(at.x, at.y));
+        if (cell !== null) point(cell);
+      }, SCROLL_SETTLE_MS);
+    };
+    const onWheel = (event: WheelEvent) => {
+      // Ctrl and the wheel is the density, which scrolls nothing.
+      if (event.ctrlKey || !pointerAt.current) return;
+      armed = true;
+      wait();
+    };
+    // A smooth scroll runs on past its last wheel event.
+    const onScroll = () => {
+      if (armed) wait();
+    };
+    // Captured on the window, because a scroll does not bubble and the box
+    // that scrolls is the host's.
+    const options = { capture: true, passive: true };
+    window.addEventListener("wheel", onWheel, options);
+    window.addEventListener("scroll", onScroll, options);
+    return () => {
+      clearTimeout(settle);
+      window.removeEventListener("wheel", onWheel, options);
+      window.removeEventListener("scroll", onScroll, options);
+    };
+  }, [enabled]);
+
+  if (!enabled) return undefined;
+  return {
+    onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
+      if (event.pointerType !== "mouse") return;
+      pointerAt.current = { x: event.clientX, y: event.clientY };
+      const cell = cellAt(
+        event.target instanceof Element ? event.target : null,
+      );
+      if (cell !== null) point(cell);
+    },
+    onPointerLeave: () => {
+      pointerAt.current = null;
+    },
+  };
+}
+
+/** How long a scroll has to be quiet before the cursor follows the mouse. */
+const SCROLL_SETTLE_MS = 120;
+
+/**
  * The cells, the cursor, the focus and the keys.
  *
  * One tab stop with a roving selection: the container is `role="grid"`, each
@@ -419,6 +536,7 @@ function Grid<T extends Keyed, A extends string>({
   className,
   ref,
   startOn,
+  followPointer = false,
 }: GridProps<T, A>) {
   const gridRef = useRef<HTMLDivElement>(null);
   // How this layout finds a cell and brings one on screen, which is the whole of
@@ -443,6 +561,7 @@ function Grid<T extends Keyed, A extends string>({
     onFocus: handleFocus,
     onBlur: handleBlur,
     moveByKey,
+    moveByPointer,
   } = usePublishedSelection(items, focus, ref, startOn);
   const { item: selected, index } = selection;
 
@@ -510,6 +629,9 @@ function Grid<T extends Keyed, A extends string>({
         onOpen?.(intent.item);
         break;
       case "move":
+        // The keyboard has the cursor back, focus ring and all
+        // (`useFollowPointer`).
+        delete gridRef.current?.dataset.pointed;
         moveByKey(intent.to);
         break;
       // Every intent the keymap can hand this surface is answered above, so
@@ -520,11 +642,17 @@ function Grid<T extends Keyed, A extends string>({
     }
   };
 
+  // The cursor following the mouse, for a host that asked. See
+  // `useFollowPointer`.
+  const pointer = useFollowPointer(gridRef, followPointer, moveByPointer);
+
   return (
     <div
       ref={gridRef}
       role="grid"
       aria-label={label}
+      onPointerMove={pointer?.onPointerMove}
+      onPointerLeave={pointer?.onPointerLeave}
       // Reachable programmatically and not by Tab. The cells hold the tab stop;
       // this is where focus lands when there is no cell left to hold it.
       tabIndex={-1}

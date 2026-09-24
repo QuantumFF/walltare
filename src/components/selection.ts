@@ -351,6 +351,15 @@ export interface PublishedSelection<T extends Keyed> {
    * pin the next card's overlay open.
    */
   moveByKey: (index: number) => void;
+  /**
+   * `moveTo` for a mouse that moved onto an entry, so a key pressed next acts
+   * on what is under it. It never scrolls, since the entry is already where
+   * the pointer is, and it is focused undrawn. It takes the focus from
+   * anywhere except a field the curator is typing in (`pointerMayTakeFocus`),
+   * and it takes it for the entry already selected too: that is the one the
+   * mouse is on.
+   */
+  moveByPointer: (index: number) => void;
 }
 
 /**
@@ -406,11 +415,12 @@ export function usePublishedSelection<T extends Keyed>(
   const selection = useSelectionCursor(items, startOn);
   const { item: selected, index, moveTo } = selection;
 
-  // Whether the move the next focus answers came from a key (`moveByKey`).
-  const byKeyRef = useRef(false);
+  // What made the move the next focus answers: a key (`moveByKey`), the mouse
+  // (`moveByPointer`), or anything else.
+  const movedByRef = useRef<"key" | "pointer" | null>(null);
   const moveByKey = useCallback(
     (to: number) => {
-      byKeyRef.current = true;
+      movedByRef.current = "key";
       moveTo(to);
     },
     [moveTo],
@@ -442,6 +452,23 @@ export function usePublishedSelection<T extends Keyed>(
   // value is never read, which is what keeps it a nudge rather than a second
   // counter.
   const [, askedForFocus] = useReducer((asks: number) => asks + 1, 0);
+
+  // The mouse on the entry already selected moves nothing, so it asks for the
+  // commit the effect answers on, as a page's request does. Only when there is
+  // something to answer: the entry does not hold the focus yet and may take
+  // it, which keeps a mouse wandering over one card from rendering per event.
+  const moveByPointer = useCallback(
+    (to: number) => {
+      if (to === index) {
+        const node = latest.current.nodeAt(to);
+        if (!pointerMayTakeFocus() || document.activeElement === node) return;
+      }
+      movedByRef.current = "pointer";
+      moveTo(to);
+      askedForFocus();
+    },
+    [index, moveTo],
+  );
 
   const [published] = useState(createPublication<T>);
   const [handle] = useState<SelectionHandle<T>>(() => ({
@@ -488,12 +515,29 @@ export function usePublishedSelection<T extends Keyed>(
     // nor an entry that has a node (ADR 0022).
     const request = focusRequestRef.current;
     const requested = request !== null;
+    const byPointer = movedByRef.current === "pointer";
+    if (byPointer) movedByRef.current = null;
 
     // Moving the selection must not steal focus. When the curator is somewhere
     // else in the app, a list that changes underneath updates the selection and
-    // the tab stop that goes with it, and leaves focus where they put it.
-    if (!holdsFocusRef.current && !requested) {
+    // the tab stop that goes with it, and leaves focus where they put it. The
+    // mouse is the exception: the curator put it on this entry to act on it.
+    const pointerTakes = byPointer && pointerMayTakeFocus();
+    if (!holdsFocusRef.current && !requested && !pointerTakes) {
       focusedRef.current = target;
+      return;
+    }
+
+    // The pointer is already on the entry, so nothing scrolls, and the focus is
+    // undrawn: the mouse is what says where the cursor is. Ahead of the checks
+    // below, because the entry it is on may be the one already selected, with
+    // the focus on the container after a wheel pass or on a button after a
+    // click.
+    if (byPointer && !requested && target !== null && index !== -1) {
+      const node = nodeAt(index);
+      if (!node) return;
+      focusedRef.current = target;
+      if (document.activeElement !== node) node.focus({ preventScroll: true });
       return;
     }
 
@@ -510,7 +554,7 @@ export function usePublishedSelection<T extends Keyed>(
     if (target === focusedRef.current && holds) {
       // A key that moved nothing, at either end of the list, is spent here
       // rather than left to draw whatever the selection does next.
-      byKeyRef.current = false;
+      movedByRef.current = null;
       focusRequestRef.current = null;
       return;
     }
@@ -572,8 +616,8 @@ export function usePublishedSelection<T extends Keyed>(
     if (!node) return;
     // Drawn when a key moved it here (`moveByKey`); the engine's guess
     // otherwise.
-    const byKey = byKeyRef.current;
-    byKeyRef.current = false;
+    const byKey = movedByRef.current === "key";
+    movedByRef.current = null;
     focusedRef.current = target;
     focusRequestRef.current = null;
     node.focus(request ?? (byKey ? { focusVisible: true } : undefined));
@@ -599,5 +643,21 @@ export function usePublishedSelection<T extends Keyed>(
     holdsFocusRef.current = false;
   }, []);
 
-  return { selection, onFocus, onBlur, moveByKey };
+  return { selection, onFocus, onBlur, moveByKey, moveByPointer };
+}
+
+/**
+ * Whether a mouse moved onto an entry may take the focus from wherever it is.
+ *
+ * Anywhere but a field the curator types in: a letter pressed there is a
+ * letter, and the mouse passing over the grid on the way to somewhere must not
+ * turn it into a Pick. A button a click left focused holds nothing the curator
+ * would lose.
+ */
+function pointerMayTakeFocus(): boolean {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return true;
+  return !(
+    active.isContentEditable || active.matches("input, textarea, select")
+  );
 }

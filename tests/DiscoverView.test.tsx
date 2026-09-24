@@ -211,9 +211,7 @@ test("a Result the library holds and one the curator rejected are marked, dimmed
   await renderInApp(<DiscoverView />);
 
   const [held, rejected, fresh] = cards();
-  expect(held.querySelector("figcaption")?.textContent).toContain(
-    "In library",
-  );
+  expect(held.querySelector("figcaption")?.textContent).toContain("In library");
   expect(rejected.querySelector("figcaption")?.textContent).toContain(
     "You rejected this",
   );
@@ -309,7 +307,10 @@ test("a first search's error replaces the Results inline, and Retry searches aga
     ["network", "Wallhaven took too long to answer."],
     ["network", "Wallhaven's Cloudflare check stopped the search."],
     ["network", "Wallhaven is having trouble (HTTP 503)."],
-    ["rate_limited", "Wallhaven's rate limit was reached. Try again in 9 seconds."],
+    [
+      "rate_limited",
+      "Wallhaven's rate limit was reached. Try again in 9 seconds.",
+    ],
   ] as const) {
     let failed = false;
     answer = () => {
@@ -385,7 +386,9 @@ test("the Ratio pill offers the Screen's, the common ones and Any ratio", async 
     "9:16",
     "Any ratio",
   ]);
-  await press("Enter", { target: screen.getByRole("option", { name: "21:9" }) });
+  await press("Enter", {
+    target: screen.getByRole("option", { name: "21:9" }),
+  });
 
   expect(searches[1].ratios).toEqual(["21x9"]);
   expect(ratioPill().textContent).toBe("21:9");
@@ -909,7 +912,8 @@ function toast(): { title: string; description: string | null } | null {
   return {
     title: root.querySelector("[data-slot='toast-title']")?.textContent ?? "",
     description:
-      root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
+      root.querySelector("[data-slot='toast-description']")?.textContent ??
+      null,
   };
 }
 
@@ -944,7 +948,11 @@ test("Download queues the Result, and its caption follows the file into the libr
   expect(downloadButton(first)).toBeNull();
   expect(downloadButton(second)).toBeNull();
 
-  await fileDone("qrow67", { kind: "landed" }, { total: 2, landed: 1, failed: 0 });
+  await fileDone(
+    "qrow67",
+    { kind: "landed" },
+    { total: 2, landed: 1, failed: 0 },
+  );
 
   // Added, and an In library card from here on: dimmed, and nothing to
   // download again.
@@ -1036,7 +1044,9 @@ test("with no Library root, Download is refused up front and opens the root's fi
   expect(caption(first)).toContain("Choose a library root to download");
   expect(downloadButton(first)).toBeNull();
 
-  await click(screen.getAllByRole("button", { name: /choose a library root/i })[0]);
+  await click(
+    screen.getAllByRole("button", { name: /choose a library root/i })[0],
+  );
 
   expect(downloads).toEqual([]);
   expect(currentView()).toBe("settings");
@@ -1638,8 +1648,7 @@ const identity = () =>
   document.querySelector('[data-slot="lightbox-identity"]')?.textContent ??
   null;
 const readOut = () =>
-  document.querySelector('[data-slot="lightbox-readout"]')?.textContent ??
-  null;
+  document.querySelector('[data-slot="lightbox-readout"]')?.textContent ?? null;
 const heroPicture = () =>
   document.querySelector<HTMLImageElement>('[data-slot="hero-picture"]');
 const heroPlaceholder = () =>
@@ -1999,4 +2008,162 @@ test("the Close button puts the focus back on the card the cursor is on", async 
 
   expect(lightbox()).toBeNull();
   expect(document.activeElement).toBe(second);
+});
+
+/** The mouse moving over `target`, as a real pointer does. */
+async function hover(target: Element, pointerType = "mouse") {
+  await act(async () => {
+    fireEvent.pointerMove(target, { pointerType, bubbles: true });
+  });
+}
+
+test("the keys act on the card under the mouse", async () => {
+  withLibraryRoot();
+  answer = () => page(["fresh1", "fresh2", "fresh3"]);
+  await renderInApp(<DiscoverView />);
+  const [first, second, third] = cards();
+  await focusCard(first);
+
+  await hover(picture(second));
+  expect(document.activeElement).toBe(second);
+  await press("d");
+  expect(downloads).toEqual([["fresh2"]]);
+
+  await hover(third.querySelector("figcaption")!);
+  await press("p");
+  expect(pickButton(third)?.getAttribute("aria-pressed")).toBe("true");
+  await hover(second);
+
+  // The arrows carry on from where the mouse left the cursor.
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(third);
+});
+
+test("a hover takes the focus from nowhere and from a button, never from the search box", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+
+  (document.activeElement as HTMLElement | null)?.blur();
+  await hover(second);
+  expect(document.activeElement).toBe(second);
+
+  const order = screen.getByRole("button", { name: /Descending/ });
+  await act(async () => {
+    order.focus();
+  });
+  await hover(first);
+  expect(document.activeElement).toBe(first);
+
+  const search = screen.getByRole("textbox", { name: "Search Wallhaven" });
+  await act(async () => {
+    search.focus();
+  });
+  await hover(second);
+  expect(document.activeElement).toBe(search);
+});
+
+test("a hover on the card already under the cursor takes the focus back to it", async () => {
+  withLibraryRoot();
+  answer = () => page(["fresh1", "fresh2"]);
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+
+  // The cursor starts on the first card, with the focus nowhere.
+  (document.activeElement as HTMLElement | null)?.blur();
+  await hover(picture(first));
+  expect(document.activeElement).toBe(first);
+  await press("d");
+  expect(downloads).toEqual([["fresh1"]]);
+
+  // And from the grid itself, where a wheel pass leaves it.
+  const grid = screen.getByRole("grid");
+  await act(async () => {
+    grid.focus();
+  });
+  await hover(first);
+  expect(document.activeElement).toBe(first);
+});
+
+test("a touch moving over a card leaves the cursor alone", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  await focusCard(first);
+
+  await hover(second, "touch");
+
+  expect(document.activeElement).toBe(first);
+});
+
+test("after a wheel scroll under a still mouse, the keys act on the card now under it", async () => {
+  withLibraryRoot();
+  answer = () => page(["fresh1", "fresh2", "fresh3"]);
+  await renderInApp(<DiscoverView />);
+  const [first, , third] = cards();
+  await hover(first);
+  expect(document.activeElement).toBe(first);
+
+  // The page scrolls the third card under where the mouse still is.
+  const under = document.elementFromPoint;
+  document.elementFromPoint = () => picture(third);
+  try {
+    await act(async () => {
+      fireEvent.wheel(first, { deltaY: 100 });
+      fireEvent.scroll(window);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+  } finally {
+    document.elementFromPoint = under;
+  }
+
+  expect(document.activeElement).toBe(third);
+  await press("d");
+  expect(downloads).toEqual([["fresh3"]]);
+});
+
+test("a scroll no wheel started leaves the cursor where the keys put it", async () => {
+  answer = () => page(["fresh1", "fresh2", "fresh3"]);
+  await renderInApp(<DiscoverView />);
+  const [first, second, third] = cards();
+  await hover(first);
+  await press("ArrowRight");
+
+  const under = document.elementFromPoint;
+  document.elementFromPoint = () => picture(third);
+  try {
+    await act(async () => {
+      fireEvent.scroll(window);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+  } finally {
+    document.elementFromPoint = under;
+  }
+
+  expect(document.activeElement).toBe(second);
+});
+
+test("a card draws a frame under the mouse, on a layer inside the picture", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+
+  const frame = first.querySelector('[data-slot="hover-frame"]');
+  expect(frame?.className).toContain("group-hover:opacity-100");
+  expect(frame?.className).toContain("ring-inset");
+  expect(frame?.parentElement?.className).toContain("overflow-hidden");
+});
+
+test("the keyboard's focus ring stays off a card the mouse chose, until an arrow key", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+  const grid = screen.getByRole("grid");
+  expect(picture(first).parentElement?.className).toContain(
+    "not-in-data-pointed:group-focus-visible:ring-2",
+  );
+
+  await hover(first);
+  expect(grid.hasAttribute("data-pointed")).toBe(true);
+  await press("p");
+  expect(grid.hasAttribute("data-pointed")).toBe(true);
+
+  await press("ArrowRight");
+  expect(grid.hasAttribute("data-pointed")).toBe(false);
 });

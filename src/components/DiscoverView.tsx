@@ -1029,6 +1029,8 @@ export function DiscoverView() {
               actions={resultKeys(livePicks.length)}
               onAct={act}
               onOpen={openOn}
+              // The keys act on the card under the mouse.
+              followPointer
               card={RESULT_CARD}
               density="discover"
               className="gap-y-8 px-6 pb-8"
@@ -1662,10 +1664,11 @@ const ResultCard = memo(function ResultCard({
       <div
         className={cn(
           "relative aspect-video overflow-hidden rounded-xl bg-card",
-          // A Pick wears a ring of its own, which the cursor's focus ring
-          // replaces while it is on the card.
-          isPick && "ring-3 ring-primary",
-          "group-focus-visible:ring-2 group-focus-visible:ring-primary group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
+          // A Pick leaves the picture alone and says so on its Pick button.
+          // The focus ring is the keyboard's, and not drawn while the mouse
+          // put the cursor here (`data-pointed`): a `P` pressed over a card
+          // would otherwise have WebKit draw it as keyboard focus.
+          "not-in-data-pointed:group-focus-visible:ring-2 not-in-data-pointed:group-focus-visible:ring-primary not-in-data-pointed:group-focus-visible:ring-offset-2 not-in-data-pointed:group-focus-visible:ring-offset-background",
         )}
       >
         {/* Kept mounted after a failure, so a load that later succeeds can
@@ -1706,6 +1709,15 @@ const ResultCard = memo(function ResultCard({
             <span className="text-xs">Couldn&apos;t load preview</span>
           </div>
         )}
+        {/* The card under the mouse, which is the one the keys act on
+            (`followPointer`). A thin, half-strength inset ring and nothing
+            over the wallpaper itself, on a layer inside the clipped picture,
+            so a hover repaints nothing outside the card. */}
+        <div
+          aria-hidden
+          data-slot="hover-frame"
+          className="pointer-events-none absolute inset-0 rounded-xl opacity-0 ring-2 ring-primary/50 ring-inset transition-opacity duration-150 group-hover:opacity-100"
+        />
       </div>
       <figcaption className="flex items-center gap-2 text-xs leading-4">
         <div className="min-w-0 flex-1">
@@ -1853,7 +1865,9 @@ function ResultOffer({
       ) : (
         <>
           <Button
-            variant={isPick ? "secondary" : "ghost"}
+            // Filled when picked: the button is the whole of what a Pick
+            // looks like on a card.
+            variant={isPick ? "default" : "ghost"}
             size="sm"
             aria-label={named("Pick")}
             aria-pressed={isPick}
