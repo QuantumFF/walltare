@@ -287,11 +287,18 @@ export interface SearchParams {
 }
 
 /**
- * Mirrors wallhaven::SearchResult: one Result, as Wallhaven's search record has
- * it, less the full file's `path` — which the backend keeps for the download
- * that names it by id (ADR 0054).
+ * Mirrors wallhaven::Mark: what the library already says about a Result
+ * (ADR 0050). `in_library` when some Active or Kept wallpaper carries its
+ * Wallhaven id, `rejected` when only Rejected ones do, and `unmarked` otherwise.
  */
-export interface SearchResult {
+export type Mark = "unmarked" | "in_library" | "rejected";
+
+/**
+ * Mirrors wallhaven::MarkedResult: one Result, as Wallhaven's search record has it,
+ * less the full file's `path` — which the backend keeps for the download that
+ * names it by id (ADR 0054) — and with its mark beside it.
+ */
+export interface MarkedResult {
   id: string;
   url: string;
   short_url: string;
@@ -308,13 +315,15 @@ export interface SearchResult {
   file_type: string;
   created_at: string;
   colors: string[];
+  /** Read off the library's rows alone, so a missing file still marks it. */
+  mark: Mark;
   /** On `th.wallhaven.cc`, the one remote origin the policy allows (ADR 0053). */
   thumbs: { large: string; original: string; small: string };
 }
 
 /** Mirrors wallhaven::Page: one page of Results, and where it sits. */
 export interface SearchPage {
-  results: SearchResult[];
+  results: MarkedResult[];
   meta: {
     current_page: number;
     last_page: number;

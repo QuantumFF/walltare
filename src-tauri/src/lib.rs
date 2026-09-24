@@ -383,8 +383,8 @@ fn set_setting(
     state.write(|conn| settings::set(conn, &key, &value, detected))
 }
 
-/// One page of a Wallhaven search, and the filters it succeeded with
-/// remembered.
+/// One page of a Wallhaven search, each Result marked by what the library
+/// already holds, and the filters it succeeded with remembered.
 ///
 /// Off the main thread, because it waits on the network for up to twenty
 /// seconds. Every refusal of ADR 0054 is [`wallhaven::SearchParams`]' own and
@@ -393,7 +393,7 @@ fn set_setting(
 async fn wallhaven_search(
     params: wallhaven::SearchParams,
     app: AppHandle,
-) -> Result<wallhaven::Page, error::AppError> {
+) -> Result<wallhaven::Page<wallhaven::MarkedResult>, error::AppError> {
     off_main_thread(app, move |app| {
         wallhaven::search(
             &app.state::<Db>(),

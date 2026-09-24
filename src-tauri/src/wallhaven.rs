@@ -2,7 +2,7 @@
 //! turning status codes and bodies into errors (ADR 0054).
 //!
 //! It knows nothing about the library. What Discover does with a Result — the
-//! remembered filters, and later the marks and the downloads — sits on top of
+//! remembered filters, the marks, and later the downloads — sits on top of
 //! [`Wallhaven::search`] in [`search`], so the client can be driven against the
 //! stub server in `testing.rs` without a database, and the entry point against
 //! an in-memory one.
@@ -256,11 +256,32 @@ pub struct Meta {
     pub seed: Option<String>,
 }
 
-/// One page of Results.
+/// One page of Results: as the client read them, or marked, as [`search`]
+/// answers them.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Page {
-    pub results: Vec<SearchResult>,
+pub struct Page<R = SearchResult> {
+    pub results: Vec<R>,
     pub meta: Meta,
+}
+
+/// What the library already says about a Result (ADR 0050).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mark {
+    /// No wallpaper carries its id.
+    Unmarked,
+    /// Some Active or Kept wallpaper carries its id.
+    InLibrary,
+    /// Only Rejected wallpapers carry its id.
+    Rejected,
+}
+
+/// A Result and its mark, flattened into one record on the wire.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MarkedResult {
+    #[serde(flatten)]
+    pub result: SearchResult,
+    pub mark: Mark,
 }
 
 /// The record as it arrives, `path` included.
@@ -382,15 +403,40 @@ impl Wallhaven {
     }
 }
 
-/// The search Discover asks for: one page, and the filters it succeeded with
-/// remembered.
+/// The search Discover asks for: one page, each Result marked, and the filters
+/// it succeeded with remembered.
+///
+/// The marks come from one id lookup for the whole page, and from rows alone:
+/// a search never looks at the disk, so a wallpaper whose file is missing still
+/// marks its Result (ADR 0050).
 ///
 /// Only a search that answered is remembered, so a typo or a failed call never
 /// becomes the curator's default (ADR 0054). A search with no toplist range
 /// keeps the one remembered before it, so a detour through another sort does
 /// not lose it.
-pub fn search(db: &Db, client: &Wallhaven, params: &SearchParams) -> Result<Page, AppError> {
+pub fn search(
+    db: &Db,
+    client: &Wallhaven,
+    params: &SearchParams,
+) -> Result<Page<MarkedResult>, AppError> {
     let page = client.search(params)?;
+    let ids: Vec<&str> = page.results.iter().map(|r| r.id.as_str()).collect();
+    let carriers = db.read(|conn| crate::db::wallhaven_carriers(conn, &ids))?;
+    let page = Page {
+        results: page
+            .results
+            .into_iter()
+            .map(|result| {
+                let mark = match carriers.get(&result.id) {
+                    Some(true) => Mark::InLibrary,
+                    Some(false) => Mark::Rejected,
+                    None => Mark::Unmarked,
+                };
+                MarkedResult { result, mark }
+            })
+            .collect(),
+        meta: page.meta,
+    };
     db.write(|conn| {
         let top_range = match params.top_range {
             Some(range) => range,
@@ -976,6 +1022,71 @@ mod tests {
             db.read(settings::discover_filters).unwrap(),
             DiscoverFilters::default()
         );
+    }
+
+    fn seed_carrier(db: &Db, path: &str, status: &str) {
+        db.write(|conn| testing::seed_wallhaven_wallpaper(conn, path, status));
+    }
+
+    fn marks(page: &Page<MarkedResult>) -> Vec<(&str, Mark)> {
+        page.results
+            .iter()
+            .map(|r| (r.result.id.as_str(), r.mark))
+            .collect()
+    }
+
+    #[test]
+    fn a_search_marks_each_result_by_the_wallpapers_carrying_its_id() {
+        // ADR 0050's precedence, against a row of every Status: In library when
+        // any Active or Kept wallpaper carries the id, Rejected when only
+        // Rejected ones do, and nothing otherwise. The rows point at files that
+        // do not exist, which is the point: a search never looks at the disk,
+        // so a missing file counts like any other.
+        let db = db();
+        seed_carrier(&db, "/gone/wallhaven-active.jpg", "active");
+        seed_carrier(&db, "/w/wallhaven-kept01.png", "kept");
+        seed_carrier(&db, "/w/rejected/wallhaven-reject.jpg", "rejected");
+        seed_carrier(&db, "/w/rejected/wallhaven-shared.jpg", "rejected");
+        seed_carrier(&db, "/w/wallhaven-shared (2).jpg", "active");
+        seed_carrier(&db, "/w/rejected/wallhaven-twice1.jpg", "rejected");
+        seed_carrier(&db, "/w/rejected/wallhaven-twice1 (2).jpg", "rejected");
+        let stub = testing::stub(vec![page_of(
+            &["active", "kept01", "reject", "shared", "twice1", "nobody"],
+            1,
+            1,
+        )]);
+
+        let page = search(&db, &client(&stub), &plain()).unwrap();
+
+        assert_eq!(
+            marks(&page),
+            vec![
+                ("active", Mark::InLibrary),
+                ("kept01", Mark::InLibrary),
+                ("reject", Mark::Rejected),
+                ("shared", Mark::InLibrary),
+                ("twice1", Mark::Rejected),
+                ("nobody", Mark::Unmarked),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_mark_crosses_the_ipc_beside_the_record_it_marks() {
+        let db = db();
+        seed_carrier(&db, "/w/wallhaven-qrow67.png", "kept");
+        let stub = testing::stub(vec![page_of(&["qrow67", "jedzym"], 1, 1)]);
+
+        let page = search(&db, &client(&stub), &plain()).unwrap();
+
+        let json = serde_json::to_value(&page).unwrap();
+        assert_eq!(json["results"][0]["id"], "qrow67");
+        assert_eq!(json["results"][0]["mark"], "in_library");
+        assert_eq!(json["results"][0]["resolution"], "3840x2160");
+        assert!(json["results"][0].get("path").is_none(), "{json}");
+        assert_eq!(json["results"][1]["mark"], "unmarked");
+        assert_eq!(serde_json::to_value(Mark::Rejected).unwrap(), "rejected");
+        assert_eq!(json["meta"]["last_page"], 1);
     }
 
     #[test]

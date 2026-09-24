@@ -3,7 +3,7 @@ import type {
   AppError,
   SearchPage,
   SearchParams,
-  SearchResult,
+  MarkedResult,
 } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -28,7 +28,7 @@ let searches: SearchParams[];
 /** What the next search answers with, by the page it asked for. */
 let answer: (params: SearchParams) => SearchPage | Promise<SearchPage>;
 
-function result(id: string, over: Partial<SearchResult> = {}): SearchResult {
+function result(id: string, over: Partial<MarkedResult> = {}): MarkedResult {
   const prefix = id.slice(0, 2);
   return {
     id,
@@ -47,6 +47,7 @@ function result(id: string, over: Partial<SearchResult> = {}): SearchResult {
     file_type: "image/png",
     created_at: "2026-09-02 17:01:46",
     colors: ["#000000"],
+    mark: "unmarked",
     thumbs: {
       large: `https://th.wallhaven.cc/lg/${prefix}/${id}.jpg`,
       original: `https://th.wallhaven.cc/orig/${prefix}/${id}.jpg`,
@@ -170,6 +171,48 @@ test("a card shows its lg thumbnail and its facts in the caption", async () => {
   expect(caption).toContain("3840x2160");
   expect(caption).toContain("10 MB");
   expect(caption).toContain("19.4k · general");
+});
+
+test("a Result the library holds and one the curator rejected are marked, dimmed and greyscale", async () => {
+  // Marked, not hidden: every page keeps its 24 and the curator's earlier
+  // judgement stays visible (ADR 0050). The mark sits in the caption where
+  // Pick and Download go, and neither is offered.
+  answer = () => ({
+    ...page([]),
+    results: [
+      result("inlib1", { mark: "in_library" }),
+      result("rejct1", { mark: "rejected" }),
+      result("fresh1"),
+    ],
+  });
+
+  await renderInApp(<DiscoverView />);
+
+  const [held, rejected, fresh] = cards();
+  expect(held.querySelector("figcaption")?.textContent).toContain(
+    "In library",
+  );
+  expect(rejected.querySelector("figcaption")?.textContent).toContain(
+    "You rejected this",
+  );
+  expect(held.getAttribute("aria-label")).toContain("In library");
+  expect(rejected.getAttribute("aria-label")).toContain("You rejected this");
+  for (const marked of [held, rejected]) {
+    const picture = marked.querySelector("img") as HTMLImageElement;
+    expect(picture.className).toContain("opacity-60");
+    expect(picture.className).toContain("grayscale");
+    // Full size, with its facts still under it.
+    expect(marked.querySelector("figcaption")?.textContent).toContain(
+      "3840x2160",
+    );
+    expect(marked.querySelectorAll("button")).toHaveLength(0);
+    expect(marked.textContent).not.toMatch(/Pick|Download/);
+  }
+
+  const picture = fresh.querySelector("img") as HTMLImageElement;
+  expect(picture.className).not.toContain("grayscale");
+  expect(fresh.textContent).not.toContain("In library");
+  expect(fresh.textContent).not.toContain("You rejected this");
 });
 
 test("a thumbnail that fails to load reads as a preview problem, not a gone file", async () => {

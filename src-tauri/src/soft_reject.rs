@@ -648,6 +648,49 @@ mod tests {
     }
 
     #[test]
+    fn a_reject_and_a_restore_leave_the_wallhaven_id_alone_through_a_collision() {
+        // ADR 0050: the id is what the file was when it arrived. A colliding
+        // reject renames it `wallhaven-abc123 (2).jpg`, and a Restore puts it
+        // back, and neither is a reason for its mark to change.
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (first, _) = seed_for_restore(&conn, tmp.path(), "wallhaven-abc123.jpg");
+        let other_dir = tmp.path().join("other");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        let second = seed_real_wallpaper(&conn, &other_dir, "wallhaven-abc123.jpg");
+        let out = dest.path().to_str().unwrap();
+
+        reject(&conn, first, out).unwrap();
+        let collided = reject(&conn, second, out).unwrap();
+
+        assert_eq!(collided.filename, "wallhaven-abc123 (2).jpg");
+        for id in [first, second] {
+            assert_eq!(wallhaven_id_of(&conn, id).as_deref(), Some("abc123"));
+        }
+
+        restore(&conn, second).unwrap();
+
+        assert_eq!(wallhaven_id_of(&conn, second).as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn a_reject_and_a_restore_of_a_missing_file_leave_the_wallhaven_id_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, origin) = seed_for_restore(&conn, tmp.path(), "wallhaven-gone01.png");
+        std::fs::remove_file(&origin).unwrap();
+
+        reject(&conn, id, "rejected").unwrap();
+        assert_eq!(wallhaven_id_of(&conn, id).as_deref(), Some("gone01"));
+        restore(&conn, id).unwrap();
+
+        assert_eq!(wallhaven_id_of(&conn, id).as_deref(), Some("gone01"));
+    }
+
+    #[test]
     fn default_relative_destination_survives_a_rescan() {
         // `./rejected` is the destination the review UI ships with. Stored
         // verbatim it would read `/lib/./rejected/x.jpg`, which UNIQUE(path)

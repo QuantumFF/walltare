@@ -183,6 +183,14 @@ export interface WallpaperCardProps {
 }
 
 /**
+ * How a card's picture looks when the curator has already judged it: a
+ * Rejected wallpaper in Library and Review, and a marked Result in Discover.
+ * On the picture and never the card, so what is drawn over or under it stays
+ * readable.
+ */
+export const DIMMED_PICTURE = "opacity-60 grayscale";
+
+/**
  * The card, shared by Review and by the library page (#79).
  *
  * Its design is #44's prototype at ADR 0019's corrections: a dense
@@ -287,7 +295,7 @@ export const WallpaperCard = memo(function WallpaperCard({
     // whose buttons have to stay readable was the one the prototype
     // faded. A solid frame around a faded image also reads less like a
     // failed load than a faded frame around one (ADR 0019).
-    rejected && "opacity-60 grayscale",
+    rejected && DIMMED_PICTURE,
     // The scale, and the layer it needs. WebKit builds the composited
     // layer an animated property needs the first time it is animated,
     // which on a wheel pass is mid-gesture: one ~50-95ms stall per card
