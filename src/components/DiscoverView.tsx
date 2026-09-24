@@ -1,5 +1,12 @@
 import { EmptyState } from "@/components/EmptyState";
+import type { Picture } from "@/components/HeroPicture";
 import { ItemGrid, type GridCell } from "@/components/ItemGrid";
+import {
+  ItemLightbox,
+  LightboxTitle,
+  useLightbox,
+  type LightboxRow,
+} from "@/components/ItemLightbox";
 import { RESULT_CARD } from "@/components/grid-geometry";
 import { DIMMED_PICTURE } from "@/components/WallpaperCard";
 import {
@@ -229,6 +236,40 @@ function compact(count: number): string {
 }
 
 /**
+ * Where Wallhaven serves a Result's full file: `w.wallhaven.cc`, under the
+ * id's first two characters, named `wallhaven-<id>` with the extension its
+ * `file_type` says.
+ *
+ * Spelled here rather than carried on the wire, because the answer leaves out
+ * `path` on purpose: the backend keeps it for the download that names the
+ * Result by id, so that nothing the webview holds is ever a URL written into
+ * the library (ADR 0054). This one is only ever an `<img>`'s, which the policy
+ * lets through for the lightbox alone (ADR 0055). Wallhaven serves two types,
+ * and anything but a PNG is a JPEG.
+ */
+function fullFileUrl(result: MarkedResult): string {
+  const extension = result.file_type === "image/png" ? "png" : "jpg";
+  return `https://w.wallhaven.cc/full/${result.id.slice(0, 2)}/wallhaven-${result.id}.${extension}`;
+}
+
+/**
+ * A Result's picture in the lightbox: the card's `lg` thumbnail under the full
+ * file, in a box of the file's own Dimensions (ADR 0055). The thumbnail is
+ * 16:9 whatever the file is, so it is drawn stretched to the file's shape
+ * until the full file lands, which is ADR 0022's never-blank rule with
+ * Wallhaven's two sizes in.
+ */
+function resultPicture(result: MarkedResult): Picture {
+  return {
+    id: result.id,
+    placeholder: result.thumbs.large,
+    full: fullFileUrl(result),
+    alt: `wallhaven-${result.id}`,
+    dimensions: { width: result.dimension_x, height: result.dimension_y },
+  };
+}
+
+/**
  * What a failed search says, where the Results would be (ADR 0054).
  *
  * The backend's own sentence for the three kinds that carry one written for
@@ -356,6 +397,8 @@ interface PicksAndDownloads {
   download: (result: MarkedResult) => void;
   /** Make the Result a Pick, or stop it being one. */
   pick: (result: MarkedResult) => void;
+  /** Open the Result in the lightbox, which a click on its card does. */
+  open: (result: MarkedResult) => void;
 }
 
 const PicksAndDownloadsContext = createContext<PicksAndDownloads>({
@@ -364,7 +407,33 @@ const PicksAndDownloadsContext = createContext<PicksAndDownloads>({
   noRoot: false,
   download: () => {},
   pick: () => {},
+  open: () => {},
 });
+
+/**
+ * What a Result offers where Pick and Download go, which the card's caption
+ * and the lightbox's row both read, so the two can never offer different
+ * things for one Result.
+ *
+ * `mark` is what a marked Result says in their place. A card whose file just
+ * landed is an In library card, and says how it got there rather than
+ * repeating the mark. `state` is where its download has got to, and a Result
+ * offers Download while it has none, or after one failed.
+ */
+function offerOf(
+  result: MarkedResult,
+  { states, picked }: Pick<PicksAndDownloads, "states" | "picked">,
+) {
+  const state = states[result.id];
+  const mark =
+    result.mark === "unmarked" || state?.kind === "landed"
+      ? null
+      : MARK_TEXT[result.mark];
+  const offersDownload =
+    result.mark === "unmarked" && (!state || state.kind === "failed");
+  const isPick = offersDownload && picked.has(result.id);
+  return { state, mark, offersDownload, isPick };
+}
 
 /** What a card with no Library root offers in place of Download. */
 const NO_ROOT = "Choose a library root to download";
@@ -394,6 +463,11 @@ const NO_ROOT = "Choose a library root to download";
  * are held as the Results themselves, so a new search or a changed filter
  * keeps them, and the tray can still draw one no page shown now holds. A
  * download clears them.
+ *
+ * `Enter` on a card, or a click on one, opens the Result full size in
+ * Library's lightbox (#345): the `lg` thumbnail under the full file from
+ * `w.wallhaven.cc`, loaded for the Result on screen and never ahead of it
+ * (ADR 0055), with Pick and Download under the picture.
  *
  * The grid mounts every card rather than windowing, because the header scrolls
  * with the Results and a window is measured against a scroll box it starts at
@@ -699,14 +773,23 @@ export function DiscoverView() {
     // is already the next batch's, on the wire while that ending arrives.
   });
 
+  const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
+    null,
+  );
+  useKeyboardSurface("discover", grid);
+  // Enter on a card, or a click on one, opens it full size (#345). The
+  // lightbox walks this grid's own cursor (ADR 0022).
+  const lightbox = useLightbox(grid);
+  const { openOn } = lightbox;
+
   const picksAndDownloads = useMemo<PicksAndDownloads>(() => {
     const states: Record<string, CardDownload> = { ...ended };
     queue.forEach((id, at) => {
       states[id] = { kind: at === 0 ? "downloading" : "queued" };
     });
     const picked = new Set(livePicks.map((r) => r.id));
-    return { states, picked, noRoot, download, pick };
-  }, [ended, queue, livePicks, noRoot, download, pick]);
+    return { states, picked, noRoot, download, pick, open: openOn };
+  }, [ended, queue, livePicks, noRoot, download, pick, openOn]);
 
   // The keys on the cursor: `P` and `D` are the card's own Pick and Download
   // pressed by key, and with Picks `D` is the tray's Download and `Escape` its
@@ -735,10 +818,6 @@ export function DiscoverView() {
     [clearPicks],
   );
 
-  const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
-    null,
-  );
-  useKeyboardSurface("discover", grid);
 
   const ratioHandOff = usePillHandOff();
   const handOffOnPointerPress = useHandOffOnPointerPress();
@@ -948,6 +1027,7 @@ export function DiscoverView() {
               label="Results from Wallhaven"
               actions={resultKeys(livePicks.length)}
               onAct={act}
+              onOpen={openOn}
               card={RESULT_CARD}
               density="discover"
               className="gap-y-8 px-6 pb-8"
@@ -1012,8 +1092,168 @@ export function DiscoverView() {
           onClear={clearPicks}
         />
       )}
+
+      {/* Handed `RESULT_KEYS` whatever the tray holds, so `D` in here is the
+          Result on screen, as its button says (see `RESULT_KEYS`). */}
+      <ItemLightbox
+        grid={grid}
+        open={lightbox.open}
+        onClose={lightbox.close}
+        actions={RESULT_KEYS}
+        onAct={act}
+        picture={resultPicture}
+        row={(result) => resultRow(result, picksAndDownloads)}
+        rowFloor={RESULT_ROW_FLOOR}
+        noun="Result"
+        gone={PREVIEW_FAILED}
+      />
     </div>
   );
+}
+
+/**
+ * How narrow the lightbox's row under a Result is allowed to get, in pixels,
+ * below which it overhangs the picture and the read-out drops (ADR 0022).
+ *
+ * The widest thing the floor has to hold, which is an unmarked Result whose
+ * last download failed: a `wallhaven-<id>` still worth printing (120), its
+ * facts beside it (130), the position (40) and the two gaps of 16 around it,
+ * then **Failed**, `Pick P` and `Download D` (230 with the gaps between them).
+ * That is 552, so 560. A portrait phone wallpaper at the default window is
+ * narrower than that, and is the one that drops its read-out.
+ */
+const RESULT_ROW_FLOOR = 560;
+
+/**
+ * What the lightbox's picture says when the full file never arrives: a network
+ * fact about Wallhaven, like the card's panel, and never Library's "File is
+ * gone" (ADR 0053). In white, since this ground is dark in both themes.
+ */
+const PREVIEW_FAILED = (
+  <>
+    <ImageOff className="h-10 w-10 text-white/40" aria-hidden />
+    <p className="text-sm font-medium text-white">
+      Couldn&apos;t load preview
+    </p>
+    <p className="max-w-sm text-xs text-white/60">
+      Wallhaven didn&apos;t send the full file. It can still be downloaded.
+    </p>
+  </>
+);
+
+/**
+ * The lightbox's row under a Result (#345): the identity line, the read-out,
+ * and Pick and Download.
+ *
+ * The identity line is `wallhaven-<id> · 3840×2160 · 10 MB`, the name the
+ * file lands under and the two facts that decide whether it is worth taking,
+ * the size in the same decimal units the card's caption and the tray use.
+ * The read-out is `anime · 231 favourites · 19.4k views`, which is what drops
+ * on a picture narrower than the row's floor, since nothing in it is needed in
+ * order to act (ADR 0022).
+ *
+ * The buttons are the card's, printing the keys that fire them, off the same
+ * reading of the Result the caption takes: a marked Result shows its mark in
+ * their place, one on its way to the library shows where it has got to, and
+ * with no Library root Download is the way to one. The dialog is named by the
+ * Result, so the buttons carry the verb alone.
+ */
+function resultRow(
+  result: MarkedResult,
+  offer: PicksAndDownloads,
+): LightboxRow {
+  const { state, mark, offersDownload, isPick } = offerOf(result, offer);
+  return {
+    identity: (
+      <div
+        data-slot="lightbox-identity"
+        className="flex min-w-0 items-center gap-1.5"
+      >
+        <LightboxTitle>{`wallhaven-${result.id}`}</LightboxTitle>{" "}
+        <span className="shrink-0 text-sm text-white/70 tabular-nums">
+          {`· ${result.dimension_x}×${result.dimension_y} · ${bytes(result.file_size)}`}
+        </span>
+      </div>
+    ),
+    readout: (
+      <p
+        data-slot="lightbox-readout"
+        className="truncate text-[11px] text-white/50"
+      >
+        {`${result.category} · ${compact(result.favorites)} ${
+          result.favorites === 1 ? "favourite" : "favourites"
+        } · ${compact(result.views)} ${result.views === 1 ? "view" : "views"}`}
+      </p>
+    ),
+    buttons: mark ? (
+      <span data-slot="result-mark" className="text-xs text-white/60">
+        {mark}
+      </span>
+    ) : state && state.kind !== "failed" ? (
+      <span
+        data-slot="result-download"
+        className={cn(
+          "flex items-center gap-1 text-xs",
+          state.kind === "landed" ? "text-emerald-400" : "text-white/60",
+        )}
+      >
+        {state.kind === "downloading" && (
+          <Loader2 aria-hidden className="size-3 animate-spin" />
+        )}
+        {state.kind === "landed" && <Check aria-hidden className="size-3.5" />}
+        {DOWNLOAD_TEXT[state.kind]}
+      </span>
+    ) : (
+      offersDownload && (
+        <>
+          {state?.kind === "failed" && (
+            <span
+              data-slot="result-download"
+              className="text-xs text-destructive"
+              title={state.message}
+            >
+              Failed
+            </span>
+          )}
+          {offer.noRoot ? (
+            <Button
+              variant="link"
+              size="sm"
+              // It puts the caret in the Library root field itself.
+              data-moves-focus
+              className="px-0 text-xs"
+              onClick={() => offer.download(result)}
+            >
+              {NO_ROOT}
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant={isPick ? "secondary" : "ghost"}
+                size="sm"
+                aria-pressed={isPick}
+                aria-keyshortcuts={keyShortcut("pick", RESULT_KEYS)}
+                onClick={() => offer.pick(result)}
+              >
+                {isPick ? <Check /> : <Plus />}
+                {isPick ? "Picked" : "Pick"}
+                <Kbd aria-hidden>{printedKey("pick", RESULT_KEYS)}</Kbd>
+              </Button>
+              <Button
+                size="sm"
+                aria-keyshortcuts={keyShortcut("download", RESULT_KEYS)}
+                onClick={() => offer.download(result)}
+              >
+                <Download />
+                Download
+                <Kbd aria-hidden>{printedKey("download", RESULT_KEYS)}</Kbd>
+              </Button>
+            </>
+          )}
+        </>
+      )
+    ),
+  };
 }
 
 /**
@@ -1440,20 +1680,10 @@ const ResultCard = memo(function ResultCard({
   selected: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const { states, picked, noRoot, download, pick } = useContext(
-    PicksAndDownloadsContext,
-  );
+  const offer = useContext(PicksAndDownloadsContext);
+  const { noRoot, download, pick, open } = offer;
   const handOffOnPointerPress = useHandOffOnPointerPress();
-  const state = states[result.id];
-  // A card whose file just landed is an In library card, and its caption says
-  // how it got there rather than repeating the mark.
-  const mark =
-    result.mark === "unmarked" || state?.kind === "landed"
-      ? null
-      : MARK_TEXT[result.mark];
-  const offersDownload =
-    result.mark === "unmarked" && (!state || state.kind === "failed");
-  const isPick = offersDownload && picked.has(result.id);
+  const { state, mark, offersDownload, isPick } = offerOf(result, offer);
   const said =
     mark ?? (state ? DOWNLOAD_TEXT[state.kind] : isPick ? "Picked" : null);
   const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
@@ -1463,6 +1693,9 @@ const ResultCard = memo(function ResultCard({
       tabIndex={selected ? 0 : -1}
       data-cell={cellIndex}
       aria-label={said ? `${facts}, ${said}` : facts}
+      // A click on the card opens it, as `Enter` does; its buttons keep their
+      // clicks to themselves (ADR 0022).
+      onClick={() => open(result)}
       className="group m-0 flex flex-col gap-2 rounded-xl outline-none"
     >
       <div
@@ -1542,10 +1775,14 @@ const ResultCard = memo(function ResultCard({
         ) : (
           offersDownload && (
             // The pointer's press hands the keyboard back to the grid, so `D`
-            // still reaches the cursor after a click (ADR 0047).
+            // still reaches the cursor after a click (ADR 0047), and stops
+            // there rather than opening the card as well.
             <div
               className="flex shrink-0 items-center gap-2"
-              onClick={handOffOnPointerPress}
+              onClick={(event) => {
+                handOffOnPointerPress(event);
+                event.stopPropagation();
+              }}
             >
               {state?.kind === "failed" && (
                 <span

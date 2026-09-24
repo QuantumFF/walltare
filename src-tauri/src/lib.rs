@@ -833,13 +833,16 @@ mod tests {
     }
 
     #[test]
-    fn the_policy_names_no_remote_origin_but_discovers_thumbnails() {
+    fn the_policy_names_no_remote_origin_but_discovers_images() {
         // An allowlist rather than a pattern, so that widening the policy has
         // to be argued for here as well as in the config. Five local sources,
-        // and one remote origin in one directive: Discover's thumbnails, loaded
-        // by `<img>` and by nothing else (ADR 0053). `connect-src` stays local,
-        // so the webview never talks to Wallhaven's API itself.
+        // and two remote origins in one directive: Discover's thumbnails
+        // (ADR 0053) and the full file its lightbox previews (ADR 0055), both
+        // loaded by `<img>` and by nothing else. `connect-src` stays local, so
+        // the webview never talks to Wallhaven's API itself, and never reads a
+        // full file `w.` would hand any origin.
         const THUMBNAILS: &str = "https://th.wallhaven.cc";
+        const FULL_FILES: &str = "https://w.wallhaven.cc";
         let mut remote = Vec::new();
         for (directive, sources) in content_security_policy() {
             for source in sources {
@@ -852,7 +855,13 @@ mod tests {
                 }
             }
         }
-        assert_eq!(remote, [format!("img-src {THUMBNAILS}")]);
+        assert_eq!(
+            remote,
+            [
+                format!("img-src {THUMBNAILS}"),
+                format!("img-src {FULL_FILES}"),
+            ]
+        );
     }
 
     #[test]
