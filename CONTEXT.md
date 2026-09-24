@@ -69,14 +69,38 @@ A file renamed outside the app is not changed by that either, because the app
 sees it as a new wallpaper at a new path.
 
 Most wallpapers have none. Several wallpapers may share one, for example a
-copy in two folders. A Wallhaven search result is already in the library when
-some wallpaper carries its id. It is Rejected when every wallpaper carrying its
-id is Rejected. Either way it is marked, not hidden, and it is not downloaded
-again. See
+copy in two folders. The id is what marks a Result as already in the library
+or Rejected. See
 [ADR 0050](docs/adr/0050-a-wallhaven-id-is-recorded-when-a-wallpaper-arrives.md).
 
 _Avoid_: Source (that is the full-size file as opposed to its thumbnail),
 provenance
+
+## Result
+
+A Wallhaven wallpaper that a search on Discover shows. It is not a Wallpaper:
+it has no file in the library, no Status and no Score. It becomes a Wallpaper
+only by being downloaded, and from then on it is an ordinary Active one.
+
+Each Result carries a mark, decided by its Wallhaven id:
+
+- **In library**: some Active or Kept wallpaper carries its id.
+- **Rejected**: no Active or Kept wallpaper does, but a Rejected one does.
+- **Unmarked**: no wallpaper carries its id.
+
+A marked Result is still shown, but it cannot be picked or downloaded again.
+Changing your mind about a Rejected one is a Restore in the library.
+
+_Avoid_: search hit, remote wallpaper, candidate
+
+## Pick
+
+A Result the curator has chosen for the next download. Picks gather across
+searches, so a changed filter keeps them, and a download clears them. Only an
+unmarked Result can be a Pick.
+
+_Avoid_: selection (that is the grid's cursor), queue (that is what a download
+works through)
 
 ## Screen
 
