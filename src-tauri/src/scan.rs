@@ -565,6 +565,44 @@ mod tests {
     }
 
     #[test]
+    fn a_scan_records_the_wallhaven_id_of_every_file_named_the_way_wallhaven_names_it() {
+        // ADR 0050: a folder of Wallhaven downloads made before walltare counts
+        // as In library from its first scan. The suffix and the extension's
+        // case are what a browser and this app's own rejects leave behind; the
+        // near misses get none, because a wrong id marks a Result the library
+        // does not hold.
+        let db = library();
+        let dir = tempfile::tempdir().unwrap();
+        let named = [
+            ("wallhaven-abc123.jpg", Some("abc123")),
+            ("wallhaven-abc123 (2).PNG", Some("abc123")),
+            ("wallhaven-85e1g1.Jpeg", Some("85e1g1")),
+            ("wallpaper-abc123.jpg", None),
+            ("wallhaven-abc123(2).jpg", None),
+            ("wallhaven-abc123 (two).jpg", None),
+            ("sunset.webp", None),
+        ];
+        for (name, _) in named {
+            std::fs::write(dir.path().join(name), b"").unwrap();
+        }
+        // Not an image, so not a wallpaper at all.
+        std::fs::write(dir.path().join("wallhaven-abc123.gif"), b"").unwrap();
+
+        let report = scan(&db, dir.path());
+
+        assert_eq!(report.completion().added_count, named.len() as u64);
+        for (name, expected) in named {
+            let id = id_of(&db, &dir.path().join(name));
+            assert_eq!(
+                db.read(|conn| testing::wallhaven_id_of(conn, id))
+                    .as_deref(),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn a_library_root_that_is_gone_fails_the_scan_and_touches_nothing() {
         // ADR 0034: the scan's own ending rather than a refusal of the call.
         // And no `began`, which is what keeps the pre-generation pass running:

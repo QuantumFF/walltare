@@ -20,6 +20,7 @@ import {
   client,
   isAppError,
   type DiscoverFilters,
+  type Mark,
   type Resolution,
   type SearchPage,
   type SearchParams,
@@ -495,9 +496,22 @@ function renderResult(result: SearchResult, { cellIndex, selected }: GridCell) {
   );
 }
 
+/** What a marked card's caption says, where Pick and Download would sit. */
+const MARK_TEXT: Record<Exclude<Mark, "none">, string> = {
+  in_library: "In library",
+  rejected: "You rejected this",
+};
+
 /**
  * One Result: its `lg` thumbnail from `th.wallhaven.cc`, with the facts in a
  * caption underneath — resolution and file size, then favourites and category.
+ *
+ * A marked Result is still a full-size card, so every page keeps its 24 and the
+ * curator's earlier judgement stays in view (ADR 0050). Its picture is dimmed
+ * and greyscale, the way a Rejected card's is in Library, and its caption says
+ * "In library" or "You rejected this" where Pick and Download go. It offers
+ * neither: a duplicate is not downloaded, and changing one's mind about a
+ * reject is a Restore in Library.
  *
  * The card is the grid's cell, wearing the role, the roving `tabindex` and the
  * position the grid finds it by (ADR 0019). Its shape is `RESULT_CARD`: the
@@ -517,12 +531,14 @@ const ResultCard = memo(function ResultCard({
   selected: boolean;
 }) {
   const [failed, setFailed] = useState(false);
+  const mark = result.mark === "none" ? null : MARK_TEXT[result.mark];
+  const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
   return (
     <figure
       role="gridcell"
       tabIndex={selected ? 0 : -1}
       data-cell={cellIndex}
-      aria-label={`${result.resolution}, ${bytes(result.file_size)}, ${result.category}`}
+      aria-label={mark ? `${facts}, ${mark}` : facts}
       className="group m-0 flex flex-col gap-2 rounded-xl outline-none"
     >
       <div
@@ -540,7 +556,13 @@ const ResultCard = memo(function ResultCard({
           decoding="async"
           onLoad={() => setFailed(false)}
           onError={() => setFailed(true)}
-          className={cn("h-full w-full object-cover", failed && "invisible")}
+          className={cn(
+            "h-full w-full object-cover",
+            // On the picture and not the card, as on a Rejected card in
+            // Library, so the caption's mark stays readable.
+            mark && "opacity-60 grayscale",
+            failed && "invisible",
+          )}
         />
         {failed && (
           <div
@@ -552,17 +574,27 @@ const ResultCard = memo(function ResultCard({
           </div>
         )}
       </div>
-      <figcaption className="text-xs leading-4">
-        <p className="font-medium tabular-nums">
-          {result.resolution}{" "}
-          <span className="font-normal text-muted-foreground">
-            · {bytes(result.file_size)}
+      <figcaption className="flex items-center gap-2 text-xs leading-4">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium tabular-nums">
+            {result.resolution}{" "}
+            <span className="font-normal text-muted-foreground">
+              · {bytes(result.file_size)}
+            </span>
+          </p>
+          <p className="flex items-center gap-1 text-muted-foreground">
+            <Heart aria-hidden className="size-3" />
+            {compact(result.favorites)} · {result.category}
+          </p>
+        </div>
+        {mark && (
+          <span
+            data-slot="result-mark"
+            className="shrink-0 text-muted-foreground"
+          >
+            {mark}
           </span>
-        </p>
-        <p className="flex items-center gap-1 text-muted-foreground">
-          <Heart aria-hidden className="size-3" />
-          {compact(result.favorites)} · {result.category}
-        </p>
+        )}
       </figcaption>
     </figure>
   );

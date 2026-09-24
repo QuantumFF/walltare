@@ -761,6 +761,7 @@ test("Discover's Results, scroll position and page count survive a trip to anoth
     file_type: "image/jpeg",
     created_at: "",
     colors: [],
+    mark: "none" as const,
     thumbs: { large: `lg/${id}`, original: "", small: "" },
   });
   let searches = 0;

@@ -10,6 +10,39 @@ pub fn is_supported(path: &Path) -> bool {
     })
 }
 
+/// The Wallhaven id a filename names, or `None` when it is not named the way
+/// Wallhaven names its files.
+///
+/// The grammar is ADR 0050's: `wallhaven-<id>`, optionally ` (n)`, then an image
+/// extension this app reads, in any case. The suffix covers this app's own
+/// reject collisions and a browser's duplicate downloads. The id is spelled the
+/// way Wallhaven spells one, in lowercase letters and digits; anything else is a
+/// near miss and names no id, because a wrong id would mark a Result the
+/// library does not hold.
+///
+/// One parser for every place an id is read off a name: the scan, the schema
+/// backfill and the download landing. A second copy would let them disagree
+/// about which files are Wallhaven's.
+pub fn wallhaven_id(filename: &str) -> Option<&str> {
+    let (stem, extension) = filename.rsplit_once('.')?;
+    if !SUPPORTED_EXTENSIONS.contains(&extension.to_lowercase().as_str()) {
+        return None;
+    }
+    let named = stem.strip_prefix("wallhaven-")?;
+    let id = match named.split_once(" (") {
+        None => named,
+        Some((id, suffix)) => {
+            let n = suffix.strip_suffix(')')?;
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            id
+        }
+    };
+    let spelled = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    (!id.is_empty() && id.bytes().all(spelled)).then_some(id)
+}
+
 /// A source file's own pixel dimensions, or `None` when the file is gone or is
 /// not an image this build can read.
 ///
@@ -96,6 +129,52 @@ mod tests {
         assert!(!is_supported(Path::new("a.jpgx")));
         assert!(!is_supported(Path::new("jpg")));
         assert!(!is_supported(Path::new("")));
+    }
+
+    #[test]
+    fn a_wallhaven_filename_names_its_id_with_or_without_a_copy_suffix() {
+        // ADR 0050's grammar: `wallhaven-<id>`, an optional ` (n)`, and an image
+        // extension in any case. The suffix is this app's own reject collisions
+        // and a browser's duplicate downloads.
+        assert_eq!(wallhaven_id("wallhaven-abc123.jpg"), Some("abc123"));
+        assert_eq!(wallhaven_id("wallhaven-abc123 (2).PNG"), Some("abc123"));
+        assert_eq!(wallhaven_id("wallhaven-85e1g1 (13).jpeg"), Some("85e1g1"));
+        assert_eq!(wallhaven_id("wallhaven-qrow67.WebP"), Some("qrow67"));
+        assert_eq!(wallhaven_id("wallhaven-9ml1dd.Jpg"), Some("9ml1dd"));
+    }
+
+    #[test]
+    fn a_near_miss_of_the_wallhaven_filename_names_no_id() {
+        for name in [
+            // Another prefix, or none.
+            "abc123.jpg",
+            "wallpaper-abc123.jpg",
+            "Wallhaven-abc123.jpg",
+            "my wallhaven-abc123.jpg",
+            "wallhaven_abc123.jpg",
+            // No id, or one Wallhaven would never spell.
+            "wallhaven-.jpg",
+            "wallhaven-ABC123.jpg",
+            "wallhaven-abc123-edited.jpg",
+            "wallhaven-abc 123.jpg",
+            // Not an image this app reads, or no extension at all.
+            "wallhaven-abc123.gif",
+            "wallhaven-abc123.jpg.txt",
+            "wallhaven-abc123",
+            "wallhaven-abc123.",
+            // A malformed suffix.
+            "wallhaven-abc123(2).jpg",
+            "wallhaven-abc123 ().jpg",
+            "wallhaven-abc123 (x).jpg",
+            "wallhaven-abc123 (2.jpg",
+            "wallhaven-abc123 2).jpg",
+            "wallhaven-abc123  (2).jpg",
+            "wallhaven-abc123 (2)(3).jpg",
+            "wallhaven-abc123 (2) .jpg",
+            "wallhaven-abc123 copy.jpg",
+        ] {
+            assert_eq!(wallhaven_id(name), None, "{name}");
+        }
     }
 
     #[test]

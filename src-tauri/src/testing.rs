@@ -26,6 +26,20 @@ pub(crate) fn seed_wallpaper(conn: &Connection, path: &str, status: &str, mu: f6
     conn.last_insert_rowid()
 }
 
+/// [`seed_wallpaper`] carrying the Wallhaven id its filename names, the way a
+/// scan of that file would record it (ADR 0050). Still no file behind it,
+/// which is what the mark tests want: a search never looks at the disk.
+pub(crate) fn seed_wallhaven_wallpaper(conn: &Connection, path: &str, status: &str) -> i64 {
+    let id = seed_wallpaper(conn, path, status, 25.0);
+    let name = path.rsplit('/').next().unwrap();
+    conn.execute(
+        "UPDATE wallpapers SET wallhaven_id = ?2 WHERE id = ?1",
+        rusqlite::params![id, crate::scanner::wallhaven_id(name)],
+    )
+    .unwrap();
+    id
+}
+
 /// A wallpaper whose file exists, seeded through the same insert a scan uses.
 /// The file is empty, which is enough for anything that only moves it.
 pub(crate) fn seed_real_wallpaper(conn: &Connection, dir: &Path, name: &str) -> i64 {
@@ -72,6 +86,20 @@ pub(crate) fn dimensions_of(conn: &Connection, id: i64) -> (Option<i64>, Option<
         "SELECT width, height FROM wallpapers WHERE id = ?1",
         rusqlite::params![id],
         |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .unwrap()
+}
+
+/// The Wallhaven id a wallpaper's row carries, `None` for one that has none
+/// (ADR 0050).
+///
+/// Here because the scan records it, the schema backfills it, and the soft
+/// reject and Restore must leave it alone, and all three modules' tests ask it.
+pub(crate) fn wallhaven_id_of(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT wallhaven_id FROM wallpapers WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get(0),
     )
     .unwrap()
 }

@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
 use crate::error::AppError;
+use crate::scanner;
 
 /// Bumped whenever `DDL` changes in a way an existing database can't reach by
 /// running the (idempotent) DDL again. See `migrate`.
@@ -10,7 +12,7 @@ use crate::error::AppError;
 /// Adding a whole table is not such a change: `init_schema` runs the DDL before
 /// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
 /// why `settings` arrived without a bump, and `thumbnail_failures` after it.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const DDL: &str = "
 CREATE TABLE IF NOT EXISTS wallpapers (
@@ -32,7 +34,13 @@ CREATE TABLE IF NOT EXISTS wallpapers (
     -- cache holds, which gives the aspect ratio and not the resolution
     -- (ADR 0044). Appended after `origin_path` for the same reason it is last.
     width             INTEGER,
-    height            INTEGER
+    height            INTEGER,
+    -- Which Wallhaven wallpaper the file is, NULL for most. Written when the
+    -- row is created and never rewritten, and shared rather than unique: a
+    -- copy in a second folder carries the same one (ADR 0050). Its index is in
+    -- `INDEXES`, because an index on a column the DDL cannot add to an old
+    -- file would fail before `migrate` had added it.
+    wallhaven_id      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallpapers_status_comparisons ON wallpapers (status, comparisons_count);
@@ -70,6 +78,13 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+";
+
+/// Indexes on columns a migration adds, run after `migrate` rather than with
+/// the DDL: against a file from before the column, `CREATE INDEX` in the DDL
+/// would name a column that is not there yet.
+const INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS idx_wallpapers_wallhaven_id ON wallpapers (wallhaven_id);
 ";
 
 /// Why a database file cannot become a working connection.
@@ -141,10 +156,11 @@ pub fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute_batch(DDL)?;
     if fresh {
         // The DDL always creates the current shape, so a new file starts current.
-        set_schema_version(conn, SCHEMA_VERSION)
+        set_schema_version(conn, SCHEMA_VERSION)?;
     } else {
-        migrate(conn)
+        migrate(conn)?;
     }
+    conn.execute_batch(INDEXES)
 }
 
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
@@ -234,7 +250,46 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         version = 4;
     }
 
+    if version < 5 {
+        // v5 added `wallpapers.wallhaven_id`, and this one is backfilled. A
+        // rescan inserts only new paths, so a row that existed before the
+        // column will never arrive again, and its current filename is the only
+        // chance it has to be recognised (ADR 0050). Every Status, and one
+        // transaction with the column, so a half-run step cannot be stamped.
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch("ALTER TABLE wallpapers ADD COLUMN wallhaven_id TEXT;")?;
+        backfill_wallhaven_ids(&tx)?;
+        set_schema_version(&tx, 5)?;
+        tx.commit()?;
+        version = 5;
+    }
+
     set_schema_version(conn, version)
+}
+
+/// Records the Wallhaven id of every row that has none and whose filename
+/// names one, by [`scanner::wallhaven_id`]'s grammar.
+///
+/// Only rows with none, so it is idempotent and never rewrites an id: the id
+/// is what the file was when it arrived, not what it is called today.
+fn backfill_wallhaven_ids(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let named: Vec<(i64, String)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, filename FROM wallpapers WHERE wallhaven_id IS NULL")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?;
+        rows.filter_map(|row| match row {
+            Ok((id, filename)) => {
+                scanner::wallhaven_id(&filename).map(|wallhaven| Ok((id, wallhaven.to_string())))
+            }
+            Err(e) => Some(Err(e)),
+        })
+        .collect::<Result<_, _>>()?
+    };
+    let mut stmt = conn.prepare("UPDATE wallpapers SET wallhaven_id = ?2 WHERE id = ?1")?;
+    for (id, wallhaven) in named {
+        stmt.execute(rusqlite::params![id, wallhaven])?;
+    }
+    Ok(())
 }
 
 /// A wallpaper row a scan has just created, and where its file sits.
@@ -261,19 +316,25 @@ pub fn insert_new_wallpapers(
     let tx = conn.unchecked_transaction()?;
     let mut added = Vec::new();
     {
-        let mut stmt =
-            tx.prepare_cached("INSERT OR IGNORE INTO wallpapers (filename, path) VALUES (?1, ?2)")?;
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR IGNORE INTO wallpapers (filename, path, wallhaven_id) VALUES (?1, ?2, ?3)",
+        )?;
         for path in paths {
             let Some(path_str) = path.to_str() else {
                 // `scanner::walk` filters these out; skip rather than panic so a
                 // caller that doesn't can't poison the connection mutex.
                 continue;
             };
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            // Recorded on arrival and never again, so a later collision suffix
+            // or a missing file cannot lose it (ADR 0050).
             let inserted = stmt.execute(rusqlite::params![
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default(),
+                filename,
                 path_str,
+                scanner::wallhaven_id(filename),
             ])?;
             if inserted > 0 {
                 added.push(Added {
@@ -322,6 +383,32 @@ pub fn record_dimensions_batch(
         record_dimensions(&tx, *id, *width, *height)?;
     }
     tx.commit()
+}
+
+/// For each of `ids` that some wallpaper carries as its Wallhaven id, whether
+/// any wallpaper carrying it is Eligible.
+///
+/// The one lookup behind a search's marks: `true` is In library, `false` is
+/// Rejected, and an id absent from the map is carried by nothing. One statement
+/// however many ids, served by `idx_wallpapers_wallhaven_id`. It reads rows and
+/// never the disk, so a wallpaper whose file is missing counts like any other
+/// (ADR 0050, ADR 0032).
+pub fn wallhaven_carriers(
+    conn: &Connection,
+    ids: &[&str],
+) -> Result<HashMap<String, bool>, rusqlite::Error> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let wanted = serde_json::to_string(ids).expect("a list of strings serialises");
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT wallhaven_id, MAX({}) FROM wallpapers
+         WHERE wallhaven_id IN (SELECT value FROM json_each(?1))
+         GROUP BY wallhaven_id",
+        Status::ELIGIBLE_SQL
+    ))?;
+    let rows = stmt.query_map([wanted], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
 }
 
 /// A wallpaper's Status, the three of `CONTEXT.md`: Active, Kept, Rejected.
@@ -816,6 +903,58 @@ mod tests {
         PRAGMA user_version = 3;
     ";
 
+    /// The v4 schema, as the release before the Wallhaven id shipped it.
+    const DDL_V4: &str = "
+        CREATE TABLE wallpapers (
+            id                INTEGER PRIMARY KEY,
+            filename          TEXT    NOT NULL,
+            path              TEXT    NOT NULL UNIQUE,
+            status            TEXT    NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active', 'kept', 'rejected')),
+            rating_mu         REAL    NOT NULL DEFAULT 25.0,
+            rating_sigma      REAL    NOT NULL DEFAULT 8.333,
+            comparisons_count INTEGER NOT NULL DEFAULT 0,
+            created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+            origin_path       TEXT,
+            width             INTEGER,
+            height            INTEGER
+        );
+        CREATE TABLE comparisons (
+            id        INTEGER PRIMARY KEY,
+            winner_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            loser_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            voted_at  INTEGER NOT NULL
+        );
+        CREATE TABLE thumbnails (
+            wallpaper_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE CASCADE,
+            size         TEXT    NOT NULL CHECK (size IN ('small', 'medium', 'full')),
+            width        INTEGER NOT NULL,
+            height       INTEGER NOT NULL,
+            source_mtime INTEGER NOT NULL,
+            PRIMARY KEY (wallpaper_id, size)
+        );
+        CREATE TABLE thumbnail_failures (
+            wallpaper_id INTEGER PRIMARY KEY REFERENCES wallpapers(id) ON DELETE CASCADE,
+            source_mtime INTEGER NOT NULL,
+            message      TEXT    NOT NULL,
+            failed_at    INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE TABLE settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        PRAGMA user_version = 4;
+    ";
+
+    fn index_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            rusqlite::params![name],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+    }
+
     fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
         conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
@@ -841,8 +980,10 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 4);
+        assert_eq!(SCHEMA_VERSION, 5);
         assert!(column_exists(&conn, "wallpapers", "origin_path").unwrap());
+        assert!(column_exists(&conn, "wallpapers", "wallhaven_id").unwrap());
+        assert!(index_exists(&conn, "idx_wallpapers_wallhaven_id").unwrap());
         assert!(column_exists(&conn, "wallpapers", "width").unwrap());
         assert!(column_exists(&conn, "wallpapers", "height").unwrap());
         let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
@@ -936,6 +1077,86 @@ mod tests {
         // And the library and its history come through untouched.
         assert_eq!(count_wallpapers(&conn), 2);
         assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn a_v4_database_gains_the_wallhaven_id_backfilled_from_every_filename() {
+        // ADR 0050's one backfill. A rescan inserts only new paths, so a row
+        // that existed before the column will never arrive again, and this is
+        // the only chance it has to be recognised. Every Status counts: a
+        // Rejected `wallhaven-` file is exactly the Result the curator must not
+        // be offered again, and its collision suffix is the app's own doing.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+        conn.execute_batch(DDL_V4).unwrap();
+        let active = seed_wallpaper(&conn, "/w/wallhaven-abc123.jpg", "active", 25.0);
+        let kept = seed_wallpaper(&conn, "/w/wallhaven-kept01.PNG", "kept", 30.0);
+        let rejected = seed_wallpaper(
+            &conn,
+            "/w/rejected/wallhaven-85e1g1 (2).jpg",
+            "rejected",
+            11.0,
+        );
+        let copy = seed_wallpaper(&conn, "/w/copies/wallhaven-abc123.jpg", "active", 25.0);
+        let other = seed_wallpaper(&conn, "/w/sunset.jpg", "active", 25.0);
+        let near_miss = seed_wallpaper(&conn, "/w/wallhaven-abc123.gif.jpg", "active", 25.0);
+        add_comparison(&conn, active, rejected);
+
+        init_schema(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(index_exists(&conn, "idx_wallpapers_wallhaven_id").unwrap());
+        assert_eq!(wallhaven_id_of(&conn, active).as_deref(), Some("abc123"));
+        assert_eq!(wallhaven_id_of(&conn, kept).as_deref(), Some("kept01"));
+        assert_eq!(wallhaven_id_of(&conn, rejected).as_deref(), Some("85e1g1"));
+        // Shared, not unique: the copy carries the same id as the original.
+        assert_eq!(wallhaven_id_of(&conn, copy).as_deref(), Some("abc123"));
+        assert_eq!(wallhaven_id_of(&conn, other), None);
+        assert_eq!(wallhaven_id_of(&conn, near_miss), None);
+        // Nothing else about the library moved.
+        assert_eq!(status_of(&conn, rejected), "rejected");
+        assert_eq!(count_wallpapers(&conn), 6);
+        assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn the_wallhaven_backfill_is_idempotent() {
+        // Running it again changes nothing: an id already recorded is never
+        // rewritten, even when the name no longer says it, and one never
+        // recorded stays absent.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL_V4).unwrap();
+        let named = seed_wallpaper(&conn, "/w/wallhaven-abc123.jpg", "active", 25.0);
+        let plain = seed_wallpaper(&conn, "/w/sunset.jpg", "kept", 25.0);
+        init_schema(&conn).unwrap();
+        // A row whose name has since changed under the app, which the backfill
+        // must not read again.
+        conn.execute(
+            "UPDATE wallpapers SET filename = 'wallhaven-zzz999.jpg' WHERE id = ?1",
+            [named],
+        )
+        .unwrap();
+
+        backfill_wallhaven_ids(&conn).unwrap();
+        init_schema(&conn).unwrap();
+
+        assert_eq!(wallhaven_id_of(&conn, named).as_deref(), Some("abc123"));
+        assert_eq!(wallhaven_id_of(&conn, plain), None);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn an_older_database_reaches_the_wallhaven_id_in_one_open() {
+        // Every step below the target runs, so a v1 file two columns and a
+        // backfill behind lands on the current shape, ids and all.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL_V1).unwrap();
+        let id = seed_wallpaper(&conn, "/w/wallhaven-old001.jpeg", "active", 25.0);
+
+        init_schema(&conn).unwrap();
+
+        assert_eq!(wallhaven_id_of(&conn, id).as_deref(), Some("old001"));
+        assert!(index_exists(&conn, "idx_wallpapers_wallhaven_id").unwrap());
     }
 
     #[test]
@@ -1128,6 +1349,75 @@ mod tests {
         );
         // And the id is the row's own, so a caller can write back to it.
         assert_eq!(get_wallpaper(&conn, added[0].id).unwrap().path, "/w/c.webp");
+    }
+
+    #[test]
+    fn an_inserted_file_named_the_way_wallhaven_names_it_carries_its_id() {
+        // The scan's insert is where a new row gets its id (ADR 0050), so a
+        // folder of Wallhaven downloads made before walltare counts as In
+        // library from its first scan.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        let added = insert_new_wallpapers(
+            &conn,
+            &[
+                PathBuf::from("/w/wallhaven-abc123.jpg"),
+                PathBuf::from("/w/wallhaven-abc123 (2).PNG"),
+                PathBuf::from("/w/wallpaper-abc123.jpg"),
+            ],
+        )
+        .unwrap();
+
+        let ids: Vec<Option<String>> = added
+            .iter()
+            .map(|row| wallhaven_id_of(&conn, row.id))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![Some("abc123".to_string()), Some("abc123".to_string()), None]
+        );
+    }
+
+    #[test]
+    fn a_wallhaven_lookup_says_for_each_id_whether_an_eligible_wallpaper_carries_it() {
+        // The mark query, against a row of every Status. Only ids some
+        // wallpaper carries come back; the file behind a row is never looked
+        // at, so one that is missing counts like any other.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let seed = |path: &str, status: &str| {
+            seed_wallhaven_wallpaper(&conn, path, status);
+        };
+        seed("/gone/wallhaven-active.jpg", "active");
+        seed("/w/wallhaven-kept01.jpg", "kept");
+        seed("/w/rejected/wallhaven-reject.jpg", "rejected");
+        // One id on two wallpapers: rejected once, and kept in another folder.
+        seed("/w/rejected/wallhaven-shared.jpg", "rejected");
+        seed("/w/wallhaven-shared (2).jpg", "kept");
+        // And one on two Rejected ones.
+        seed("/w/rejected/wallhaven-twice1.jpg", "rejected");
+        seed("/w/rejected/wallhaven-twice1 (2).jpg", "rejected");
+        seed("/w/sunset.jpg", "active");
+
+        let carried = wallhaven_carriers(
+            &conn,
+            &["active", "kept01", "reject", "shared", "twice1", "nobody"],
+        )
+        .unwrap();
+
+        let expected: std::collections::HashMap<String, bool> = [
+            ("active", true),
+            ("kept01", true),
+            ("reject", false),
+            ("shared", true),
+            ("twice1", false),
+        ]
+        .into_iter()
+        .map(|(id, eligible)| (id.to_string(), eligible))
+        .collect();
+        assert_eq!(carried, expected);
+        assert!(wallhaven_carriers(&conn, &[]).unwrap().is_empty());
     }
 
     #[test]
