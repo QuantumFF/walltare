@@ -7,6 +7,7 @@ import {
 } from "@/components/ItemLightbox";
 import type { ActionTable } from "@/components/keymap";
 import type { SelectionHandle } from "@/components/selection";
+import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useState } from "react";
@@ -72,13 +73,23 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-function ThingCard({ thing, cell }: { thing: Thing; cell: GridCell }) {
+/** A card, which opens its thing on a click the way a Result's card does. */
+function ThingCard({
+  thing,
+  cell,
+  onOpen,
+}: {
+  thing: Thing;
+  cell: GridCell;
+  onOpen: (thing: Thing) => void;
+}) {
   return (
     <div
       role="gridcell"
       aria-label={thing.name}
       data-cell={cell.cellIndex}
       tabIndex={cell.selected ? 0 : -1}
+      onClick={() => onOpen(thing)}
     >
       {thing.name}
     </div>
@@ -97,7 +108,9 @@ function ThingPage() {
         ref={setGrid}
         items={THINGS}
         label="Things"
-        renderCard={(thing, cell) => <ThingCard thing={thing} cell={cell} />}
+        renderCard={(thing, cell) => (
+          <ThingCard thing={thing} cell={cell} onOpen={lightbox.openOn} />
+        )}
         actions={THING_KEYS}
         onAct={onAct}
         onOpen={lightbox.openOn}
@@ -179,6 +192,57 @@ test("it opens over a non-Wallpaper item, walks the grid's cursor, and closes ba
   expect(document.activeElement?.getAttribute("aria-label")).toBe(
     "second thing",
   );
+});
+
+test("a click on another card never hands the lightbox the last item's picture", async () => {
+  // A container, the way the shell hands one over. Without one Radix's portal
+  // waits a layout effect before it mounts anything, which hides a first
+  // commit drawn from the wrong item.
+  const container = document.body.appendChild(document.createElement("div"));
+  await renderInApp(
+    <LightboxHostProvider value={{ container, setOpen: () => {} }}>
+      <ThingPage />
+    </LightboxHostProvider>,
+  );
+
+  // The first thing opened and closed, so the grid's cursor is on it and its
+  // full source is one the webview has cached.
+  await act(async () => {
+    screen.getByRole("gridcell", { name: "first thing" }).focus();
+  });
+  await press("Enter");
+  await press("Escape");
+
+  // Every source an image was handed, including one replaced before a paint:
+  // an `<img>` handed the last item's cached full source decodes it, and keeps
+  // painting it over the clicked item's placeholder until that one's arrives.
+  // React hands an `<img>` its first `src` as a property.
+  const handed: string[] = [];
+  const src = Object.getOwnPropertyDescriptor(
+    HTMLImageElement.prototype,
+    "src",
+  )!;
+  Object.defineProperty(HTMLImageElement.prototype, "src", {
+    ...src,
+    set(value: string) {
+      handed.push(value);
+      src.set!.call(this, value);
+    },
+  });
+  try {
+    await act(async () => {
+      fireEvent.click(screen.getByRole("gridcell", { name: "second thing" }));
+    });
+  } finally {
+    Object.defineProperty(HTMLImageElement.prototype, "src", src);
+  }
+
+  expect(screen.getByRole("dialog", { name: "wh-b2" })).toBeTruthy();
+  expect(handed).toEqual([
+    "https://th.example/lg/wh-b2.jpg",
+    "https://w.example/full/wh-b2.jpg",
+  ]);
+  container.remove();
 });
 
 test("the page's own row and keys are what it offers", async () => {

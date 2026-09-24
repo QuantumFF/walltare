@@ -23,6 +23,7 @@ import { grouped } from "@/lib/copy";
 import type { Box } from "@/lib/layout-plan";
 import { ChevronLeft, ChevronRight, X } from "lucide-react";
 import { Dialog } from "radix-ui";
+import { flushSync } from "react-dom";
 import {
   useCallback,
   useEffect,
@@ -196,12 +197,24 @@ export function useLightbox<T extends Keyed>(
   // It also notes whether the focus it opened from was drawn, which is how the
   // curator arrived: `Enter` on a card is keyboard focus and a click on one is
   // not. A ref, because nothing renders from it.
+  //
+  // The move is flushed before the open, not batched with it. The grid
+  // publishes its selection from a layout effect, so an open in the same
+  // commit reads the selection from before the click: the lightbox mounts its
+  // `<img>`s on the item it was last left on, and the render the publication
+  // forces then hands them the clicked item's sources. That is too late. An
+  // `<img>` handed a source the webview has cached decodes it at once, and
+  // keeps painting it while its next source arrives, so every open onto a card
+  // other than the last one flashed the last one's full file for as long as
+  // the clicked one's took. Flushed, the grid has published by the time the
+  // open renders, and the first thing an `<img>` in here is handed is the
+  // clicked item's.
   const openedWithVisibleFocus = useRef(false);
   const openOn = useCallback(
     (subject: T) => {
       openedWithVisibleFocus.current =
         document.activeElement?.matches(":focus-visible") ?? false;
-      grid?.selection().selectId(subject.id);
+      flushSync(() => grid?.selection().selectId(subject.id));
       setOpenEverywhere(true);
     },
     [grid, setOpenEverywhere],
