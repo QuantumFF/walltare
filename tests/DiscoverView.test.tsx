@@ -374,20 +374,23 @@ test("the search box sends the query verbatim, Wallhaven's syntax included", asy
   expect(searches[1].page).toBeUndefined();
 });
 
-test("the Ratio pill offers the Screen's, the common ones, Wide, Portrait and Any ratio", async () => {
+test("the Ratio pill offers Wide and Portrait, then the Screen's, the common ones and Any ratio", async () => {
   await renderInApp(<DiscoverView />);
 
   await press("Enter", { target: ratioPill() });
   expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+    "Wide",
+    "Portrait",
     "16:9 · Screen",
     "16:10",
     "21:9",
     "32:9",
     "9:16",
-    "Wide",
-    "Portrait",
     "Any ratio",
   ]);
+  expect(
+    document.querySelector("[data-slot='select-separator']"),
+  ).not.toBeNull();
   await press("Enter", {
     target: screen.getByRole("option", { name: "21:9" }),
   });

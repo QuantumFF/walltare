@@ -36,6 +36,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -937,15 +938,19 @@ export function DiscoverView() {
                 <SelectValue>{pillLabel(asked.ratio)}</SelectValue>
               </SelectTrigger>
               <SelectContent onCloseAutoFocus={ratioHandOff.onCloseAutoFocus}>
-                {[
-                  screen,
-                  ...COMMON_RATIOS.filter((r) => r !== screen),
-                  ...Object.keys(NAMED_RATIOS),
-                ].map((ratio) => (
+                {Object.keys(NAMED_RATIOS).map((ratio) => (
                   <SelectItem key={ratio} value={ratio} className="text-xs">
                     {pillLabel(ratio)}
                   </SelectItem>
                 ))}
+                <SelectSeparator />
+                {[screen, ...COMMON_RATIOS.filter((r) => r !== screen)].map(
+                  (ratio) => (
+                    <SelectItem key={ratio} value={ratio} className="text-xs">
+                      {pillLabel(ratio)}
+                    </SelectItem>
+                  ),
+                )}
                 <SelectItem value={ANY_RATIO} className="text-xs">
                   Any ratio
                 </SelectItem>
