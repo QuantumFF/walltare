@@ -73,6 +73,12 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+/** Containers a test handed the lightbox, removed whatever the test did. */
+const containers: HTMLElement[] = [];
+afterEach(() => {
+  for (const container of containers.splice(0)) container.remove();
+});
+
 /** A card, which opens its thing on a click the way a Result's card does. */
 function ThingCard({
   thing,
@@ -199,6 +205,7 @@ test("a click on another card never hands the lightbox the last item's picture",
   // waits a layout effect before it mounts anything, which hides a first
   // commit drawn from the wrong item.
   const container = document.body.appendChild(document.createElement("div"));
+  containers.push(container);
   await renderInApp(
     <LightboxHostProvider value={{ container, setOpen: () => {} }}>
       <ThingPage />
@@ -242,7 +249,6 @@ test("a click on another card never hands the lightbox the last item's picture",
     "https://th.example/lg/wh-b2.jpg",
     "https://w.example/full/wh-b2.jpg",
   ]);
-  container.remove();
 });
 
 test("the page's own row and keys are what it offers", async () => {
