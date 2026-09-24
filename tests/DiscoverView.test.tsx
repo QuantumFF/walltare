@@ -1073,6 +1073,104 @@ test("a download refused at the click says why, and the card offers Download aga
   });
   expect(downloadButton(first)).not.toBeNull();
   expect(caption(first)).not.toContain("Downloading");
+
+  // Nothing was queued, so no report of a batch ever opened underneath.
+  await click(
+    document.querySelector<HTMLElement>("[data-slot='toast-close']")!,
+  );
+  expect(toast()).toBeNull();
+});
+
+test("a batch's ending leaves alone a Result clicked after the backend closed it", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  await click(downloadButton(first)!);
+  await fileDone("qrow67", { kind: "landed" });
+
+  // The backend has already closed that batch when this click reaches it, so
+  // its ending arrives while the second file is on the wire.
+  await click(downloadButton(second)!);
+  await act(async () => {
+    emitEvent("download-complete", {
+      total: 1,
+      landed: 1,
+      failed: 0,
+      first_error: null,
+    });
+  });
+  await flush();
+
+  expect(caption(second)).toContain("Downloading");
+  expect(downloadButton(second)).toBeNull();
+});
+
+test("a batch clicked before the last one's ending still says when it sent the Round back", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  // Round 3 at the first click, and the first file fails, so nothing moves.
+  await click(downloadButton(first)!);
+  await fileDone(
+    "qrow67",
+    { kind: "failed", message: "gone" },
+    { total: 1, landed: 0, failed: 1 },
+  );
+  await click(downloadButton(second)!);
+  await act(async () => {
+    emitEvent("download-complete", {
+      total: 1,
+      landed: 0,
+      failed: 1,
+      first_error: "gone",
+    });
+  });
+  await flush();
+
+  // The second batch started without a click of its own being first, and is
+  // still judged against the Round it started from.
+  mockCommand("get_stats", () => stats({ round: 1 }));
+  await fileDone("jedzym", { kind: "landed" });
+  await act(async () => {
+    emitEvent("download-complete", {
+      total: 1,
+      landed: 1,
+      failed: 0,
+      first_error: null,
+    });
+  });
+  await flush();
+
+  expect(toast()).toEqual({
+    title: "1 wallpaper downloaded",
+    description: "Back to Round 1. The new wallpapers have no comparisons yet.",
+  });
+});
+
+test("a new search drops the captions of downloads it replaced", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  await click(downloadButton(cards()[0])!);
+  await click(downloadButton(cards()[1])!);
+  await fileDone("qrow67", { kind: "landed" });
+  await fileDone("jedzym", { kind: "failed", message: "gone" });
+
+  // The search marks the landed one itself, and the failed one is a plain
+  // card again.
+  answer = () => ({
+    ...page([]),
+    results: [result("qrow67", { mark: "in_library" }), result("jedzym")],
+  });
+  await act(async () => {
+    fireEvent.submit(screen.getByRole("search"));
+  });
+  await flush();
+
+  const [held, fresh] = cards();
+  expect(caption(held)).toContain("In library");
+  expect(caption(held)).not.toContain("Added to library");
+  expect(caption(fresh)).not.toContain("Failed");
+  expect(downloadButton(fresh)).not.toBeNull();
 });
 
 test("each file that lands refreshes the library and the headline, as a scan would", async () => {

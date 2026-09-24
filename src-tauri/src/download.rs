@@ -28,6 +28,7 @@
 
 use std::collections::VecDeque;
 use std::io::Read;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -142,6 +143,11 @@ impl Downloads {
             .timeout_connect(Some(timeouts.connect))
             // Every status is read below, so a 404 can say which file.
             .http_status_as_error(false)
+            // No redirect is followed, so the bytes come from the URL the
+            // search served and from nowhere a 3xx could bounce them to
+            // (ADR 0054). A redirect is then a status that is not 200, and
+            // fails the file saying so.
+            .max_redirects(0)
             .user_agent(concat!("walltare/", env!("CARGO_PKG_VERSION")))
             .build();
         let connector = DefaultConnector::new().chain(BetweenReads(timeouts.between_reads));
@@ -168,6 +174,8 @@ impl Downloads {
     ///
     /// [`enqueue`]: Downloads::enqueue
     pub fn run(&self, db: &Db, report: &impl Report) {
+        // Whatever stops this thread, the queue is left able to start another.
+        let _draining = Draining(self);
         loop {
             let job = {
                 let mut queue = self.queue();
@@ -186,7 +194,12 @@ impl Downloads {
                 }
             };
 
-            let outcome = match self.land(db, &job) {
+            // A panic in one file is that file failing, for the reason
+            // `ThumbnailCache::warm` gives: it is a fact about those bytes or
+            // that folder, and the rest of the batch is still the curator's.
+            let landed = std::panic::catch_unwind(AssertUnwindSafe(|| self.land(db, &job)))
+                .unwrap_or_else(|_| Err(panicked()));
+            let outcome = match landed {
                 Ok(()) => Outcome::Landed,
                 Err(error) => Outcome::Failed {
                     message: sentence(error),
@@ -315,6 +328,31 @@ impl Downloads {
         }
         Ok(staged)
     }
+}
+
+/// Resets the queue's thread state if [`Downloads::run`] unwinds.
+///
+/// A file's own panic is caught where it happens, so this is for one anywhere
+/// else — a report that panicked while emitting. Without it `running` would
+/// stay set, every later click would join a batch no thread is draining, and
+/// the report would say "Downloading…" for the rest of the session.
+struct Draining<'a>(&'a Downloads);
+
+impl Drop for Draining<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let mut queue = self.0.queue();
+        queue.running = false;
+        queue.current = None;
+        queue.batch = Complete::default();
+    }
+}
+
+/// What a file that panicked reports.
+fn panicked() -> AppError {
+    AppError::Io("the download stopped on an error inside walltare".to_string())
 }
 
 /// Ask for `ids` to be downloaded, and answer whether a thread has to be
@@ -637,7 +675,8 @@ mod tests {
             "order": "desc",
         }))
         .unwrap();
-        client.search(&params).unwrap();
+        // With a key, so the file's request can be seen not to carry it.
+        client.search(&params, Some("secret-key")).unwrap();
         client
     }
 
@@ -716,10 +755,68 @@ mod tests {
             asked[0]
                 .headers
                 .iter()
-                .all(|(name, _)| name != "x-api-key" && name != "authorization"),
+                .all(|(name, value)| name != "x-api-key"
+                    && name != "authorization"
+                    && !value.contains("secret-key")),
             "{:?}",
             asked[0].headers
         );
+    }
+
+    #[test]
+    fn a_redirect_is_not_followed_and_fails_the_file() {
+        let library = Library::new();
+        let image = png(2, 2);
+        let elsewhere = testing::stub(vec![Canned::file(&image)]);
+        let files = testing::stub(vec![Canned::html(302, "moved").header(
+            "Location",
+            &format!("{}/full/qr/wallhaven-qrow67.png", elsewhere.base()),
+        )]);
+        let client = served(&files, &[("qrow67", image.len())]);
+        let downloads = downloads();
+        let report = Recorder::default();
+
+        request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
+        downloads.run(&library.db, &report);
+
+        assert!(elsewhere.requests().is_empty(), "the redirect went nowhere");
+        assert_eq!(
+            failed_with(&report.progress.borrow()[0]),
+            "Wallhaven's image host refused the file (HTTP 302)."
+        );
+        assert!(library.rows().is_empty());
+        assert_eq!(library.entries(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_thread_that_dies_mid_batch_leaves_the_queue_able_to_start_again() {
+        // A report that panics is the cheapest way to unwind out of `run`; a
+        // file's own panic is caught inside it and counted as a failure.
+        struct Panics;
+        impl Report for Panics {
+            fn progress(&self, _: Progress) {
+                panic!("the report broke");
+            }
+            fn complete(&self, _: Complete) {}
+        }
+        let library = Library::new();
+        let image = png(2, 2);
+        let files = testing::stub(vec![Canned::file(&image), Canned::file(&image)]);
+        let client = served(&files, &[("aaaaaa", image.len()), ("bbbbbb", image.len())]);
+        let downloads = downloads();
+        request(&library.db, &client, &downloads, &ids(&["aaaaaa"])).unwrap();
+
+        let died =
+            std::panic::catch_unwind(AssertUnwindSafe(|| downloads.run(&library.db, &Panics)));
+
+        assert!(died.is_err());
+        // Not joined to a batch nobody is draining: the next click starts a
+        // thread, and it runs.
+        assert!(request(&library.db, &client, &downloads, &ids(&["bbbbbb"])).unwrap());
+        let report = Recorder::default();
+        downloads.run(&library.db, &report);
+        assert_eq!(*report.events.borrow(), ["progress bbbbbb", "complete"]);
+        assert_eq!(report.complete.borrow()[0].total, 1);
     }
 
     #[test]

@@ -675,7 +675,7 @@ export interface BackendEvents {
  *
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
  * `BackendEvents` does above for the seven event names: the one place in the
- * frontend where these 19 strings are written down. `client`'s methods below
+ * frontend where these 23 strings are written down. `client`'s methods below
  * reach them through `call`, the only caller in the app; the test suite's
  * `mockCommand` is the other reader, which is why the names are exported rather
  * than inlined (ADR 0031).

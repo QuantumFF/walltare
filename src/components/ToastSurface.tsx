@@ -624,21 +624,16 @@ export function ToastSurface({
           return;
 
         case "download-refused":
-          setTransient({
-            key,
-            prefix: "Couldn't download",
-            filename: "",
-            suffix: "",
-            description: backendMessage(request.error),
-            pinned: true,
-          });
+          // Names no file, so it is a whole-string title like a scan's
+          // ending rather than the filename shape above.
+          raise("Couldn't download", backendMessage(request.error), true);
           return;
       }
     },
-    // Nothing outside this component: every request now arrives holding
-    // whatever acting on it would take, the two Undos included, so `show` is
-    // stable for the life of the shell.
-    [],
+    // Nothing outside this component but `raise`, which is as stable: every
+    // request now arrives holding whatever acting on it would take, the two
+    // Undos included, so `show` is stable for the life of the shell.
+    [raise],
   );
 
   /**

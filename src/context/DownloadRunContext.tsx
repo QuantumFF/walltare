@@ -86,61 +86,60 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
   // handlers are registered once and the events outrun a render.
   const running = useRef(false);
   const runs = useRef(0);
-  /** Whether the backend has queued anything for the batch that is open. */
-  const accepted = useRef(false);
+  /** How many batches have ended, so a reply can tell one ended under it. */
+  const endings = useRef(0);
   /**
    * The Round as it stood before the batch's first file, which the "back to
    * Round N" ending is judged against.
    */
   const roundBefore = useRef<number | null>(null);
+  /**
+   * The last Round this provider read: before a click, or after a file landed.
+   * A batch opens on it, which is right even for one the frontend did not see
+   * start — clicked while the last batch was still reporting, so no read was
+   * made for it — because whatever that batch landed was read as it landed.
+   */
+  const lastRound = useRef<number | null>(null);
   const listeners = useRef(new Set<(ending: DownloadEnding) => void>());
 
   const open = useCallback((progress: DownloadProgress | null) => {
     running.current = true;
     runs.current += 1;
-    accepted.current = false;
-    roundBefore.current = null;
+    roundBefore.current = lastRound.current;
     setState({ running: true, run: runs.current, progress });
   }, []);
 
   const end = useCallback(() => {
     running.current = false;
+    endings.current += 1;
     setState(IDLE);
   }, []);
 
   const download = useCallback<DownloadRunControls["download"]>(
     async (ids) => {
-      const opening = !running.current;
-      if (opening) {
-        open(null);
-        const run = runs.current;
+      if (!running.current) {
         // Before the call, so no file can land ahead of the read: the Round
         // the batch is judged against is the one it started from.
         try {
-          const stats = await client.getStats();
-          if (runs.current === run) roundBefore.current = stats.round;
+          lastRound.current = (await client.getStats()).round;
         } catch (error) {
           console.error("Failed to read the Round before a download:", error);
         }
       }
-      const run = runs.current;
-      try {
-        await client.downloadWallhaven(ids);
-        if (runs.current === run) accepted.current = true;
-      } catch (error) {
-        // A batch this call opened and nothing else joined never was one: the
-        // backend queued nothing, so no ending is coming to close it.
-        if (opening && runs.current === run && !accepted.current) end();
-        throw error;
-      }
+      const ended = endings.current;
+      // A refusal throws from here and opens nothing, so a click refused at
+      // once never flashes a report of work that was never queued.
+      await client.downloadWallhaven(ids);
+      // Opened by the reply unless the batch already said something: its
+      // first file opened it, or it has been and gone before the reply came.
+      if (!running.current && endings.current === ended) open(null);
     },
-    [open, end],
+    [open],
   );
 
   useBackendEvents({
     downloadProgress: (progress) => {
       if (!running.current) open(progress);
-      accepted.current = true;
       setState({ running: true, run: runs.current, progress });
       if (progress.item.outcome.kind !== "landed") return;
       // A landed file is a new row, which only a refetch can place, and a new
@@ -148,7 +147,10 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
       publish({ type: "library-scanned", added: 1 });
       void client
         .getStats()
-        .then((stats) => publish({ type: "stats-changed", stats }))
+        .then((stats) => {
+          lastRound.current = stats.round;
+          publish({ type: "stats-changed", stats });
+        })
         .catch((error: unknown) => {
           console.error("Failed to read the stats after a download:", error);
         });
@@ -173,7 +175,10 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
       }
       void client
         .getStats()
-        .then((stats) => settle(stats.round < before ? stats.round : null))
+        .then((stats) => {
+          lastRound.current = stats.round;
+          settle(stats.round < before ? stats.round : null);
+        })
         .catch((error: unknown) => {
           console.error(
             "Failed to read the Round a download left behind:",

@@ -475,6 +475,14 @@ export function DiscoverView() {
     followScroll();
   }, [reserved, followScroll]);
 
+  // The page's downloads. `queue` is the ids this page has asked for and
+  // heard nothing back about, in the order asked; `ended` is how each file
+  // came out, for as long as the Results it was shown on are. A new search
+  // marks a landed Result In library itself, and a failed one is back to a
+  // plain card that offers Download.
+  const [queue, setQueue] = useState<string[]>([]);
+  const [ended, setEnded] = useState<Record<string, Ended>>({});
+
   const search = useCallback(async (next: Asked) => {
     const call = ++latest.current;
     setAsked(next);
@@ -488,6 +496,7 @@ export function DiscoverView() {
       const page = await client.searchWallhaven(paramsFor(next));
       if (call !== latest.current) return;
       setShown({ results: page.results, meta: page.meta });
+      setEnded({});
     } catch (error) {
       if (call !== latest.current) return;
       setFailure(failed("first", error));
@@ -540,12 +549,6 @@ export function DiscoverView() {
     followScroll();
   }, [showing, followScroll]);
 
-  // The page's downloads. `queue` is the ids this page has asked for and
-  // heard nothing back about, in the order asked; `ended` is how each file
-  // came out. A Result keeps its ending across searches, so a Result that
-  // failed still says so when it comes round again.
-  const [queue, setQueue] = useState<string[]>([]);
-  const [ended, setEnded] = useState<Record<string, Ended>>({});
   const noRoot = settings.library_root === "";
 
   const download = useCallback(
@@ -597,9 +600,9 @@ export function DiscoverView() {
           },
       );
     },
-    // Anything still waiting when the queue drains is something the backend
-    // never took up, and a card saying Queued forever would be a lie.
-    downloadComplete: () => setQueue([]),
+    // Nothing on `download-complete`: every id this page queued gets its own
+    // `download-progress`, and an id clicked after the backend closed a batch
+    // is already the next batch's, on the wire while that ending arrives.
   });
 
   const downloads = useMemo<ResultDownloads>(() => {
