@@ -308,10 +308,21 @@ export function HeroPicture({
         // remounts with nothing painted, which is a held arrow key strobing to
         // black at a median 376KB a frame (ADR 0022).
         onLoad={(event) => {
-          setArrived(true);
+          const element = event.currentTarget;
+          // Arrived once it has decoded, not once it has loaded. `load` is the
+          // bytes, and WebKit decodes a large image after it, off the main
+          // thread, painting nothing for it meanwhile: a placeholder taken
+          // down on `load` left the box empty for a frame or two, which was a
+          // flicker on the first open of every Discover full file. A decode
+          // that rejects is a `src` replaced mid-decode, whose own `load` is
+          // still coming, or a file that will not decode, which fires `error`.
+          element.decode().then(
+            () => setArrived(true),
+            () => {},
+          );
           setGoneId(null);
           setBroken(false);
-          const { naturalWidth, naturalHeight } = event.currentTarget;
+          const { naturalWidth, naturalHeight } = element;
           onNaturalSize?.(picture.id, {
             width: naturalWidth,
             height: naturalHeight,

@@ -182,6 +182,26 @@ test("the first frame is the small behind the medium, until the medium arrives",
   expect(placeholder()).toBeNull();
 });
 
+test("the small stays up until the medium has decoded, not only loaded", async () => {
+  await mount(first);
+  // `load` is the bytes arriving. WebKit decodes a large image after that,
+  // off the main thread, and paints nothing for it until it has: take the
+  // `small` down on `load` and the box shows the surface's ground for a frame
+  // or two, a flicker on the first open of every file.
+  let decoded: () => void = () => {};
+  Object.defineProperty(picture(), "decode", {
+    configurable: true,
+    value: () => new Promise<void>((resolve) => (decoded = resolve)),
+  });
+
+  await loaded(picture());
+  expect(placeholder()).not.toBeNull();
+
+  await act(async () => decoded());
+  await flush();
+  expect(placeholder()).toBeNull();
+});
+
 test("a step holds the outgoing picture, and asks for nothing but the next one", async () => {
   await mount(first);
   const element = picture();
