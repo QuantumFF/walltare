@@ -1637,9 +1637,7 @@ const ResultCard = memo(function ResultCard({
       <div
         className={cn(
           "relative aspect-video overflow-hidden rounded-xl bg-card",
-          // A Pick wears a ring of its own, which the cursor's focus ring
-          // replaces while it is on the card.
-          isPick && "ring-3 ring-primary",
+          // A Pick leaves the picture alone and says so on its Pick button.
           "group-focus-visible:ring-2 group-focus-visible:ring-primary group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
         )}
       >
@@ -1672,8 +1670,7 @@ const ResultCard = memo(function ResultCard({
         {/* The card under the mouse, which is the one the keys act on
             (`followPointer`). A thin, half-strength inset ring and nothing
             over the wallpaper itself, on a layer inside the clipped picture,
-            so a hover repaints nothing outside the card and a Pick's outer
-            ring still reads beside it. */}
+            so a hover repaints nothing outside the card. */}
         <div
           aria-hidden
           data-slot="hover-frame"
@@ -1826,7 +1823,9 @@ function ResultOffer({
       ) : (
         <>
           <Button
-            variant={isPick ? "secondary" : "ghost"}
+            // Filled when picked: the button is the whole of what a Pick
+            // looks like on a card.
+            variant={isPick ? "default" : "ghost"}
             size="sm"
             aria-label={named("Pick")}
             aria-pressed={isPick}
