@@ -1721,7 +1721,7 @@ const cardFullFiles = () =>
       .filter((src) => src.startsWith("https://w.wallhaven.cc/")),
   );
 
-test("a card lays the full file over its lg at three columns and fewer, and only the lg at four and more", async () => {
+test("a card draws the full file over its lg at three columns and fewer, and only the lg at four and more", async () => {
   answer = () => page(["qrow67", "jedzym"]);
   await renderInApp(<DiscoverView />);
   await focusCard(cards()[0]);
@@ -1746,28 +1746,53 @@ test("a card lays the full file over its lg at three columns and fewer, and only
     "https://w.wallhaven.cc/full/je/wallhaven-jedzym.png",
   ]);
 
-  // Hidden until it has loaded, so the card never blanks, and then the `lg`
-  // under it is hidden instead.
-  const [lg, full] = cards()[0].querySelectorAll("img");
-  expect(lg.getAttribute("src")).toBe(
-    "https://th.wallhaven.cc/lg/qr/qrow67.jpg",
-  );
-  expect(full.className).toContain("opacity-0");
-  expect(lg.className).not.toContain("invisible");
-  await act(async () => {
-    fireEvent.load(full);
-  });
-  expect(full.className).not.toContain("opacity-0");
-  expect(lg.className).toContain("invisible");
+  // Hidden until it has been drawn, so the card never blanks, and then the
+  // `lg` under it is hidden instead.
+  const drawn: unknown[][] = [];
+  const context = {
+    drawImage: (...args: unknown[]) => drawn.push(args),
+  } as unknown as CanvasRenderingContext2D;
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  const measure = HTMLCanvasElement.prototype.getBoundingClientRect;
+  HTMLCanvasElement.prototype.getContext = (() => context) as never;
+  HTMLCanvasElement.prototype.getBoundingClientRect = () =>
+    ({ width: 640, height: 360 }) as DOMRect;
+  try {
+    const [lg, full] = cards()[0].querySelectorAll("img");
+    const canvas = cards()[0].querySelector("canvas")!;
+    expect(lg.getAttribute("src")).toBe(
+      "https://th.wallhaven.cc/lg/qr/qrow67.jpg",
+    );
+    expect(canvas.className).toContain("invisible");
+    expect(lg.className).not.toContain("invisible");
+    Object.defineProperty(full, "naturalWidth", { value: 3840 });
+    Object.defineProperty(full, "naturalHeight", { value: 2400 });
+    await act(async () => {
+      fireEvent.load(full);
+    });
+    expect(canvas.className).not.toContain("invisible");
+    expect(lg.className).toContain("invisible");
 
-  // Out and back in: the `lg` shows again at four, and the full file is shown
-  // at once at three rather than waiting on a load it already had.
-  await press("-");
-  expect(lg.className).not.toContain("invisible");
-  await press("+");
-  expect(cards()[0].querySelectorAll("img")[1].className).not.toContain(
-    "opacity-0",
-  );
+    // Drawn at the card's size and cropped to its shape, and the full-size
+    // `<img>` gone, so the file is not held decoded at full size.
+    expect([canvas.width, canvas.height]).toEqual([640, 360]);
+    expect(drawn).toEqual([[full, 0, 120, 3840, 2160, 0, 0, 640, 360]]);
+    expect(cardFullFiles().slice(0, 1)).toEqual([
+      "https://w.wallhaven.cc/full/je/wallhaven-jedzym.png",
+    ]);
+
+    // Out and back in: the `lg` shows again at four, and the canvas is shown
+    // at once at three rather than waiting on a load it already had.
+    await press("-");
+    expect(lg.className).not.toContain("invisible");
+    expect(canvas.className).toContain("invisible");
+    await press("+");
+    expect(canvas.className).not.toContain("invisible");
+    expect(drawn).toHaveLength(1);
+  } finally {
+    HTMLCanvasElement.prototype.getContext = getContext;
+    HTMLCanvasElement.prototype.getBoundingClientRect = measure;
+  }
 });
 
 test("the lightbox draws the lg thumbnail under the full file, shaped by the Dimensions", async () => {

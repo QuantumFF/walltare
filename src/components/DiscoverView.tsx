@@ -1648,7 +1648,7 @@ const ResultCard = memo(function ResultCard({
   full: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  // Whether the full file over the `lg` has loaded, and so is shown. Kept
+  // Whether the full file over the `lg` has been drawn, and so is shown. Kept
   // across a zoom out and back, as a Library card keeps its `medium`'s.
   const [sharp, setSharp] = useState(false);
   const controls = useContext(ResultControlsContext);
@@ -1698,22 +1698,17 @@ const ResultCard = memo(function ResultCard({
           onError={() => setFailed(true)}
           className={cn(pictureClassName, (failed || covered) && "invisible")}
         />
-        {/* Laid over the `lg` and shown once it has loaded, so a zoom in
+        {/* Laid over the `lg` and shown once it has been drawn, so a zoom in
             sharpens the card rather than blanking it. A full file that fails
-            leaves the `lg` showing, which is still the picture. */}
-        {full && !failed && (
-          <img
+            leaves the `lg` showing, which is still the picture. Kept mounted
+            but hidden at four and five once drawn, so a zoom back in shows it
+            at once. */}
+        {(full || sharp) && !failed && (
+          <SharpPicture
             src={fullFileUrl(result)}
-            alt=""
-            aria-hidden
-            loading="lazy"
-            decoding="async"
-            onLoad={() => setSharp(true)}
-            className={cn(
-              pictureClassName,
-              "pointer-events-none absolute inset-0",
-              !sharp && "opacity-0",
-            )}
+            className={pictureClassName}
+            shown={covered}
+            onDrawn={() => setSharp(true)}
           />
         )}
         {failed && (
@@ -1765,6 +1760,131 @@ const ResultCard = memo(function ResultCard({
     </figure>
   );
 });
+
+/**
+ * A card's full file, drawn once onto a canvas the card's size in device pixels.
+ *
+ * The `<img>` is only the fetch, lazy like the `lg`'s and never painted. Once it
+ * has loaded, the file is decoded, drawn onto the canvas cropped to the card's
+ * shape, and the `<img>` unmounts. A card that kept it would hold its file
+ * decoded at full size, 33 MB for a 4K file and 133 MB for an 8K one, and a page
+ * of 24 of those exhausts WebKitGTK's graphics memory. It showed that as cards
+ * flickering, a card briefly drawing another's picture, and pictures drawn
+ * between rows whenever the mouse moved over the grid.
+ *
+ * Draws take turns (`drawTurn`), so a page whose files land together decodes
+ * one full file at a time instead of all of them at once. A card that grows past
+ * what it was drawn at, from three columns to two, fetches the file again from
+ * WebKit's cache and draws it at the new size.
+ */
+function SharpPicture({
+  src,
+  className,
+  shown,
+  onDrawn,
+}: {
+  src: string;
+  className: string;
+  /** Whether the canvas shows, which it only does once it has been drawn. */
+  shown: boolean;
+  onDrawn: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Whether the canvas holds the file at about the card's size. False before
+  // the first draw, and again once the card has grown past it.
+  const [drawn, setDrawn] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (canvas.width > 0 && devicePixelsOf(canvas).width > canvas.width * 1.1)
+        setDrawn(false);
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
+  const draw = async (image: HTMLImageElement) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    try {
+      await image.decode();
+    } catch {
+      return;
+    }
+    const { width, height } = devicePixelsOf(canvas);
+    const context =
+      width > 0 && image.naturalWidth > 0 ? canvas.getContext("2d") : null;
+    if (!context) return;
+    canvas.width = width;
+    canvas.height = height;
+    context.imageSmoothingQuality = "high";
+    // `object-cover`'s crop, done here so the canvas holds only what shows.
+    const scale = Math.max(
+      width / image.naturalWidth,
+      height / image.naturalHeight,
+    );
+    const sourceWidth = width / scale;
+    const sourceHeight = height / scale;
+    context.drawImage(
+      image,
+      (image.naturalWidth - sourceWidth) / 2,
+      (image.naturalHeight - sourceHeight) / 2,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      width,
+      height,
+    );
+    setDrawn(true);
+    onDrawn();
+  };
+
+  return (
+    <>
+      <canvas
+        ref={canvasRef}
+        aria-hidden
+        className={cn(
+          className,
+          "pointer-events-none absolute inset-0",
+          !shown && "invisible",
+        )}
+      />
+      {!drawn && (
+        <img
+          src={src}
+          alt=""
+          aria-hidden
+          loading="lazy"
+          decoding="async"
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            // A draw that throws leaves the `lg` showing, and the next card's
+            // turn still comes.
+            drawTurn = drawTurn.then(() => draw(image)).catch(() => {});
+          }}
+          className="pointer-events-none invisible absolute inset-0 h-full w-full"
+        />
+      )}
+    </>
+  );
+}
+
+/** The queue `SharpPicture` draws in, one full file at a time. */
+let drawTurn: Promise<void> = Promise.resolve();
+
+/** How many device pixels a canvas is laid out across. */
+function devicePixelsOf(canvas: HTMLCanvasElement) {
+  const box = canvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  return {
+    width: Math.round(box.width * ratio),
+    height: Math.round(box.height * ratio),
+  };
+}
 
 /**
  * How the offer looks on each surface that draws it: the card's caption, on
