@@ -96,6 +96,17 @@ gesture [ADR 0007](0007-review-card-layer-promotion.md) measured.
 > card a wheel pass slides under the pointer, so it adds nothing to the gesture
 > ADR 0006 and ADR 0007 priced. `:hover` is unchanged.
 
+> **Amended by [#356](https://github.com/QuantumFF/walltare/pull/356),
+> 2026-09-24.** On a grid mounted with `followPointer` (Discover's), the focus
+> also moves on every card the mouse crosses, and once when a wheel scroll under
+> a still mouse settles. So "a keypress and a click" is no longer the whole
+> list there. The argument still holds, for two reasons. The crossing is a
+> pointer that dwells and not a wheel pass: the settle fires once at the end of
+> the pass, not on each card it slides by, and ADR 0041 found that pass crosses
+> no `:hover` anyway. And Discover mounts a few pages of 24 cards unwindowed,
+> not the library's five thousand. Library and Review do not follow the pointer,
+> and nothing here changes for them.
+
 ### The selection acts with direct keys, and Enter opens the lightbox
 
 On the selected card: `K` keeps, `Delete` rejects, `R` restores, `Enter` and

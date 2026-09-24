@@ -197,9 +197,8 @@ export interface ItemGridProps<T extends Keyed, A extends string> {
    * where the curator browses with the mouse and presses `P` or `D` over what
    * they are looking at.
    *
-   * Moved by motion and not by `pointerenter`, which also fires on a card a
-   * wheel pass slides under a still pointer — that is scrolling, and the cursor
-   * stays where it was.
+   * See `useFollowPointer` for how, and for a still mouse the page scrolls
+   * under.
    */
   followPointer?: boolean;
 }
@@ -389,6 +388,101 @@ function useCellWidth(
 }
 
 /**
+ * The grid's cursor following the mouse (`followPointer`): the card the mouse
+ * is over becomes the selected one, through `moveByPointer`.
+ *
+ * Driven by `pointermove` and not by `pointerenter`, because engines disagree
+ * about whether a card a wheel pass slides under a still pointer was entered:
+ * WebKitGTK fired no `mouseover` across a whole wheel run (ADR 0041). So a
+ * wheel's scroll is followed on its own terms instead. Once it has been quiet
+ * for a moment, the card under where the mouse last was is the one it is over now,
+ * and that is the card selected. Once and not per frame, so a wheel pass moves
+ * the focus at its end rather than across every card it slides by.
+ *
+ * Touch and pen have no hover to follow; a tap is a click, which opens the
+ * card. `undefined` when the host did not ask, so the grid carries no pointer
+ * handlers at all.
+ */
+function useFollowPointer(
+  grid: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+  moveByPointer: (index: number) => void,
+) {
+  // Where the mouse last was over the grid, in the viewport, or `null` once it
+  // has left.
+  const pointerAt = useRef<{ x: number; y: number } | null>(null);
+  const move = useRef(moveByPointer);
+  useEffect(() => {
+    move.current = moveByPointer;
+  });
+
+  // The cell of the grid under a point in the viewport, if there is one.
+  const cellAt = (target: Element | null) => {
+    const cell = target?.closest<HTMLElement>("[data-cell]");
+    return cell && grid.current?.contains(cell)
+      ? Number(cell.dataset.cell)
+      : null;
+  };
+
+  useEffect(() => {
+    if (!enabled) return;
+    // Armed by the wheel and not by any scroll: an arrow key's reveal scrolls
+    // too, and following that would put the cursor straight back under a
+    // mouse the curator had stopped using.
+    let armed = false;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const wait = () => {
+      clearTimeout(settle);
+      settle = setTimeout(() => {
+        armed = false;
+        const at = pointerAt.current;
+        if (!at) return;
+        const cell = cellAt(document.elementFromPoint(at.x, at.y));
+        if (cell !== null) move.current(cell);
+      }, SCROLL_SETTLE_MS);
+    };
+    const onWheel = (event: WheelEvent) => {
+      // Ctrl and the wheel is the density, which scrolls nothing.
+      if (event.ctrlKey || !pointerAt.current) return;
+      armed = true;
+      wait();
+    };
+    // A smooth scroll runs on past its last wheel event.
+    const onScroll = () => {
+      if (armed) wait();
+    };
+    // Captured on the window, because a scroll does not bubble and the box
+    // that scrolls is the host's.
+    const options = { capture: true, passive: true };
+    window.addEventListener("wheel", onWheel, options);
+    window.addEventListener("scroll", onScroll, options);
+    return () => {
+      clearTimeout(settle);
+      window.removeEventListener("wheel", onWheel, options);
+      window.removeEventListener("scroll", onScroll, options);
+    };
+  }, [enabled]);
+
+  if (!enabled) return undefined;
+  return {
+    onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
+      if (event.pointerType !== "mouse") return;
+      pointerAt.current = { x: event.clientX, y: event.clientY };
+      const cell = cellAt(
+        event.target instanceof Element ? event.target : null,
+      );
+      if (cell !== null) moveByPointer(cell);
+    },
+    onPointerLeave: () => {
+      pointerAt.current = null;
+    },
+  };
+}
+
+/** How long a scroll has to be quiet before the cursor follows the mouse. */
+const SCROLL_SETTLE_MS = 120;
+
+/**
  * The cells, the cursor, the focus and the keys.
  *
  * One tab stop with a roving selection: the container is `role="grid"`, each
@@ -528,23 +622,17 @@ function Grid<T extends Keyed, A extends string>({
     }
   };
 
-  // A mouse moved onto a card that is not the cursor's. Touch and pen have no
-  // hover to follow; a tap is a click, which opens the card.
-  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== "mouse" || !(event.target instanceof Element))
-      return;
-    const cell = event.target.closest<HTMLElement>("[data-cell]");
-    if (!cell || !gridRef.current?.contains(cell)) return;
-    const at = Number(cell.dataset.cell);
-    if (at !== index) moveByPointer(at);
-  };
+  // The cursor following the mouse, for a host that asked. See
+  // `useFollowPointer`.
+  const pointer = useFollowPointer(gridRef, followPointer, moveByPointer);
 
   return (
     <div
       ref={gridRef}
       role="grid"
       aria-label={label}
-      onPointerMove={followPointer ? handlePointerMove : undefined}
+      onPointerMove={pointer?.onPointerMove}
+      onPointerLeave={pointer?.onPointerLeave}
       // Reachable programmatically and not by Tab. The cells hold the tab stop;
       // this is where focus lands when there is no cell left to hold it.
       tabIndex={-1}
