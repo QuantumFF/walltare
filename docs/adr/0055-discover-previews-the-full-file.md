@@ -97,5 +97,8 @@ render in a release build, and the console shows no violations.
 > mouse moved. So the `<img>` now only fetches the file and is never painted.
 > Once it has loaded, the file is decoded and drawn onto a canvas at the card's
 > size in device pixels, cropped as `object-cover` would, and the `<img>`
-> unmounts. Cards decode one at a time. A card that grows past the size it
-> was drawn at, from three columns to two, draws again from WebKit's cache.
+> unmounts, as it also does when the fetch or the draw fails. Cards decode one
+> at a time. A shown card that settles more than 10% wider than it was drawn
+> at, from three columns to two, fetches the file and draws it again. That
+> fetch usually comes from WebKit's cache, but nothing guarantees it. A card
+> hidden at four and five columns never refetches.

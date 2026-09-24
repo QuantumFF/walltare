@@ -1726,11 +1726,7 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
   await renderInApp(<DiscoverView />);
   await focusCard(cards()[0]);
   const columns = () =>
-    Number(
-      screen
-        .getByRole("grid")
-        .className.match(/grid-cols-(\d+)/)?.[1],
-    );
+    Number(screen.getByRole("grid").className.match(/grid-cols-(\d+)/)?.[1]);
 
   // Out as far as the range goes, then in one step at a time, which crosses
   // the threshold between four and three.
@@ -1748,15 +1744,7 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
 
   // Hidden until it has been drawn, so the card never blanks, and then the
   // `lg` under it is hidden instead.
-  const drawn: unknown[][] = [];
-  const context = {
-    drawImage: (...args: unknown[]) => drawn.push(args),
-  } as unknown as CanvasRenderingContext2D;
-  const getContext = HTMLCanvasElement.prototype.getContext;
-  const measure = HTMLCanvasElement.prototype.getBoundingClientRect;
-  HTMLCanvasElement.prototype.getContext = (() => context) as never;
-  HTMLCanvasElement.prototype.getBoundingClientRect = () =>
-    ({ width: 640, height: 360 }) as DOMRect;
+  const canvases = stubCanvases();
   try {
     const [lg, full] = cards()[0].querySelectorAll("img");
     const canvas = cards()[0].querySelector("canvas")!;
@@ -1765,19 +1753,17 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
     );
     expect(canvas.className).toContain("invisible");
     expect(lg.className).not.toContain("invisible");
-    Object.defineProperty(full, "naturalWidth", { value: 3840 });
-    Object.defineProperty(full, "naturalHeight", { value: 2400 });
-    await act(async () => {
-      fireEvent.load(full);
-    });
+    await loadFullFile(full);
     expect(canvas.className).not.toContain("invisible");
     expect(lg.className).toContain("invisible");
 
     // Drawn at the card's size and cropped to its shape, and the full-size
     // `<img>` gone, so the file is not held decoded at full size.
     expect([canvas.width, canvas.height]).toEqual([640, 360]);
-    expect(drawn).toEqual([[full, 0, 120, 3840, 2160, 0, 0, 640, 360]]);
-    expect(cardFullFiles().slice(0, 1)).toEqual([
+    expect(canvases.drawn).toEqual([
+      [full, 0, 120, 3840, 2160, 0, 0, 640, 360],
+    ]);
+    expect(cardFullFiles()).toEqual([
       "https://w.wallhaven.cc/full/je/wallhaven-jedzym.png",
     ]);
 
@@ -1788,12 +1774,114 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
     expect(canvas.className).toContain("invisible");
     await press("+");
     expect(canvas.className).not.toContain("invisible");
-    expect(drawn).toHaveLength(1);
+    expect(canvases.drawn).toHaveLength(1);
   } finally {
-    HTMLCanvasElement.prototype.getContext = getContext;
-    HTMLCanvasElement.prototype.getBoundingClientRect = measure;
+    canvases.restore();
   }
 });
+
+test("a shown card that settles wider fetches its full file again, and a hidden one does not", async () => {
+  const canvases = stubCanvases();
+  try {
+    answer = () => page(["qrow67"]);
+    await renderInApp(<DiscoverView />);
+    await focusCard(cards()[0]);
+    await loadFullFile(cards()[0].querySelectorAll("img")[1]);
+    expect(cardFullFiles()).toEqual([]);
+
+    // At four the canvas is hidden, so a wider window fetches nothing.
+    await press("-");
+    await canvases.resize(1280);
+    expect(cardFullFiles()).toEqual([]);
+
+    // Back at three it shows, and a card wider than it was drawn draws again.
+    await press("+");
+    await canvases.resize(1280);
+    expect(cardFullFiles()).toEqual([
+      "https://w.wallhaven.cc/full/qr/wallhaven-qrow67.png",
+    ]);
+    await loadFullFile(cards()[0].querySelectorAll("img")[1]);
+    expect(cards()[0].querySelector("canvas")!.width).toBe(1280);
+    expect(cardFullFiles()).toEqual([]);
+  } finally {
+    canvases.restore();
+  }
+});
+
+test("a full file that loads while the page has no size draws once it has one", async () => {
+  const canvases = stubCanvases(0);
+  try {
+    answer = () => page(["qrow67"]);
+    await renderInApp(<DiscoverView />);
+    await loadFullFile(cards()[0].querySelectorAll("img")[1]);
+    expect(canvases.drawn).toEqual([]);
+    expect(cardFullFiles()).toHaveLength(1);
+
+    await canvases.resize(640);
+    expect(canvases.drawn).toHaveLength(1);
+    expect(cardFullFiles()).toEqual([]);
+  } finally {
+    canvases.restore();
+  }
+});
+
+/**
+ * Stands in for what happy-dom has no engine for: a 2D context that records
+ * its draws, a canvas laid out `width` wide at the card's shape, and a resize
+ * observer the test fires by hand. `resize` lays every canvas out at a new
+ * width and waits out the card's settle.
+ */
+function stubCanvases(width = 640) {
+  const drawn: unknown[][] = [];
+  const context = {
+    drawImage: (...args: unknown[]) => drawn.push(args),
+  } as unknown as CanvasRenderingContext2D;
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  const measure = HTMLCanvasElement.prototype.getBoundingClientRect;
+  const Observer = globalThis.ResizeObserver;
+  const onCanvasResize = new Set<() => void>();
+  HTMLCanvasElement.prototype.getContext = (() => context) as never;
+  HTMLCanvasElement.prototype.getBoundingClientRect = () =>
+    ({ width, height: (width * 9) / 16 }) as DOMRect;
+  globalThis.ResizeObserver = class {
+    #callback: () => void;
+    constructor(callback: () => void) {
+      this.#callback = callback;
+    }
+    observe(target: Element) {
+      if (target instanceof HTMLCanvasElement)
+        onCanvasResize.add(this.#callback);
+    }
+    disconnect() {
+      onCanvasResize.delete(this.#callback);
+    }
+    unobserve() {}
+  } as unknown as typeof ResizeObserver;
+  return {
+    drawn,
+    async resize(to: number) {
+      width = to;
+      for (const callback of onCanvasResize) callback();
+      await act(async () => {
+        await new Promise((settled) => setTimeout(settled, 200));
+      });
+    },
+    restore() {
+      HTMLCanvasElement.prototype.getContext = getContext;
+      HTMLCanvasElement.prototype.getBoundingClientRect = measure;
+      globalThis.ResizeObserver = Observer;
+    },
+  };
+}
+
+/** A 3840 by 2400 full file arriving at its hidden `<img>`. */
+async function loadFullFile(full: HTMLImageElement) {
+  Object.defineProperty(full, "naturalWidth", { value: 3840 });
+  Object.defineProperty(full, "naturalHeight", { value: 2400 });
+  await act(async () => {
+    fireEvent.load(full);
+  });
+}
 
 test("the lightbox draws the lg thumbnail under the full file, shaped by the Dimensions", async () => {
   answer = () => ({
