@@ -68,6 +68,13 @@ no surface, and letting go is the whole of it.
 > focus out of a dialog holding it — `Ctrl+Tab` under the `?` sheet changes the
 > page behind it and leaves the curator in the sheet.
 
+> **Amended by [#354](https://github.com/QuantumFF/walltare/pull/354),
+> 2026-09-24.** Discover's Picks tray hands off on every press of Download and
+> Clear, and on `Escape` inside it, the keyboard's as well as the pointer's,
+> because each empties the tray and unmounts the control that was pressed. That
+> is Settings' reason for its ways out. Its "Choose a library root to download"
+> is `data-moves-focus`, so it does not hand off.
+
 **The pointer, not the keyboard.** A control the keyboard pressed keeps the
 focus: a tablist's arrows are the ARIA pattern, and a curator who tabbed to a
 button expects to stay on it. `detail` tells the two apart, since the click Enter

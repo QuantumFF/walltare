@@ -6,6 +6,7 @@ import {
   RESULT_KEYS,
   keyShortcut,
   printedKey,
+  resultKeys,
   type ResultAction,
 } from "@/components/keymap";
 import type { SelectionHandle } from "@/components/selection";
@@ -66,9 +67,11 @@ import {
   Heart,
   ImageOff,
   Loader2,
+  Plus,
   Search,
   SearchX,
   Settings as SettingsIcon,
+  X,
 } from "lucide-react";
 import {
   createContext,
@@ -337,24 +340,30 @@ type Ended = Extract<CardDownload, { kind: "landed" | "failed" }>;
 
 /**
  * What every card needs from the page to draw its caption: each Result's
- * download, whether there is a Library root to download into, and the way to
- * ask for one.
+ * download, which Results are Picks, whether there is a Library root to
+ * download into, and the ways to ask for each.
  *
  * A context rather than props through the grid's renderer, which stays a
  * value per cell so the grid can hold its memo (#230). A few pages of cards
  * re-render when a download moves, which is Review's scale.
  */
-interface ResultDownloads {
+interface PicksAndDownloads {
   states: Readonly<Record<string, CardDownload>>;
+  /** The ids of the Picks. */
+  picked: ReadonlySet<string>;
   /** No Library root, so nothing can land and Download says so (ADR 0051). */
   noRoot: boolean;
   download: (result: MarkedResult) => void;
+  /** Make the Result a Pick, or stop it being one. */
+  pick: (result: MarkedResult) => void;
 }
 
-const ResultDownloadsContext = createContext<ResultDownloads>({
+const PicksAndDownloadsContext = createContext<PicksAndDownloads>({
   states: {},
+  picked: new Set(),
   noRoot: false,
   download: () => {},
+  pick: () => {},
 });
 
 /** What a card with no Library root offers in place of Download. */
@@ -379,6 +388,12 @@ const NO_ROOT = "Choose a library root to download";
  * and the page count across a trip to another tab. The ratio and the colour
  * are never remembered: each launch starts on the Screen's ratio and any
  * colour.
+ *
+ * Several Results can be gathered as Picks and downloaded together from a
+ * floating tray (#344). The Picks are the page's and not the search's: they
+ * are held as the Results themselves, so a new search or a changed filter
+ * keeps them, and the tray can still draw one no page shown now holds. A
+ * download clears them.
  *
  * The grid mounts every card rather than windowing, because the header scrolls
  * with the Results and a window is measured against a scroll box it starts at
@@ -482,6 +497,12 @@ export function DiscoverView() {
   // plain card that offers Download.
   const [queue, setQueue] = useState<string[]>([]);
   const [ended, setEnded] = useState<Record<string, Ended>>({});
+  // The Picks, in the order picked, which is the order they download in.
+  const [picks, setPicks] = useState<MarkedResult[]>([]);
+  // The Picks a download took that the backend has not answered for yet. A
+  // refusal puts back only the ones still here, so a Clear pressed while the
+  // request was out stays a Clear.
+  const inFlight = useRef(new Set<string>());
 
   const search = useCallback(async (next: Asked) => {
     const call = ++latest.current;
@@ -551,30 +572,103 @@ export function DiscoverView() {
 
   const noRoot = settings.library_root === "";
 
-  const download = useCallback(
-    (result: MarkedResult) => {
-      // Refused up front: with no library there is nothing for a download to
-      // join, and the fix is one field away (ADR 0051).
-      if (noRoot) {
-        setView("settings", { focus: "library_root", returnTo: "discover" });
-        return;
-      }
-      if (result.mark !== "unmarked" || queue.includes(result.id)) return;
-      const { id } = result;
-      setQueue((q) => [...q, id]);
+  // Refused up front: with no library there is nothing for a download to join,
+  // and the fix is one field away (ADR 0051). Pick says so too, since a Pick is
+  // only ever gathered to be downloaded.
+  const chooseRoot = useCallback(
+    () => setView("settings", { focus: "library_root", returnTo: "discover" }),
+    [setView],
+  );
+
+  // A Result as the page now knows it: the Picks and a click hold the Result
+  // as it was when it was taken, and a Result still on the page may since have
+  // landed or been queued. One no page shown now holds keeps its snapshot.
+  const onPage = useMemo(
+    () => new Map((shown?.results ?? []).map((r) => [r.id, r])),
+    [shown],
+  );
+  const downloadable = useCallback(
+    (result: MarkedResult) =>
+      (onPage.get(result.id) ?? result).mark === "unmarked" &&
+      !queue.includes(result.id),
+    [onPage, queue],
+  );
+  // The Picks that could still be downloaded, which is every one the tray
+  // counts and `D` sends.
+  const livePicks = useMemo(
+    () => picks.filter(downloadable),
+    [picks, downloadable],
+  );
+
+  // Every download starts here: the caption's, `D`'s and the tray's. The ids
+  // go to the backend as one request, in the order given, and leave the Picks
+  // as they go, which only ever hold what is still to come.
+  const take = useCallback(
+    (taken: MarkedResult[]) => {
+      const ids = taken.filter(downloadable).map((r) => r.id);
+      if (ids.length === 0) return;
+      const leaving = picks.filter((r) => ids.includes(r.id));
+      for (const r of leaving) inFlight.current.add(r.id);
+      const settle = () => {
+        for (const r of leaving) inFlight.current.delete(r.id);
+      };
+      setQueue((q) => [...q, ...ids]);
       setEnded((prev) => {
         const next = { ...prev };
-        delete next[id];
+        for (const id of ids) delete next[id];
         return next;
       });
-      requestDownload([id]).catch((error: unknown) => {
-        // A refusal at the click queued nothing, so the card goes back to
-        // offering Download and the reason is said where the click was.
-        setQueue((q) => q.filter((queued) => queued !== id));
+      setPicks((p) => p.filter((r) => !ids.includes(r.id)));
+      requestDownload(ids).then(settle, (error: unknown) => {
+        // A refusal at the click queued nothing, so the cards go back to
+        // offering Download, the Picks it took and nobody has cleared since go
+        // back ahead of any picked since, and the reason is said where the
+        // click was.
+        const back = leaving.filter((r) => inFlight.current.has(r.id));
+        settle();
+        setQueue((q) => q.filter((queued) => !ids.includes(queued)));
+        setPicks((p) => [
+          ...back,
+          ...p.filter((r) => !back.some((b) => b.id === r.id)),
+        ]);
         show({ kind: "download-refused", error });
       });
     },
-    [noRoot, queue, requestDownload, setView, show],
+    [downloadable, picks, requestDownload, show],
+  );
+
+  // One Clear, for the tray's button and `Escape` from the grid or the tray.
+  const clearPicks = useCallback(() => {
+    setPicks([]);
+    inFlight.current.clear();
+  }, []);
+
+  const download = useCallback(
+    (result: MarkedResult) => (noRoot ? chooseRoot() : take([result])),
+    [noRoot, chooseRoot, take],
+  );
+
+  const downloadPicks = useCallback(
+    () => (noRoot ? chooseRoot() : take(livePicks)),
+    [noRoot, chooseRoot, take, livePicks],
+  );
+
+  // A Pick is a Result that could be downloaded now: an unmarked one that is
+  // not already on its way.
+  const pick = useCallback(
+    (result: MarkedResult) => {
+      if (noRoot) {
+        chooseRoot();
+        return;
+      }
+      if (result.mark !== "unmarked" || queue.includes(result.id)) return;
+      setPicks((p) =>
+        p.some((r) => r.id === result.id)
+          ? p.filter((r) => r.id !== result.id)
+          : [...p, result],
+      );
+    },
+    [noRoot, chooseRoot, queue],
   );
 
   useBackendEvents({
@@ -605,22 +699,41 @@ export function DiscoverView() {
     // is already the next batch's, on the wire while that ending arrives.
   });
 
-  const downloads = useMemo<ResultDownloads>(() => {
+  const picksAndDownloads = useMemo<PicksAndDownloads>(() => {
     const states: Record<string, CardDownload> = { ...ended };
     queue.forEach((id, at) => {
       states[id] = { kind: at === 0 ? "downloading" : "queued" };
     });
-    return { states, noRoot, download };
-  }, [ended, queue, noRoot, download]);
+    const picked = new Set(livePicks.map((r) => r.id));
+    return { states, picked, noRoot, download, pick };
+  }, [ended, queue, livePicks, noRoot, download, pick]);
 
-  // `D` on the cursor, which is the card's own Download pressed by key.
-  const latestDownload = useRef(download);
+  // The keys on the cursor: `P` and `D` are the card's own Pick and Download
+  // pressed by key, and with Picks `D` is the tray's Download and `Escape` its
+  // Clear.
+  const handlers = useRef({ download, downloadPicks, pick });
   useEffect(() => {
-    latestDownload.current = download;
+    handlers.current = { download, downloadPicks, pick };
   });
-  const act = useCallback((action: ResultAction, result: MarkedResult) => {
-    if (action === "download") latestDownload.current(result);
-  }, []);
+  const act = useCallback(
+    (action: ResultAction, result: MarkedResult) => {
+      switch (action) {
+        case "pick":
+          handlers.current.pick(result);
+          break;
+        case "download":
+          handlers.current.download(result);
+          break;
+        case "download-picks":
+          handlers.current.downloadPicks();
+          break;
+        case "clear-picks":
+          clearPicks();
+          break;
+      }
+    },
+    [clearPicks],
+  );
 
   const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
     null,
@@ -828,19 +941,19 @@ export function DiscoverView() {
               scale of a few pages of 24. Load more has no ceiling, so if a
               curator ever pages far enough for mount cost to matter, windowing
               against this page's scroller is the follow-up (ADR 0016). */}
-          <ResultDownloadsContext.Provider value={downloads}>
+          <PicksAndDownloadsContext.Provider value={picksAndDownloads}>
             <ItemGrid
               ref={setGrid}
               items={results}
               label="Results from Wallhaven"
-              actions={RESULT_KEYS}
+              actions={resultKeys(livePicks.length)}
               onAct={act}
               card={RESULT_CARD}
               density="discover"
               className="gap-y-8 px-6 pb-8"
               renderCard={renderResult}
             />
-          </ResultDownloadsContext.Provider>
+          </PicksAndDownloadsContext.Provider>
 
           <div className="flex flex-col items-center gap-2 px-4 pb-24">
             {failure?.at === "more" ? (
@@ -890,7 +1003,111 @@ export function DiscoverView() {
           </div>
         </>
       ) : null}
+
+      {livePicks.length > 0 && (
+        <PicksTray
+          picks={livePicks}
+          noRoot={noRoot}
+          onDownload={downloadPicks}
+          onClear={clearPicks}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * The Picks, floating at the bottom right while there are any: their
+ * thumbnails, how many and how large, and **Download** and **Clear**.
+ *
+ * There is no action that takes a whole page, only the Picks the curator made
+ * one at a time, which is Wallhaven's request not to mass-download (#335).
+ *
+ * The thumbnails are the cards' own `lg` ones, already fetched, so the tray
+ * asks Wallhaven for nothing (ADR 0053); the last five show, overlapped. Both
+ * buttons empty the tray, which unmounts the control that was pressed, so each
+ * hands the keyboard back to the grid, whichever way it was pressed (ADR 0047).
+ * `Escape` with the focus in the tray is its Clear, as it is from the grid.
+ * With no Library root, Download is the way to one instead, as on a card.
+ */
+function PicksTray({
+  picks,
+  noRoot,
+  onDownload,
+  onClear,
+}: {
+  picks: MarkedResult[];
+  noRoot: boolean;
+  onDownload: () => void;
+  onClear: () => void;
+}) {
+  const handOff = useKeyboardHandoff();
+  const total = picks.reduce((sum, r) => sum + r.file_size, 0);
+  return (
+    <section
+      aria-label="Picks"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        event.preventDefault();
+        onClear();
+        handOff();
+      }}
+      className="fixed right-6 bottom-6 z-30 flex items-center gap-3 rounded-2xl border border-border bg-popover p-2 pl-3 text-popover-foreground shadow-xl"
+    >
+      <div aria-hidden className="flex -space-x-3">
+        {picks.slice(-5).map((r) => (
+          <img
+            key={r.id}
+            src={r.thumbs.large}
+            alt=""
+            decoding="async"
+            className="h-9 w-14 rounded-md border-2 border-popover object-cover"
+          />
+        ))}
+      </div>
+      <p className="text-sm tabular-nums">
+        {picks.length} picked
+        <span className="block text-[11px] text-muted-foreground">
+          {bytes(total)}
+        </span>
+      </p>
+      {noRoot ? (
+        <Button
+          variant="link"
+          size="sm"
+          // It puts the caret in the Library root field itself.
+          data-moves-focus
+          className="px-0 text-xs"
+          onClick={onDownload}
+        >
+          {NO_ROOT}
+        </Button>
+      ) : (
+        <Button
+          aria-keyshortcuts={keyShortcut("download-picks", RESULT_KEYS)}
+          onClick={() => {
+            onDownload();
+            handOff();
+          }}
+        >
+          <Download />
+          Download
+          <Kbd aria-hidden>{printedKey("download-picks", RESULT_KEYS)}</Kbd>
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        aria-keyshortcuts={keyShortcut("clear-picks", RESULT_KEYS)}
+        onClick={() => {
+          onClear();
+          handOff();
+        }}
+      >
+        <X />
+        Clear
+        <Kbd aria-hidden>{printedKey("clear-picks", RESULT_KEYS)}</Kbd>
+      </Button>
+    </section>
   );
 }
 
@@ -1223,7 +1440,9 @@ const ResultCard = memo(function ResultCard({
   selected: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const { states, noRoot, download } = useContext(ResultDownloadsContext);
+  const { states, picked, noRoot, download, pick } = useContext(
+    PicksAndDownloadsContext,
+  );
   const handOffOnPointerPress = useHandOffOnPointerPress();
   const state = states[result.id];
   // A card whose file just landed is an In library card, and its caption says
@@ -1232,10 +1451,12 @@ const ResultCard = memo(function ResultCard({
     result.mark === "unmarked" || state?.kind === "landed"
       ? null
       : MARK_TEXT[result.mark];
-  const said = mark ?? (state ? DOWNLOAD_TEXT[state.kind] : null);
-  const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
   const offersDownload =
     result.mark === "unmarked" && (!state || state.kind === "failed");
+  const isPick = offersDownload && picked.has(result.id);
+  const said =
+    mark ?? (state ? DOWNLOAD_TEXT[state.kind] : isPick ? "Picked" : null);
+  const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
   return (
     <figure
       role="gridcell"
@@ -1247,6 +1468,9 @@ const ResultCard = memo(function ResultCard({
       <div
         className={cn(
           "relative aspect-video overflow-hidden rounded-xl bg-card",
+          // A Pick wears a ring of its own, which the cursor's focus ring
+          // replaces while it is on the card.
+          isPick && "ring-3 ring-primary",
           "group-focus-visible:ring-2 group-focus-visible:ring-primary group-focus-visible:ring-offset-2 group-focus-visible:ring-offset-background",
         )}
       >
@@ -1345,20 +1569,35 @@ const ResultCard = memo(function ResultCard({
                   {NO_ROOT}
                 </Button>
               ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  aria-label={`Download ${facts}`}
-                  aria-keyshortcuts={keyShortcut("download", RESULT_KEYS)}
-                  // The grid's cell is the tab stop, and `D` is how the
-                  // keyboard presses this (ADR 0019).
-                  tabIndex={-1}
-                  onClick={() => download(result)}
-                >
-                  <Download />
-                  Download
-                  <Kbd aria-hidden>{printedKey("download", RESULT_KEYS)}</Kbd>
-                </Button>
+                <>
+                  <Button
+                    variant={isPick ? "secondary" : "ghost"}
+                    size="sm"
+                    aria-label={`Pick ${facts}`}
+                    aria-pressed={isPick}
+                    aria-keyshortcuts={keyShortcut("pick", RESULT_KEYS)}
+                    tabIndex={-1}
+                    onClick={() => pick(result)}
+                  >
+                    {isPick ? <Check /> : <Plus />}
+                    {isPick ? "Picked" : "Pick"}
+                    <Kbd aria-hidden>{printedKey("pick", RESULT_KEYS)}</Kbd>
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    aria-label={`Download ${facts}`}
+                    aria-keyshortcuts={keyShortcut("download", RESULT_KEYS)}
+                    // The grid's cell is the tab stop, and `D` is how the
+                    // keyboard presses this (ADR 0019).
+                    tabIndex={-1}
+                    onClick={() => download(result)}
+                  >
+                    <Download />
+                    Download
+                    <Kbd aria-hidden>{printedKey("download", RESULT_KEYS)}</Kbd>
+                  </Button>
+                </>
               )}
             </div>
           )

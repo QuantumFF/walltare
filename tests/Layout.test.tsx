@@ -802,6 +802,47 @@ test("Discover's Results, scroll position and page count survive a trip to anoth
   expect(searches).toBe(2);
 });
 
+test("Discover's Picks survive a trip to another tab", async () => {
+  mockCommand("get_settings", () => settings({ library_root: "/pics" }));
+  mockCommand("wallhaven_search", () => ({
+    results: [
+      {
+        id: "qrow67",
+        url: "",
+        short_url: "",
+        views: 1,
+        favorites: 1,
+        source: "",
+        purity: "sfw",
+        category: "general",
+        dimension_x: 3840,
+        dimension_y: 2160,
+        resolution: "3840x2160",
+        ratio: "1.78",
+        file_size: 1_000_000,
+        file_type: "image/jpeg",
+        created_at: "",
+        colors: [],
+        mark: "unmarked" as const,
+        thumbs: { large: "lg/qrow67", original: "", small: "" },
+      },
+    ],
+    meta: { current_page: 1, last_page: 1, per_page: 24, total: 1, seed: null },
+  }));
+  const tray = () => screen.queryByRole("region", { name: "Picks" });
+
+  await openApp();
+  await press("4", { target: window, ctrlKey: true });
+  await click(screen.getByRole("button", { name: /^Pick/ }));
+  expect(tray()?.textContent).toContain("1 picked");
+
+  await press("3", { target: window, ctrlKey: true });
+  await press("4", { target: window, ctrlKey: true });
+
+  expect(showingView()).toBe("discover");
+  expect(tray()?.textContent).toContain("1 picked");
+});
+
 test("over Discover, the shortcuts list names the grid's keys and none of the Status keys", async () => {
   await openApp();
   await press("4", { target: window, ctrlKey: true });
@@ -811,6 +852,17 @@ test("over Discover, the shortcuts list names the grid's keys and none of the St
   const dialog = screen.getByRole("dialog");
   expect(rowsUnder(dialog, "Grid and strip")).toEqual(
     shortcutLines("listing", RESULT_KEYS),
+  );
+  expect(rowsUnder(dialog, "Grid and strip")).toEqual(
+    expect.arrayContaining([
+      { keys: ["P"], action: "Pick the selected Result, or unpick it" },
+      {
+        keys: ["D"],
+        action:
+          "Download your Picks, or the selected Result when there are none",
+      },
+      { keys: ["Escape"], action: "Clear your Picks" },
+    ]),
   );
   expect(dialog.textContent).not.toContain("Reject the selected wallpaper");
   // Nothing opens a Result yet (#345), so Enter is not listed there.

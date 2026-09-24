@@ -344,32 +344,94 @@ export const STATUS_KEYS: ActionTable<Wallpaper, TransitionAction> = {
   offers: (wallpaper) => STATUS_ACTIONS[wallpaper.status],
 };
 
-/** What Discover does to a Result. */
-export type ResultAction = "download";
+/**
+ * What Discover does to a Result: pick it, download it, and the two that act
+ * on the Picks rather than on the cursor.
+ */
+export type ResultAction =
+  "pick" | "download" | "download-picks" | "clear-picks";
 
 /**
- * The keys Discover acts on a Result with: `D` downloads the cursor's.
+ * The keys Discover acts on a Result with (#344).
  *
- * Only an unmarked Result offers it, the same rule the card's Download button
- * renders from: one the library already holds, or one the curator rejected, is
- * not downloaded again (ADR 0050). `P` picks when Picks arrive (#344), and `D`
- * then downloads them when there are any. Nor does `Enter` open a Result until
- * the lightbox does (#345), so `opens` is `false` until then, and the
- * shortcuts dialog lists nothing the grid does not answer.
+ * **`P` toggles a Pick**, and only an unmarked Result offers it, the same rule
+ * the card's Download renders from: one the library already holds, or one the
+ * curator rejected, is not downloaded again (ADR 0050), so it is not picked
+ * either.
+ *
+ * **`D` names two actions**, and the Picks decide which applies: while there
+ * are any it downloads them, whatever the cursor is on, and otherwise the
+ * cursor's Result. One key for both, so the curator never has to remember
+ * which of two download keys takes the tray. **`Escape` clears the Picks**, and
+ * is left alone when there are none, so it goes on meaning whatever else
+ * answers it.
+ *
+ * So what a Result offers depends on whether there are Picks, which `offers`
+ * cannot see from the Result alone. There are two tables, the same keys over
+ * two rules, and the page hands the grid the one that holds: `resultKeys`.
+ * `RESULT_KEYS` is the one with no Picks, which is also what the shortcuts
+ * dialog prints, since its lines are the keys and not the rule.
+ *
+ * `Enter` opens nothing until the lightbox does (#345), so `opens` is `false`
+ * until then, and the shortcuts dialog lists nothing the grid does not answer.
  */
-export const RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
-  bindings: [
-    {
-      keys: ["d"],
-      printed: "D",
-      act: ["download"],
-      on: ["grid"],
-      listed: { listing: "Download the selected Result" },
+const RESULT_BINDINGS: readonly ActionBinding<ResultAction>[] = [
+  {
+    keys: ["p"],
+    printed: "P",
+    act: ["pick"],
+    on: ["grid"],
+    listed: { listing: "Pick the selected Result, or unpick it" },
+  },
+  {
+    keys: ["d"],
+    printed: "D",
+    act: ["download-picks", "download"],
+    on: ["grid"],
+    listed: {
+      listing:
+        "Download your Picks, or the selected Result when there are none",
     },
-  ],
-  offers: (result) => (result.mark === "unmarked" ? ["download"] : []),
+  },
+  // Printed as ARIA and the dialog spell it, and as `Esc` on a button, the way
+  // `Delete` is `Del` there (#140).
+  {
+    keys: ["Escape"],
+    printed: "Escape",
+    button: "Esc",
+    act: ["clear-picks"],
+    on: ["grid"],
+    listed: { listing: "Clear your Picks" },
+  },
+];
+
+const unmarked = (result: MarkedResult) => result.mark === "unmarked";
+
+export const RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
+  bindings: RESULT_BINDINGS,
+  offers: (result) => (unmarked(result) ? ["pick", "download"] : []),
   opens: false,
 };
+
+const PICKING_RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
+  bindings: RESULT_BINDINGS,
+  offers: (result) =>
+    unmarked(result)
+      ? ["pick", "download-picks", "clear-picks"]
+      : ["download-picks", "clear-picks"],
+  opens: false,
+};
+
+/**
+ * Discover's table while it holds `pickCount` Picks. One of two constants, so a
+ * Pick that is not the first or the last hands the grid the table it already
+ * has.
+ */
+export function resultKeys(
+  pickCount: number,
+): ActionTable<MarkedResult, ResultAction> {
+  return pickCount > 0 ? PICKING_RESULT_KEYS : RESULT_KEYS;
+}
 
 /** The table read at run time, where one entry's literal types are no help. */
 const TABLE: readonly Binding[] = BINDINGS;
