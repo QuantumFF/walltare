@@ -152,8 +152,14 @@ pub(crate) fn review_ids(conn: &Connection) -> Vec<i64> {
 pub(crate) struct Canned {
     status: u16,
     headers: Vec<(String, String)>,
-    body: String,
+    body: Vec<u8>,
     delay: Option<std::time::Duration>,
+    /// How long to sit between the head and the body, for a transfer that
+    /// stalls once it has begun.
+    stall: Option<std::time::Duration>,
+    /// How much of the body to send before hanging up, with the whole of it
+    /// still announced in `Content-Length`: a transfer that broke off.
+    cut: Option<usize>,
 }
 
 impl Canned {
@@ -167,8 +173,10 @@ impl Canned {
         Self {
             status,
             headers: vec![("Content-Type".to_string(), "application/json".to_string())],
-            body: body.to_string(),
+            body: body.to_string().into_bytes(),
             delay: None,
+            stall: None,
+            cut: None,
         }
     }
 
@@ -181,8 +189,22 @@ impl Canned {
                 "Content-Type".to_string(),
                 "text/html; charset=UTF-8".to_string(),
             )],
-            body: body.to_string(),
+            body: body.as_bytes().to_vec(),
             delay: None,
+            stall: None,
+            cut: None,
+        }
+    }
+
+    /// A 200 carrying `body` as a file, the way the image host answers.
+    pub(crate) fn file(body: &[u8]) -> Self {
+        Self {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), "image/png".to_string())],
+            body: body.to_vec(),
+            delay: None,
+            stall: None,
+            cut: None,
         }
     }
 
@@ -194,6 +216,20 @@ impl Canned {
     /// Waits `delay` before answering, for a client's timeout to run out.
     pub(crate) fn after(mut self, delay: std::time::Duration) -> Self {
         self.delay = Some(delay);
+        self
+    }
+
+    /// Sends the head, then waits `stall` before the body, for a client's
+    /// wait between reads to run out.
+    pub(crate) fn stalling(mut self, stall: std::time::Duration) -> Self {
+        self.stall = Some(stall);
+        self
+    }
+
+    /// Sends only the first `sent` bytes of the body it announced, then hangs
+    /// up.
+    pub(crate) fn cut_after(mut self, sent: usize) -> Self {
+        self.cut = Some(sent);
         self
     }
 }
@@ -287,8 +323,10 @@ pub(crate) fn stub(answers: Vec<Canned>) -> Stub {
                 let answer = answers.next().unwrap_or_else(|| Canned {
                     status: 500,
                     headers: Vec::new(),
-                    body: "the stub has no answer left".to_string(),
+                    body: b"the stub has no answer left".to_vec(),
                     delay: None,
+                    stall: None,
+                    cut: None,
                 });
                 if let Some(delay) = answer.delay {
                     std::thread::sleep(delay);
@@ -302,7 +340,12 @@ pub(crate) fn stub(answers: Vec<Canned>) -> Stub {
                     answer.body.len()
                 ));
                 let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(answer.body.as_bytes());
+                if let Some(stall) = answer.stall {
+                    let _ = stream.flush();
+                    std::thread::sleep(stall);
+                }
+                let sent = answer.cut.unwrap_or(answer.body.len());
+                let _ = stream.write_all(&answer.body[..sent.min(answer.body.len())]);
             }
         })
     };

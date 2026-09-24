@@ -461,8 +461,7 @@ impl Wallhaven {
 
     /// What was served under `id`, or nothing when this process never served
     /// it. `wallhaven_download` resolves an id through this and refuses one it
-    /// finds nothing for (#343).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// finds nothing for.
     pub fn served(&self, id: &str) -> Option<Served> {
         self.served
             .lock()
