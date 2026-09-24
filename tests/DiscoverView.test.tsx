@@ -1,9 +1,10 @@
 import { DiscoverView } from "@/components/DiscoverView";
-import type {
-  AppError,
-  SearchPage,
-  SearchParams,
-  MarkedResult,
+import {
+  WALLHAVEN_COLOURS,
+  type AppError,
+  type SearchPage,
+  type SearchParams,
+  type MarkedResult,
 } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -78,7 +79,7 @@ function failure(kind: AppError["kind"], message: string): Promise<never> {
 const cards = () => screen.queryAllByRole("gridcell");
 const pageCount = () =>
   document.querySelector('[data-slot="page-count"]')?.textContent ?? null;
-const ratioPill = () => screen.getByLabelText("Ratio");
+const ratioPill = () => screen.getByLabelText(/^Ratio: /);
 
 async function chooseRatio(name: string) {
   await press("Enter", { target: ratioPill() });
@@ -422,4 +423,329 @@ test("Ctrl and the wheel move through Discover's two to five a row", async () =>
   expect(await inARow()).toBe(5);
   for (let i = 0; i < 6; i++) await ctrlWheel(grid, -1);
   expect(await inARow()).toBe(2);
+});
+
+// The filter pills (#340). Each one opens a menu, and every change is a new
+// search with it.
+
+/** A pill, by what it filters: its name also says what it is set to. */
+const pill = (name: string) => screen.getByLabelText(new RegExp(`^${name}: `));
+// Named by the way it runs, so a screen reader hears the state and not a label.
+const orderPill = () =>
+  screen.getByRole("button", { name: /^(Descending|Ascending)$/ });
+
+async function openPill(name: string) {
+  await press("Enter", { target: pill(name) });
+}
+
+test("the Sort pill offers all seven sortings, and a choice searches with it", async () => {
+  await renderInApp(<DiscoverView />);
+  expect(pill("Sort").textContent).toBe("Date added");
+
+  await openPill("Sort");
+  expect(
+    screen.getAllByRole("menuitemradio").map((o) => o.textContent),
+  ).toEqual([
+    "Date added",
+    "Relevance",
+    "Random",
+    "Views",
+    "Favourites",
+    "Toplist",
+    "Hot",
+  ]);
+  await click(screen.getByRole("menuitemradio", { name: "Views" }));
+
+  expect(searches[1].sorting).toBe("views");
+  expect(searches[1].top_range).toBeUndefined();
+  expect(pill("Sort").textContent).toBe("Views");
+  expect(pill("Sort").getAttribute("aria-label")).toBe("Sort: Views");
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+test("the toplist range is picked inside the Sort menu, and only for Toplist", async () => {
+  await renderInApp(<DiscoverView />);
+
+  await openPill("Sort");
+  expect(screen.queryByRole("menuitemradio", { name: "1y" })).toBeNull();
+
+  // Choosing Toplist searches with the range it already has, and leaves the
+  // menu open on the ranges.
+  await click(screen.getByRole("menuitemradio", { name: "Toplist" }));
+  expect(searches[1].sorting).toBe("toplist");
+  expect(searches[1].top_range).toBe("1M");
+  expect(pill("Sort").textContent).toBe("Toplist · 1M");
+
+  await click(screen.getByRole("menuitemradio", { name: "1y" }));
+  expect(searches[2].top_range).toBe("1y");
+  expect(pill("Sort").textContent).toBe("Toplist · 1y");
+
+  // Away from Toplist, the range is neither sent nor offered.
+  await openPill("Sort");
+  await click(screen.getByRole("menuitemradio", { name: "Hot" }));
+  expect(searches[3].top_range).toBeUndefined();
+  await openPill("Sort");
+  expect(screen.queryByRole("menuitemradio", { name: "1y" })).toBeNull();
+});
+
+test("the Order control beside Sort flips which way the sort runs", async () => {
+  await renderInApp(<DiscoverView />);
+  expect(orderPill().textContent).toBe("Descending");
+
+  await click(orderPill());
+  expect(searches[1].order).toBe("asc");
+  expect(orderPill().textContent).toBe("Ascending");
+
+  await click(orderPill());
+  expect(searches[2].order).toBe("desc");
+});
+
+test("the Categories pill ticks General, Anime and People, and never all off", async () => {
+  await renderInApp(<DiscoverView />);
+  expect(pill("Categories").textContent).toBe("All categories");
+
+  await openPill("Categories");
+  expect(
+    screen.getAllByRole("menuitemcheckbox").map((o) => o.textContent),
+  ).toEqual(["General", "Anime", "People"]);
+  await click(screen.getByRole("menuitemcheckbox", { name: "Anime" }));
+
+  expect(searches[1].categories).toEqual({
+    general: true,
+    anime: false,
+    people: true,
+  });
+  expect(pill("Categories").textContent).toBe("General, People");
+  // Still open, so a second box is one more click.
+  await click(screen.getByRole("menuitemcheckbox", { name: "People" }));
+  expect(searches[2].categories).toEqual({
+    general: true,
+    anime: false,
+    people: false,
+  });
+
+  // The backend refuses a search with none, so the last one stays on.
+  const general = screen.getByRole("menuitemcheckbox", { name: "General" });
+  expect(general.getAttribute("aria-disabled")).toBe("true");
+  await click(general);
+  expect(searches).toHaveLength(3);
+});
+
+test("the Purity pill ticks SFW and Sketchy, and NSFW waits for an API key", async () => {
+  await renderInApp(<DiscoverView />);
+  expect(pill("Purity").textContent).toBe("SFW");
+
+  await openPill("Purity");
+  await click(screen.getByRole("menuitemcheckbox", { name: "Sketchy" }));
+  expect(searches[1].purity).toEqual({ sfw: true, sketchy: true, nsfw: false });
+  expect(pill("Purity").textContent).toBe("SFW + Sketchy");
+
+  const nsfw = screen.getByRole("menuitemcheckbox", { name: /NSFW/ });
+  expect(nsfw.getAttribute("aria-disabled")).toBe("true");
+  expect(nsfw.textContent).toContain("Add an API key in Settings");
+  await click(nsfw);
+  expect(searches).toHaveLength(2);
+});
+
+test("the Colour pill offers Wallhaven's 29 and can be cleared", async () => {
+  answer = (params) =>
+    params.page === 2 ? page(["b1b1b1"], 2, 2) : page(["a1a1a1"], 1, 2);
+  await renderInApp(<DiscoverView />);
+  expect(searches[0].colors).toBeUndefined();
+  expect(pill("Colour").textContent).toBe("Any colour");
+
+  await openPill("Colour");
+  const swatches = screen
+    .getAllByRole("menuitemradio")
+    .map((o) => o.getAttribute("aria-label") ?? o.textContent);
+  expect(swatches).toHaveLength(30);
+  expect(swatches[0]).toBe("Any colour");
+  expect(new Set(swatches.slice(1)).size).toBe(29);
+  await click(screen.getByRole("menuitemradio", { name: "Slate (#424153)" }));
+
+  expect(searches[1].colors).toBe("424153");
+  expect(pill("Colour").textContent).toBe("Colour");
+
+  // Load more keeps it, as it keeps every filter.
+  await click(screen.getByRole("button", { name: "Load more" }));
+  expect(searches[2].colors).toBe("424153");
+
+  await openPill("Colour");
+  await click(screen.getByRole("menuitemradio", { name: "Any colour" }));
+  expect(searches[3].colors).toBeUndefined();
+  expect(pill("Colour").textContent).toBe("Any colour");
+});
+
+test("every pill starts from the remembered filters", async () => {
+  mockCommand("get_settings", () =>
+    settings({
+      discover_filters: {
+        purity: { sfw: false, sketchy: true, nsfw: false },
+        categories: { general: false, anime: true, people: false },
+        sorting: "toplist",
+        order: "asc",
+        top_range: "1w",
+      },
+    }),
+  );
+
+  await renderInApp(<DiscoverView />);
+
+  expect(pill("Sort").textContent).toBe("Toplist · 1w");
+  expect(orderPill().textContent).toBe("Ascending");
+  expect(pill("Categories").textContent).toBe("Anime");
+  expect(pill("Purity").textContent).toBe("Sketchy");
+
+  // A change carries the rest of them along.
+  await openPill("Categories");
+  await click(screen.getByRole("menuitemcheckbox", { name: "People" }));
+  expect(searches[1]).toMatchObject({
+    purity: { sfw: false, sketchy: true, nsfw: false },
+    categories: { general: false, anime: true, people: true },
+    sorting: "toplist",
+    order: "asc",
+    top_range: "1w",
+  });
+});
+
+test("scrolling collapses the header into a sticky strip, and the top expands it", async () => {
+  await renderInApp(<DiscoverView />);
+  const scroller = document.querySelector(
+    '[data-slot="discover-page"]',
+  ) as HTMLElement;
+  const header = () =>
+    document.querySelector('[data-slot="discover-header"]') as HTMLElement;
+  const scrollTo = async (top: number) => {
+    await act(async () => {
+      scroller.scrollTop = top;
+      fireEvent.scroll(scroller);
+    });
+  };
+  expect(header().dataset.collapsed).toBe("false");
+
+  await scrollTo(600);
+  expect(header().dataset.collapsed).toBe("true");
+
+  // Both halves are still there and still work.
+  fireEvent.change(screen.getByLabelText("Search Wallhaven"), {
+    target: { value: "forest" },
+  });
+  await act(async () => {
+    fireEvent.submit(screen.getByRole("search"));
+  });
+  await flush();
+  expect(searches[1].q).toBe("forest");
+
+  await scrollTo(600);
+  await openPill("Sort");
+  await click(screen.getByRole("menuitemradio", { name: "Views" }));
+  expect(searches[2].sorting).toBe("views");
+
+  await scrollTo(600);
+  expect(header().dataset.collapsed).toBe("true");
+  await scrollTo(0);
+  expect(header().dataset.collapsed).toBe("false");
+});
+
+test("the colours are exactly the ones the backend accepts", async () => {
+  // Two copies of one list, and a colour in only one of them is either never
+  // offered or refused when chosen.
+  const rust = await Bun.file(
+    new URL("../src-tauri/src/wallhaven.rs", import.meta.url),
+  ).text();
+  const list = /const COLOURS: \[&str; 29\] = \[([^\]]*)\]/.exec(rust)?.[1];
+  expect(list).toBeDefined();
+  const backend = [...(list ?? "").matchAll(/"([0-9a-f]{6})"/g)].map(
+    ([, hex]) => hex,
+  );
+  expect(backend).toEqual([...WALLHAVEN_COLOURS]);
+});
+
+test("the arrows walk the swatches as a grid of eight a row", async () => {
+  await renderInApp(<DiscoverView />);
+  await openPill("Colour");
+  const swatches = screen
+    .getAllByRole("menuitemradio")
+    .filter((o) => o.hasAttribute("aria-label"));
+  const focused = () => swatches.indexOf(document.activeElement as HTMLElement);
+  await act(async () => {
+    swatches[0].focus();
+  });
+
+  await press("ArrowRight");
+  expect(focused()).toBe(1);
+  await press("ArrowDown");
+  expect(focused()).toBe(9);
+  await press("ArrowLeft");
+  expect(focused()).toBe(8);
+  await press("ArrowDown");
+  await press("ArrowDown");
+  expect(focused()).toBe(24);
+  // The last row holds five, so Down from past its end lands on the last one.
+  await press("ArrowUp");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  expect(focused()).toBe(21);
+  await press("ArrowDown");
+  expect(focused()).toBe(28);
+
+  // Up out of the top row is Any colour.
+  await act(async () => {
+    swatches[3].focus();
+  });
+  await press("ArrowUp");
+  expect(document.activeElement?.textContent).toBe("Any colour");
+});
+
+test("a resize while collapsed measures the expanded header again", async () => {
+  const observers: ResizeObserverCallback[] = [];
+  const Real = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      observers.push(callback);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+  try {
+    await renderInApp(<DiscoverView />);
+    const scroller = document.querySelector(
+      '[data-slot="discover-page"]',
+    ) as HTMLElement;
+    const header = document.querySelector(
+      '[data-slot="discover-header"]',
+    ) as HTMLElement;
+    // happy-dom lays nothing out, so the header says how tall it is: the
+    // strip's height collapsed, and the expanded one the pills wrap to.
+    let expanded = 200;
+    Object.defineProperty(header, "offsetHeight", {
+      get: () => (header.dataset.collapsed === "true" ? 44 : expanded),
+    });
+    await act(async () => {
+      scroller.scrollTop = 600;
+      fireEvent.scroll(scroller);
+    });
+    expect(header.dataset.collapsed).toBe("true");
+    expect(header.style.marginBottom).toBe("156px");
+
+    // A narrower window wraps the pills onto another row.
+    expanded = 240;
+    await act(async () => {
+      for (const callback of observers) {
+        callback(
+          [{ contentRect: { width: 800 } } as ResizeObserverEntry],
+          {} as ResizeObserver,
+        );
+      }
+    });
+
+    expect(header.dataset.collapsed).toBe("true");
+    expect(header.style.marginBottom).toBe("196px");
+  } finally {
+    globalThis.ResizeObserver = Real;
+  }
 });
