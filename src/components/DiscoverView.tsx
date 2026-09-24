@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/EmptyState";
 import { ItemGrid, type GridCell } from "@/components/ItemGrid";
 import { RESULT_CARD } from "@/components/grid-geometry";
+import { DIMMED_PICTURE } from "@/components/WallpaperCard";
 import { RESULT_KEYS } from "@/components/keymap";
 import type { SelectionHandle } from "@/components/selection";
 import { Button } from "@/components/ui/button";
@@ -24,7 +25,7 @@ import {
   type Resolution,
   type SearchPage,
   type SearchParams,
-  type SearchResult,
+  type MarkedResult,
 } from "@/lib/client";
 import { bytes } from "@/lib/copy";
 import { cn } from "@/lib/utils";
@@ -155,7 +156,7 @@ function paramsFor(
 
 /** The pages shown so far, flattened, and where the last of them sits. */
 interface Shown {
-  results: SearchResult[];
+  results: MarkedResult[];
   meta: SearchPage["meta"];
 }
 
@@ -279,7 +280,7 @@ export function DiscoverView() {
     scroller.current.scrollTop = scrollTop.current;
   }, [showing]);
 
-  const [grid, setGrid] = useState<SelectionHandle<SearchResult> | null>(
+  const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
     null,
   );
   useKeyboardSurface("discover", grid);
@@ -490,14 +491,17 @@ export function DiscoverView() {
 function noAction(): void {}
 
 /** The grid's renderer: a value per prop, so the card's memo holds (#230). */
-function renderResult(result: SearchResult, { cellIndex, selected }: GridCell) {
+function renderResult(
+  result: MarkedResult,
+  { cellIndex, selected }: GridCell,
+) {
   return (
     <ResultCard result={result} cellIndex={cellIndex} selected={selected} />
   );
 }
 
 /** What a marked card's caption says, where Pick and Download would sit. */
-const MARK_TEXT: Record<Exclude<Mark, "none">, string> = {
+const MARK_TEXT: Record<Exclude<Mark, "unmarked">, string> = {
   in_library: "In library",
   rejected: "You rejected this",
 };
@@ -526,12 +530,12 @@ const ResultCard = memo(function ResultCard({
   cellIndex,
   selected,
 }: {
-  result: SearchResult;
+  result: MarkedResult;
   cellIndex: number;
   selected: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const mark = result.mark === "none" ? null : MARK_TEXT[result.mark];
+  const mark = result.mark === "unmarked" ? null : MARK_TEXT[result.mark];
   const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
   return (
     <figure
@@ -560,7 +564,7 @@ const ResultCard = memo(function ResultCard({
             "h-full w-full object-cover",
             // On the picture and not the card, as on a Rejected card in
             // Library, so the caption's mark stays readable.
-            mark && "opacity-60 grayscale",
+            mark && DIMMED_PICTURE,
             failed && "invisible",
           )}
         />

@@ -289,16 +289,16 @@ export interface SearchParams {
 /**
  * Mirrors wallhaven::Mark: what the library already says about a Result
  * (ADR 0050). `in_library` when some Active or Kept wallpaper carries its
- * Wallhaven id, `rejected` when only Rejected ones do, and `none` otherwise.
+ * Wallhaven id, `rejected` when only Rejected ones do, and `unmarked` otherwise.
  */
-export type Mark = "none" | "in_library" | "rejected";
+export type Mark = "unmarked" | "in_library" | "rejected";
 
 /**
- * Mirrors wallhaven::Marked: one Result, as Wallhaven's search record has it,
+ * Mirrors wallhaven::MarkedResult: one Result, as Wallhaven's search record has it,
  * less the full file's `path` — which the backend keeps for the download that
  * names it by id (ADR 0054) — and with its mark beside it.
  */
-export interface SearchResult {
+export interface MarkedResult {
   id: string;
   url: string;
   short_url: string;
@@ -323,7 +323,7 @@ export interface SearchResult {
 
 /** Mirrors wallhaven::Page: one page of Results, and where it sits. */
 export interface SearchPage {
-  results: SearchResult[];
+  results: MarkedResult[];
   meta: {
     current_page: number;
     last_page: number;

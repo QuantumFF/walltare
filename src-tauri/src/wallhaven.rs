@@ -269,7 +269,7 @@ pub struct Page<R = SearchResult> {
 #[serde(rename_all = "snake_case")]
 pub enum Mark {
     /// No wallpaper carries its id.
-    None,
+    Unmarked,
     /// Some Active or Kept wallpaper carries its id.
     InLibrary,
     /// Only Rejected wallpapers carry its id.
@@ -278,7 +278,7 @@ pub enum Mark {
 
 /// A Result and its mark, flattened into one record on the wire.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct Marked {
+pub struct MarkedResult {
     #[serde(flatten)]
     pub result: SearchResult,
     pub mark: Mark,
@@ -418,7 +418,7 @@ pub fn search(
     db: &Db,
     client: &Wallhaven,
     params: &SearchParams,
-) -> Result<Page<Marked>, AppError> {
+) -> Result<Page<MarkedResult>, AppError> {
     let page = client.search(params)?;
     let ids: Vec<&str> = page.results.iter().map(|r| r.id.as_str()).collect();
     let carriers = db.read(|conn| crate::db::wallhaven_carriers(conn, &ids))?;
@@ -430,9 +430,9 @@ pub fn search(
                 let mark = match carriers.get(&result.id) {
                     Some(true) => Mark::InLibrary,
                     Some(false) => Mark::Rejected,
-                    None => Mark::None,
+                    None => Mark::Unmarked,
                 };
-                Marked { result, mark }
+                MarkedResult { result, mark }
             })
             .collect(),
         meta: page.meta,
@@ -1028,7 +1028,7 @@ mod tests {
         db.write(|conn| testing::seed_wallhaven_wallpaper(conn, path, status));
     }
 
-    fn marks(page: &Page<Marked>) -> Vec<(&str, Mark)> {
+    fn marks(page: &Page<MarkedResult>) -> Vec<(&str, Mark)> {
         page.results
             .iter()
             .map(|r| (r.result.id.as_str(), r.mark))
@@ -1066,7 +1066,7 @@ mod tests {
                 ("reject", Mark::Rejected),
                 ("shared", Mark::InLibrary),
                 ("twice1", Mark::Rejected),
-                ("nobody", Mark::None),
+                ("nobody", Mark::Unmarked),
             ]
         );
     }
@@ -1084,7 +1084,7 @@ mod tests {
         assert_eq!(json["results"][0]["mark"], "in_library");
         assert_eq!(json["results"][0]["resolution"], "3840x2160");
         assert!(json["results"][0].get("path").is_none(), "{json}");
-        assert_eq!(json["results"][1]["mark"], "none");
+        assert_eq!(json["results"][1]["mark"], "unmarked");
         assert_eq!(serde_json::to_value(Mark::Rejected).unwrap(), "rejected");
         assert_eq!(json["meta"]["last_page"], 1);
     }

@@ -207,7 +207,20 @@ fn set_schema_version(conn: &Connection, version: i64) -> Result<(), rusqlite::E
 ///
 /// `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already exists,
 /// so any change to an existing table's shape needs an explicit step here.
+///
+/// Every step and the version stamp run in one transaction, so a step that
+/// fails leaves the file exactly as it was, on its old version and its old
+/// shape, and the next open runs the same steps again. SQLite's DDL is
+/// transactional. Stamped only at the end without it, a later step failing
+/// would leave an earlier step's columns in place under the old version, and
+/// the next open would fail on `duplicate column name` for good.
 fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    migrate_steps(&tx)?;
+    tx.commit()
+}
+
+fn migrate_steps(conn: &Connection) -> Result<(), rusqlite::Error> {
     let mut version = schema_version(conn)?;
 
     if version < 2 {
@@ -254,13 +267,9 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         // v5 added `wallpapers.wallhaven_id`, and this one is backfilled. A
         // rescan inserts only new paths, so a row that existed before the
         // column will never arrive again, and its current filename is the only
-        // chance it has to be recognised (ADR 0050). Every Status, and one
-        // transaction with the column, so a half-run step cannot be stamped.
-        let tx = conn.unchecked_transaction()?;
-        tx.execute_batch("ALTER TABLE wallpapers ADD COLUMN wallhaven_id TEXT;")?;
-        backfill_wallhaven_ids(&tx)?;
-        set_schema_version(&tx, 5)?;
-        tx.commit()?;
+        // chance it has to be recognised (ADR 0050). Every Status.
+        conn.execute_batch("ALTER TABLE wallpapers ADD COLUMN wallhaven_id TEXT;")?;
+        backfill_wallhaven_ids(conn)?;
         version = 5;
     }
 
@@ -272,15 +281,22 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
 ///
 /// Only rows with none, so it is idempotent and never rewrites an id: the id
 /// is what the file was when it arrived, not what it is called today.
+///
+/// A filename that is not text names no id rather than failing the step: the
+/// migration runs on open, and one odd row must not keep the library shut.
 fn backfill_wallhaven_ids(conn: &Connection) -> Result<(), rusqlite::Error> {
     let named: Vec<(i64, String)> = {
         let mut stmt =
             conn.prepare("SELECT id, filename FROM wallpapers WHERE wallhaven_id IS NULL")?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))?;
+        let rows = stmt.query_map([], |row| {
+            let filename = row.get_ref(1)?.as_str().ok().map(str::to_string);
+            Ok((row.get::<_, i64>(0)?, filename))
+        })?;
         rows.filter_map(|row| match row {
-            Ok((id, filename)) => {
-                scanner::wallhaven_id(&filename).map(|wallhaven| Ok((id, wallhaven.to_string())))
-            }
+            Ok((id, filename)) => filename
+                .as_deref()
+                .and_then(scanner::wallhaven_id)
+                .map(|wallhaven| Ok((id, wallhaven.to_string()))),
             Err(e) => Some(Err(e)),
         })
         .collect::<Result<_, _>>()?
@@ -1143,6 +1159,49 @@ mod tests {
         assert_eq!(wallhaven_id_of(&conn, named).as_deref(), Some("abc123"));
         assert_eq!(wallhaven_id_of(&conn, plain), None);
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn a_migration_that_fails_partway_leaves_the_file_as_it_was_and_reopenable() {
+        // A v3 file needs two steps. The second one's backfill fails (a disk
+        // that fills up, say, played here by a trigger), and the first one's
+        // columns must not survive it: stamped at v3 with `width` already
+        // there, the next open would fail on `duplicate column name` for good.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = open(&db_path).unwrap();
+            conn.execute_batch(DDL_V3).unwrap();
+            seed_wallpaper(&conn, "/w/wallhaven-abc123.jpg", "kept", 25.0);
+            // Not text, which the backfill skips rather than fails over.
+            conn.execute(
+                "INSERT INTO wallpapers (filename, path) VALUES (X'00ff', '/w/odd')",
+                [],
+            )
+            .unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER refuse BEFORE UPDATE ON wallpapers
+                 BEGIN SELECT RAISE(ABORT, 'the disk is full'); END;",
+            )
+            .unwrap();
+
+            let err = init_schema(&conn).unwrap_err();
+
+            assert!(err.to_string().contains("the disk is full"), "{err}");
+            assert_eq!(schema_version(&conn).unwrap(), 3);
+            assert!(!column_exists(&conn, "wallpapers", "width").unwrap());
+            assert!(!column_exists(&conn, "wallpapers", "wallhaven_id").unwrap());
+            conn.execute_batch("DROP TRIGGER refuse").unwrap();
+        }
+
+        let conn = open(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(column_exists(&conn, "wallpapers", "width").unwrap());
+        assert_eq!(wallhaven_id_of(&conn, 1).as_deref(), Some("abc123"));
+        assert_eq!(wallhaven_id_of(&conn, 2), None);
+        assert_eq!(count_wallpapers(&conn), 2);
     }
 
     #[test]

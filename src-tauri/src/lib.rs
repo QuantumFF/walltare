@@ -393,7 +393,7 @@ fn set_setting(
 async fn wallhaven_search(
     params: wallhaven::SearchParams,
     app: AppHandle,
-) -> Result<wallhaven::Page<wallhaven::Marked>, error::AppError> {
+) -> Result<wallhaven::Page<wallhaven::MarkedResult>, error::AppError> {
     off_main_thread(app, move |app| {
         wallhaven::search(
             &app.state::<Db>(),

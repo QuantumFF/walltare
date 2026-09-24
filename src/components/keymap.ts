@@ -30,7 +30,7 @@ import {
   STATUS_ACTIONS,
   type TransitionAction,
 } from "@/components/transitions";
-import type { SearchResult, Wallpaper } from "@/lib/client";
+import type { MarkedResult, Wallpaper } from "@/lib/client";
 
 /**
  * Which surface is asking, and the two facts about it that change what a key
@@ -353,7 +353,7 @@ export const STATUS_KEYS: ActionTable<Wallpaper, TransitionAction> = {
  * answers the shared navigation and density keys alone, and the shortcuts
  * dialog lists nothing it does not.
  */
-export const RESULT_KEYS: ActionTable<SearchResult, never> = {
+export const RESULT_KEYS: ActionTable<MarkedResult, never> = {
   bindings: [],
   offers: () => [],
   opens: false,

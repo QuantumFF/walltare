@@ -3,7 +3,7 @@ import type {
   AppError,
   SearchPage,
   SearchParams,
-  SearchResult,
+  MarkedResult,
 } from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -28,7 +28,7 @@ let searches: SearchParams[];
 /** What the next search answers with, by the page it asked for. */
 let answer: (params: SearchParams) => SearchPage | Promise<SearchPage>;
 
-function result(id: string, over: Partial<SearchResult> = {}): SearchResult {
+function result(id: string, over: Partial<MarkedResult> = {}): MarkedResult {
   const prefix = id.slice(0, 2);
   return {
     id,
@@ -47,7 +47,7 @@ function result(id: string, over: Partial<SearchResult> = {}): SearchResult {
     file_type: "image/png",
     created_at: "2026-09-02 17:01:46",
     colors: ["#000000"],
-    mark: "none",
+    mark: "unmarked",
     thumbs: {
       large: `https://th.wallhaven.cc/lg/${prefix}/${id}.jpg`,
       original: `https://th.wallhaven.cc/orig/${prefix}/${id}.jpg`,

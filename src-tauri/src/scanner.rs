@@ -20,9 +20,9 @@ pub fn is_supported(path: &Path) -> bool {
 /// near miss and names no id, because a wrong id would mark a Result the
 /// library does not hold.
 ///
-/// One parser for every place an id is read off a name: the scan, the schema
-/// backfill and the download landing. A second copy would let them disagree
-/// about which files are Wallhaven's.
+/// One parser for every place an id is read off a name: the scan and the
+/// schema backfill today, and the download landing (#343) will reuse it. A
+/// second copy would let them disagree about which files are Wallhaven's.
 pub fn wallhaven_id(filename: &str) -> Option<&str> {
     let (stem, extension) = filename.rsplit_once('.')?;
     if !SUPPORTED_EXTENSIONS.contains(&extension.to_lowercase().as_str()) {
