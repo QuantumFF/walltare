@@ -36,6 +36,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -117,6 +118,15 @@ const WALLHAVEN_RATIOS = [
 
 /** The ratios the pill offers besides the Screen's, most common first. */
 const COMMON_RATIOS = ["16x9", "16x10", "21x9", "32x9", "9x16"];
+
+/**
+ * The two ratios Wallhaven names rather than spells as `WxH`, with the words
+ * its own menu shows for them: every landscape shape, and every portrait one.
+ */
+const NAMED_RATIOS: Record<string, string> = {
+  landscape: "Wide",
+  portrait: "Portrait",
+};
 
 /** The pill's value for Any ratio, which no ratio can be spelled as. */
 const ANY_RATIO = "any";
@@ -226,9 +236,9 @@ function screenRatio({ width, height }: Resolution): string {
   return `${width / d}x${height / d}`;
 }
 
-/** `16x9` as the curator reads it: `16:9`. */
+/** `16x9` as the curator reads it: `16:9`, and `landscape` as `Wide`. */
 function readableRatio(ratio: string): string {
-  return ratio.replace("x", ":");
+  return NAMED_RATIOS[ratio] ?? ratio.replace("x", ":");
 }
 
 /** `231`, `19.4k`: a count short enough for a caption. */
@@ -928,6 +938,12 @@ export function DiscoverView() {
                 <SelectValue>{pillLabel(asked.ratio)}</SelectValue>
               </SelectTrigger>
               <SelectContent onCloseAutoFocus={ratioHandOff.onCloseAutoFocus}>
+                {Object.keys(NAMED_RATIOS).map((ratio) => (
+                  <SelectItem key={ratio} value={ratio} className="text-xs">
+                    {pillLabel(ratio)}
+                  </SelectItem>
+                ))}
+                <SelectSeparator />
                 {[screen, ...COMMON_RATIOS.filter((r) => r !== screen)].map(
                   (ratio) => (
                     <SelectItem key={ratio} value={ratio} className="text-xs">

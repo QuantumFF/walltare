@@ -374,11 +374,13 @@ test("the search box sends the query verbatim, Wallhaven's syntax included", asy
   expect(searches[1].page).toBeUndefined();
 });
 
-test("the Ratio pill offers the Screen's, the common ones and Any ratio", async () => {
+test("the Ratio pill offers Wide and Portrait, then the Screen's, the common ones and Any ratio", async () => {
   await renderInApp(<DiscoverView />);
 
   await press("Enter", { target: ratioPill() });
   expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+    "Wide",
+    "Portrait",
     "16:9 · Screen",
     "16:10",
     "21:9",
@@ -386,6 +388,9 @@ test("the Ratio pill offers the Screen's, the common ones and Any ratio", async 
     "9:16",
     "Any ratio",
   ]);
+  expect(
+    document.querySelector("[data-slot='select-separator']"),
+  ).not.toBeNull();
   await press("Enter", {
     target: screen.getByRole("option", { name: "21:9" }),
   });
@@ -393,8 +398,16 @@ test("the Ratio pill offers the Screen's, the common ones and Any ratio", async 
   expect(searches[1].ratios).toEqual(["21x9"]);
   expect(ratioPill().textContent).toBe("21:9");
 
+  await chooseRatio("Wide");
+  expect(searches[2].ratios).toEqual(["landscape"]);
+  expect(ratioPill().textContent).toBe("Wide");
+
+  await chooseRatio("Portrait");
+  expect(searches[3].ratios).toEqual(["portrait"]);
+  expect(ratioPill().textContent).toBe("Portrait");
+
   await chooseRatio("Any ratio");
-  expect(searches[2].ratios).toBeUndefined();
+  expect(searches[4].ratios).toBeUndefined();
 });
 
 test("the ratio goes back to the Screen's when Discover mounts again", async () => {

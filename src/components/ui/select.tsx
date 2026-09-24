@@ -23,10 +23,11 @@ import { cn } from "@/lib/utils"
  * entry is current. A list anchored under the trigger is where a curator looks
  * for it.
  *
- * There is no `SelectGroup`, `SelectLabel` or `SelectSeparator`. One flat list
- * of named orderings is what this is for, and a group with nothing to separate
- * it from is an empty wrapper with a `role` on it. `RadioGroupItem` dropped its
- * `Indicator` on the same ground.
+ * There is no `SelectGroup` or `SelectLabel`. A list is flat, and a group
+ * with nothing to name it is an empty wrapper with a `role` on it.
+ * `RadioGroupItem` dropped its `Indicator` on the same ground. A
+ * `SelectSeparator` is kept: Discover's Ratio pill rules its named ratios off
+ * from the `WxH` ones.
  */
 
 function Select({
@@ -130,6 +131,19 @@ function SelectItem({
   )
 }
 
+function SelectSeparator({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.Separator>) {
+  return (
+    <SelectPrimitive.Separator
+      data-slot="select-separator"
+      className={cn("-mx-1 my-1 h-px bg-border", className)}
+      {...props}
+    />
+  )
+}
+
 /*
  * The two overflow controls, rendered by `SelectContent` and not exported. Four
  * orderings never overflow, but the max-height above is the viewport's rather
@@ -173,4 +187,11 @@ function SelectScrollDownButton({
   )
 }
 
-export { Select, SelectContent, SelectItem, SelectTrigger, SelectValue }
+export {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+}
