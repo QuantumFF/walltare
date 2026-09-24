@@ -48,16 +48,17 @@ import {
 /**
  * What the back control calls the view it goes back to.
  *
- * The shell's tab labels say the same three words and are not exported on
+ * The shell's tab labels say the same four words and are not exported on
  * purpose: a tab's label names a destination in a row of them, and this names
  * one inside a sentence. `settings` is in the map because `returnTo` is a `View`
- * and the type has four of them, not because anything opens Settings from
+ * and the type has five of them, not because anything opens Settings from
  * Settings.
  */
 const RETURN_LABEL: Record<View, string> = {
   rank: "Rank",
   review: "Review",
   library: "Library",
+  discover: "Discover",
   settings: "Settings",
 };
 

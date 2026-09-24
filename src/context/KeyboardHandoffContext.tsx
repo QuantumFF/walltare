@@ -13,6 +13,12 @@ import {
 } from "react";
 
 /**
+ * What a hand-off lands on: the one part of a surface's handle it calls, so a
+ * page's grid qualifies whatever it lists — Wallpapers or Results (#339).
+ */
+type Surface = Pick<SelectionHandle, "focusSelection">;
+
+/**
  * Giving the keyboard back to the page.
  *
  * Review and Library answer their keys — the arrows, `K`, `Delete`, `Enter` —
@@ -41,7 +47,7 @@ import {
 interface KeyboardHandoff {
   handOff: () => void;
   /** Say which surface a page is drawing now, or `null` for none. */
-  register: (view: View, surface: SelectionHandle | null) => void;
+  register: (view: View, surface: Surface | null) => void;
 }
 
 const KeyboardHandoffContext = createContext<KeyboardHandoff | undefined>(
@@ -86,10 +92,10 @@ export function KeyboardHandoffProvider({
   const handOff = useCallback(() => setAsked((n) => n + 1), []);
 
   const [surfaces, setSurfaces] = useState<
-    Partial<Record<View, SelectionHandle>>
+    Partial<Record<View, Surface>>
   >({});
   const register = useCallback(
-    (at: View, surface: SelectionHandle | null) =>
+    (at: View, surface: Surface | null) =>
       setSurfaces((prev) =>
         (prev[at] ?? null) === surface ? prev : { ...prev, [at]: surface },
       ),
@@ -161,7 +167,7 @@ export function useKeyboardHandoff(): () => void {
  */
 export function useKeyboardSurface(
   view: View,
-  surface: SelectionHandle | null,
+  surface: Surface | null,
 ): void {
   const { register } = useKeyboardHandoffContext();
   useLayoutEffect(() => {

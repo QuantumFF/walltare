@@ -40,8 +40,8 @@ import { Dialog } from "radix-ui";
  * What those surfaces do to the selected item is the page's since #336, so the
  * listing groups are built with the action table of the page the dialog opened
  * over: `K`, `Delete` and `R` over Library and Review, and Discover's own keys
- * over Discover. The listing heading still names wallpapers; #339 rewords it
- * when Discover's rows join the list.
+ * over Discover. So the listing heading names the surfaces rather than what
+ * they list (#339).
  */
 function groupsFor(actions: AnyActionTable): readonly {
   heading: string;
@@ -54,6 +54,7 @@ function groupsFor(actions: AnyActionTable): readonly {
         { keys: ["Ctrl", "1"], action: "Rank" },
         { keys: ["Ctrl", "2"], action: "Review" },
         { keys: ["Ctrl", "3"], action: "Library" },
+        { keys: ["Ctrl", "4"], action: "Discover" },
         { keys: ["Ctrl", ","], action: "Settings" },
         { keys: ["Ctrl", "Tab"], action: "Next tab" },
         { keys: ["Ctrl", "Shift", "Tab"], action: "Previous tab" },
@@ -67,7 +68,7 @@ function groupsFor(actions: AnyActionTable): readonly {
       ],
     },
     {
-      heading: "Wallpaper grid and strip",
+      heading: "Grid and strip",
       bindings: shortcutLines("listing", actions),
     },
     {

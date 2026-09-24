@@ -17,18 +17,20 @@ import React, {
 } from "react";
 
 /**
- * The four destinations, and the whole of the app's navigation.
+ * The five destinations, and the whole of the app's navigation.
  *
  * There is no router. This app has no URL bar to synchronise, no window-chrome
  * back button, one level of nesting and a bundle too small to split — and a
  * router unmounts a route by default, which is the one thing the shell exists
  * to prevent (ADR 0015).
  *
- * Written as the three a curator can open the app on plus Settings, rather than
- * as four names, because that is the relationship between the two types: the
- * startup view is every destination except the one boot reaches on its own.
+ * Written as the three a curator can open the app on plus Discover and
+ * Settings, rather than as five names, because that is the relationship between
+ * the two types: the startup view is every destination except the one boot
+ * reaches on its own and Discover, which opens on a network search and so is
+ * never where the app starts (#339).
  */
-export type View = StartupView | "settings";
+export type View = StartupView | "discover" | "settings";
 
 /**
  * What `get_pair` needs before Rank can draw anything (`voting.rs:74`), and so

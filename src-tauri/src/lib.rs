@@ -15,6 +15,7 @@ mod soft_reject;
 mod testing;
 mod thumbnails;
 mod voting;
+mod wallhaven;
 mod window_state;
 
 use std::sync::{Mutex, MutexGuard};
@@ -382,6 +383,27 @@ fn set_setting(
     state.write(|conn| settings::set(conn, &key, &value, detected))
 }
 
+/// One page of a Wallhaven search, and the filters it succeeded with
+/// remembered.
+///
+/// Off the main thread, because it waits on the network for up to twenty
+/// seconds. Every refusal of ADR 0054 is [`wallhaven::SearchParams`]' own and
+/// happens before anything is sent; nothing is throttled, retried or cached.
+#[tauri::command]
+async fn wallhaven_search(
+    params: wallhaven::SearchParams,
+    app: AppHandle,
+) -> Result<wallhaven::Page, error::AppError> {
+    off_main_thread(app, move |app| {
+        wallhaven::search(
+            &app.state::<Db>(),
+            &app.state::<wallhaven::Wallhaven>(),
+            &params,
+        )
+    })
+    .await
+}
+
 /// Every wallpaper matching a named filter, in a named ordering, at most `limit`
 /// of them.
 ///
@@ -635,6 +657,10 @@ pub fn run() {
             app.manage(detect_screen(app.handle()));
             app.manage(scan::Running::default());
             app.manage(Pregen::default());
+            app.manage(wallhaven::Wallhaven::new(
+                wallhaven::API_BASE,
+                wallhaven::API_TIMEOUTS,
+            ));
             serving::start(app.handle());
             Ok(())
         })
@@ -669,7 +695,8 @@ pub fn run() {
             move_wallpaper,
             restore_wallpaper,
             get_settings,
-            set_setting
+            set_setting,
+            wallhaven_search
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -737,18 +764,26 @@ mod tests {
     }
 
     #[test]
-    fn the_policy_names_no_remote_origin() {
+    fn the_policy_names_no_remote_origin_but_discovers_thumbnails() {
         // An allowlist rather than a pattern, so that widening the policy has
-        // to be argued for here as well as in the config.
+        // to be argued for here as well as in the config. Five local sources,
+        // and one remote origin in one directive: Discover's thumbnails, loaded
+        // by `<img>` and by nothing else (ADR 0053). `connect-src` stays local,
+        // so the webview never talks to Wallhaven's API itself.
+        const THUMBNAILS: &str = "https://th.wallhaven.cc";
+        let mut remote = Vec::new();
         for (directive, sources) in content_security_policy() {
             for source in sources {
                 let local = matches!(
                     source.as_str(),
                     "'self'" | "'none'" | "'unsafe-inline'" | "ipc:" | "wallpaper:"
                 );
-                assert!(local, "{directive} allows {source}, which is not local");
+                if !local {
+                    remote.push(format!("{directive} {source}"));
+                }
             }
         }
+        assert_eq!(remote, [format!("img-src {THUMBNAILS}")]);
     }
 
     #[test]

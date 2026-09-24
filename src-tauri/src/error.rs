@@ -24,6 +24,14 @@ pub enum AppError {
     BadRequest(String),
     NotEnoughWallpapers(String),
     UnknownWallpaper(String),
+    /// Wallhaven could not be reached, timed out, or answered with something
+    /// other than the JSON it documents: a 5xx, a Cloudflare challenge, a body
+    /// that will not parse. The message says which, and is user-facing copy:
+    /// Discover prints it where the Results would be (ADR 0054).
+    Network(String),
+    /// Wallhaven's rate limit answered. The message is the whole sentence,
+    /// seconds to wait included, because Discover prints it verbatim.
+    RateLimited(String),
     Io(String),
     Db(String),
     Image(String),
@@ -52,6 +60,8 @@ impl std::fmt::Display for AppError {
             AppError::BadRequest(m) => ("bad_request", m),
             AppError::NotEnoughWallpapers(m) => ("not_enough_wallpapers", m),
             AppError::UnknownWallpaper(m) => ("unknown_wallpaper", m),
+            AppError::Network(m) => ("network", m),
+            AppError::RateLimited(m) => ("rate_limited", m),
             AppError::Io(m) => ("io", m),
             AppError::Db(m) => ("db", m),
             AppError::Image(m) => ("image", m),

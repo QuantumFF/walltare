@@ -13,9 +13,9 @@ failure is a fact rather than a judgement.
 - **Build under test** — every section names the build it applies to. A `bun
   tauri dev` run does not exercise the content security policy or the bundle
   layout, so a pass from a dev run is not a pass.
-- **Four views** — Library, Rank, Review and Settings, which is the whole app.
-  Where a section says "all four views", visit each one and leave the console
-  open the whole time.
+- **Five views** — Library, Rank, Review, Discover and Settings, which is the
+  whole app. Where a section says "all five views", visit each one and leave
+  the console open the whole time.
 - **Recording a run** — copy the checklist into the release issue and tick it
   there. This file stays unticked, as the template for the next release.
 
@@ -169,19 +169,26 @@ release that looks like it has a broken thumbnail pipeline.
 - [ ] **Thumbnails render in the Lightbox.** Open a card from Library. The small
       thumbnail appears first and the medium one replaces it. Page through
       several wallpapers with the arrow keys.
+- [ ] **Thumbnails render on Discover.** Open Discover with a network
+      connection. The first search runs by itself and its cards show pictures
+      from `th.wallhaven.cc`. No card shows **Couldn't load preview** while
+      the machine is online. See
+      [ADR 0053](adr/0053-discover-thumbnails-load-straight-from-wallhaven.md).
 - [ ] **Fonts render as Geist, not a fallback.** Geist is bundled, so this is a
       check that the bundled `.woff2` files loaded rather than a check that the
       network worked. Compare a heading against the specimen at
       <https://vercel.com/font>, or open the inspector on any text node and read
       the rendered font family. A fallback looks like your system sans-serif and
       is easiest to spot on digits and on the letter `g`.
-- [ ] **The console reports no policy violations, across all four views.** Open
+- [ ] **The console reports no policy violations, across all five views.** Open
       the webview inspector, then walk Library → Lightbox → Rank → Review →
-      Settings, vote once, reject once, restore it, and run a scan. Nothing in
+      Discover → Settings, vote once, reject once, restore it, and run a scan. Nothing in
       the console mentions Content Security Policy, `Refused to`, or a blocked
       URI.
 - [ ] **No remote origin is reachable.** In the inspector console, run
-      `fetch('https://example.com')`. It must fail with a policy error. This is
+      `fetch('https://example.com')`, then `fetch('https://wallhaven.cc/api/v1/search')`.
+      Both must fail with a policy error: Discover's thumbnails are the one
+      remote source, and only through `<img>`. This is
       the check that the policy is doing anything at all.
 
 ## The release artifact and its checksums
@@ -224,7 +231,7 @@ was built.
 - [ ] **The downloaded AppImage runs on a distribution that is not the build
       host.** `chmod +x` it and run it on Ubuntu or Fedora, not on the Arch
       machine that has every build dependency installed. A window paints and all
-      four views open. A missing shared library here means linuxdeploy did not
+      five views open. A missing shared library here means linuxdeploy did not
       bundle something the binary asks for, and the AppImage's whole promise is
       that there is nothing to install.
 - [ ] **The Arch container job on the tag is green.**

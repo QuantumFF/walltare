@@ -199,7 +199,7 @@ export interface ItemGridProps<T extends Keyed, A extends string> {
  * It holds the cursor, the keys, the density and the window, and draws nothing
  * of an item itself: the card is the host's `renderCard`, and what a key does to
  * an item is the host's action table. `WallpaperGrid` is the host Library and
- * Review mount; Discover will mount this over Results.
+ * Review mount; Discover mounts this directly over Results.
  *
  * Two components and not one with a branch in it. A window is a `useVirtualizer`
  * call, hooks do not run conditionally, and a virtualiser standing by on a host

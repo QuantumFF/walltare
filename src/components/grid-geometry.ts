@@ -308,6 +308,18 @@ export const WALLPAPER_CARD: CardSpec = {
 };
 
 /**
+ * Discover's card: the same 16:9 picture with its facts in a caption under it,
+ * two lines of `text-xs` and the `gap-2` above them (#339).
+ *
+ * `ResultCard` in `DiscoverView` wears both, and this is how a reader of either finds the other.
+ */
+export const RESULT_CARD: CardSpec = {
+  ratio: 9 / 16,
+  className: "aspect-video",
+  caption: 40,
+};
+
+/**
  * The gutter between wallpapers in the two layouts that draw each one at its own
  * shape: 4px, which is what #254's prototype put between them and what the
  * verdict picked.
