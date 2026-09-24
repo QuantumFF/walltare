@@ -142,6 +142,17 @@ current one, per the reading above, so it needs no handling.
 > takes the cursor and the density with it too, since both are the surface's
 > own since ADR 0042 and #264.
 
+> **Amended 2026-09-24, by [#338](https://github.com/QuantumFF/walltare/issues/338).**
+> The shell works over any keyed item now, so Discover can open Results in
+> it. `ItemLightbox` holds what every page shares: non-modal, the page behind
+> `inert`, the position line, and `←`/`→` walking the grid's own cursor. The
+> row under the picture (the identity line, the read-out and the buttons) is a
+> slot the page fills, and so is the choice of the picture's two sources.
+> `Lightbox` is Library's and Review's page of it, with the row described here.
+> The crop preview is opt-in per page. Library's lightbox and the Review strip
+> keep it, and where it's off, `C` isn't answered at all. None of the decisions
+> above changed: the lightbox is still a rendering of the grid's selection.
+
 ### It clamps at the ends
 
 `←` at the first wallpaper and `→` at the last do nothing, and the arrow buttons

@@ -207,7 +207,7 @@ export interface HeroPictureProps {
  * - **The load phases.** The `small` under the `medium` until the `medium` has
  *   painted, then the `medium`, or the gone panel if it never will.
  * - **When each phase resets.** The placeholder once per mount and the gone
- *   panel once per wallpaper, for the reasons beside each below.
+ *   panel once per picture, for the reasons beside each below.
  * - **The crop preview**, drawn over the picture while the stored toggle is up
  *   and not while the panel says there is no picture (#266), for a surface
  *   that offers it.

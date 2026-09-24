@@ -40,9 +40,9 @@ import { ImageOff } from "lucide-react";
  * `Reject Del` (227 with the gap between them). That is 499, so 500.
  *
  * **It has no test, on purpose.** happy-dom does no layout, so under a test
- * runner the box is `UNMEASURED_PICTURE` fitted to the wallpaper's ratio, and a
- * test of the floor would be a test of that fallback's arithmetic rather than of
- * a laid-out row. ADR 0022 records the floor as untested by construction, since
+ * runner the box is `ItemLightbox.tsx`'s `UNMEASURED_PICTURE` fitted to the
+ * wallpaper's ratio, and a test of the floor would be a test of that fallback's
+ * arithmetic rather than of a laid-out row. ADR 0022 records the floor as untested by construction, since
  * the live library holds no portrait wallpaper — 120 rows, the narrowest a
  * square — and says the arithmetic wants checking against a real 9:16 file once
  * one exists.

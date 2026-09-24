@@ -51,8 +51,8 @@ import {
  *
  * The default 1280x800 window less what this surface puts around the picture:
  * 1280 wide less the content's `p-8` at both ends is 1216, and 800 tall less
- * that same 64 and less the `pb-14` the row is given is about 680. The pair the
- * `ROW_FLOOR` arithmetic above is already written against.
+ * that same 64 and less the `pb-14` the row is given is about 680. The pair
+ * Library's `ROW_FLOOR` arithmetic in `Lightbox.tsx` is written against.
  *
  * The picture, the crop bars and the row all take their box from this until a
  * browser lays the area out, and then from the measurement. Under a test runner
@@ -88,17 +88,11 @@ const CLOSED = <T extends Keyed>(): Selection<T> => NO_SELECTION;
 /**
  * What the lightbox tells the keymap about itself: which surface it is, and so
  * which keys are its. It walks with `←` and `→` alone, since one item at a
- * time has no rows for Up and Down to move by. Two, because whether `C` is one
- * of its keys is whether the page offers the crop preview.
+ * time has no rows for Up and Down to move by, and `C` is one of its keys only
+ * where the page offers the crop preview.
  */
-const CROPPING = {
-  kind: "lightbox",
-  crop: true,
-} as const satisfies ListingSurface;
-const NOT_CROPPING = {
-  kind: "lightbox",
-  crop: false,
-} as const satisfies ListingSurface;
+const lightboxSurface = (crop: boolean) =>
+  ({ kind: "lightbox", crop }) as const satisfies ListingSurface;
 
 /**
  * Whether a lightbox is up, and the two gestures that change that.
@@ -487,7 +481,7 @@ export function ItemLightbox<T extends Keyed, A extends string>({
       const intent = answerKey(
         event,
         {
-          surface: cropPreview ? CROPPING : NOT_CROPPING,
+          surface: lightboxSurface(cropPreview),
           selected: item,
           index,
           length,

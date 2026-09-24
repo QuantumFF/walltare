@@ -227,3 +227,29 @@ test("a page that leaves the crop preview out gets no toggle, no bars and no C",
   await press("c");
   expect(saved).toBe(0);
 });
+
+test("the placeholder stays drawn under the full source until that loads", async () => {
+  await mount();
+  await press("Enter");
+
+  const full = () =>
+    dialog()!.querySelector('[data-slot="hero-picture"]') as HTMLImageElement;
+  const placeholder = () =>
+    dialog()!.querySelector('[data-slot="hero-placeholder"]');
+
+  // Never blank: the page's placeholder is up while its full source is out,
+  // through any number of renders that bring nothing new.
+  await flush();
+  expect(placeholder()?.getAttribute("src")).toBe(
+    "https://th.example/lg/wh-a1.jpg",
+  );
+  expect(full().getAttribute("src")).toBe("https://w.example/full/wh-a1.jpg");
+
+  // And gone once the full source has painted, the same rule a wallpaper's
+  // `small` under its `medium` follows.
+  await act(async () => {
+    fireEvent.load(full());
+  });
+  await flush();
+  expect(placeholder()).toBeNull();
+});
