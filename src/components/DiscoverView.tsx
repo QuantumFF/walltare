@@ -1558,12 +1558,24 @@ function ColourPill({ asked, onChange }: PillProps) {
 /** The grid's renderer: a value per prop, so the card's memo holds (#230). */
 function renderResult(
   result: MarkedResult,
-  { cellIndex, selected }: GridCell,
+  { cellIndex, selected, columns }: GridCell,
 ) {
   return (
-    <ResultCard result={result} cellIndex={cellIndex} selected={selected} />
+    <ResultCard
+      result={result}
+      cellIndex={cellIndex}
+      selected={selected}
+      full={columns <= FULL_FILE_COLUMNS}
+    />
   );
 }
+
+/**
+ * The most columns at which a card lays the full file over its `lg`. At three
+ * a card is drawn wider than the `lg`'s 432 pixels on most screens, so the
+ * thumbnail is upscaled into a blur; at four and five it is not.
+ */
+const FULL_FILE_COLUMNS = 3;
 
 /** What a caption says for each state of a download, where Download would sit. */
 const DOWNLOAD_TEXT: Record<CardDownload["kind"], string> = {
@@ -1609,18 +1621,33 @@ const ResultCard = memo(function ResultCard({
   result,
   cellIndex,
   selected,
+  full,
 }: {
   result: MarkedResult;
   cellIndex: number;
   selected: boolean;
+  /** Whether the zoom is wide enough for the full file (`FULL_FILE_COLUMNS`). */
+  full: boolean;
 }) {
   const [failed, setFailed] = useState(false);
+  // Whether the full file over the `lg` has loaded, and so is shown. Kept
+  // across a zoom out and back, as a Library card keeps its `medium`'s.
+  const [sharp, setSharp] = useState(false);
   const controls = useContext(ResultControlsContext);
   const handOffOnPointerPress = useHandOffOnPointerPress();
   const { state, mark, isPick } = offerOf(result, controls);
   const said =
     mark ?? (state ? DOWNLOAD_TEXT[state.kind] : isPick ? "Picked" : null);
   const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
+  const pictureClassName = cn(
+    "h-full w-full object-cover",
+    // On the picture and not the card, as on a Rejected card in Library, so
+    // the caption's mark stays readable.
+    result.mark !== "unmarked" && DIMMED_PICTURE,
+  );
+  // Once the full file is shown, the `lg` under it is hidden rather than left
+  // to show through: two dimmed pictures stacked read as one barely dimmed.
+  const covered = full && sharp;
   return (
     <figure
       role="gridcell"
@@ -1650,14 +1677,26 @@ const ResultCard = memo(function ResultCard({
           decoding="async"
           onLoad={() => setFailed(false)}
           onError={() => setFailed(true)}
-          className={cn(
-            "h-full w-full object-cover",
-            // On the picture and not the card, as on a Rejected card in
-            // Library, so the caption's mark stays readable.
-            result.mark !== "unmarked" && DIMMED_PICTURE,
-            failed && "invisible",
-          )}
+          className={cn(pictureClassName, (failed || covered) && "invisible")}
         />
+        {/* Laid over the `lg` and shown once it has loaded, so a zoom in
+            sharpens the card rather than blanking it. A full file that fails
+            leaves the `lg` showing, which is still the picture. */}
+        {full && !failed && (
+          <img
+            src={fullFileUrl(result)}
+            alt=""
+            aria-hidden
+            loading="lazy"
+            decoding="async"
+            onLoad={() => setSharp(true)}
+            className={cn(
+              pictureClassName,
+              "pointer-events-none absolute inset-0",
+              !sharp && "opacity-0",
+            )}
+          />
+        )}
         {failed && (
           <div
             data-slot="preview-failed"

@@ -1649,9 +1649,9 @@ const heroBox = () =>
 /** The counter under the arrows: `2 / 3`. */
 const position = () =>
   within(lightboxRow()).queryByText(/^\d+ \/ \d+$/)?.textContent ?? null;
-/** Every image in the document loaded from Wallhaven's full-file host. */
+/** Every image in the lightbox loaded from Wallhaven's full-file host. */
 const fullFiles = () =>
-  [...document.querySelectorAll("img")]
+  [...(lightbox()?.querySelectorAll("img") ?? [])]
     .map((img) => img.getAttribute("src") ?? "")
     .filter((src) => src.startsWith("https://w.wallhaven.cc/"));
 const rowButton = (name: RegExp) =>
@@ -1691,6 +1691,63 @@ test("a click on a card's picture opens it too, and a click on its buttons does 
   expect(identity()).toContain("wallhaven-jedzym");
 });
 
+/** Every image on the cards loaded from Wallhaven's full-file host. */
+const cardFullFiles = () =>
+  cards().flatMap((card) =>
+    [...card.querySelectorAll("img")]
+      .map((img) => img.getAttribute("src") ?? "")
+      .filter((src) => src.startsWith("https://w.wallhaven.cc/")),
+  );
+
+test("a card lays the full file over its lg at three columns and fewer, and only the lg at four and more", async () => {
+  answer = () => page(["qrow67", "jedzym"]);
+  await renderInApp(<DiscoverView />);
+  await focusCard(cards()[0]);
+  const columns = () =>
+    Number(
+      screen
+        .getByRole("grid")
+        .className.match(/grid-cols-(\d+)/)?.[1],
+    );
+
+  // Out as far as the range goes, then in one step at a time, which crosses
+  // the threshold between four and three.
+  for (let at = 0; at < 6; at++) await press("-");
+  while (columns() > 4) await press("+");
+  expect(columns()).toBe(4);
+  expect(cardFullFiles()).toEqual([]);
+
+  await press("+");
+  expect(columns()).toBe(3);
+  expect(cardFullFiles()).toEqual([
+    "https://w.wallhaven.cc/full/qr/wallhaven-qrow67.png",
+    "https://w.wallhaven.cc/full/je/wallhaven-jedzym.png",
+  ]);
+
+  // Hidden until it has loaded, so the card never blanks, and then the `lg`
+  // under it is hidden instead.
+  const [lg, full] = cards()[0].querySelectorAll("img");
+  expect(lg.getAttribute("src")).toBe(
+    "https://th.wallhaven.cc/lg/qr/qrow67.jpg",
+  );
+  expect(full.className).toContain("opacity-0");
+  expect(lg.className).not.toContain("invisible");
+  await act(async () => {
+    fireEvent.load(full);
+  });
+  expect(full.className).not.toContain("opacity-0");
+  expect(lg.className).toContain("invisible");
+
+  // Out and back in: the `lg` shows again at four, and the full file is shown
+  // at once at three rather than waiting on a load it already had.
+  await press("-");
+  expect(lg.className).not.toContain("invisible");
+  await press("+");
+  expect(cards()[0].querySelectorAll("img")[1].className).not.toContain(
+    "opacity-0",
+  );
+});
+
 test("the lightbox draws the lg thumbnail under the full file, shaped by the Dimensions", async () => {
   answer = () => ({
     ...page([]),
@@ -1700,9 +1757,6 @@ test("the lightbox draws the lg thumbnail under the full file, shaped by the Dim
     ],
   });
   await renderInApp(<DiscoverView />);
-  // The cards only ever draw `lg`, and never touch the full-file host.
-  expect(fullFiles()).toEqual([]);
-
   await openOn(cards()[0]);
 
   // Never blank: the card's own thumbnail paints until the full file loads.

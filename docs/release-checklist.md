@@ -174,6 +174,9 @@ release that looks like it has a broken thumbnail pipeline.
       from `th.wallhaven.cc`. No card shows **Couldn't load preview** while
       the machine is online. See
       [ADR 0053](adr/0053-discover-thumbnails-load-straight-from-wallhaven.md).
+      At the starting three columns each card sharpens as its full file from
+      `w.wallhaven.cc` lands; press `-` to four and the cards stay on the
+      thumbnail, with no blank card on the way in or out.
       Then press `Enter` on a card: the lightbox opens on its thumbnail, and
       the full file from `w.wallhaven.cc` replaces it. Step with `→` a few
       times; each Result sharpens the same way. See
