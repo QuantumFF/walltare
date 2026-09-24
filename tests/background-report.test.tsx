@@ -532,3 +532,153 @@ test("a pass the curator cancelled says nothing either", async () => {
   // not something anyone acts on.
   expect(toast()).toBeNull();
 });
+
+// Discover's downloads (ADR 0051). The batch's report ranks between the two
+// above, and its ending is transient when every file landed and pinned when
+// any did not.
+
+/** One file done, as `download-progress` carries it. */
+function fileDone(total: number, landed: number, failed: number) {
+  return emit("download-progress", {
+    total,
+    landed,
+    failed,
+    item: {
+      wallhaven_id: "qrow67",
+      outcome: failed > 0 ? { kind: "failed", message: "gone" } : { kind: "landed" },
+    },
+  });
+}
+
+test("a batch of downloads counts its files, and draws a bar once it has a total", async () => {
+  await openApp();
+
+  await fileDone(3, 1, 0);
+
+  expect(toast()?.title).toBe("Downloading… 1 of 3");
+  expect(bar()?.getAttribute("aria-valuenow")).toBe("33");
+  // Nothing on Settings cancels a download, so the report offers no route
+  // there, only the close.
+  expect(actionButton()).toBeNull();
+  expect(closeButton()).not.toBeNull();
+});
+
+test("a download reports above the thumbnail pass, which comes back when it ends", async () => {
+  freezeClock();
+  await openApp();
+  await emit("pregen-progress", { done: 12, total: 412 });
+
+  await fileDone(2, 1, 0);
+  expect(toast()?.title).toBe("Downloading… 1 of 2");
+
+  // The pass carries on underneath rather than being dropped: nothing about a
+  // download restarts it, the way a scan's ending does.
+  await emit("pregen-progress", { done: 13, total: 412 });
+  await fileDone(2, 2, 0);
+  await emit("download-complete", {
+    total: 2,
+    landed: 2,
+    failed: 0,
+    first_error: null,
+  });
+  expect(toast()?.title).toBe("2 wallpapers downloaded");
+
+  await runOut(LIFETIME);
+  expect(toast()?.title).toBe("Preparing thumbnails… 13 of 412");
+});
+
+test("a download running during a scan reports below it", async () => {
+  await openApp();
+  await emit("scan-progress", { scanned: 1536, added: 212 });
+
+  await fileDone(4, 1, 0);
+
+  expect(toast()?.title).toBe("Scanning… 1,536 files, 212 new");
+  expect(toastCount()).toBe(1);
+
+  await emit("scan-failed", { message: "The library root is gone." });
+  await click(closeButton()!);
+
+  // The scan is over and its ending read, so the batch underneath is what the
+  // slot has left to say.
+  expect(toast()?.title).toBe("Downloading… 1 of 4");
+});
+
+test("a batch where every file landed ends transient, saying when it sent the Round back", async () => {
+  freezeClock();
+  mockCommand("get_settings", () => settings({ library_root: "/pics" }));
+  mockCommand("wallhaven_search", () => ({
+    results: [
+      {
+        id: "qrow67",
+        url: "https://wallhaven.cc/w/qrow67",
+        short_url: "https://whvn.cc/qrow67",
+        views: 1,
+        favorites: 1,
+        source: "",
+        purity: "sfw",
+        category: "anime",
+        dimension_x: 3840,
+        dimension_y: 2160,
+        resolution: "3840x2160",
+        ratio: "1.78",
+        file_size: 1000,
+        file_type: "image/png",
+        created_at: "2026-09-02 17:01:46",
+        colors: [],
+        mark: "unmarked",
+        thumbs: {
+          large: "https://th.wallhaven.cc/lg/qr/qrow67.jpg",
+          original: "https://th.wallhaven.cc/orig/qr/qrow67.jpg",
+          small: "https://th.wallhaven.cc/small/qr/qrow67.jpg",
+        },
+      },
+    ],
+    meta: { current_page: 1, last_page: 1, per_page: 24, total: 1, seed: null },
+  }));
+  mockCommand("wallhaven_download", () => null);
+  await openApp();
+  await click(tab("Discover"));
+
+  // Round 3 when the click was made, and Round 1 once the file has landed:
+  // a wallpaper with no comparisons sends the library back (ADR 0008).
+  await click(
+    document.querySelector<HTMLElement>('button[aria-label^="Download"]')!,
+  );
+  mockCommand("get_stats", () => stats({ round: 1 }));
+  await fileDone(1, 1, 0);
+  await emit("download-complete", {
+    total: 1,
+    landed: 1,
+    failed: 0,
+    first_error: null,
+  });
+
+  expect(toast()).toEqual({
+    title: "1 wallpaper downloaded",
+    description: "Back to Round 1. The new wallpapers have no comparisons yet.",
+  });
+
+  await runOut(LIFETIME);
+  expect(toast()).toBeNull();
+});
+
+test("a batch with any failure ends pinned, with the first error", async () => {
+  freezeClock();
+  await openApp();
+  await fileDone(5, 3, 2);
+
+  await emit("download-complete", {
+    total: 5,
+    landed: 3,
+    failed: 2,
+    first_error: "Wallhaven's image host refused the file (HTTP 404).",
+  });
+
+  expect(toast()).toEqual({
+    title: "Couldn't download 2 of 5",
+    description: "Wallhaven's image host refused the file (HTTP 404).",
+  });
+  await runOut(LIFETIME * 10);
+  expect(toast()?.title).toBe("Couldn't download 2 of 5");
+});

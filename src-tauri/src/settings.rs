@@ -854,6 +854,17 @@ pub fn discover_filters(conn: &Connection) -> Result<DiscoverFilters, AppError> 
     Ok(resolve_filters(&stored(conn)?))
 }
 
+/// The Download folder and the Library root, both as written, for a download
+/// that resolves the one against the other as they stand at that moment
+/// (ADR 0051).
+///
+/// Neither default depends on the Screen, so no detected monitor is needed to
+/// read them.
+pub fn download_paths(conn: &Connection) -> Result<(String, String), AppError> {
+    let settings = resolve(&stored(conn)?, Detected::from_monitor(None));
+    Ok((settings.download_folder, settings.library_root))
+}
+
 /// Writes one row, or deletes it when `value` is what the key means with no row.
 ///
 /// The delete is the only reset the app has, and the reason most keys need no

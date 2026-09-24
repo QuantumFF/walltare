@@ -1,7 +1,9 @@
 import { DiscoverView } from "@/components/DiscoverView";
+import { useAppEvent, type AppEvent } from "@/context/AppEventsContext";
 import {
   WALLHAVEN_COLOURS,
   type AppError,
+  type DownloadOutcome,
   type SearchPage,
   type SearchParams,
   type MarkedResult,
@@ -18,9 +20,10 @@ import {
   press,
   renderInApp,
   settings,
+  stats,
   viewportWidth,
 } from "./fixtures";
-import { mockCommand } from "./ipc-mocks";
+import { emitEvent, mockCommand } from "./ipc-mocks";
 
 // Discover mocks `wallhaven_search` at the IPC boundary and nothing below it:
 // what the page sends is what the backend would be asked, and what it renders
@@ -88,13 +91,21 @@ async function chooseRatio(name: string) {
   await press("Enter", { target: screen.getByRole("option", { name }) });
 }
 
+/** Every download the page asked for, in order, as the wire carries it. */
+let downloads: string[][];
+
 beforeEach(() => {
   searches = [];
+  downloads = [];
   answer = () => page(["qrow67", "jedzym"]);
   mockBootedApp();
   mockCommand("wallhaven_search", (args) => {
     searches.push(args.params);
     return answer(args.params);
+  });
+  mockCommand("wallhaven_download", (args) => {
+    downloads.push(args.ids);
+    return null;
   });
 });
 
@@ -884,4 +895,310 @@ test("a resize while collapsed measures the expanded header again", async () => 
   } finally {
     globalThis.ResizeObserver = Real;
   }
+});
+
+// Downloading. The backend is mocked at `wallhaven_download` and its two
+// events are emitted the way download.rs emits them, so what a card says is
+// what the page reads off the wire (#343).
+
+/** A library with a root, which is what lets anything be downloaded. */
+function withLibraryRoot() {
+  mockCommand("get_settings", () => settings({ library_root: "/pics" }));
+}
+
+const caption = (card: Element) =>
+  card.querySelector("figcaption")?.textContent ?? "";
+const downloadButton = (card: Element) =>
+  card.querySelector<HTMLElement>('button[aria-label^="Download"]');
+const picture = (card: Element) => card.querySelector("img") as HTMLElement;
+
+/** The toast that is up: its title and description, or `null`. */
+function toast(): { title: string; description: string | null } | null {
+  const root = document.querySelector("[data-slot='toast']");
+  if (!root) return null;
+  return {
+    title: root.querySelector("[data-slot='toast-title']")?.textContent ?? "",
+    description:
+      root.querySelector("[data-slot='toast-description']")?.textContent ?? null,
+  };
+}
+
+/** One file done, as `download-progress` carries it. */
+async function fileDone(
+  id: string,
+  outcome: DownloadOutcome,
+  counts = { total: 1, landed: 0, failed: 0 },
+) {
+  await act(async () => {
+    emitEvent("download-progress", {
+      ...counts,
+      item: { wallhaven_id: id, outcome },
+    });
+  });
+  await flush();
+}
+
+test("Download queues the Result, and its caption follows the file into the library", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+
+  await click(downloadButton(first)!);
+  await click(downloadButton(second)!);
+
+  // One at a time, in the order asked: the first is on the wire and the
+  // second waits behind it.
+  expect(downloads).toEqual([["qrow67"], ["jedzym"]]);
+  expect(caption(first)).toContain("Downloading");
+  expect(caption(second)).toContain("Queued");
+  expect(downloadButton(first)).toBeNull();
+  expect(downloadButton(second)).toBeNull();
+
+  await fileDone("qrow67", { kind: "landed" }, { total: 2, landed: 1, failed: 0 });
+
+  // Added, and an In library card from here on: dimmed, and nothing to
+  // download again.
+  expect(caption(first)).toContain("Added to library");
+  expect(first.getAttribute("aria-label")).toContain("Added to library");
+  expect(picture(first).className).toContain("grayscale");
+  expect(downloadButton(first)).toBeNull();
+  expect(caption(second)).toContain("Downloading");
+});
+
+test("a failed file reads Failed, with the reason as its tooltip, and can be downloaded again", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+  await click(downloadButton(first)!);
+
+  await fileDone(
+    "qrow67",
+    { kind: "failed", message: "The download broke off (connection reset)." },
+    { total: 1, landed: 0, failed: 1 },
+  );
+
+  const failed = first.querySelector('[data-slot="result-download"]');
+  expect(failed?.textContent).toBe("Failed");
+  expect(failed?.getAttribute("title")).toBe(
+    "The download broke off (connection reset).",
+  );
+  // Nothing reached the library, so the card is still an unmarked one.
+  expect(picture(first).className).not.toContain("grayscale");
+
+  await click(downloadButton(first)!);
+
+  expect(downloads).toEqual([["qrow67"], ["qrow67"]]);
+  expect(caption(first)).toContain("Downloading");
+  expect(caption(first)).not.toContain("Failed");
+});
+
+test("D downloads the Result under the cursor, and leaves a marked one alone", async () => {
+  withLibraryRoot();
+  answer = () => ({
+    ...page([]),
+    results: [result("fresh1"), result("inlib1", { mark: "in_library" })],
+  });
+  await renderInApp(<DiscoverView />);
+  const [fresh, held] = cards();
+
+  await act(async () => {
+    (fresh as HTMLElement).focus();
+  });
+  await press("d");
+
+  expect(downloads).toEqual([["fresh1"]]);
+  expect(caption(fresh)).toContain("Downloading");
+
+  // A second press on the one already downloading asks for nothing more.
+  await press("D");
+  expect(downloads).toEqual([["fresh1"]]);
+
+  // A marked Result offers no Download, so its key is not answered at all.
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(held);
+  const event = new KeyboardEvent("keydown", {
+    key: "d",
+    bubbles: true,
+    cancelable: true,
+  });
+  await act(async () => {
+    held.dispatchEvent(event);
+  });
+  expect(event.defaultPrevented).toBe(false);
+  expect(downloads).toEqual([["fresh1"]]);
+});
+
+test("with no Library root, Download is refused up front and opens the root's field", async () => {
+  const asked: { focus: string | null } = { focus: null };
+  function FocusProbe() {
+    asked.focus = useApp().focus;
+    return null;
+  }
+  await renderInApp(
+    <>
+      <FocusProbe />
+      <DiscoverView />
+    </>,
+  );
+  const [first] = cards();
+
+  // Browsing still works; only the download says what it needs.
+  expect(caption(first)).toContain("Choose a library root to download");
+  expect(downloadButton(first)).toBeNull();
+
+  await click(screen.getAllByRole("button", { name: /choose a library root/i })[0]);
+
+  expect(downloads).toEqual([]);
+  expect(currentView()).toBe("settings");
+  expect(asked.focus).toBe("library_root");
+});
+
+test("a download refused at the click says why, and the card offers Download again", async () => {
+  withLibraryRoot();
+  mockCommand("wallhaven_download", () =>
+    failure(
+      "invalid_path",
+      "The library root /pics is not there, so nothing can be downloaded",
+    ),
+  );
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+
+  await click(downloadButton(first)!);
+
+  expect(toast()).toEqual({
+    title: "Couldn't download",
+    description:
+      "The library root /pics is not there, so nothing can be downloaded",
+  });
+  expect(downloadButton(first)).not.toBeNull();
+  expect(caption(first)).not.toContain("Downloading");
+
+  // Nothing was queued, so no report of a batch ever opened underneath.
+  await click(
+    document.querySelector<HTMLElement>("[data-slot='toast-close']")!,
+  );
+  expect(toast()).toBeNull();
+});
+
+test("a batch's ending leaves alone a Result clicked after the backend closed it", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  await click(downloadButton(first)!);
+  await fileDone("qrow67", { kind: "landed" });
+
+  // The backend has already closed that batch when this click reaches it, so
+  // its ending arrives while the second file is on the wire.
+  await click(downloadButton(second)!);
+  await act(async () => {
+    emitEvent("download-complete", {
+      total: 1,
+      landed: 1,
+      failed: 0,
+      first_error: null,
+    });
+  });
+  await flush();
+
+  expect(caption(second)).toContain("Downloading");
+  expect(downloadButton(second)).toBeNull();
+});
+
+test("a batch clicked before the last one's ending still says when it sent the Round back", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  // Round 3 at the first click, and the first file fails, so nothing moves.
+  await click(downloadButton(first)!);
+  await fileDone(
+    "qrow67",
+    { kind: "failed", message: "gone" },
+    { total: 1, landed: 0, failed: 1 },
+  );
+  await click(downloadButton(second)!);
+  await act(async () => {
+    emitEvent("download-complete", {
+      total: 1,
+      landed: 0,
+      failed: 1,
+      first_error: "gone",
+    });
+  });
+  await flush();
+
+  // The second batch started without a click of its own being first, and is
+  // still judged against the Round it started from.
+  mockCommand("get_stats", () => stats({ round: 1 }));
+  await fileDone("jedzym", { kind: "landed" });
+  await act(async () => {
+    emitEvent("download-complete", {
+      total: 1,
+      landed: 1,
+      failed: 0,
+      first_error: null,
+    });
+  });
+  await flush();
+
+  expect(toast()).toEqual({
+    title: "1 wallpaper downloaded",
+    description: "Back to Round 1. The new wallpapers have no comparisons yet.",
+  });
+});
+
+test("a new search drops the captions of downloads it replaced", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  await click(downloadButton(cards()[0])!);
+  await click(downloadButton(cards()[1])!);
+  await fileDone("qrow67", { kind: "landed" });
+  await fileDone("jedzym", { kind: "failed", message: "gone" });
+
+  // The search marks the landed one itself, and the failed one is a plain
+  // card again.
+  answer = () => ({
+    ...page([]),
+    results: [result("qrow67", { mark: "in_library" }), result("jedzym")],
+  });
+  await act(async () => {
+    fireEvent.submit(screen.getByRole("search"));
+  });
+  await flush();
+
+  const [held, fresh] = cards();
+  expect(caption(held)).toContain("In library");
+  expect(caption(held)).not.toContain("Added to library");
+  expect(caption(fresh)).not.toContain("Failed");
+  expect(downloadButton(fresh)).not.toBeNull();
+});
+
+test("each file that lands refreshes the library and the headline, as a scan would", async () => {
+  withLibraryRoot();
+  const heard: AppEvent[] = [];
+  function Listener() {
+    useAppEvent((event) => heard.push(event));
+    return null;
+  }
+  await renderInApp(
+    <>
+      <Listener />
+      <DiscoverView />
+    </>,
+  );
+  mockCommand("get_stats", () => stats({ round: 1, total_wallpapers: 13 }));
+  await click(downloadButton(cards()[0])!);
+
+  await fileDone("qrow67", { kind: "landed" });
+
+  expect(heard).toEqual([
+    { type: "library-scanned", added: 1 },
+    { type: "stats-changed", stats: stats({ round: 1, total_wallpapers: 13 }) },
+  ]);
+
+  // A file that failed changed nothing, and says nothing to the library.
+  heard.length = 0;
+  await click(downloadButton(cards()[1])!);
+  await fileDone("jedzym", { kind: "failed", message: "gone" });
+  expect(heard).toEqual([]);
 });

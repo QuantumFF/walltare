@@ -2,6 +2,7 @@ import App from "@/App";
 import { ToastSurface } from "@/components/ToastSurface";
 import { AppProvider, useApp } from "@/context/AppContext";
 import { AppEventsProvider } from "@/context/AppEventsContext";
+import { DownloadRunProvider } from "@/context/DownloadRunContext";
 import { KeyboardHandoffProvider } from "@/context/KeyboardHandoffContext";
 import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { ScanRunProvider } from "@/context/ScanRunContext";
@@ -453,14 +454,16 @@ export async function renderInApp(ui: ReactNode) {
     <AppProvider>
       <AppEventsProvider>
         <ScanRunProvider>
-          <KeyboardHandoffProvider>
-            <ToastSurface>
-              <LightboxHostProvider value={LIGHTBOX_HOST}>
-                <ViewProbe />
-                {ui}
-              </LightboxHostProvider>
-            </ToastSurface>
-          </KeyboardHandoffProvider>
+          <DownloadRunProvider>
+            <KeyboardHandoffProvider>
+              <ToastSurface>
+                <LightboxHostProvider value={LIGHTBOX_HOST}>
+                  <ViewProbe />
+                  {ui}
+                </LightboxHostProvider>
+              </ToastSurface>
+            </KeyboardHandoffProvider>
+          </DownloadRunProvider>
         </ScanRunProvider>
       </AppEventsProvider>
     </AppProvider>,

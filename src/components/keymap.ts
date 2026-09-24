@@ -344,18 +344,30 @@ export const STATUS_KEYS: ActionTable<Wallpaper, TransitionAction> = {
   offers: (wallpaper) => STATUS_ACTIONS[wallpaper.status],
 };
 
+/** What Discover does to a Result. */
+export type ResultAction = "download";
+
 /**
- * The keys Discover acts on a Result with: none yet.
+ * The keys Discover acts on a Result with: `D` downloads the cursor's.
  *
- * `P` picks and `D` downloads, and each arrives with the ticket that gives it
- * something to do (#343, #344). Nor does `Enter` open a Result until the
- * lightbox does (#345), so `opens` is `false` until then. Until then the grid
- * answers the shared navigation and density keys alone, and the shortcuts
- * dialog lists nothing it does not.
+ * Only an unmarked Result offers it, the same rule the card's Download button
+ * renders from: one the library already holds, or one the curator rejected, is
+ * not downloaded again (ADR 0050). `P` picks when Picks arrive (#344), and `D`
+ * then downloads them when there are any. Nor does `Enter` open a Result until
+ * the lightbox does (#345), so `opens` is `false` until then, and the
+ * shortcuts dialog lists nothing the grid does not answer.
  */
-export const RESULT_KEYS: ActionTable<MarkedResult, never> = {
-  bindings: [],
-  offers: () => [],
+export const RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
+  bindings: [
+    {
+      keys: ["d"],
+      printed: "D",
+      act: ["download"],
+      on: ["grid"],
+      listed: { listing: "Download the selected Result" },
+    },
+  ],
+  offers: (result) => (result.mark === "unmarked" ? ["download"] : []),
   opens: false,
 };
 

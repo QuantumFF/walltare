@@ -1,4 +1,5 @@
 mod db;
+mod download;
 mod download_folder;
 mod error;
 mod missing;
@@ -427,6 +428,48 @@ async fn set_wallhaven_key(
     .await
 }
 
+/// Queues Results for download by id, and answers once they are queued.
+///
+/// Every refusal is [`download::request`]'s and happens before anything is
+/// queued: an id no search served, and a Download folder that cannot be used.
+/// The files then land one at a time on the queue's own thread, reported on
+/// `download-progress` and `download-complete`, and ids asked for while a batch
+/// runs join it (ADR 0051, ADR 0054). Off the main thread, because checking the
+/// folder writes a probe into it.
+#[tauri::command]
+async fn wallhaven_download(ids: Vec<String>, app: AppHandle) -> Result<(), error::AppError> {
+    off_main_thread(app, move |app| {
+        let start = download::request(
+            &app.state::<Db>(),
+            &app.state::<wallhaven::Wallhaven>(),
+            &app.state::<download::Downloads>(),
+            &ids,
+        )?;
+        if start {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                app.state::<download::Downloads>()
+                    .run(&app.state::<Db>(), &DownloadEvents(&app));
+            });
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// The real download report: the two events the frontend listens for.
+struct DownloadEvents<'a>(&'a AppHandle);
+
+impl download::Report for DownloadEvents<'_> {
+    fn progress(&self, progress: download::Progress) {
+        let _ = self.0.emit("download-progress", progress);
+    }
+
+    fn complete(&self, complete: download::Complete) {
+        let _ = self.0.emit("download-complete", complete);
+    }
+}
+
 /// Every wallpaper matching a named filter, in a named ordering, at most `limit`
 /// of them.
 ///
@@ -684,6 +727,7 @@ pub fn run() {
                 wallhaven::API_BASE,
                 wallhaven::API_TIMEOUTS,
             ));
+            app.manage(download::Downloads::new(download::DOWNLOAD_TIMEOUTS));
             serving::start(app.handle());
             Ok(())
         })
@@ -720,7 +764,8 @@ pub fn run() {
             get_settings,
             set_setting,
             wallhaven_search,
-            set_wallhaven_key
+            set_wallhaven_key,
+            wallhaven_download
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

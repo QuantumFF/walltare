@@ -69,9 +69,10 @@ export type AppEvent =
   /** The Round, the counts and the fractions, all of them, as the backend just reported them. */
   | { type: "stats-changed"; stats: Stats }
   /**
-   * Wallpapers a scan added. Zero is published too and says something worth
-   * knowing: a scan only ever inserts, so a scan that added nothing cannot have
-   * changed which rows exist, and nothing owes a refetch for it.
+   * Wallpapers a scan added, or the one a download landed (ADR 0051). Zero is
+   * published too and says something worth knowing: a scan only ever inserts,
+   * so a scan that added nothing cannot have changed which rows exist, and
+   * nothing owes a refetch for it.
    */
   | { type: "library-scanned"; added: number };
 

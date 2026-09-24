@@ -86,17 +86,11 @@ pub(crate) fn check_with(
 /// way the folder cannot be used refuses with `InvalidPath`, carrying the
 /// sentence the Settings field prints, and a malformed path with
 /// `InvalidPathSyntax`.
-///
-/// Nothing calls it yet: the download itself arrives with
-/// [#343](https://github.com/QuantumFF/walltare/issues/343), and this is the
-/// half of the pair it will call.
-#[allow(dead_code)]
 pub fn prepare(written: &str, library_root: &str) -> Result<PathBuf, AppError> {
     prepare_with(written, library_root, |name| std::env::var(name).ok())
 }
 
 /// The body of [`prepare`], with the environment passed in.
-#[allow(dead_code)]
 pub(crate) fn prepare_with(
     written: &str,
     library_root: &str,
