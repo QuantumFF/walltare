@@ -6,6 +6,17 @@ import { RESULT_KEYS } from "@/components/keymap";
 import type { SelectionHandle } from "@/components/selection";
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSwatchItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -14,22 +25,36 @@ import {
 } from "@/components/ui/select";
 import { useApp } from "@/context/AppContext";
 import {
+  useHandOffOnPointerPress,
   useKeyboardHandoff,
   useKeyboardSurface,
 } from "@/context/KeyboardHandoffContext";
 import {
   client,
   isAppError,
+  type Categories,
   type DiscoverFilters,
   type Mark,
+  type MarkedResult,
+  type Purity,
   type Resolution,
   type SearchPage,
   type SearchParams,
-  type MarkedResult,
+  type Sorting,
+  type TopRange,
 } from "@/lib/client";
 import { bytes } from "@/lib/copy";
 import { cn } from "@/lib/utils";
-import { Heart, ImageOff, Loader2, Search, SearchX } from "lucide-react";
+import {
+  ArrowDownWideNarrow,
+  ArrowUpNarrowWide,
+  ChevronDown,
+  Heart,
+  ImageOff,
+  Loader2,
+  Search,
+  SearchX,
+} from "lucide-react";
 import {
   memo,
   useCallback,
@@ -37,6 +62,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 
 /**
@@ -65,6 +91,78 @@ const COMMON_RATIOS = ["16x9", "16x10", "21x9", "32x9", "9x16"];
 
 /** The pill's value for Any ratio, which no ratio can be spelled as. */
 const ANY_RATIO = "any";
+
+/** Wallhaven's seven sort orders, in the order its own menu lists them. */
+const SORTINGS: { value: Sorting; label: string }[] = [
+  { value: "date_added", label: "Date added" },
+  { value: "relevance", label: "Relevance" },
+  { value: "random", label: "Random" },
+  { value: "views", label: "Views" },
+  { value: "favorites", label: "Favourites" },
+  { value: "toplist", label: "Toplist" },
+  { value: "hot", label: "Hot" },
+];
+
+/** How far back a toplist reaches, shortest first. */
+const TOP_RANGES: TopRange[] = ["1d", "3d", "1w", "1M", "3M", "6M", "1y"];
+
+const CATEGORIES: { value: keyof Categories; label: string }[] = [
+  { value: "general", label: "General" },
+  { value: "anime", label: "Anime" },
+  { value: "people", label: "People" },
+];
+
+const PURITIES: { value: keyof Purity; label: string }[] = [
+  { value: "sfw", label: "SFW" },
+  { value: "sketchy", label: "Sketchy" },
+  { value: "nsfw", label: "NSFW" },
+];
+
+/**
+ * Wallhaven's 29 colours, the only values its `colors` parameter takes, in its
+ * own palette's order. Mirrors `wallhaven::COLOURS`, which refuses anything
+ * else (ADR 0054).
+ */
+const COLOURS = [
+  "660000",
+  "990000",
+  "cc0000",
+  "cc3333",
+  "ea4c88",
+  "993399",
+  "663399",
+  "333399",
+  "0066cc",
+  "0099cc",
+  "66cccc",
+  "77cc33",
+  "669900",
+  "336600",
+  "666600",
+  "999900",
+  "cccc33",
+  "ffff00",
+  "ffcc33",
+  "ff9900",
+  "ff6600",
+  "cc6633",
+  "996633",
+  "663300",
+  "000000",
+  "999999",
+  "cccccc",
+  "ffffff",
+  "424153",
+];
+
+/** The Colour pill's value for Any colour, which no colour is spelled as. */
+const ANY_COLOUR = "any";
+
+/**
+ * The sticky strip's height: a PageBar's `h-11`, so a collapsed header is the
+ * same fixed bar every other page has under the chrome (ADR 0015).
+ */
+const STRIP_HEIGHT = 44;
 
 function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
@@ -125,30 +223,39 @@ function searchFailure(error: unknown): string {
   return "Couldn't search Wallhaven.";
 }
 
-/** What the curator last asked for: the search box and the ratio pill. */
-interface Asked {
+/**
+ * What the curator last asked for: the search box and every pill.
+ *
+ * The five remembered filters, which a successful search records, and three
+ * the backend never remembers: the words, the ratio and the colour describe
+ * what the curator is looking for right now (ADR 0054).
+ */
+interface Asked extends DiscoverFilters {
   q: string;
   /** `null` is Any ratio. */
   ratio: string | null;
+  /** One of `COLOURS`, or `null` for Any colour. */
+  colour: string | null;
 }
 
-/** The request for one page of `asked`, under the remembered filters. */
+/** The request for one page of `asked`. */
 function paramsFor(
   asked: Asked,
-  filters: DiscoverFilters,
   page?: number,
   seed?: string | null,
 ): SearchParams {
   return {
     q: asked.q,
-    categories: filters.categories,
-    purity: filters.purity,
-    sorting: filters.sorting,
-    order: filters.order,
+    categories: asked.categories,
+    purity: asked.purity,
+    sorting: asked.sorting,
+    order: asked.order,
     // Only a toplist reads a range, and the backend refuses one sent with any
-    // other sort rather than let it be ignored (ADR 0054).
-    top_range: filters.sorting === "toplist" ? filters.top_range : undefined,
+    // other sort rather than let it be ignored (ADR 0054). The pill keeps it
+    // for when the curator comes back to Toplist.
+    top_range: asked.sorting === "toplist" ? asked.top_range : undefined,
     ratios: asked.ratio ? [asked.ratio] : undefined,
+    colors: asked.colour ?? undefined,
     page,
     seed: seed ?? undefined,
   };
@@ -173,7 +280,10 @@ interface Failure {
  * Discover: Wallhaven's search, inside the app (#339).
  *
  * The header is a large search box that takes Wallhaven's own query syntax
- * verbatim and a Ratio pill defaulting to the Screen's, and the Results are
+ * verbatim and the filter pills (#340): Ratio, defaulting to the Screen's, Sort
+ * with its Order beside it, Categories, Purity and Colour. Each change is a new
+ * search. Once the page scrolls, the header collapses into a sticky strip that
+ * holds both halves, so the filters stay within reach. The Results are
  * Library's grid model over cards with their facts under the picture. One page
  * at a time, by **Load more**: every API call is one the curator asked for, and
  * the page keeps each page it has loaded, since the backend caches nothing
@@ -182,8 +292,9 @@ interface Failure {
  * It searches on its first visit, with the filters the last successful search
  * left remembered, so it never opens blank. The shell keeps it mounted from
  * then on (ADR 0015), which is what carries the Results, the scroll position
- * and the page count across a trip to another tab. The ratio is the one filter
- * never remembered: each launch starts on the Screen's.
+ * and the page count across a trip to another tab. The ratio and the colour
+ * are never remembered: each launch starts on the Screen's ratio and any
+ * colour.
  *
  * The grid mounts every card rather than windowing, because the header scrolls
  * with the Results and a window is measured against a scroll box it starts at
@@ -193,15 +304,19 @@ export function DiscoverView() {
   const { view, settings } = useApp();
   const showing = view === "discover";
 
-  // The filters Discover opens with, read once: until the filter pills arrive
-  // they are the remembered ones and nothing on the page changes them.
-  const [filters] = useState(() => settings.discover_filters);
-  // Read once too, so a Screen changed in Settings reaches Discover's ratio on
-  // the next launch rather than re-searching the page under the curator.
+  // Read once, so a Screen changed in Settings reaches Discover's ratio on the
+  // next launch rather than re-searching the page under the curator.
   const [screen] = useState(() => screenRatio(settings.screen));
 
   const [draft, setDraft] = useState("");
-  const [asked, setAsked] = useState<Asked>({ q: "", ratio: screen });
+  // The pills start from the remembered filters, read once: from then on the
+  // pills are what says them, and the backend records each successful search's.
+  const [asked, setAsked] = useState<Asked>(() => ({
+    ...settings.discover_filters,
+    q: "",
+    ratio: screen,
+    colour: null,
+  }));
   const [shown, setShown] = useState<Shown | null>(null);
   const [pending, setPending] = useState<"first" | "more" | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -214,28 +329,49 @@ export function DiscoverView() {
   // because `display: none` reports an offset of zero (ADR 0015).
   const scrollTop = useRef(0);
 
-  const search = useCallback(
-    async (next: Asked) => {
-      const call = ++latest.current;
-      setAsked(next);
-      setShown(null);
-      setFailure(null);
-      setPending("first");
-      scrollTop.current = 0;
-      if (scroller.current) scroller.current.scrollTop = 0;
-      try {
-        const page = await client.searchWallhaven(paramsFor(next, filters));
-        if (call !== latest.current) return;
-        setShown({ results: page.results, meta: page.meta });
-      } catch (error) {
-        if (call !== latest.current) return;
-        setFailure({ at: "first", message: searchFailure(error) });
-      } finally {
-        if (call === latest.current) setPending(null);
-      }
-    },
-    [filters],
-  );
+  // The sticky strip. The header collapses once the page has scrolled as far as
+  // the strip would leave of it, and expands again short of that, so the two
+  // shapes swap where they would show the same thing. While collapsed it keeps
+  // its expanded height in the flow as a margin: the Results never move as it
+  // swaps, and a scroll offset cannot land either side of the line because of
+  // the swap itself.
+  const header = useRef<HTMLElement | null>(null);
+  // Measured while expanded, since collapsed it is the strip's.
+  const expandedHeight = useRef(0);
+  // What the collapsed header keeps in the flow below itself, or `null` while
+  // it is expanded.
+  const [reserved, setReserved] = useState<number | null>(null);
+  const collapsed = reserved !== null;
+  const followScroll = useCallback(() => {
+    const at = scroller.current?.scrollTop ?? 0;
+    scrollTop.current = at;
+    if (header.current?.dataset.collapsed === "false") {
+      expandedHeight.current = header.current.offsetHeight;
+    }
+    const reserve = Math.max(0, expandedHeight.current - STRIP_HEIGHT);
+    setReserved(at > reserve ? reserve : null);
+  }, []);
+
+  const search = useCallback(async (next: Asked) => {
+    const call = ++latest.current;
+    setAsked(next);
+    setShown(null);
+    setFailure(null);
+    setPending("first");
+    scrollTop.current = 0;
+    if (scroller.current) scroller.current.scrollTop = 0;
+    setReserved(null);
+    try {
+      const page = await client.searchWallhaven(paramsFor(next));
+      if (call !== latest.current) return;
+      setShown({ results: page.results, meta: page.meta });
+    } catch (error) {
+      if (call !== latest.current) return;
+      setFailure({ at: "first", message: searchFailure(error) });
+    } finally {
+      if (call === latest.current) setPending(null);
+    }
+  }, []);
 
   const loadMore = useCallback(async () => {
     if (!shown) return;
@@ -244,7 +380,7 @@ export function DiscoverView() {
     setPending("more");
     try {
       const page = await client.searchWallhaven(
-        paramsFor(asked, filters, shown.meta.current_page + 1, shown.meta.seed),
+        paramsFor(asked, shown.meta.current_page + 1, shown.meta.seed),
       );
       if (call !== latest.current) return;
       // Wallhaven can hand a Result across two pages when one is added between
@@ -264,7 +400,7 @@ export function DiscoverView() {
     } finally {
       if (call === latest.current) setPending(null);
     }
-  }, [asked, filters, shown]);
+  }, [asked, shown]);
 
   // The first visit's search. Once, however often the effect runs: StrictMode
   // runs it twice, and a second call would spend a second request.
@@ -278,15 +414,18 @@ export function DiscoverView() {
   useLayoutEffect(() => {
     if (!showing || !scroller.current) return;
     scroller.current.scrollTop = scrollTop.current;
-  }, [showing]);
+    followScroll();
+  }, [showing, followScroll]);
 
   const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
     null,
   );
   useKeyboardSurface("discover", grid);
 
-  const handOff = useKeyboardHandoff();
-  const ratioByPointer = useRef(false);
+  const ratioHandOff = usePillHandOff();
+  const handOffOnPointerPress = useHandOffOnPointerPress();
+  const refine = (change: Partial<Asked>) =>
+    void search({ ...asked, ...change });
 
   const results = shown?.results ?? [];
   const meta = shown?.meta;
@@ -302,86 +441,131 @@ export function DiscoverView() {
     <div
       ref={scroller}
       data-slot="discover-page"
-      onScroll={() => {
-        scrollTop.current = scroller.current?.scrollTop ?? 0;
-      }}
+      onScroll={followScroll}
       className="min-h-0 flex-1 overflow-y-auto"
     >
       <h1 className="sr-only">Discover</h1>
 
-      <div className="mx-auto flex max-w-3xl flex-col items-center gap-3 px-4 pt-8 pb-6">
-        <form
-          role="search"
-          className="relative w-full"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void search({ ...asked, q: draft });
-          }}
+      {/* One header in two shapes rather than a strip beside it, so the search
+          box and the pills are the same elements either way and the focus, the
+          caret and an open menu survive the swap. */}
+      <header
+        ref={header}
+        data-slot="discover-header"
+        data-collapsed={collapsed}
+        style={collapsed ? { marginBottom: reserved } : undefined}
+        className={cn(
+          collapsed &&
+            "sticky top-0 z-20 h-11 border-b border-border/60 bg-background/95 backdrop-blur",
+        )}
+      >
+        <div
+          className={cn(
+            "mx-auto flex gap-3 px-4",
+            collapsed
+              ? "h-full items-center"
+              : "max-w-3xl flex-col items-center pt-8 pb-6",
+          )}
         >
-          <Search
-            aria-hidden
-            className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-muted-foreground"
-          />
-          <input
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            aria-label="Search Wallhaven"
-            placeholder="Search Wallhaven: tags, +tag -tag, id:, like:"
-            // Wallhaven's syntax is the curator's own words, so nothing here
-            // corrects them.
-            spellCheck={false}
-            autoComplete="off"
-            className="h-12 w-full rounded-full border border-border bg-card pr-5 pl-11 text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          />
-        </form>
+          <form
+            role="search"
+            className={cn("relative", collapsed ? "w-72 shrink-0" : "w-full")}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void search({ ...asked, q: draft });
+            }}
+          >
+            <Search
+              aria-hidden
+              className={cn(
+                "pointer-events-none absolute top-1/2 size-4 -translate-y-1/2 text-muted-foreground",
+                collapsed ? "left-3" : "left-4",
+              )}
+            />
+            <input
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              aria-label="Search Wallhaven"
+              placeholder="Search Wallhaven: tags, +tag -tag, id:, like:"
+              // Wallhaven's syntax is the curator's own words, so nothing here
+              // corrects them.
+              spellCheck={false}
+              autoComplete="off"
+              className={cn(
+                "w-full rounded-full border border-border bg-card text-sm shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                collapsed ? "h-8 pr-4 pl-9" : "h-12 pr-5 pl-11",
+              )}
+            />
+          </form>
 
-        <div className="flex flex-wrap justify-center gap-2">
-          {/* The Ratio pill: a single choice from a short list, so the same
+          {/* A pill the pointer pressed hands the keyboard back to the grid, as
+            a PageBar's buttons do; the menus do it as they close. */}
+          <div
+            onClick={handOffOnPointerPress}
+            className={cn(
+              "flex gap-2",
+              collapsed
+                ? "min-w-0 flex-nowrap overflow-x-auto py-1"
+                : "flex-wrap justify-center",
+            )}
+          >
+            {/* The Ratio pill: a single choice from a short list, so the same
               Radix list Library's ordering uses, portalled clear of the grid
               whose arrows it would otherwise take (ADR 0019). */}
-          <Select
-            value={asked.ratio ?? ANY_RATIO}
-            onValueChange={(value) =>
-              void search({
-                ...asked,
-                ratio: value === ANY_RATIO ? null : value,
-              })
-            }
-          >
-            <SelectTrigger
-              onPointerDown={() => {
-                ratioByPointer.current = true;
-              }}
-              onKeyDown={() => {
-                ratioByPointer.current = false;
-              }}
-              aria-label="Ratio"
-              size="sm"
-              className="rounded-full text-xs"
+            <Select
+              value={asked.ratio ?? ANY_RATIO}
+              onValueChange={(value) =>
+                void search({
+                  ...asked,
+                  ratio: value === ANY_RATIO ? null : value,
+                })
+              }
             >
-              <SelectValue>{pillLabel(asked.ratio)}</SelectValue>
-            </SelectTrigger>
-            <SelectContent
-              onCloseAutoFocus={(event) => {
-                if (!ratioByPointer.current) return;
-                event.preventDefault();
-                handOff();
-              }}
+              <SelectTrigger
+                {...ratioHandOff.trigger}
+                aria-label="Ratio"
+                size="sm"
+                className="shrink-0 rounded-full text-xs"
+              >
+                <SelectValue>{pillLabel(asked.ratio)}</SelectValue>
+              </SelectTrigger>
+              <SelectContent onCloseAutoFocus={ratioHandOff.onCloseAutoFocus}>
+                {[screen, ...COMMON_RATIOS.filter((r) => r !== screen)].map(
+                  (ratio) => (
+                    <SelectItem key={ratio} value={ratio} className="text-xs">
+                      {pillLabel(ratio)}
+                    </SelectItem>
+                  ),
+                )}
+                <SelectItem value={ANY_RATIO} className="text-xs">
+                  Any ratio
+                </SelectItem>
+              </SelectContent>
+            </Select>
+
+            <SortPill asked={asked} onChange={refine} />
+
+            <button
+              type="button"
+              onClick={() =>
+                refine({ order: asked.order === "desc" ? "asc" : "desc" })
+              }
+              className={PILL}
             >
-              {[screen, ...COMMON_RATIOS.filter((r) => r !== screen)].map(
-                (ratio) => (
-                  <SelectItem key={ratio} value={ratio} className="text-xs">
-                    {pillLabel(ratio)}
-                  </SelectItem>
-                ),
+              {asked.order === "desc" ? (
+                <ArrowDownWideNarrow aria-hidden className="size-3.5" />
+              ) : (
+                <ArrowUpNarrowWide aria-hidden className="size-3.5" />
               )}
-              <SelectItem value={ANY_RATIO} className="text-xs">
-                Any ratio
-              </SelectItem>
-            </SelectContent>
-          </Select>
+              {asked.order === "desc" ? "Descending" : "Ascending"}
+            </button>
+
+            <CategoriesPill asked={asked} onChange={refine} />
+            <PurityPill asked={asked} onChange={refine} />
+            <ColourPill asked={asked} onChange={refine} />
+          </div>
         </div>
-      </div>
+      </header>
 
       {pending === "first" ? (
         <div className="flex justify-center py-16">
@@ -484,6 +668,253 @@ export function DiscoverView() {
         </>
       ) : null}
     </div>
+  );
+}
+
+/** A pill's look, which the Ratio pill's `SelectTrigger` has at `size="sm"`. */
+const PILL =
+  "flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-input bg-transparent pr-2 pl-2.5 text-xs whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-muted dark:bg-input/30 dark:hover:bg-input/50";
+
+/**
+ * Where a pill's menu leaves the keyboard as it closes.
+ *
+ * Opened by the pointer, it goes back to the grid, the way a pressed PageBar
+ * button hands it back; opened by the keyboard, it goes back to the pill, so
+ * `Tab` carries on along the row from where the curator was (ADR 0047).
+ */
+function usePillHandOff() {
+  const handOff = useKeyboardHandoff();
+  const byPointer = useRef(false);
+  return {
+    trigger: {
+      onPointerDown: () => {
+        byPointer.current = true;
+      },
+      onKeyDown: () => {
+        byPointer.current = false;
+      },
+    },
+    onCloseAutoFocus: (event: Event) => {
+      if (!byPointer.current) return;
+      event.preventDefault();
+      handOff();
+    },
+  };
+}
+
+/**
+ * A pill that opens a menu: what it filters by as its name, what it is set to
+ * as its text, then the chevron every pill wears.
+ *
+ * The menu is Radix's, portalled clear of the grid whose arrows it would
+ * otherwise take (ADR 0019), and walked with the arrows inside itself.
+ */
+function Pill({
+  name,
+  label,
+  swatch,
+  className,
+  children,
+}: {
+  name: string;
+  label: string;
+  /** A colour drawn before the label, as the Colour pill's is. */
+  swatch?: string;
+  /** The menu's own box, for one that is not a list. */
+  className?: string;
+  children: ReactNode;
+}) {
+  const handOff = usePillHandOff();
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        {...handOff.trigger}
+        aria-label={name}
+        className={PILL}
+      >
+        {swatch && (
+          <span
+            aria-hidden
+            className="size-3 rounded-full border border-border/60"
+            style={{ background: swatch }}
+          />
+        )}
+        {label}
+        <ChevronDown aria-hidden className="size-4 text-muted-foreground" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        onCloseAutoFocus={handOff.onCloseAutoFocus}
+        className={className}
+      >
+        {children}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+interface PillProps {
+  asked: Asked;
+  onChange: (change: Partial<Asked>) => void;
+}
+
+/**
+ * Sort: all seven of Wallhaven's orders. Choosing Toplist keeps the menu open
+ * on the toplist range, which is picked right there, and the pill says both.
+ */
+function SortPill({ asked, onChange }: PillProps) {
+  const label =
+    asked.sorting === "toplist"
+      ? `Toplist · ${asked.top_range}`
+      : (SORTINGS.find((s) => s.value === asked.sorting)?.label ?? "");
+  return (
+    <Pill name="Sort" label={label}>
+      <DropdownMenuRadioGroup
+        value={asked.sorting}
+        onValueChange={(value) => {
+          if (value !== asked.sorting) onChange({ sorting: value as Sorting });
+        }}
+      >
+        {SORTINGS.map(({ value, label }) => (
+          <DropdownMenuRadioItem
+            key={value}
+            value={value}
+            onSelect={
+              value === "toplist"
+                ? (event) => event.preventDefault()
+                : undefined
+            }
+          >
+            {label}
+          </DropdownMenuRadioItem>
+        ))}
+      </DropdownMenuRadioGroup>
+      {asked.sorting === "toplist" && (
+        <>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>Toplist range</DropdownMenuLabel>
+          <DropdownMenuRadioGroup
+            value={asked.top_range}
+            onValueChange={(value) => {
+              if (value !== asked.top_range) {
+                onChange({ top_range: value as TopRange });
+              }
+            }}
+          >
+            {TOP_RANGES.map((range) => (
+              <DropdownMenuRadioItem key={range} value={range}>
+                {range}
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </>
+      )}
+    </Pill>
+  );
+}
+
+/**
+ * Categories and Purity: checkboxes that stay open while they are ticked, each
+ * tick a search. The last box on cannot be turned off, because the backend
+ * refuses a search with none rather than let Wallhaven answer it (ADR 0054).
+ */
+function CategoriesPill({ asked, onChange }: PillProps) {
+  const on = CATEGORIES.filter(({ value }) => asked.categories[value]);
+  return (
+    <Pill
+      name="Categories"
+      label={
+        on.length === CATEGORIES.length
+          ? "All categories"
+          : on.map(({ label }) => label).join(", ")
+      }
+    >
+      {CATEGORIES.map(({ value, label }) => (
+        <DropdownMenuCheckboxItem
+          key={value}
+          checked={asked.categories[value]}
+          disabled={asked.categories[value] && on.length === 1}
+          onSelect={(event) => event.preventDefault()}
+          onCheckedChange={(checked) =>
+            onChange({
+              categories: { ...asked.categories, [value]: checked === true },
+            })
+          }
+        >
+          {label}
+        </DropdownMenuCheckboxItem>
+      ))}
+    </Pill>
+  );
+}
+
+/**
+ * Purity. NSFW needs an API key, and until one can be saved it is shown and
+ * disabled, saying how to unlock it; the backend refuses it too (ADR 0054).
+ */
+function PurityPill({ asked, onChange }: PillProps) {
+  const on = PURITIES.filter(({ value }) => asked.purity[value]);
+  return (
+    <Pill name="Purity" label={on.map(({ label }) => label).join(" + ")}>
+      {PURITIES.map(({ value, label }) => (
+        <DropdownMenuCheckboxItem
+          key={value}
+          checked={asked.purity[value]}
+          disabled={
+            value === "nsfw" || (asked.purity[value] && on.length === 1)
+          }
+          onSelect={(event) => event.preventDefault()}
+          onCheckedChange={(checked) =>
+            onChange({ purity: { ...asked.purity, [value]: checked === true } })
+          }
+        >
+          {value === "nsfw" ? (
+            <span className="flex flex-col">
+              {label}
+              <span className="text-[11px] text-muted-foreground">
+                Add an API key in Settings
+              </span>
+            </span>
+          ) : (
+            label
+          )}
+        </DropdownMenuCheckboxItem>
+      ))}
+    </Pill>
+  );
+}
+
+/** Colour: Wallhaven's 29 swatches, and Any colour to clear it. */
+function ColourPill({ asked, onChange }: PillProps) {
+  return (
+    <Pill
+      name="Colour"
+      label={asked.colour ? "Colour" : "Any colour"}
+      swatch={asked.colour ? `#${asked.colour}` : undefined}
+      className="w-60"
+    >
+      <DropdownMenuRadioGroup
+        value={asked.colour ?? ANY_COLOUR}
+        onValueChange={(value) => {
+          const colour = value === ANY_COLOUR ? null : value;
+          if (colour !== asked.colour) onChange({ colour });
+        }}
+      >
+        <DropdownMenuRadioItem value={ANY_COLOUR}>
+          Any colour
+        </DropdownMenuRadioItem>
+        <DropdownMenuSeparator />
+        <div className="grid grid-cols-8 gap-1 p-1">
+          {COLOURS.map((colour) => (
+            <DropdownMenuSwatchItem
+              key={colour}
+              value={colour}
+              colour={`#${colour}`}
+              aria-label={`#${colour}`}
+            />
+          ))}
+        </div>
+      </DropdownMenuRadioGroup>
+    </Pill>
   );
 }
 
