@@ -347,7 +347,7 @@ type Ended = Extract<CardDownload, { kind: "landed" | "failed" }>;
  * value per cell so the grid can hold its memo (#230). A few pages of cards
  * re-render when a download moves, which is Review's scale.
  */
-interface ResultDownloads {
+interface PicksAndDownloads {
   states: Readonly<Record<string, CardDownload>>;
   /** The ids of the Picks. */
   picked: ReadonlySet<string>;
@@ -358,7 +358,7 @@ interface ResultDownloads {
   pick: (result: MarkedResult) => void;
 }
 
-const ResultDownloadsContext = createContext<ResultDownloads>({
+const PicksAndDownloadsContext = createContext<PicksAndDownloads>({
   states: {},
   picked: new Set(),
   noRoot: false,
@@ -499,6 +499,10 @@ export function DiscoverView() {
   const [ended, setEnded] = useState<Record<string, Ended>>({});
   // The Picks, in the order picked, which is the order they download in.
   const [picks, setPicks] = useState<MarkedResult[]>([]);
+  // The Picks a download took that the backend has not answered for yet. A
+  // refusal puts back only the ones still here, so a Clear pressed while the
+  // request was out stays a Clear.
+  const inFlight = useRef(new Set<string>());
 
   const search = useCallback(async (next: Asked) => {
     const call = ++latest.current;
@@ -576,16 +580,38 @@ export function DiscoverView() {
     [setView],
   );
 
+  // A Result as the page now knows it: the Picks and a click hold the Result
+  // as it was when it was taken, and a Result still on the page may since have
+  // landed or been queued. One no page shown now holds keeps its snapshot.
+  const onPage = useMemo(
+    () => new Map((shown?.results ?? []).map((r) => [r.id, r])),
+    [shown],
+  );
+  const downloadable = useCallback(
+    (result: MarkedResult) =>
+      (onPage.get(result.id) ?? result).mark === "unmarked" &&
+      !queue.includes(result.id),
+    [onPage, queue],
+  );
+  // The Picks that could still be downloaded, which is every one the tray
+  // counts and `D` sends.
+  const livePicks = useMemo(
+    () => picks.filter(downloadable),
+    [picks, downloadable],
+  );
+
   // Every download starts here: the caption's, `D`'s and the tray's. The ids
   // go to the backend as one request, in the order given, and leave the Picks
   // as they go, which only ever hold what is still to come.
   const take = useCallback(
     (taken: MarkedResult[]) => {
-      const ids = taken
-        .filter((r) => r.mark === "unmarked" && !queue.includes(r.id))
-        .map((r) => r.id);
+      const ids = taken.filter(downloadable).map((r) => r.id);
       if (ids.length === 0) return;
       const leaving = picks.filter((r) => ids.includes(r.id));
+      for (const r of leaving) inFlight.current.add(r.id);
+      const settle = () => {
+        for (const r of leaving) inFlight.current.delete(r.id);
+      };
       setQueue((q) => [...q, ...ids]);
       setEnded((prev) => {
         const next = { ...prev };
@@ -593,20 +619,29 @@ export function DiscoverView() {
         return next;
       });
       setPicks((p) => p.filter((r) => !ids.includes(r.id)));
-      requestDownload(ids).catch((error: unknown) => {
+      requestDownload(ids).then(settle, (error: unknown) => {
         // A refusal at the click queued nothing, so the cards go back to
-        // offering Download, the Picks it took go back ahead of any picked
-        // since, and the reason is said where the click was.
+        // offering Download, the Picks it took and nobody has cleared since go
+        // back ahead of any picked since, and the reason is said where the
+        // click was.
+        const back = leaving.filter((r) => inFlight.current.has(r.id));
+        settle();
         setQueue((q) => q.filter((queued) => !ids.includes(queued)));
         setPicks((p) => [
-          ...leaving,
-          ...p.filter((r) => !leaving.some((back) => back.id === r.id)),
+          ...back,
+          ...p.filter((r) => !back.some((b) => b.id === r.id)),
         ]);
         show({ kind: "download-refused", error });
       });
     },
-    [picks, queue, requestDownload, show],
+    [downloadable, picks, requestDownload, show],
   );
+
+  // One Clear, for the tray's button and `Escape` from the grid or the tray.
+  const clearPicks = useCallback(() => {
+    setPicks([]);
+    inFlight.current.clear();
+  }, []);
 
   const download = useCallback(
     (result: MarkedResult) => (noRoot ? chooseRoot() : take([result])),
@@ -614,8 +649,8 @@ export function DiscoverView() {
   );
 
   const downloadPicks = useCallback(
-    () => (noRoot ? chooseRoot() : take(picks)),
-    [noRoot, chooseRoot, take, picks],
+    () => (noRoot ? chooseRoot() : take(livePicks)),
+    [noRoot, chooseRoot, take, livePicks],
   );
 
   // A Pick is a Result that could be downloaded now: an unmarked one that is
@@ -664,38 +699,41 @@ export function DiscoverView() {
     // is already the next batch's, on the wire while that ending arrives.
   });
 
-  const downloads = useMemo<ResultDownloads>(() => {
+  const picksAndDownloads = useMemo<PicksAndDownloads>(() => {
     const states: Record<string, CardDownload> = { ...ended };
     queue.forEach((id, at) => {
       states[id] = { kind: at === 0 ? "downloading" : "queued" };
     });
-    const picked = new Set(picks.map((r) => r.id));
+    const picked = new Set(livePicks.map((r) => r.id));
     return { states, picked, noRoot, download, pick };
-  }, [ended, queue, picks, noRoot, download, pick]);
+  }, [ended, queue, livePicks, noRoot, download, pick]);
 
   // The keys on the cursor: `P` and `D` are the card's own Pick and Download
   // pressed by key, and with Picks `D` is the tray's Download and `Escape` its
   // Clear.
-  const keys = useRef({ download, downloadPicks, pick });
+  const handlers = useRef({ download, downloadPicks, pick });
   useEffect(() => {
-    keys.current = { download, downloadPicks, pick };
+    handlers.current = { download, downloadPicks, pick };
   });
-  const act = useCallback((action: ResultAction, result: MarkedResult) => {
-    switch (action) {
-      case "pick":
-        keys.current.pick(result);
-        break;
-      case "download":
-        keys.current.download(result);
-        break;
-      case "download-picks":
-        keys.current.downloadPicks();
-        break;
-      case "clear-picks":
-        setPicks([]);
-        break;
-    }
-  }, []);
+  const act = useCallback(
+    (action: ResultAction, result: MarkedResult) => {
+      switch (action) {
+        case "pick":
+          handlers.current.pick(result);
+          break;
+        case "download":
+          handlers.current.download(result);
+          break;
+        case "download-picks":
+          handlers.current.downloadPicks();
+          break;
+        case "clear-picks":
+          clearPicks();
+          break;
+      }
+    },
+    [clearPicks],
+  );
 
   const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
     null,
@@ -903,19 +941,19 @@ export function DiscoverView() {
               scale of a few pages of 24. Load more has no ceiling, so if a
               curator ever pages far enough for mount cost to matter, windowing
               against this page's scroller is the follow-up (ADR 0016). */}
-          <ResultDownloadsContext.Provider value={downloads}>
+          <PicksAndDownloadsContext.Provider value={picksAndDownloads}>
             <ItemGrid
               ref={setGrid}
               items={results}
               label="Results from Wallhaven"
-              actions={resultKeys(picks.length)}
+              actions={resultKeys(livePicks.length)}
               onAct={act}
               card={RESULT_CARD}
               density="discover"
               className="gap-y-8 px-6 pb-8"
               renderCard={renderResult}
             />
-          </ResultDownloadsContext.Provider>
+          </PicksAndDownloadsContext.Provider>
 
           <div className="flex flex-col items-center gap-2 px-4 pb-24">
             {failure?.at === "more" ? (
@@ -966,12 +1004,12 @@ export function DiscoverView() {
         </>
       ) : null}
 
-      {picks.length > 0 && (
+      {livePicks.length > 0 && (
         <PicksTray
-          picks={picks}
+          picks={livePicks}
           noRoot={noRoot}
           onDownload={downloadPicks}
-          onClear={() => setPicks([])}
+          onClear={clearPicks}
         />
       )}
     </div>
@@ -989,6 +1027,7 @@ export function DiscoverView() {
  * asks Wallhaven for nothing (ADR 0053); the last five show, overlapped. Both
  * buttons empty the tray, which unmounts the control that was pressed, so each
  * hands the keyboard back to the grid, whichever way it was pressed (ADR 0047).
+ * `Escape` with the focus in the tray is its Clear, as it is from the grid.
  * With no Library root, Download is the way to one instead, as on a card.
  */
 function PicksTray({
@@ -1007,6 +1046,12 @@ function PicksTray({
   return (
     <section
       aria-label="Picks"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || event.defaultPrevented) return;
+        event.preventDefault();
+        onClear();
+        handOff();
+      }}
       className="fixed right-6 bottom-6 z-30 flex items-center gap-3 rounded-2xl border border-border bg-popover p-2 pl-3 text-popover-foreground shadow-xl"
     >
       <div aria-hidden className="flex -space-x-3">
@@ -1396,7 +1441,7 @@ const ResultCard = memo(function ResultCard({
 }) {
   const [failed, setFailed] = useState(false);
   const { states, picked, noRoot, download, pick } = useContext(
-    ResultDownloadsContext,
+    PicksAndDownloadsContext,
   );
   const handOffOnPointerPress = useHandOffOnPointerPress();
   const state = states[result.id];

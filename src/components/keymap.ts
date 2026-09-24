@@ -423,14 +423,14 @@ const PICKING_RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
 };
 
 /**
- * Discover's table while it holds `picks` Picks. One of two constants, so a
+ * Discover's table while it holds `pickCount` Picks. One of two constants, so a
  * Pick that is not the first or the last hands the grid the table it already
  * has.
  */
 export function resultKeys(
-  picks: number,
+  pickCount: number,
 ): ActionTable<MarkedResult, ResultAction> {
-  return picks > 0 ? PICKING_RESULT_KEYS : RESULT_KEYS;
+  return pickCount > 0 ? PICKING_RESULT_KEYS : RESULT_KEYS;
 }
 
 /** The table read at run time, where one entry's literal types are no help. */

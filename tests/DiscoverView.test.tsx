@@ -1403,7 +1403,7 @@ test("Picks survive a new search and a filter change, and download from any of t
   expect(downloads).toEqual([["qrow67", "other2"]]);
 });
 
-test("a Result the library comes to hold stops being a Pick", async () => {
+test("a picked Result's own Download takes it out of the Picks and leaves the others", async () => {
   withLibraryRoot();
   await renderInApp(<DiscoverView />);
   const [first, second] = cards();
@@ -1499,4 +1499,145 @@ test("with no Library root, Pick and the tray say what's missing and open the ro
   expect(currentView()).toBe("settings");
   expect(asked.focus).toBe("library_root");
   expect(tray()?.textContent).toContain("1 picked");
+});
+
+test("a Queued or Downloading Result can't be picked", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  await click(downloadButton(first)!);
+  await click(downloadButton(second)!);
+  expect(caption(first)).toContain("Downloading");
+  expect(caption(second)).toContain("Queued");
+
+  expect(pickButton(first)).toBeNull();
+  expect(pickButton(second)).toBeNull();
+  await focusCard(first);
+  await press("p");
+  await press("ArrowRight");
+  await press("p");
+  expect(tray()).toBeNull();
+});
+
+test("the tray draws the last five Picks' thumbnails and counts them all", async () => {
+  withLibraryRoot();
+  const ids = [
+    "pick01",
+    "pick02",
+    "pick03",
+    "pick04",
+    "pick05",
+    "pick06",
+    "pick07",
+  ];
+  answer = () => page(ids);
+  await renderInApp(<DiscoverView />);
+  for (const card of cards()) await click(pickButton(card)!);
+
+  expect(tray()?.textContent).toContain("7 picked");
+  expect(trayThumbnails()).toEqual(
+    ids.slice(2).map((id) => `https://th.wallhaven.cc/lg/pi/${id}.jpg`),
+  );
+});
+
+test("Clear is labelled with Esc, and Escape clears the Picks from inside the tray", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  await click(pickButton(cards()[0])!);
+  const clear = within(tray()!).getByRole("button", { name: /clear/i });
+  expect(clear.querySelector("kbd")?.textContent).toBe("Esc");
+  expect(clear.getAttribute("aria-keyshortcuts")).toBe("Escape");
+
+  await act(async () => {
+    clear.focus();
+  });
+  expect(await answered("Escape", clear)).toBe(true);
+
+  expect(tray()).toBeNull();
+  expect(downloads).toEqual([]);
+});
+
+/** A `wallhaven_download` that answers when the test says, refusing. */
+function refuseLater(): () => Promise<void> {
+  let refuse: () => void = () => {};
+  mockCommand("wallhaven_download", (args) => {
+    downloads.push(args.ids);
+    return new Promise((_, reject) => {
+      refuse = () =>
+        reject({
+          kind: "invalid_path",
+          message: "The Download folder can't be used",
+        } satisfies AppError);
+    });
+  });
+  return async () => {
+    await act(async () => {
+      refuse();
+    });
+    await flush();
+  };
+}
+
+test("a refusal puts back the Picks it took, after any picked since", async () => {
+  withLibraryRoot();
+  const refuse = refuseLater();
+  answer = () => page(["qrow67", "jedzym", "later1"]);
+  await renderInApp(<DiscoverView />);
+  const [first, second, third] = cards();
+  await click(pickButton(first)!);
+  await click(pickButton(second)!);
+  await click(within(tray()!).getByRole("button", { name: /^Download/ }));
+  expect(tray()).toBeNull();
+
+  await click(pickButton(third)!);
+  await refuse();
+
+  expect(tray()?.textContent).toContain("3 picked");
+  expect(trayThumbnails()).toEqual([
+    "https://th.wallhaven.cc/lg/qr/qrow67.jpg",
+    "https://th.wallhaven.cc/lg/je/jedzym.jpg",
+    "https://th.wallhaven.cc/lg/la/later1.jpg",
+  ]);
+});
+
+test("a refusal after a Clear leaves the Picks cleared", async () => {
+  withLibraryRoot();
+  const refuse = refuseLater();
+  answer = () => page(["qrow67", "jedzym", "later1"]);
+  await renderInApp(<DiscoverView />);
+  const [first, second, third] = cards();
+  await click(pickButton(first)!);
+  await click(pickButton(second)!);
+  await click(within(tray()!).getByRole("button", { name: /^Download/ }));
+
+  // Picked while the request was out, then cleared with everything else.
+  await click(pickButton(third)!);
+  await click(within(tray()!).getByRole("button", { name: /clear/i }));
+  await refuse();
+
+  expect(toast()?.title).toBe("Couldn't download");
+  expect(tray()).toBeNull();
+  expect(pickButton(first)?.getAttribute("aria-pressed")).toBe("false");
+});
+
+test("a Pick a later search marks is no longer counted or sent", async () => {
+  withLibraryRoot();
+  await renderInApp(<DiscoverView />);
+  await click(pickButton(cards()[0])!);
+  await click(pickButton(cards()[1])!);
+  expect(tray()?.textContent).toContain("2 picked");
+
+  // The library came to hold the first by another way, and this search says so.
+  answer = () => ({
+    ...page([]),
+    results: [result("qrow67", { mark: "in_library" }), result("jedzym")],
+  });
+  await act(async () => {
+    fireEvent.submit(screen.getByRole("search"));
+  });
+  await flush();
+
+  expect(tray()?.textContent).toContain("1 picked");
+  await click(within(tray()!).getByRole("button", { name: /^Download/ }));
+  expect(downloads).toEqual([["jedzym"]]);
 });
