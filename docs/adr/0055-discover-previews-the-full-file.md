@@ -38,6 +38,12 @@ with `←/→` loads only the result stepped to.
 **Only the lightbox loads it.** Cards keep `lg`, and the grid never touches
 `w.`.
 
+**The frontend spells the full file's URL itself**, from the result's id and
+`file_type`: `w.wallhaven.cc/full/<first two>/wallhaven-<id>.<png or jpg>`.
+The `path` stays off the wire, as ADR 0054 has it. A `file_type` that isn't
+PNG is taken for a JPEG, and if that guess is wrong the full file fails to
+load and the lightbox shows its "Couldn't load preview" panel.
+
 **It carries no key.** Full files load without auth, NSFW included
 ([ADR 0052](0052-the-wallhaven-key-is-a-write-only-setting.md)).
 

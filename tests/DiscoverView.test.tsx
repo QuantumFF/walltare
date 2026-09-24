@@ -1696,7 +1696,7 @@ test("the lightbox draws the lg thumbnail under the full file, shaped by the Dim
     ...page([]),
     results: [
       result("qrow67", { dimension_x: 3440, dimension_y: 1440 }),
-      result("jedzym", { file_type: "image/jpeg" }),
+      result("jedzym"),
     ],
   });
   await renderInApp(<DiscoverView />);
@@ -1720,12 +1720,6 @@ test("the lightbox draws the lg thumbnail under the full file, shaped by the Dim
     fireEvent.load(heroPicture()!);
   });
   expect(heroPlaceholder()).toBeNull();
-
-  // A JPEG's full file is a `.jpg`.
-  await press("ArrowRight");
-  expect(heroPicture()?.getAttribute("src")).toBe(
-    "https://w.wallhaven.cc/full/je/wallhaven-jedzym.jpg",
-  );
 });
 
 test("← and → walk the grid's cursor with a counter, loading only the Result stepped to", async () => {
@@ -1898,4 +1892,57 @@ test("the pages behind the lightbox are inert, and a toast shows over it", async
   await click(within(lightbox()!).getByRole("button", { name: "Close" }));
   expect(lightbox()).toBeNull();
   expect(container.hasAttribute("inert")).toBe(false);
+});
+
+test("a JPEG Result's full file is the .jpg on w.wallhaven.cc", async () => {
+  answer = () => ({
+    ...page([]),
+    results: [result("jedzym", { file_type: "image/jpeg" })],
+  });
+  await renderInApp(<DiscoverView />);
+
+  await openOn(cards()[0]);
+
+  expect(heroPicture()?.getAttribute("src")).toBe(
+    "https://w.wallhaven.cc/full/je/wallhaven-jedzym.jpg",
+  );
+});
+
+test("with no Library root, D in the lightbox opens the root's field instead", async () => {
+  const asked: { focus: string | null } = { focus: null };
+  function FocusProbe() {
+    asked.focus = useApp().focus;
+    return null;
+  }
+  await renderInApp(
+    <>
+      <FocusProbe />
+      <DiscoverView />
+    </>,
+  );
+
+  await openOn(cards()[0]);
+  // The row says what is missing where Pick and Download would be.
+  expect(rowButton(/^Download/)).toBeNull();
+  expect(rowButton(/choose a library root/i)).not.toBeNull();
+
+  await press("d");
+
+  expect(downloads).toEqual([]);
+  expect(currentView()).toBe("settings");
+  expect(asked.focus).toBe("library_root");
+  // Changing destination closes the lightbox (ADR 0015).
+  expect(lightbox()).toBeNull();
+});
+
+test("the Close button puts the focus back on the card the cursor is on", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+
+  await openOn(first);
+  await press("ArrowRight");
+  await click(within(lightbox()!).getByRole("button", { name: "Close" }));
+
+  expect(lightbox()).toBeNull();
+  expect(document.activeElement).toBe(second);
 });

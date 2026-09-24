@@ -380,7 +380,10 @@ const RESULT_BINDINGS: readonly ActionBinding<ResultAction>[] = [
     printed: "P",
     act: ["pick"],
     on: ["grid", "lightbox"],
-    listed: { listing: "Pick the selected Result, or unpick it" },
+    listed: {
+      listing: "Pick the selected Result, or unpick it",
+      lightbox: "Pick the Result on screen, or unpick it",
+    },
   },
   {
     keys: ["d"],
@@ -390,6 +393,8 @@ const RESULT_BINDINGS: readonly ActionBinding<ResultAction>[] = [
     listed: {
       listing:
         "Download your Picks, or the selected Result when there are none",
+      // Not the Picks in here: the lightbox is handed `RESULT_KEYS`.
+      lightbox: "Download the Result on screen",
     },
   },
   // Printed as ARIA and the dialog spell it, and as `Esc` on a button, the way

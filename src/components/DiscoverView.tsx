@@ -90,6 +90,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MouseEventHandler,
   type ReactNode,
 } from "react";
 
@@ -382,13 +383,14 @@ type Ended = Extract<CardDownload, { kind: "landed" | "failed" }>;
 /**
  * What every card needs from the page to draw its caption: each Result's
  * download, which Results are Picks, whether there is a Library root to
- * download into, and the ways to ask for each.
+ * download into, and the ways to ask for each — the lightbox's open among
+ * them, since a click on a card is one.
  *
  * A context rather than props through the grid's renderer, which stays a
  * value per cell so the grid can hold its memo (#230). A few pages of cards
  * re-render when a download moves, which is Review's scale.
  */
-interface PicksAndDownloads {
+interface ResultControls {
   states: Readonly<Record<string, CardDownload>>;
   /** The ids of the Picks. */
   picked: ReadonlySet<string>;
@@ -401,7 +403,7 @@ interface PicksAndDownloads {
   open: (result: MarkedResult) => void;
 }
 
-const PicksAndDownloadsContext = createContext<PicksAndDownloads>({
+const ResultControlsContext = createContext<ResultControls>({
   states: {},
   picked: new Set(),
   noRoot: false,
@@ -422,7 +424,7 @@ const PicksAndDownloadsContext = createContext<PicksAndDownloads>({
  */
 function offerOf(
   result: MarkedResult,
-  { states, picked }: Pick<PicksAndDownloads, "states" | "picked">,
+  { states, picked }: Pick<ResultControls, "states" | "picked">,
 ) {
   const state = states[result.id];
   const mark =
@@ -782,7 +784,7 @@ export function DiscoverView() {
   const lightbox = useLightbox(grid);
   const { openOn } = lightbox;
 
-  const picksAndDownloads = useMemo<PicksAndDownloads>(() => {
+  const resultControls = useMemo<ResultControls>(() => {
     const states: Record<string, CardDownload> = { ...ended };
     queue.forEach((id, at) => {
       states[id] = { kind: at === 0 ? "downloading" : "queued" };
@@ -817,7 +819,6 @@ export function DiscoverView() {
     },
     [clearPicks],
   );
-
 
   const ratioHandOff = usePillHandOff();
   const handOffOnPointerPress = useHandOffOnPointerPress();
@@ -1020,7 +1021,7 @@ export function DiscoverView() {
               scale of a few pages of 24. Load more has no ceiling, so if a
               curator ever pages far enough for mount cost to matter, windowing
               against this page's scroller is the follow-up (ADR 0016). */}
-          <PicksAndDownloadsContext.Provider value={picksAndDownloads}>
+          <ResultControlsContext.Provider value={resultControls}>
             <ItemGrid
               ref={setGrid}
               items={results}
@@ -1033,7 +1034,7 @@ export function DiscoverView() {
               className="gap-y-8 px-6 pb-8"
               renderCard={renderResult}
             />
-          </PicksAndDownloadsContext.Provider>
+          </ResultControlsContext.Provider>
 
           <div className="flex flex-col items-center gap-2 px-4 pb-24">
             {failure?.at === "more" ? (
@@ -1102,7 +1103,7 @@ export function DiscoverView() {
         actions={RESULT_KEYS}
         onAct={act}
         picture={resultPicture}
-        row={(result) => resultRow(result, picksAndDownloads)}
+        row={(result) => resultRow(result, resultControls)}
         rowFloor={RESULT_ROW_FLOOR}
         noun="Result"
         gone={PREVIEW_FAILED}
@@ -1160,9 +1161,8 @@ const PREVIEW_FAILED = (
  */
 function resultRow(
   result: MarkedResult,
-  offer: PicksAndDownloads,
+  controls: ResultControls,
 ): LightboxRow {
-  const { state, mark, offersDownload, isPick } = offerOf(result, offer);
   return {
     identity: (
       <div
@@ -1185,73 +1185,8 @@ function resultRow(
         } · ${compact(result.views)} ${result.views === 1 ? "view" : "views"}`}
       </p>
     ),
-    buttons: mark ? (
-      <span data-slot="result-mark" className="text-xs text-white/60">
-        {mark}
-      </span>
-    ) : state && state.kind !== "failed" ? (
-      <span
-        data-slot="result-download"
-        className={cn(
-          "flex items-center gap-1 text-xs",
-          state.kind === "landed" ? "text-emerald-400" : "text-white/60",
-        )}
-      >
-        {state.kind === "downloading" && (
-          <Loader2 aria-hidden className="size-3 animate-spin" />
-        )}
-        {state.kind === "landed" && <Check aria-hidden className="size-3.5" />}
-        {DOWNLOAD_TEXT[state.kind]}
-      </span>
-    ) : (
-      offersDownload && (
-        <>
-          {state?.kind === "failed" && (
-            <span
-              data-slot="result-download"
-              className="text-xs text-destructive"
-              title={state.message}
-            >
-              Failed
-            </span>
-          )}
-          {offer.noRoot ? (
-            <Button
-              variant="link"
-              size="sm"
-              // It puts the caret in the Library root field itself.
-              data-moves-focus
-              className="px-0 text-xs"
-              onClick={() => offer.download(result)}
-            >
-              {NO_ROOT}
-            </Button>
-          ) : (
-            <>
-              <Button
-                variant={isPick ? "secondary" : "ghost"}
-                size="sm"
-                aria-pressed={isPick}
-                aria-keyshortcuts={keyShortcut("pick", RESULT_KEYS)}
-                onClick={() => offer.pick(result)}
-              >
-                {isPick ? <Check /> : <Plus />}
-                {isPick ? "Picked" : "Pick"}
-                <Kbd aria-hidden>{printedKey("pick", RESULT_KEYS)}</Kbd>
-              </Button>
-              <Button
-                size="sm"
-                aria-keyshortcuts={keyShortcut("download", RESULT_KEYS)}
-                onClick={() => offer.download(result)}
-              >
-                <Download />
-                Download
-                <Kbd aria-hidden>{printedKey("download", RESULT_KEYS)}</Kbd>
-              </Button>
-            </>
-          )}
-        </>
-      )
+    buttons: (
+      <ResultOffer result={result} controls={controls} surface="lightbox" />
     ),
   };
 }
@@ -1680,10 +1615,9 @@ const ResultCard = memo(function ResultCard({
   selected: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  const offer = useContext(PicksAndDownloadsContext);
-  const { noRoot, download, pick, open } = offer;
+  const controls = useContext(ResultControlsContext);
   const handOffOnPointerPress = useHandOffOnPointerPress();
-  const { state, mark, offersDownload, isPick } = offerOf(result, offer);
+  const { state, mark, isPick } = offerOf(result, controls);
   const said =
     mark ?? (state ? DOWNLOAD_TEXT[state.kind] : isPick ? "Picked" : null);
   const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
@@ -1695,7 +1629,7 @@ const ResultCard = memo(function ResultCard({
       aria-label={said ? `${facts}, ${said}` : facts}
       // A click on the card opens it, as `Enter` does; its buttons keep their
       // clicks to themselves (ADR 0022).
-      onClick={() => open(result)}
+      onClick={() => controls.open(result)}
       className="group m-0 flex flex-col gap-2 rounded-xl outline-none"
     >
       <div
@@ -1747,99 +1681,165 @@ const ResultCard = memo(function ResultCard({
             {compact(result.favorites)} · {result.category}
           </p>
         </div>
-        {mark ? (
-          <span
-            data-slot="result-mark"
-            className="shrink-0 text-muted-foreground"
-          >
-            {mark}
-          </span>
-        ) : state && state.kind !== "failed" ? (
-          <span
-            data-slot="result-download"
-            className={cn(
-              "flex shrink-0 items-center gap-1",
-              state.kind === "landed"
-                ? "text-emerald-600 dark:text-emerald-400"
-                : "text-muted-foreground",
-            )}
-          >
-            {state.kind === "downloading" && (
-              <Loader2 aria-hidden className="size-3 animate-spin" />
-            )}
-            {state.kind === "landed" && (
-              <Check aria-hidden className="size-3.5" />
-            )}
-            {DOWNLOAD_TEXT[state.kind]}
-          </span>
-        ) : (
-          offersDownload && (
-            // The pointer's press hands the keyboard back to the grid, so `D`
-            // still reaches the cursor after a click (ADR 0047), and stops
-            // there rather than opening the card as well.
-            <div
-              className="flex shrink-0 items-center gap-2"
-              onClick={(event) => {
-                handOffOnPointerPress(event);
-                event.stopPropagation();
-              }}
-            >
-              {state?.kind === "failed" && (
-                <span
-                  data-slot="result-download"
-                  className="text-destructive"
-                  title={state.message}
-                >
-                  Failed
-                </span>
-              )}
-              {noRoot ? (
-                <Button
-                  variant="link"
-                  size="sm"
-                  // It puts the caret in the Library root field itself.
-                  data-moves-focus
-                  tabIndex={-1}
-                  className="h-7 px-0 text-xs"
-                  onClick={() => download(result)}
-                >
-                  {NO_ROOT}
-                </Button>
-              ) : (
-                <>
-                  <Button
-                    variant={isPick ? "secondary" : "ghost"}
-                    size="sm"
-                    aria-label={`Pick ${facts}`}
-                    aria-pressed={isPick}
-                    aria-keyshortcuts={keyShortcut("pick", RESULT_KEYS)}
-                    tabIndex={-1}
-                    onClick={() => pick(result)}
-                  >
-                    {isPick ? <Check /> : <Plus />}
-                    {isPick ? "Picked" : "Pick"}
-                    <Kbd aria-hidden>{printedKey("pick", RESULT_KEYS)}</Kbd>
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    aria-label={`Download ${facts}`}
-                    aria-keyshortcuts={keyShortcut("download", RESULT_KEYS)}
-                    // The grid's cell is the tab stop, and `D` is how the
-                    // keyboard presses this (ADR 0019).
-                    tabIndex={-1}
-                    onClick={() => download(result)}
-                  >
-                    <Download />
-                    Download
-                    <Kbd aria-hidden>{printedKey("download", RESULT_KEYS)}</Kbd>
-                  </Button>
-                </>
-              )}
-            </div>
-          )
-        )}
+        <ResultOffer
+          result={result}
+          controls={controls}
+          surface="card"
+          subject={facts}
+          // The pointer's press hands the keyboard back to the grid, so `D`
+          // still reaches the cursor after a click (ADR 0047), and stops
+          // there rather than opening the card as well.
+          onClick={(event) => {
+            handOffOnPointerPress(event);
+            event.stopPropagation();
+          }}
+        />
       </figcaption>
     </figure>
   );
 });
+
+/**
+ * How the offer looks on each surface that draws it: the card's caption, on
+ * the page's theme, and the lightbox's row, dark in both themes.
+ *
+ * On a card the buttons are out of the tab order, because the grid's cell is
+ * the tab stop and `P` and `D` are how the keyboard presses them (ADR 0019).
+ * In the lightbox they are the row's own controls, and the first Tab reaches
+ * them (ADR 0022).
+ */
+const OFFER_LOOK = {
+  card: {
+    text: "",
+    muted: "text-muted-foreground",
+    landed: "text-emerald-600 dark:text-emerald-400",
+    download: "outline",
+    rootLink: "h-7 px-0 text-xs",
+    tabIndex: -1,
+  },
+  lightbox: {
+    text: "text-xs",
+    muted: "text-white/60",
+    landed: "text-emerald-400",
+    download: "default",
+    rootLink: "px-0 text-xs",
+    tabIndex: undefined,
+  },
+} as const;
+
+/**
+ * What a Result offers where Pick and Download go, drawn once for the card's
+ * caption and the lightbox's row (#345), off `offerOf`'s one reading.
+ *
+ * A marked Result says its mark. One on its way to the library says where it
+ * has got to: Queued, Downloading, and "Added to library". Otherwise it offers
+ * Pick and Download, after **Failed** with the backend's sentence as its
+ * tooltip when the last try failed; with no Library root, Download is
+ * "Choose a library root to download" instead, and takes the curator to that
+ * field (ADR 0051).
+ *
+ * `subject` is what the buttons are about, for their names on a card, where a
+ * grid holds many Picks and Downloads. The lightbox's dialog is already named
+ * by its Result, so there the buttons carry the verb alone.
+ */
+function ResultOffer({
+  result,
+  controls,
+  surface,
+  subject,
+  onClick,
+}: {
+  result: MarkedResult;
+  controls: ResultControls;
+  surface: keyof typeof OFFER_LOOK;
+  subject?: string;
+  /** A press anywhere on the buttons, which the card hands the keyboard back on. */
+  onClick?: MouseEventHandler<HTMLDivElement>;
+}) {
+  const look = OFFER_LOOK[surface];
+  const { state, mark, offersDownload, isPick } = offerOf(result, controls);
+  const named = (verb: string) => (subject ? `${verb} ${subject}` : undefined);
+  if (mark) {
+    return (
+      <span
+        data-slot="result-mark"
+        className={cn("shrink-0", look.text, look.muted)}
+      >
+        {mark}
+      </span>
+    );
+  }
+  if (state && state.kind !== "failed") {
+    return (
+      <span
+        data-slot="result-download"
+        className={cn(
+          "flex shrink-0 items-center gap-1",
+          look.text,
+          state.kind === "landed" ? look.landed : look.muted,
+        )}
+      >
+        {state.kind === "downloading" && (
+          <Loader2 aria-hidden className="size-3 animate-spin" />
+        )}
+        {state.kind === "landed" && <Check aria-hidden className="size-3.5" />}
+        {DOWNLOAD_TEXT[state.kind]}
+      </span>
+    );
+  }
+  if (!offersDownload) return null;
+  return (
+    <div className="flex shrink-0 items-center gap-2" onClick={onClick}>
+      {state?.kind === "failed" && (
+        <span
+          data-slot="result-download"
+          className={cn("text-destructive", look.text)}
+          title={state.message}
+        >
+          Failed
+        </span>
+      )}
+      {controls.noRoot ? (
+        <Button
+          variant="link"
+          size="sm"
+          // It puts the caret in the Library root field itself.
+          data-moves-focus
+          tabIndex={look.tabIndex}
+          className={look.rootLink}
+          onClick={() => controls.download(result)}
+        >
+          {NO_ROOT}
+        </Button>
+      ) : (
+        <>
+          <Button
+            variant={isPick ? "secondary" : "ghost"}
+            size="sm"
+            aria-label={named("Pick")}
+            aria-pressed={isPick}
+            aria-keyshortcuts={keyShortcut("pick", RESULT_KEYS)}
+            tabIndex={look.tabIndex}
+            onClick={() => controls.pick(result)}
+          >
+            {isPick ? <Check /> : <Plus />}
+            {isPick ? "Picked" : "Pick"}
+            <Kbd aria-hidden>{printedKey("pick", RESULT_KEYS)}</Kbd>
+          </Button>
+          <Button
+            variant={look.download}
+            size="sm"
+            aria-label={named("Download")}
+            aria-keyshortcuts={keyShortcut("download", RESULT_KEYS)}
+            tabIndex={look.tabIndex}
+            onClick={() => controls.download(result)}
+          >
+            <Download />
+            Download
+            <Kbd aria-hidden>{printedKey("download", RESULT_KEYS)}</Kbd>
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
