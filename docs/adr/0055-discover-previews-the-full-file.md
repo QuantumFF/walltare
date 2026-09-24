@@ -77,3 +77,14 @@ webview's cache.
 
 **The release checklist's Discover line covers the lightbox too.** Full files
 render in a release build, and the console shows no violations.
+
+> **Amended 2026-09-24.** Cards touch `w.` too now, at three columns and
+> fewer. There a card is drawn wider than the `lg`'s 432 pixels on most
+> screens, so the thumbnail is upscaled into a blur. The card lays the full
+> file over its `lg` and shows it once it has loaded, the way a Library card
+> lays its `medium` over its `small`. At four and five columns the grid stays
+> on `lg` alone. Discover opens on three, so a page of 24 fetches up to
+> 24 full files as its cards come into view (`loading="lazy"`), which is
+> 1–10 MB each. That's accepted in exchange for cards that show the detail
+> the page exists to judge. The "Only the lightbox loads it" decision and the
+> first consequence above are superseded to that extent.

@@ -67,6 +67,12 @@ export interface GridCell {
    * card's memo holding through a resize that stays on one side of a threshold.
    */
   width: number;
+  /**
+   * How many columns the grid is drawn at, which is the curator's zoom. For a
+   * card whose choice of picture follows the zoom itself rather than the pixels
+   * it is drawn at, as Discover's full file does at three columns and fewer.
+   */
+  columns: number;
 }
 
 export interface ItemGridProps<T extends Keyed, A extends string> {
@@ -583,6 +589,7 @@ function Grid<T extends Keyed, A extends string>({
               selected: cardIndex === index,
               box,
               width: box ? box.width : cellWidth,
+              columns,
             })}
           </Fragment>
         );
