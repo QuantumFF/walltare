@@ -1,6 +1,10 @@
 import { ActionButton } from "@/components/ActionButton";
 import { CropPreviewToggle, useCropPreview } from "@/components/CropPreview";
-import { HeroPicture, usePictureBox } from "@/components/HeroPicture";
+import {
+  HeroPicture,
+  usePictureBox,
+  wallpaperPicture,
+} from "@/components/HeroPicture";
 import {
   useDensityWheel,
   useHeldDensity,
@@ -263,10 +267,8 @@ export function ReviewStrip({
   // module's, so the lightbox fits its picture by the same rule; what the strip
   // supplies is the area and what it is taken to be before anything measures it
   // (#279).
-  const { area: heroArea, box: hero } = usePictureBox(
-    selected,
-    UNMEASURED_AREA,
-  );
+  const picture = selected ? wallpaperPicture(selected) : null;
+  const { area: heroArea, box: hero } = usePictureBox(picture, UNMEASURED_AREA);
 
   // The press that raises the bars. Held in the settings store rather than
   // here, so they are still up on the next launch and so the lightbox opening
@@ -370,14 +372,15 @@ export function ReviewStrip({
         className="relative min-h-0 flex-1"
       >
         <div className="absolute inset-0 flex items-center justify-center">
-          {selected && (
+          {selected && picture && (
             <HeroPicture
-              wallpaper={selected}
+              picture={picture}
               box={hero}
               // A frame the picture fills, the same as the filmstrip under it:
               // only the 16:9 guess for a wallpaper whose Dimensions nothing has
               // read is ever cropped by it (ADR 0044).
               fit="cover"
+              cropPreview
               // One line, on the page's own muted ground, which is also what a
               // gone file leaves showing (ADR 0032).
               gone={

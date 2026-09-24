@@ -1,5 +1,6 @@
 import { EmptyState } from "@/components/EmptyState";
-import { Lightbox, useLightbox } from "@/components/Lightbox";
+import { useLightbox } from "@/components/ItemLightbox";
+import { Lightbox } from "@/components/Lightbox";
 import { PageBar } from "@/components/PageBar";
 import {
   RejectDestinationLine,
