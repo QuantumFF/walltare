@@ -202,11 +202,19 @@ impl Canned {
 #[derive(Clone, Debug)]
 pub(crate) struct Received {
     pub line: String,
-    #[allow(dead_code)] // For the key ticket's "sent on API calls only".
     pub headers: Vec<(String, String)>,
 }
 
 impl Received {
+    /// The value of the header `name`, which the stub lowercases, or nothing
+    /// when the request did not carry it.
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, value)| value.as_str())
+    }
+
     /// The path and query the request asked for, exactly as it crossed.
     pub(crate) fn target(&self) -> &str {
         self.line.split(' ').nth(1).unwrap_or("")

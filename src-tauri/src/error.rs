@@ -32,6 +32,10 @@ pub enum AppError {
     /// Wallhaven's rate limit answered. The message is the whole sentence,
     /// seconds to wait included, because Discover prints it verbatim.
     RateLimited(String),
+    /// Wallhaven answered a search made with the saved API key with a 401. The
+    /// search is not retried anonymously: Discover says so and links to
+    /// Settings, where the key can be replaced or removed (ADR 0054).
+    KeyRejected(String),
     Io(String),
     Db(String),
     Image(String),
@@ -62,6 +66,7 @@ impl std::fmt::Display for AppError {
             AppError::UnknownWallpaper(m) => ("unknown_wallpaper", m),
             AppError::Network(m) => ("network", m),
             AppError::RateLimited(m) => ("rate_limited", m),
+            AppError::KeyRejected(m) => ("key_rejected", m),
             AppError::Io(m) => ("io", m),
             AppError::Db(m) => ("db", m),
             AppError::Image(m) => ("image", m),

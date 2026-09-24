@@ -32,6 +32,7 @@ import {
 } from "@/context/KeyboardHandoffContext";
 import {
   client,
+  DEFAULT_DISCOVER_FILTERS,
   isAppError,
   type Categories,
   type DiscoverFilters,
@@ -56,6 +57,7 @@ import {
   Loader2,
   Search,
   SearchX,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import {
   memo,
@@ -214,12 +216,17 @@ function compact(count: number): string {
  *
  * The backend's own sentence for the three kinds that carry one written for
  * the curator: an unreachable or odd Wallhaven, the rate limit's wait, and a
- * value it refused. Anything else is a fault in the app rather than something
- * the curator can act on, and gets the plain line.
+ * value it refused, and a saved key Wallhaven rejected, which the page follows
+ * with a way to Settings. Anything else is a fault in the app rather than
+ * something the curator can act on, and gets the plain line.
  */
 function searchFailure(error: unknown): string {
   if (isAppError(error)) {
-    if (error.kind === "network" || error.kind === "rate_limited") {
+    if (
+      error.kind === "network" ||
+      error.kind === "rate_limited" ||
+      error.kind === "key_rejected"
+    ) {
       return error.message;
     }
     if (error.kind === "bad_request") {
@@ -280,6 +287,21 @@ interface Shown {
 interface Failure {
   at: "first" | "more";
   message: string;
+  /**
+   * The saved key got a 401. Nothing falls back to anonymous: the page says so
+   * and offers the way to Settings, where the key is replaced or removed
+   * (ADR 0054).
+   */
+  keyRejected: boolean;
+}
+
+/** The failure a call that did not answer leaves, at `at`. */
+function failed(at: Failure["at"], error: unknown): Failure {
+  return {
+    at,
+    message: searchFailure(error),
+    keyRejected: isAppError(error) && error.kind === "key_rejected",
+  };
 }
 
 /**
@@ -307,8 +329,9 @@ interface Failure {
  * the top of. A few pages of 24 is Review's scale, not Library's.
  */
 export function DiscoverView() {
-  const { view, settings } = useApp();
+  const { view, settings, setView } = useApp();
   const showing = view === "discover";
+  const keyed = settings.wallhaven_key_set;
 
   // Read once, so a Screen changed in Settings reaches Discover's ratio on the
   // next launch rather than re-searching the page under the curator.
@@ -323,6 +346,18 @@ export function DiscoverView() {
     ratio: screen,
     colour: null,
   }));
+  // A key removed in Settings drops NSFW from the remembered filters, and the
+  // pills follow, so the next search is not one the backend refuses. Nothing
+  // searches again for it: every call is one the curator asked for. Adjusted
+  // during render, so the Purity pill never paints NSFW without a key.
+  if (!keyed && asked.purity.nsfw) {
+    const purity = { ...asked.purity, nsfw: false };
+    setAsked({
+      ...asked,
+      purity:
+        purity.sfw || purity.sketchy ? purity : DEFAULT_DISCOVER_FILTERS.purity,
+    });
+  }
   const [shown, setShown] = useState<Shown | null>(null);
   const [pending, setPending] = useState<"first" | "more" | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
@@ -397,7 +432,7 @@ export function DiscoverView() {
       setShown({ results: page.results, meta: page.meta });
     } catch (error) {
       if (call !== latest.current) return;
-      setFailure({ at: "first", message: searchFailure(error) });
+      setFailure(failed("first", error));
     } finally {
       if (call === latest.current) setPending(null);
     }
@@ -426,7 +461,7 @@ export function DiscoverView() {
       });
     } catch (error) {
       if (call !== latest.current) return;
-      setFailure({ at: "more", message: searchFailure(error) });
+      setFailure(failed("more", error));
     } finally {
       if (call === latest.current) setPending(null);
     }
@@ -591,7 +626,7 @@ export function DiscoverView() {
             </button>
 
             <CategoriesPill asked={asked} onChange={refine} />
-            <PurityPill asked={asked} onChange={refine} />
+            <PurityPill asked={asked} onChange={refine} keyed={keyed} />
             <ColourPill asked={asked} onChange={refine} />
           </div>
         </div>
@@ -613,9 +648,16 @@ export function DiscoverView() {
           className="flex flex-col items-center gap-3 px-4 py-16 text-center"
         >
           <p className="text-sm text-muted-foreground">{failure.message}</p>
-          <Button variant="outline" onClick={() => void search(asked)}>
-            Retry
-          </Button>
+          <div className="flex gap-2">
+            {failure.keyRejected && (
+              <KeySettingsButton
+                onClick={() => setView("settings", { returnTo: "discover" })}
+              />
+            )}
+            <Button variant="outline" onClick={() => void search(asked)}>
+              Retry
+            </Button>
+          </div>
         </div>
       ) : shown && results.length === 0 ? (
         /* The way out is whichever filter is most likely to have emptied the
@@ -669,9 +711,18 @@ export function DiscoverView() {
                 <p className="text-sm text-muted-foreground">
                   {failure.message}
                 </p>
-                <Button variant="outline" onClick={() => void loadMore()}>
-                  Retry
-                </Button>
+                <div className="flex gap-2">
+                  {failure.keyRejected && (
+                    <KeySettingsButton
+                      onClick={() =>
+                        setView("settings", { returnTo: "discover" })
+                      }
+                    />
+                  )}
+                  <Button variant="outline" onClick={() => void loadMore()}>
+                    Retry
+                  </Button>
+                </div>
               </div>
             ) : (
               meta &&
@@ -878,10 +929,31 @@ function CategoriesPill({ asked, onChange }: PillProps) {
 }
 
 /**
- * Purity. NSFW needs an API key, and until one can be saved it is shown and
+ * The way from a rejected key to the Settings page that replaces it. No focus
+ * key rides along: the key is not a `SettingKey`, since `set_setting` never
+ * writes it, so the curator lands on Settings and Back returns to Discover.
+ */
+function KeySettingsButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Button variant="outline" onClick={onClick}>
+      <SettingsIcon aria-hidden />
+      Open Settings
+    </Button>
+  );
+}
+
+/**
+ * Purity. NSFW needs an API key, so until one is saved it is shown and
  * disabled, saying how to unlock it; the backend refuses it too (ADR 0054).
  */
-function PurityPill({ asked, onChange }: PillProps) {
+function PurityPill({
+  asked,
+  onChange,
+  keyed,
+}: PillProps & {
+  /** Whether a Wallhaven API key is saved, which is what NSFW needs. */
+  keyed: boolean;
+}) {
   const on = PURITIES.filter(({ value }) => asked.purity[value]);
   return (
     <Pill name="Purity" label={on.map(({ label }) => label).join(" + ")}>
@@ -890,14 +962,15 @@ function PurityPill({ asked, onChange }: PillProps) {
           key={value}
           checked={asked.purity[value]}
           disabled={
-            value === "nsfw" || (asked.purity[value] && on.length === 1)
+            (value === "nsfw" && !keyed) ||
+            (asked.purity[value] && on.length === 1)
           }
           onSelect={(event) => event.preventDefault()}
           onCheckedChange={(checked) =>
             onChange({ purity: { ...asked.purity, [value]: checked === true } })
           }
         >
-          {value === "nsfw" ? (
+          {value === "nsfw" && !keyed ? (
             <span className="flex flex-col">
               {label}
               <span className="text-[11px] text-muted-foreground">

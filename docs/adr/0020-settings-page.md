@@ -81,6 +81,14 @@ last.
 > the Download folder, sits between Curation and Maintenance, so maintenance is
 > still last. The Wallhaven API key section joins that group later.
 
+> **Amended by [#342](https://github.com/QuantumFF/walltare/issues/342),
+> 2026-09-24.** Thirteen sections. The **API key** section opens the Wallhaven
+> group, above the Download folder, because what a key unlocks is the first
+> question about Wallhaven and the folder only matters once there is something
+> to download. It is the one field on the page that does not write on blur: a
+> save spends one keyed search ([ADR 0052](0052-the-wallhaven-key-is-a-write-only-setting.md)),
+> so it saves on Save or Enter, and it never shows the key it saved.
+
 Sections rather than a flat list of label-and-control rows. The ticket called
 four groups of one or two controls thin, and it would be, except the two path
 items are each a field, a Browse button, and a status line under them. In a flat

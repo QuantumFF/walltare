@@ -183,6 +183,16 @@ interface AppContextType {
     value: Settings[K],
   ) => Promise<void>;
   /**
+   * Save a Wallhaven API key, or remove the saved one with an empty `key`, and
+   * hold on to the settings that come back, as `saveSetting` does. Resolves
+   * with whether Wallhaven could be asked about the key before it was stored
+   * (ADR 0052).
+   *
+   * Rejects with whatever the save rejected with: `bad_request` for a key
+   * Wallhaven refused, which is then not stored.
+   */
+  saveWallhavenKey: (key: string) => Promise<boolean>;
+  /**
    * How many wallpapers the library holds, as of the last read; `null` when
    * that read failed and there is no honest number to show.
    *
@@ -320,6 +330,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const saveWallhavenKey = useCallback(async (key: string) => {
+    const saved = await client.setWallhavenKey(key);
+    setSettings(saved.settings);
+    return saved.verified;
+  }, []);
+
   const readLibrary = useCallback(async () => {
     const stats = await client.getStats();
     setLibraryTotal(stats.total_wallpapers);
@@ -432,6 +448,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setView,
         settings,
         saveSetting,
+        saveWallhavenKey,
         libraryTotal,
         readLibrary,
         readLibraryAfterScan,
