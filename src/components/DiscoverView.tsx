@@ -1669,6 +1669,15 @@ const ResultCard = memo(function ResultCard({
             <span className="text-xs">Couldn&apos;t load preview</span>
           </div>
         )}
+        {/* The card under the mouse, which is the one the keys act on
+            (`followPointer`). An inset ring on a layer of its own inside the
+            clipped picture, so a hover repaints nothing outside the card, and
+            a Pick's outer ring still reads beside it. */}
+        <div
+          aria-hidden
+          data-slot="hover-frame"
+          className="pointer-events-none absolute inset-0 rounded-xl bg-white/10 opacity-0 ring-3 ring-primary ring-inset transition-opacity duration-100 group-hover:opacity-100"
+        />
       </div>
       <figcaption className="flex items-center gap-2 text-xs leading-4">
         <div className="min-w-0 flex-1">

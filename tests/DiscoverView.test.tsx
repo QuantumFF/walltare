@@ -2086,3 +2086,13 @@ test("a scroll no wheel started leaves the cursor where the keys put it", async 
 
   expect(document.activeElement).toBe(second);
 });
+
+test("a card draws a frame under the mouse, on a layer inside the picture", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first] = cards();
+
+  const frame = first.querySelector('[data-slot="hover-frame"]');
+  expect(frame?.className).toContain("group-hover:opacity-100");
+  expect(frame?.className).toContain("ring-inset");
+  expect(frame?.parentElement?.className).toContain("overflow-hidden");
+});
