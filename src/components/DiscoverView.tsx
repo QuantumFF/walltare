@@ -1029,6 +1029,8 @@ export function DiscoverView() {
               actions={resultKeys(livePicks.length)}
               onAct={act}
               onOpen={openOn}
+              // The keys act on the card under the mouse.
+              followPointer
               card={RESULT_CARD}
               density="discover"
               className="gap-y-8 px-6 pb-8"

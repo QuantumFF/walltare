@@ -26,6 +26,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type PointerEvent,
   type ReactNode,
   type Ref,
   type RefObject,
@@ -190,6 +191,17 @@ export interface ItemGridProps<T extends Keyed, A extends string> {
    * always did.
    */
   startOn?: T["id"] | null;
+  /**
+   * Whether the cursor follows the mouse: a pointer moved onto a card selects
+   * it, so the action keys act on the card under the mouse. Discover's grid,
+   * where the curator browses with the mouse and presses `P` or `D` over what
+   * they are looking at.
+   *
+   * Moved by motion and not by `pointerenter`, which also fires on a card a
+   * wheel pass slides under a still pointer — that is scrolling, and the cursor
+   * stays where it was.
+   */
+  followPointer?: boolean;
 }
 
 /**
@@ -413,6 +425,7 @@ function Grid<T extends Keyed, A extends string>({
   className,
   ref,
   startOn,
+  followPointer = false,
 }: GridProps<T, A>) {
   const gridRef = useRef<HTMLDivElement>(null);
   // How this layout finds a cell and brings one on screen, which is the whole of
@@ -437,6 +450,7 @@ function Grid<T extends Keyed, A extends string>({
     onFocus: handleFocus,
     onBlur: handleBlur,
     moveByKey,
+    moveByPointer,
   } = usePublishedSelection(items, focus, ref, startOn);
   const { item: selected, index } = selection;
 
@@ -514,11 +528,23 @@ function Grid<T extends Keyed, A extends string>({
     }
   };
 
+  // A mouse moved onto a card that is not the cursor's. Touch and pen have no
+  // hover to follow; a tap is a click, which opens the card.
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType !== "mouse" || !(event.target instanceof Element))
+      return;
+    const cell = event.target.closest<HTMLElement>("[data-cell]");
+    if (!cell || !gridRef.current?.contains(cell)) return;
+    const at = Number(cell.dataset.cell);
+    if (at !== index) moveByPointer(at);
+  };
+
   return (
     <div
       ref={gridRef}
       role="grid"
       aria-label={label}
+      onPointerMove={followPointer ? handlePointerMove : undefined}
       // Reachable programmatically and not by Tab. The cells hold the tab stop;
       // this is where focus lands when there is no cell left to hold it.
       tabIndex={-1}

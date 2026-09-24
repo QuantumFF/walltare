@@ -351,6 +351,14 @@ export interface PublishedSelection<T extends Keyed> {
    * pin the next card's overlay open.
    */
   moveByKey: (index: number) => void;
+  /**
+   * `moveTo` for a pointer that moved onto an entry, so a key pressed next acts
+   * on what is under the mouse. It never scrolls, since the entry is already
+   * where the pointer is, and it is focused undrawn. It takes the focus only
+   * from the list itself or from nowhere (`body`), never from a field the
+   * curator is typing in.
+   */
+  moveByPointer: (index: number) => void;
 }
 
 /**
@@ -411,6 +419,17 @@ export function usePublishedSelection<T extends Keyed>(
   const moveByKey = useCallback(
     (to: number) => {
       byKeyRef.current = true;
+      moveTo(to);
+    },
+    [moveTo],
+  );
+
+  // Whether the move the next focus answers came from the pointer
+  // (`moveByPointer`).
+  const byPointerRef = useRef(false);
+  const moveByPointer = useCallback(
+    (to: number) => {
+      byPointerRef.current = true;
       moveTo(to);
     },
     [moveTo],
@@ -488,11 +507,17 @@ export function usePublishedSelection<T extends Keyed>(
     // nor an entry that has a node (ADR 0022).
     const request = focusRequestRef.current;
     const requested = request !== null;
+    const byPointer = byPointerRef.current;
+    byPointerRef.current = false;
 
     // Moving the selection must not steal focus. When the curator is somewhere
     // else in the app, a list that changes underneath updates the selection and
     // the tab stop that goes with it, and leaves focus where they put it.
-    if (!holdsFocusRef.current && !requested) {
+    const idle =
+      byPointer &&
+      (document.activeElement === null ||
+        document.activeElement === document.body);
+    if (!holdsFocusRef.current && !requested && !idle) {
       focusedRef.current = target;
       return;
     }
@@ -565,6 +590,17 @@ export function usePublishedSelection<T extends Keyed>(
       return;
     }
 
+    // The pointer is already on the entry, so nothing scrolls, and the focus is
+    // undrawn: the mouse is what says where the cursor is.
+    if (byPointer && !requested) {
+      const node = nodeAt(index);
+      if (!node) return;
+      byKeyRef.current = false;
+      focusedRef.current = target;
+      node.focus({ preventScroll: true });
+      return;
+    }
+
     if (reveal) reveal(index);
     else nodeAt(index)?.scrollIntoView({ block: "nearest", inline: "nearest" });
 
@@ -599,5 +635,5 @@ export function usePublishedSelection<T extends Keyed>(
     holdsFocusRef.current = false;
   }, []);
 
-  return { selection, onFocus, onBlur, moveByKey };
+  return { selection, onFocus, onBlur, moveByKey, moveByPointer };
 }

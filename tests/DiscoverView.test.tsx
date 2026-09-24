@@ -1946,3 +1946,58 @@ test("the Close button puts the focus back on the card the cursor is on", async 
   expect(lightbox()).toBeNull();
   expect(document.activeElement).toBe(second);
 });
+
+/** The mouse moving over `target`, as a real pointer does. */
+async function hover(target: Element, pointerType = "mouse") {
+  await act(async () => {
+    fireEvent.pointerMove(target, { pointerType, bubbles: true });
+  });
+}
+
+test("the keys act on the card under the mouse", async () => {
+  withLibraryRoot();
+  answer = () => page(["fresh1", "fresh2", "fresh3"]);
+  await renderInApp(<DiscoverView />);
+  const [first, second, third] = cards();
+  await focusCard(first);
+
+  await hover(picture(second));
+  expect(document.activeElement).toBe(second);
+  await press("d");
+  expect(downloads).toEqual([["fresh2"]]);
+
+  await hover(third.querySelector("figcaption")!);
+  await press("p");
+  expect(pickButton(third)?.getAttribute("aria-pressed")).toBe("true");
+  await hover(second);
+
+  // The arrows carry on from where the mouse left the cursor.
+  await press("ArrowRight");
+  expect(document.activeElement).toBe(third);
+});
+
+test("a hover takes the focus from nowhere but never from the search box", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+
+  (document.activeElement as HTMLElement | null)?.blur();
+  await hover(second);
+  expect(document.activeElement).toBe(second);
+
+  const search = screen.getByRole("textbox", { name: "Search Wallhaven" });
+  await act(async () => {
+    search.focus();
+  });
+  await hover(first);
+  expect(document.activeElement).toBe(search);
+});
+
+test("a touch moving over a card leaves the cursor alone", async () => {
+  await renderInApp(<DiscoverView />);
+  const [first, second] = cards();
+  await focusCard(first);
+
+  await hover(second, "touch");
+
+  expect(document.activeElement).toBe(first);
+});
