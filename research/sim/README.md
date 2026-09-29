@@ -54,6 +54,24 @@ cargo run --release -- pair timing --selector $TOP,straddle+look
 
 The exact selector lists of every table are in the results file.
 
+Best-of-N studies for [#373](https://github.com/QuantumFF/walltare/issues/373),
+`results/best-of-four.md` (`group --help` for every flag). `src/group.rs` has
+its own run loop: a showing of 2 or N wallpapers under ADR 0060's rule, a
+curator who perceives every member once, and either one joint EP update per
+judgement (`group::joint_update`, tested against `rate_1vs1` and the research
+script) or one `rate_1vs1` per implied relation.
+
+```sh
+V=pair,bw4,best4,bw4/seq,bw4/count=show,best4/count=show,bw4/mixed,bw4/u=nolimit,bw4/u=free,bw4/m=2
+for n in 500 200; do
+  cargo run --release -- group runs --sizes $n --voter thurstone,bradley-terry --noise 1.0,0.5 \
+    --k 2.5,3 --reps 40 --variant $V
+done
+cargo run --release -- group arrival --old 500 --new 200 --each-before 20 --after 5000 \
+  --voter thurstone,bradley-terry --noise 1.0,0.5 --reps 40 \
+  --variant pair,pair/u=free,bw4,bw4/u=nolimit,bw4/u=free,best4
+```
+
 No dependencies and no Tauri build. `src/main.rs` compiles the app's
 `src-tauri/src/ranking.rs` by `#[path]`, so every run uses the real
 `rate_1vs1` and `select_pair` as they stand on this branch.

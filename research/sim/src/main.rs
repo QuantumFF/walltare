@@ -5,6 +5,7 @@
 mod ranking;
 
 mod decided_report;
+mod group;
 mod pair_report;
 mod prng;
 mod selectors;
@@ -61,7 +62,8 @@ usage: walltare-sim [options]
   --threads <cores>
 
 walltare-sim starting --help   starting Score studies (#374)
-walltare-sim pair --help       pair-selection studies (#370)";
+walltare-sim pair --help       pair-selection studies (#370)
+walltare-sim group --help      best-of-N studies (#373)";
 
 fn parse() -> Args {
     let mut a = Args {
@@ -159,6 +161,9 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("starting") {
         return starting::main(&argv[1..]);
+    }
+    if argv.first().map(String::as_str) == Some("group") {
+        return group::main(&argv[1..]);
     }
     if argv.first().map(String::as_str) == Some("pair") {
         return pair_report::main(&argv[1..]);
