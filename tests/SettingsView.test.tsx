@@ -2071,6 +2071,15 @@ test("the review ordering offers the two ends of the ranking, with lowest taken"
   expect(chosenIn(orderingSection())).toEqual(["Lowest Score"]);
 });
 
+test("the review ordering says which job each end of the ranking is for", async () => {
+  await openSettingsFromLibrary();
+
+  // The lowest end is the one the Bar exists to clear out (#397).
+  expect(orderingSection().textContent).toContain(
+    "Which end of the ranking Review works from: clear out the worst, or confirm favourites.",
+  );
+});
+
 test("picking an ordering writes the listing's own name for it", async () => {
   await openSettingsFromLibrary();
 

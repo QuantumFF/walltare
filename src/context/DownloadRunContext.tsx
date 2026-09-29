@@ -14,21 +14,15 @@ import {
 
 /**
  * How a batch of downloads ended, as a fact about the library rather than as
- * a sentence: `download-complete`'s counts, and the Round the landed files sent
- * the library back to.
- *
- * `backToRound` is `null` when the Round did not move backwards, which includes
- * a batch where nothing landed and a read of the Round that failed on either
- * side of the batch, the way a scan's `added` ending has it (ADR 0008). Every
- * download is a wallpaper with no comparisons, so a batch that landed anything
- * on a library past Round 1 sends it back there (ADR 0051).
+ * a sentence: `download-complete`'s counts. Every landed file is Undecided,
+ * which the headline's count says, so the ending carries nothing about it
+ * (ADR 0059).
  */
 export interface DownloadEnding {
   total: number;
   landed: number;
   failed: number;
   firstError: string | null;
-  backToRound: number | null;
 }
 
 /**
@@ -88,24 +82,11 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
   const runs = useRef(0);
   /** How many batches have ended, so a reply can tell one ended under it. */
   const endings = useRef(0);
-  /**
-   * The Round as it stood before the batch's first file, which the "back to
-   * Round N" ending is judged against.
-   */
-  const roundBefore = useRef<number | null>(null);
-  /**
-   * The last Round this provider read: before a click, or after a file landed.
-   * A batch opens on it, which is right even for one the frontend did not see
-   * start — clicked while the last batch was still reporting, so no read was
-   * made for it — because whatever that batch landed was read as it landed.
-   */
-  const lastRound = useRef<number | null>(null);
   const listeners = useRef(new Set<(ending: DownloadEnding) => void>());
 
   const open = useCallback((progress: DownloadProgress | null) => {
     running.current = true;
     runs.current += 1;
-    roundBefore.current = lastRound.current;
     setState({ running: true, run: runs.current, progress });
   }, []);
 
@@ -117,15 +98,6 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
 
   const download = useCallback<DownloadRunControls["download"]>(
     async (ids) => {
-      if (!running.current) {
-        // Before the call, so no file can land ahead of the read: the Round
-        // the batch is judged against is the one it started from.
-        try {
-          lastRound.current = (await client.getStats()).round;
-        } catch (error) {
-          console.error("Failed to read the Round before a download:", error);
-        }
-      }
       const ended = endings.current;
       // A refusal throws from here and opens nothing, so a click refused at
       // once never flashes a report of work that was never queued.
@@ -148,7 +120,6 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
       void client
         .getStats()
         .then((stats) => {
-          lastRound.current = stats.round;
           publish({ type: "stats-changed", stats });
         })
         .catch((error: unknown) => {
@@ -157,35 +128,9 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
     },
 
     downloadComplete: ({ total, landed, failed, first_error }) => {
-      const before = roundBefore.current;
       end();
-      const settle = (backToRound: number | null) => {
-        const ending = {
-          total,
-          landed,
-          failed,
-          firstError: first_error,
-          backToRound,
-        };
-        for (const listener of [...listeners.current]) listener(ending);
-      };
-      if (landed === 0 || before === null) {
-        settle(null);
-        return;
-      }
-      void client
-        .getStats()
-        .then((stats) => {
-          lastRound.current = stats.round;
-          settle(stats.round < before ? stats.round : null);
-        })
-        .catch((error: unknown) => {
-          console.error(
-            "Failed to read the Round a download left behind:",
-            error,
-          );
-          settle(null);
-        });
+      const ending = { total, landed, failed, firstError: first_error };
+      for (const listener of [...listeners.current]) listener(ending);
     },
   });
 
