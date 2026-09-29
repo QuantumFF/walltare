@@ -451,8 +451,8 @@ export function ToastSurface({
   // The scan is read rather than followed. What it does — the IPC and the
   // freshness events — is the scan run's, and this file turns its state into
   // the report and its outcome into the ending, which is the part that is copy
-  // (ADR 0021). The transitions' own IPC left with the
-  // Undo closures (ADR 0023), so nothing here calls the backend at all.
+  // (ADR 0021). The transitions' own IPC left with the Undo closures
+  // (ADR 0023), so nothing here calls the backend at all.
   const { state: scan } = useScanRun();
   const downloads = useDownloadState();
   const [transient, setTransient] = useState<Transient | null>(null);

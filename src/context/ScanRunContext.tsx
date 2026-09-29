@@ -217,6 +217,8 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // The outcome no longer waits on the read: it carries the count alone,
+      // and none of its listeners read the headline's stats (ADR 0059).
       settle({ kind: "added", added: added_count });
       // The headline moves through the bus, so Rank hears about the Undecided
       // wallpapers a scan just added without knowing a scan happened.
