@@ -78,7 +78,9 @@ async function renderRankView() {
 
 function idOf(alt: string): number {
   const { src } = screen.getByAltText(alt) as HTMLImageElement;
-  const match = /^wallpaper:\/\/localhost\/image\/(\d+)\?size=medium$/.exec(src);
+  const match = /^wallpaper:\/\/localhost\/image\/(\d+)\?size=medium$/.exec(
+    src,
+  );
   if (!match) throw new Error(`unexpected image src: ${src}`);
   return Number(match[1]);
 }
@@ -697,4 +699,89 @@ test("each pane is a named control the keyboard can reach", async () => {
   await runPickFeedback();
 
   expect(votes).toEqual([[1, 2]]);
+});
+
+const NOTHING_LEFT =
+  "Nothing left to decide. The rest are Close calls, best settled in Review.";
+
+function suggestion(): string | null {
+  return screen.queryByRole("status")?.querySelector("p")?.textContent ?? null;
+}
+
+test("once nothing is left to decide, Rank suggests Review and keeps the pair", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  mockCommand("get_stats", () =>
+    stats({ undecided_count: 3, close_call_count: 3 }),
+  );
+
+  await renderRankView();
+
+  expect(suggestion()).toBe(NOTHING_LEFT);
+  expect(shownIds()).toEqual([1, 2]);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Start Review" }));
+  });
+  expect(currentView()).toBe("review");
+});
+
+test("the suggestion follows the state, and Keep ranking puts it away until it is next true", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+  const outcomes: VoteOutcome[] = [
+    // A vote that leaves something to decide takes it away.
+    {
+      next_pair: pair(5, 6),
+      stats: stats({ undecided_count: 4, close_call_count: 3 }),
+    },
+    // One that settles the last brings it back.
+    {
+      next_pair: pair(7, 8),
+      stats: stats({ undecided_count: 3, close_call_count: 3 }),
+    },
+    // Dismissed, it stays away while still true...
+    {
+      next_pair: pair(9, 10),
+      stats: stats({ undecided_count: 3, close_call_count: 3 }),
+    },
+    // ...and comes back only after it was false in between.
+    {
+      next_pair: pair(11, 12),
+      stats: stats({ undecided_count: 5, close_call_count: 3 }),
+    },
+    {
+      next_pair: pair(13, 14),
+      stats: stats({ undecided_count: 3, close_call_count: 3 }),
+    },
+  ];
+  serveVote(() => outcomes.shift()!);
+  mockCommand("get_stats", () =>
+    stats({ undecided_count: 3, close_call_count: 3 }),
+  );
+
+  await renderRankView();
+  expect(suggestion()).toBe(NOTHING_LEFT);
+
+  const pick = async () => {
+    await clickPane("Left");
+    await runPickFeedback();
+    await flush();
+  };
+
+  await pick();
+  expect(suggestion()).toBeNull();
+  await pick();
+  expect(suggestion()).toBe(NOTHING_LEFT);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Keep ranking" }));
+  });
+  expect(suggestion()).toBeNull();
+  expect(shownIds()).toEqual([5, 6]);
+
+  await pick();
+  expect(suggestion()).toBeNull();
+  await pick();
+  expect(suggestion()).toBeNull();
+  await pick();
+  expect(suggestion()).toBe(NOTHING_LEFT);
 });

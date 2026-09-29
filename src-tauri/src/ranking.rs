@@ -22,6 +22,26 @@ pub struct WallpaperSummary {
     pub rating_mu: f64,
     pub rating_sigma: f64,
     pub comparisons_count: u32,
+    /// Kept rather than Active. Pair selection never draws a Kept wallpaper
+    /// first once it has a Score (ADR 0060).
+    pub kept: bool,
+}
+
+impl WallpaperSummary {
+    fn rating(&self) -> Rating {
+        Rating::new(self.rating_mu, self.rating_sigma)
+    }
+
+    /// At least one Comparison, which is what having a Score means.
+    fn is_scored(&self) -> bool {
+        self.comparisons_count > 0
+    }
+
+    /// Decided or a Close call: nothing a first pick has to spend a vote on.
+    fn is_settled(&self, bar: Option<f64>) -> bool {
+        crate::bar::decided(self.rating(), self.comparisons_count, bar).is_some()
+            || crate::bar::close_call(self.rating(), self.comparisons_count, bar)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,27 +63,139 @@ pub trait Rng {
     fn next_f64(&mut self) -> f64;
 }
 
-/// Picks a comparison pair from the eligible pool.
+/// How many of the latest Comparisons keep their wallpapers from being drawn
+/// first (ADR 0060).
+pub const REPEAT_WINDOW: usize = 10;
+
+/// What pair selection reads of the Comparison record. Derived from it on every
+/// draw, never held as state (ADR 0060).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Recent<'a> {
+    /// The latest Comparisons, newest first, at most [`REPEAT_WINDOW`] of them.
+    pub pairs: &'a [[i64; 2]],
+    /// Whether the latest Comparison was the first for either of its
+    /// wallpapers.
+    pub last_was_a_first: bool,
+}
+
+/// Picks a comparison pair from the Eligible pool (ADR 0060).
 ///
-/// First pick: least `comparisons_count`, random among ties. Second pick:
-/// opponent weighted toward a μ similar to the first pick's (Gaussian
+/// `exclude` is the pair on screen, kept out of both picks unless that leaves
+/// fewer than two wallpapers, so a small library still ranks.
+///
+/// First pick, in order:
+/// 1. While fewer than half the pool has a Score, a random Unrated wallpaper,
+///    Kept included.
+/// 2. Past half, the same, unless the latest Comparison was the first for
+///    either of its wallpapers. Then the pair holds no Unrated wallpaper, so
+///    arrivals appear in at most every other pair.
+/// 3. The least-compared Undecided wallpaper with a Score, random among ties,
+///    leaving out Kept wallpapers and Close calls.
+/// 4. When none is left, the least-compared wallpaper with a Score.
+///
+/// Steps 3 and 4 leave out the wallpapers in the last [`REPEAT_WINDOW`]
+/// Comparisons, and the window shrinks one Comparison at a time until it
+/// leaves something to draw.
+///
+/// The opponent is weighted toward a μ similar to the first pick's (Gaussian
 /// weighting on |μ₁ − μ₂| / σ₁), falling back to uniform random when all
-/// weights underflow. Returns `None` for pools with fewer than two entries.
+/// weights underflow. Decided and Kept wallpapers are opponents like any other,
+/// but an Unrated first pick, or any pick under step 2, is given an opponent
+/// with a Score whenever one is available. Returns `None` for pools with fewer
+/// than two entries.
 pub fn select_pair<'a, R: Rng>(
     pool: &'a [WallpaperSummary],
+    bar: Option<f64>,
+    recent: Recent<'_>,
+    exclude: &[i64],
     rng: &mut R,
 ) -> Option<(&'a WallpaperSummary, &'a WallpaperSummary)> {
-    if pool.len() < 2 {
+    let narrowed: Vec<&WallpaperSummary> =
+        pool.iter().filter(|w| !exclude.contains(&w.id)).collect();
+    let base: Vec<&WallpaperSummary> = if narrowed.len() >= 2 {
+        narrowed
+    } else {
+        pool.iter().collect()
+    };
+    if base.len() < 2 {
         return None;
     }
-    let least = pool.iter().map(|w| w.comparisons_count).min()?;
-    let ties: Vec<&WallpaperSummary> = pool
-        .iter()
-        .filter(|w| w.comparisons_count == least)
-        .collect();
-    let first = pick_random(&ties, rng);
 
-    let others: Vec<&WallpaperSummary> = pool.iter().filter(|w| w.id != first.id).collect();
+    let scored_count = pool.iter().filter(|w| w.is_scored()).count();
+    let young = scored_count * 2 < pool.len();
+    let capped = !young && recent.last_was_a_first;
+
+    let (scored, unrated): (Vec<&WallpaperSummary>, Vec<&WallpaperSummary>) =
+        base.iter().copied().partition(|w| w.is_scored());
+    let first = if !unrated.is_empty() && !capped {
+        pick_random(&unrated, rng)
+    } else {
+        let undecided: Vec<&WallpaperSummary> = scored
+            .iter()
+            .copied()
+            .filter(|w| !w.kept && !w.is_settled(bar))
+            .collect();
+        match least_compared_outside(&undecided, recent.pairs, rng)
+            .or_else(|| least_compared_outside(&scored, recent.pairs, rng))
+        {
+            Some(first) => first,
+            // Capped with nothing scored left to draw: an arrival after all,
+            // rather than no pair.
+            None => pick_random(&unrated, rng),
+        }
+    };
+
+    let others: Vec<&WallpaperSummary> =
+        base.iter().copied().filter(|w| w.id != first.id).collect();
+    let scored_others: Vec<&WallpaperSummary> =
+        others.iter().copied().filter(|w| w.is_scored()).collect();
+    let opponents = if (capped || !first.is_scored()) && !scored_others.is_empty() {
+        scored_others
+    } else {
+        others
+    };
+    Some((first, weighted_by_mu(first, &opponents, rng)))
+}
+
+/// The least-compared of `candidates`, random among ties, leaving out any in
+/// the latest `pairs`. The window is the widest that still leaves one, so it
+/// shrinks down to nothing rather than draw nothing. `None` only when
+/// `candidates` is empty.
+fn least_compared_outside<'a, R: Rng>(
+    candidates: &[&'a WallpaperSummary],
+    pairs: &[[i64; 2]],
+    rng: &mut R,
+) -> Option<&'a WallpaperSummary> {
+    // How many Comparisons back each candidate was last shown, or the whole
+    // window when it was not.
+    let ages: Vec<usize> = candidates
+        .iter()
+        .map(|w| {
+            pairs
+                .iter()
+                .take(REPEAT_WINDOW)
+                .position(|p| p.contains(&w.id))
+                .unwrap_or(REPEAT_WINDOW)
+        })
+        .collect();
+    let window = *ages.iter().max()?;
+    let outside = || {
+        candidates
+            .iter()
+            .zip(&ages)
+            .filter(move |(_, &age)| age >= window)
+            .map(|(w, _)| *w)
+    };
+    let least = outside().map(|w| w.comparisons_count).min()?;
+    let ties: Vec<&WallpaperSummary> = outside().filter(|w| w.comparisons_count == least).collect();
+    Some(pick_random(&ties, rng))
+}
+
+fn weighted_by_mu<'a, R: Rng>(
+    first: &WallpaperSummary,
+    others: &[&'a WallpaperSummary],
+    rng: &mut R,
+) -> &'a WallpaperSummary {
     let scale = first.rating_sigma.abs().max(f64::MIN_POSITIVE);
     let weights: Vec<f64> = others
         .iter()
@@ -74,7 +206,7 @@ pub fn select_pair<'a, R: Rng>(
         .collect();
     let total: f64 = weights.iter().sum();
 
-    let second = if total > 0.0 && total.is_finite() {
+    if total > 0.0 && total.is_finite() {
         let mut r = rng.next_f64() * total;
         let mut chosen = others.len() - 1;
         for (i, weight) in weights.iter().enumerate() {
@@ -89,9 +221,8 @@ pub fn select_pair<'a, R: Rng>(
         others[chosen]
     } else {
         // Weights underflowed entirely: uniform random within the pool.
-        pick_random(&others, rng)
-    };
-    Some((first, second))
+        pick_random(others, rng)
+    }
 }
 
 fn pick_random<'a, R: Rng>(items: &[&'a WallpaperSummary], rng: &mut R) -> &'a WallpaperSummary {
@@ -549,15 +680,22 @@ mod tests {
             rating_mu: mu,
             rating_sigma: sigma,
             comparisons_count: count,
+            kept: false,
         }
     }
 
     #[test]
     fn empty_and_single_candidate_pools_return_none() {
         let mut rng = SeqRng::new(&[0.5]);
-        assert_eq!(select_pair(&[], &mut rng), None);
+        assert_eq!(
+            select_pair(&[], None, Recent::default(), &[], &mut rng),
+            None
+        );
         let pool = [summary(1, MU, SIGMA, 0)];
-        assert_eq!(select_pair(&pool, &mut rng), None);
+        assert_eq!(
+            select_pair(&pool, None, Recent::default(), &[], &mut rng),
+            None
+        );
     }
 
     #[test]
@@ -568,9 +706,23 @@ mod tests {
             summary(3, MU, SIGMA, 3),
         ];
         // 0.0 * 2 -> first tie member; 0.999 * 2 -> second tie member.
-        let (first, _) = select_pair(&pool, &mut SeqRng::new(&[0.0, 0.5])).unwrap();
+        let (first, _) = select_pair(
+            &pool,
+            None,
+            Recent::default(),
+            &[],
+            &mut SeqRng::new(&[0.0, 0.5]),
+        )
+        .unwrap();
         assert_eq!(first.id, 2);
-        let (first, _) = select_pair(&pool, &mut SeqRng::new(&[0.999, 0.5])).unwrap();
+        let (first, _) = select_pair(
+            &pool,
+            None,
+            Recent::default(),
+            &[],
+            &mut SeqRng::new(&[0.999, 0.5]),
+        )
+        .unwrap();
         assert_eq!(first.id, 3);
     }
 
@@ -583,13 +735,13 @@ mod tests {
             summary(3, 90.0, SIGMA, 9),
         ];
         let mut rng = SeqRng::new(&[0.0, 0.0]);
-        let (first, second) = select_pair(&pool, &mut rng).unwrap();
+        let (first, second) = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
         assert_eq!(first.id, 2);
         assert_eq!(second.id, 1);
 
         // Same inputs, same RNG values -> identical result.
         let mut rng = SeqRng::new(&[0.0, 0.0]);
-        let again = select_pair(&pool, &mut rng).unwrap();
+        let again = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
         assert_eq!((first.id, second.id), (again.0.id, again.1.id));
     }
 
@@ -603,7 +755,14 @@ mod tests {
         ];
         // A draw of exactly 0.0 is the boundary case: it must still skip the
         // zero-weight candidate rather than land on index 0.
-        let (first, second) = select_pair(&pool, &mut SeqRng::new(&[0.0])).unwrap();
+        let (first, second) = select_pair(
+            &pool,
+            None,
+            Recent::default(),
+            &[],
+            &mut SeqRng::new(&[0.0]),
+        )
+        .unwrap();
         assert_eq!(first.id, 2);
         assert_eq!(second.id, 3);
     }
@@ -618,13 +777,276 @@ mod tests {
         ];
         // Uniform draw 0.9 over candidates [1, 3]: floor(0.9 * 2) = 1 -> id 3.
         let mut rng = SeqRng::new(&[0.0, 0.9]);
-        let (first, second) = select_pair(&pool, &mut rng).unwrap();
+        let (first, second) = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
         assert_eq!(first.id, 2);
         assert_eq!(second.id, 3);
 
         // Draw 0.1 picks the other one; determinism holds either way.
         let mut rng = SeqRng::new(&[0.0, 0.1]);
-        let (_, second) = select_pair(&pool, &mut rng).unwrap();
+        let (_, second) = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
         assert_eq!(second.id, 1);
+    }
+
+    fn kept(id: i64, mu: f64, sigma: f64, count: u32) -> WallpaperSummary {
+        WallpaperSummary {
+            kept: true,
+            ..summary(id, mu, sigma, count)
+        }
+    }
+
+    /// Every draw a test sweeps: enough to land on each member of a small pool.
+    const DRAWS: [f64; 7] = [0.0, 0.15, 0.3, 0.5, 0.7, 0.85, 0.999];
+
+    /// The pair for each draw in [`DRAWS`], as `(first, second)` ids.
+    fn pairs_over_draws(
+        pool: &[WallpaperSummary],
+        bar: Option<f64>,
+        recent: Recent<'_>,
+        exclude: &[i64],
+    ) -> Vec<(i64, i64)> {
+        let mut out = Vec::new();
+        for a in DRAWS {
+            for b in DRAWS {
+                let (first, second) =
+                    select_pair(pool, bar, recent, exclude, &mut SeqRng::new(&[a, b])).unwrap();
+                out.push((first.id, second.id));
+            }
+        }
+        out
+    }
+
+    const BAR: Option<f64> = Some(20.0);
+
+    // Relative to a Bar of 20: far off it with σ 2 is Decided, near it with σ 1
+    // is a Close call, near it with σ 5 is Undecided.
+    fn decided(id: i64, count: u32) -> WallpaperSummary {
+        summary(id, 40.0, 2.0, count)
+    }
+    fn close_call(id: i64, count: u32) -> WallpaperSummary {
+        summary(id, 20.5, 1.0, count)
+    }
+    fn undecided(id: i64, count: u32) -> WallpaperSummary {
+        summary(id, 22.0, 5.0, count)
+    }
+
+    #[test]
+    fn a_decided_wallpaper_is_never_drawn_first_while_undecided_ones_remain() {
+        let pool = [
+            decided(1, 1),
+            decided(2, 1),
+            undecided(3, 8),
+            undecided(4, 9),
+        ];
+        for (first, _) in pairs_over_draws(&pool, BAR, Recent::default(), &[]) {
+            assert_eq!(first, 3, "the least-compared Undecided one");
+        }
+    }
+
+    #[test]
+    fn kept_wallpapers_and_close_calls_are_not_drawn_first_but_are_opponents() {
+        let pool = [
+            WallpaperSummary {
+                kept: true,
+                ..undecided(1, 1)
+            },
+            close_call(2, 1),
+            undecided(3, 9),
+        ];
+        let pairs = pairs_over_draws(&pool, BAR, Recent::default(), &[]);
+        assert!(pairs.iter().all(|&(first, _)| first == 3));
+        let opponents: Vec<i64> = pairs.iter().map(|&(_, second)| second).collect();
+        assert!(opponents.contains(&1) && opponents.contains(&2));
+    }
+
+    #[test]
+    fn decided_wallpapers_are_opponents_too() {
+        // Only one wallpaper to decide, so its opponent has to be a Decided one.
+        let pool = [undecided(1, 3), decided(2, 40), decided(3, 5)];
+        let opponents: Vec<i64> = pairs_over_draws(&pool, BAR, Recent::default(), &[])
+            .into_iter()
+            .map(|(first, second)| {
+                assert_eq!(first, 1);
+                second
+            })
+            .collect();
+        assert!(opponents.contains(&3));
+    }
+
+    #[test]
+    fn nothing_in_the_last_ten_comparisons_is_drawn_first() {
+        // The least-compared Undecided wallpaper was in the tenth Comparison
+        // back, so the next-least goes first.
+        let pool = [undecided(1, 1), undecided(2, 2), undecided(3, 5)];
+        let mut history = vec![[90, 91]; REPEAT_WINDOW];
+        history[REPEAT_WINDOW - 1] = [1, 90];
+        let recent = Recent {
+            pairs: &history,
+            last_was_a_first: false,
+        };
+        for (first, _) in pairs_over_draws(&pool, BAR, recent, &[]) {
+            assert_eq!(first, 2);
+        }
+
+        // An eleventh Comparison back is outside the window.
+        history.insert(0, [90, 91]);
+        let recent = Recent {
+            pairs: &history,
+            last_was_a_first: false,
+        };
+        for (first, _) in pairs_over_draws(&pool, BAR, recent, &[]) {
+            assert_eq!(first, 1);
+        }
+    }
+
+    #[test]
+    fn the_window_shrinks_in_a_three_wallpaper_library() {
+        // Every wallpaper was in the last three Comparisons, so the window gives
+        // way to the one shown longest ago.
+        let pool = [undecided(1, 1), undecided(2, 5), undecided(3, 6)];
+        let history = [[1, 2], [2, 1], [3, 1]];
+        let recent = Recent {
+            pairs: &history,
+            last_was_a_first: false,
+        };
+        for (first, second) in pairs_over_draws(&pool, BAR, recent, &[]) {
+            assert_eq!(first, 3);
+            assert_ne!(second, 3);
+        }
+
+        // The pair on screen is the rest of the window, and gives way as well
+        // rather than leave one wallpaper.
+        for (first, second) in pairs_over_draws(&pool, BAR, recent, &[1, 2]) {
+            assert_ne!(first, second);
+        }
+    }
+
+    #[test]
+    fn the_pair_on_screen_stays_out_of_both_picks() {
+        let pool = [
+            undecided(1, 1),
+            undecided(2, 1),
+            undecided(3, 4),
+            undecided(4, 4),
+        ];
+        for (first, second) in pairs_over_draws(&pool, BAR, Recent::default(), &[1, 2]) {
+            assert!(![first, second].contains(&1) && ![first, second].contains(&2));
+        }
+    }
+
+    #[test]
+    fn unrated_first_while_fewer_than_half_have_a_score_kept_included() {
+        let pool = [
+            undecided(1, 1),
+            undecided(2, 1),
+            kept(3, MU, SIGMA, 0),
+            summary(4, MU, SIGMA, 0),
+            summary(5, MU, SIGMA, 0),
+        ];
+        // Even straight after a first Comparison.
+        let recent = Recent {
+            pairs: &[[1, 2]],
+            last_was_a_first: true,
+        };
+        let firsts: Vec<i64> = pairs_over_draws(&pool, BAR, recent, &[])
+            .into_iter()
+            .map(|(first, _)| first)
+            .collect();
+        assert!(firsts.iter().all(|id| [3, 4, 5].contains(id)));
+        assert!(firsts.contains(&3), "a Kept arrival is drawn too");
+    }
+
+    #[test]
+    fn two_unrated_are_never_paired_once_one_score_exists() {
+        let pool = [
+            summary(1, MU, SIGMA, 0),
+            summary(2, MU, SIGMA, 0),
+            summary(3, MU, SIGMA, 0),
+            summary(4, 29.2, 7.2, 1),
+        ];
+        for (first, second) in pairs_over_draws(&pool, BAR, Recent::default(), &[]) {
+            assert!(first == 4 || second == 4, "({first}, {second})");
+        }
+    }
+
+    #[test]
+    fn past_half_a_first_comparison_is_followed_by_a_pair_with_no_unrated() {
+        let pool = [
+            undecided(1, 1),
+            undecided(2, 3),
+            summary(3, MU, SIGMA, 0),
+            summary(4, MU, SIGMA, 0),
+        ];
+        let after_a_first = Recent {
+            pairs: &[[3, 9]],
+            last_was_a_first: true,
+        };
+        for (first, second) in pairs_over_draws(&pool, BAR, after_a_first, &[]) {
+            assert!([1, 2].contains(&first) && [1, 2].contains(&second));
+        }
+
+        // And the pair after that goes back to an arrival first.
+        let after_that = Recent {
+            pairs: &[[1, 2], [3, 9]],
+            last_was_a_first: false,
+        };
+        for (first, second) in pairs_over_draws(&pool, BAR, after_that, &[]) {
+            assert!([3, 4].contains(&first));
+            assert!([1, 2].contains(&second));
+        }
+    }
+
+    #[test]
+    fn once_nothing_is_left_to_decide_the_least_compared_goes_first() {
+        let pool = [
+            decided(1, 6),
+            close_call(2, 20),
+            kept(3, 40.0, 2.0, 4),
+            decided(4, 5),
+        ];
+        for (first, _) in pairs_over_draws(&pool, BAR, Recent::default(), &[]) {
+            assert_eq!(first, 3);
+        }
+        // Under the same window.
+        let recent = Recent {
+            pairs: &[[3, 1]],
+            last_was_a_first: false,
+        };
+        for (first, _) in pairs_over_draws(&pool, BAR, recent, &[]) {
+            assert_eq!(first, 4);
+        }
+    }
+
+    #[test]
+    fn selection_stays_under_a_millisecond_at_ten_thousand() {
+        // Deterministic spread of Scores, counts and Statuses.
+        let pool: Vec<WallpaperSummary> = (0..10_000)
+            .map(|i| WallpaperSummary {
+                id: i,
+                rating_mu: 10.0 + (i % 997) as f64 * 0.03,
+                rating_sigma: 0.8 + (i % 13) as f64 * 0.5,
+                comparisons_count: 1 + (i % 29) as u32,
+                kept: i % 17 == 0,
+            })
+            .collect();
+        let history: Vec<[i64; 2]> = (0..REPEAT_WINDOW as i64).map(|i| [i, i + 5000]).collect();
+        let recent = Recent {
+            pairs: &history,
+            last_was_a_first: false,
+        };
+        let mut rng = SeqRng::new(&[0.1, 0.4, 0.7, 0.9]);
+        let runs = 50;
+        let start = std::time::Instant::now();
+        for _ in 0..runs {
+            std::hint::black_box(select_pair(&pool, Some(20.0), recent, &[1, 2], &mut rng));
+        }
+        let each = start.elapsed() / runs;
+        // A debug build is several times slower than what ships; the bound is
+        // for the release build.
+        let limit = if cfg!(debug_assertions) {
+            std::time::Duration::from_millis(10)
+        } else {
+            std::time::Duration::from_millis(1)
+        };
+        assert!(each < limit, "{each:?} per selection");
     }
 }

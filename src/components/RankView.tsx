@@ -52,6 +52,19 @@ function roundExplanation(stats: Stats | null): string {
   return `Round ${round}: ${stats?.round_participated_count ?? 0} of ${stats?.eligible_count ?? 0} wallpapers have been compared at least ${times}.`;
 }
 
+/**
+ * Every Eligible wallpaper is Decided or a Close call (ADR 0060). An empty pool
+ * has nothing to decide either, but it has no pair to keep ranking on, so it
+ * gets no suggestion.
+ */
+function nothingLeftToDecide(stats: Stats | null): boolean {
+  return (
+    !!stats &&
+    stats.eligible_count > 0 &&
+    stats.undecided_count === stats.close_call_count
+  );
+}
+
 /** The ids in a pair slot, for the exclusion `getPair`/`vote` accept. */
 function idsOf(pair: [Wallpaper, Wallpaper] | null): number[] {
   return pair ? [pair[0].id, pair[1].id] : [];
@@ -200,6 +213,13 @@ export function RankView() {
   const [voting, setVoting] = useState<Side | null>(null);
   const [skipping, setSkipping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Keep ranking puts the suggestion away until it is next true, so it resets
+  // the moment a vote or a scan leaves something to decide again. Adjusted
+  // during render rather than in an effect, so the suggestion never flashes
+  // back for a frame when it becomes true again.
+  const nothingLeft = nothingLeftToDecide(stats);
+  const [suggestionDismissed, setSuggestionDismissed] = useState(false);
+  if (!nothingLeft && suggestionDismissed) setSuggestionDismissed(false);
   // Image URLs the browser has finished fetching. Generating a medium
   // thumbnail off a 150MB source takes seconds, and until it lands the pane is
   // blank — so a pick made before both land is a pick on wallpapers the user
@@ -482,6 +502,31 @@ export function RankView() {
           </span>
         </div>
       </PageBar>
+      {nothingLeft && !suggestionDismissed && (
+        // Under the headline and above the pair, which stays: the curator can
+        // keep ranking, and a pair keeps coming (ADR 0060).
+        <div
+          role="status"
+          className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border/60 px-4 py-2 text-sm"
+        >
+          <p className="text-muted-foreground">
+            Nothing left to decide. The rest are Close calls, best settled in
+            Review.
+          </p>
+          <div className="ml-auto flex items-center gap-2">
+            <Button size="sm" onClick={() => setView("review")}>
+              Start Review
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setSuggestionDismissed(true)}
+            >
+              Keep ranking
+            </Button>
+          </div>
+        </div>
+      )}
     </>
   );
 
