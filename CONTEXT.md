@@ -201,7 +201,7 @@ other, or by keeping both, which makes the pair **Distinct**. Distinct is a
 record, like a Comparison: the curator's judgement, kept so the pair is never
 offered again. Choosing between two copies is not a Comparison, because it says
 nothing about where either stands among the others, and a Near-duplicate pair
-is never drawn against each other in Rank.
+is never shown together in Rank.
 
 A wallpaper arriving as a Near-duplicate of a Rejected one is offered as
 something the curator rejected before. Two Rejected wallpapers are never
@@ -212,11 +212,21 @@ a Result)
 
 ## Comparison
 
-One pairwise vote: two wallpapers, one winner, one loser. Permanent. Comparisons are never deleted.
+One vote on one showing: two or four wallpapers put in front of the curator,
+of which they name the best and the worst. With two, the best is the winner and
+the worst the loser; with four, the two left unnamed are neither, and nothing
+says which of them is better. Permanent. Comparisons are never deleted.
 
-Which of the two the user sees on the left carries no meaning. The pair is
-presented in random order so that the habit of picking the left one does not
-become part of the rating.
+A Comparison of four is one vote, not the pairwise ones it implies, because the
+curator made one judgement and the rating has to be as sure as that and no
+surer. Every count of Comparisons counts it once. See
+[ADR 0061](docs/adr/0061-a-comparison-is-one-vote-on-a-showing-of-two-or-four.md).
+
+Where each wallpaper sits on screen carries no meaning. A showing is presented
+in random order so that the habit of picking the left one does not become part
+of the rating.
+
+_Avoid_: judgement, group vote, match
 
 ## Score
 
