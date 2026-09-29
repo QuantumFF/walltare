@@ -30,10 +30,10 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 // hidden view for free, and the one event that cannot be patched waits until
 // the curator is looking (ADR 0015).
 
-/** The Stats a vote answers with: a Round further on than the boot read. */
+/** The Stats a vote answers with: one fewer Undecided than the boot read. */
 const VOTED_STATS = stats({
-  round: 4,
-  round_participated_count: 1,
+  undecided_count: 5,
+  decided_above_count: 4,
   total_comparisons: 19,
 });
 
@@ -432,16 +432,15 @@ test("a vote patches Rank's headline from stats-changed", async () => {
   jest.useFakeTimers();
   await openApp();
   await panesArrive();
-  expect(pageBar("rank").textContent).toContain("Round 3");
+  expect(pageBar("rank").textContent).toContain("6 / 10 Undecided");
 
   await press("ArrowLeft", { target: window });
   await advancePickFeedback();
   expect(votes).toEqual([[1, 2]]);
 
   // The headline reads the event rather than the response, so the one path into
-  // it is the one #113's refetch after a scan will take to send it back to
-  // Round 1.
-  expect(pageBar("rank").textContent).toContain("Round 4");
+  // it is the one #113's refetch after a scan takes to raise it again.
+  expect(pageBar("rank").textContent).toContain("5 / 10 Undecided");
   expect(pageBar("rank").textContent).toContain("19");
 });
 

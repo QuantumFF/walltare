@@ -37,8 +37,12 @@ impl WallpaperSummary {
         self.comparisons_count > 0
     }
 
+    pub(crate) fn decided(&self, bar: Option<f64>) -> Option<crate::bar::Side> {
+        crate::bar::decided(self.rating(), self.comparisons_count, bar)
+    }
+
     pub(crate) fn is_decided(&self, bar: Option<f64>) -> bool {
-        crate::bar::decided(self.rating(), self.comparisons_count, bar).is_some()
+        self.decided(bar).is_some()
     }
 
     pub(crate) fn is_close_call(&self, bar: Option<f64>) -> bool {
