@@ -63,7 +63,7 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
     for (i, &(a, a_hash)) in hashes.iter().enumerate() {
         for &(b, b_hash) in &hashes[i + 1..] {
             // `a` is below `b`, the order a Distinct record is keyed in.
-            if (a_hash ^ b_hash).count_ones() <= HAMMING_LIMIT && !distinct.contains(&(a, b)) {
+            if within_limit(a_hash, b_hash) && !distinct.contains(&(a, b)) {
                 pairs.push(NearDuplicatePair {
                     kind: PairKind::KeepOne,
                     wallpapers: [row(a)?, row(b)?],
@@ -72,6 +72,56 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
         }
     }
     Ok(pairs)
+}
+
+/// The unanswered Near-duplicate pairs among the Eligible wallpapers, which
+/// pair selection keeps apart (#403).
+///
+/// These are the pairs [`waiting_pairs`] offers as keep-one. An answer either
+/// soft-rejects one of the two or makes the pair Distinct, and both take it
+/// out, so a Distinct pair can be drawn together. Reading it costs one pass
+/// over the hashes, and each pair asked about is worked out then, so a draw
+/// never pays for every pair in the library.
+pub fn unanswered_pairs(conn: &Connection) -> Result<UnansweredPairs, AppError> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT id, perceptual_hash FROM wallpapers
+         WHERE perceptual_hash IS NOT NULL AND {}",
+        Status::ELIGIBLE_SQL
+    ))?;
+    let hashes = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u64)))?
+        .collect::<Result<_, _>>()?;
+    Ok(UnansweredPairs {
+        hashes,
+        distinct: distinct_pairs(conn)?,
+    })
+}
+
+/// What [`unanswered_pairs`] read: the Eligible wallpapers' hashes and the
+/// Distinct pairs.
+pub struct UnansweredPairs {
+    hashes: HashMap<i64, u64>,
+    distinct: HashSet<(i64, i64)>,
+}
+
+impl UnansweredPairs {
+    /// Whether `a` and `b`, in either order, are an unanswered Near-duplicate
+    /// pair. A wallpaper that is not Eligible or not hashed yet is in none.
+    pub fn contains(&self, a: i64, b: i64) -> bool {
+        match (self.hashes.get(&a), self.hashes.get(&b)) {
+            (Some(&a_hash), Some(&b_hash)) => {
+                a != b
+                    && within_limit(a_hash, b_hash)
+                    && !self.distinct.contains(&(a.min(b), a.max(b)))
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether two perceptual hashes are close enough to be one image.
+fn within_limit(a: u64, b: u64) -> bool {
+    (a ^ b).count_ones() <= HAMMING_LIMIT
 }
 
 /// Keeps `kept` and soft-rejects `other` into `destination_folder`, answering

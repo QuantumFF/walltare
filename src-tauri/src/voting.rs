@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use crate::bar::Side;
 use crate::db;
 use crate::error::AppError;
+use crate::near_duplicates;
 use crate::ranking::{self, Rng};
 
 /// A pair holds two rows of the shape every listing already serves, so it uses
@@ -70,8 +71,11 @@ pub struct VoteOutcome {
 /// when honouring it would leave fewer than two candidates, so a small library
 /// still ranks.
 ///
-/// The Bar and the latest Comparisons are read here on every draw, never held
-/// as state (ADR 0060).
+/// An unanswered Near-duplicate pair is never drawn together, since a vote
+/// between two Near-duplicates says nothing about where either stands.
+///
+/// The Bar, the latest Comparisons and the unanswered Near-duplicate pairs are
+/// read here on every draw, never held as state (ADR 0060).
 pub fn get_pair<R: Rng>(
     conn: &Connection,
     exclude: &[i64],
@@ -84,10 +88,13 @@ pub fn get_pair<R: Rng>(
         pairs: &pairs,
         last_was_a_first,
     };
-    let (first, second) =
-        ranking::select_pair(&pool, bar, recent, exclude, rng).ok_or_else(|| {
+    let unanswered = near_duplicates::unanswered_pairs(conn)?;
+    let apart = |a, b| unanswered.contains(a, b);
+    let (first, second) = ranking::select_pair(&pool, bar, recent, exclude, &apart, rng)
+        .ok_or_else(|| {
             AppError::NotEnoughWallpapers(format!(
-                "pair selection needs at least two eligible wallpapers, found {}",
+                "pair selection needs two eligible wallpapers that are not an unanswered \
+                 Near-duplicate pair, found {} eligible",
                 pool.len()
             ))
         })?;
@@ -453,6 +460,69 @@ mod tests {
                 "excluded wallpaper appeared in {ids:?}"
             );
             assert!(ids.contains(&c) && ids.contains(&d));
+        }
+    }
+
+    /// An Active wallpaper carrying `hash`, the way pre-generation leaves it.
+    fn seed_hashed(conn: &Connection, hash: u64) -> i64 {
+        let id = seed_on(conn, "active", MU, SIGMA, 0);
+        db::record_perceptual_hash(conn, id, hash).unwrap();
+        id
+    }
+
+    /// Every pair drawn over many draws, as its two ids lowest first.
+    fn pairs_drawn(conn: &Connection) -> Vec<(i64, i64)> {
+        let draws = [0.0, 0.15, 0.3, 0.5, 0.7, 0.85, 0.999];
+        let mut out = Vec::new();
+        for a in draws {
+            for b in draws {
+                for c in draws {
+                    let pair = get_pair(conn, &[], &mut SeqRng::new(&[a, b, c])).unwrap();
+                    out.push((pair[0].id.min(pair[1].id), pair[0].id.max(pair[1].id)));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn an_unanswered_near_duplicate_pair_is_never_drawn_together() {
+        let conn = test_conn();
+        let a = seed_hashed(&conn, 0);
+        let b = seed_hashed(&conn, 0b11);
+        let c = seed_hashed(&conn, u64::MAX);
+        let d = seed_on(&conn, "active", MU, SIGMA, 0);
+
+        let drawn = pairs_drawn(&conn);
+
+        assert!(!drawn.contains(&(a, b)), "Near-duplicates drawn together");
+        // Each of the two still meets the others.
+        for pair in [(a, c), (a, d), (b, c), (b, d)] {
+            assert!(drawn.contains(&pair), "{pair:?} never drawn");
+        }
+    }
+
+    #[test]
+    fn a_distinct_pair_can_be_drawn_together() {
+        let conn = test_conn();
+        let a = seed_hashed(&conn, 0);
+        let b = seed_hashed(&conn, 0);
+        seed_hashed(&conn, u64::MAX);
+        near_duplicates::keep_both(&conn, a, b).unwrap();
+
+        assert!(pairs_drawn(&conn).contains(&(a, b)));
+    }
+
+    #[test]
+    fn a_library_that_is_only_an_unanswered_near_duplicate_pair_draws_nothing() {
+        // Rank has nothing it may show, and Review has the pair to answer.
+        let conn = test_conn();
+        seed_hashed(&conn, 0);
+        seed_hashed(&conn, 0);
+
+        match get_pair(&conn, &[], &mut rng()) {
+            Err(AppError::NotEnoughWallpapers(_)) => {}
+            other => panic!("expected NotEnoughWallpapers, got {other:?}"),
         }
     }
 

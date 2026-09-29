@@ -89,6 +89,11 @@ pub struct Recent<'a> {
 /// `exclude` is the pair on screen, kept out of both picks unless that leaves
 /// fewer than two wallpapers, so a small library still ranks.
 ///
+/// `apart` says whether two wallpapers are an unanswered Near-duplicate pair,
+/// and no pair drawn is one. A wallpaper that could meet nothing else is
+/// never drawn, and `exclude` also gives way when honouring it would leave no
+/// pair that may meet.
+///
 /// First pick, in order:
 /// 1. While fewer than half the pool has a Score, a random Unrated wallpaper,
 ///    Kept included.
@@ -107,23 +112,23 @@ pub struct Recent<'a> {
 /// weighting on |μ₁ − μ₂| / σ₁), falling back to uniform random when all
 /// weights underflow. Decided and Kept wallpapers are opponents like any other,
 /// but an Unrated first pick, or any pick under step 2, is given an opponent
-/// with a Score whenever one is available. Returns `None` for pools with fewer
-/// than two entries.
+/// with a Score whenever one is available. Returns `None` when the pool holds no
+/// two wallpapers that may meet.
 pub fn select_pair<'a, R: Rng>(
     pool: &'a [WallpaperSummary],
     bar: Option<f64>,
     recent: Recent<'_>,
     exclude: &[i64],
+    apart: &dyn Fn(i64, i64) -> bool,
     rng: &mut R,
 ) -> Option<(&'a WallpaperSummary, &'a WallpaperSummary)> {
     let narrowed: Vec<&WallpaperSummary> =
         pool.iter().filter(|w| !exclude.contains(&w.id)).collect();
-    let base: Vec<&WallpaperSummary> = if narrowed.len() >= 2 {
-        narrowed
-    } else {
-        pool.iter().collect()
-    };
-    if base.len() < 2 {
+    let mut base = drawable(&narrowed, apart);
+    if base.is_empty() {
+        base = drawable(&pool.iter().collect::<Vec<_>>(), apart);
+    }
+    if base.is_empty() {
         return None;
     }
 
@@ -151,8 +156,11 @@ pub fn select_pair<'a, R: Rng>(
         }
     };
 
-    let others: Vec<&WallpaperSummary> =
-        base.iter().copied().filter(|w| w.id != first.id).collect();
+    let others: Vec<&WallpaperSummary> = base
+        .iter()
+        .copied()
+        .filter(|w| w.id != first.id && !apart(first.id, w.id))
+        .collect();
     let scored_others: Vec<&WallpaperSummary> =
         others.iter().copied().filter(|w| w.is_scored()).collect();
     let opponents = if (capped || !first.is_scored()) && !scored_others.is_empty() {
@@ -161,6 +169,23 @@ pub fn select_pair<'a, R: Rng>(
         others
     };
     Some((first, weighted_by_mu(first, &opponents, rng)))
+}
+
+/// Those of `candidates` that may meet at least one of the others, so a pick
+/// among them always leaves an opponent. Empty when no two of them may meet.
+fn drawable<'a>(
+    candidates: &[&'a WallpaperSummary],
+    apart: &dyn Fn(i64, i64) -> bool,
+) -> Vec<&'a WallpaperSummary> {
+    candidates
+        .iter()
+        .copied()
+        .filter(|w| {
+            candidates
+                .iter()
+                .any(|o| o.id != w.id && !apart(w.id, o.id))
+        })
+        .collect()
 }
 
 /// The least-compared of `candidates`, random among ties, leaving out any in
@@ -694,12 +719,19 @@ mod tests {
     fn empty_and_single_candidate_pools_return_none() {
         let mut rng = SeqRng::new(&[0.5]);
         assert_eq!(
-            select_pair(&[], None, Recent::default(), &[], &mut rng),
+            select_pair(&[], None, Recent::default(), &[], &nothing_apart, &mut rng),
             None
         );
         let pool = [summary(1, MU, SIGMA, 0)];
         assert_eq!(
-            select_pair(&pool, None, Recent::default(), &[], &mut rng),
+            select_pair(
+                &pool,
+                None,
+                Recent::default(),
+                &[],
+                &nothing_apart,
+                &mut rng
+            ),
             None
         );
     }
@@ -717,6 +749,7 @@ mod tests {
             None,
             Recent::default(),
             &[],
+            &nothing_apart,
             &mut SeqRng::new(&[0.0, 0.5]),
         )
         .unwrap();
@@ -726,6 +759,7 @@ mod tests {
             None,
             Recent::default(),
             &[],
+            &nothing_apart,
             &mut SeqRng::new(&[0.999, 0.5]),
         )
         .unwrap();
@@ -741,13 +775,29 @@ mod tests {
             summary(3, 90.0, SIGMA, 9),
         ];
         let mut rng = SeqRng::new(&[0.0, 0.0]);
-        let (first, second) = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
+        let (first, second) = select_pair(
+            &pool,
+            None,
+            Recent::default(),
+            &[],
+            &nothing_apart,
+            &mut rng,
+        )
+        .unwrap();
         assert_eq!(first.id, 2);
         assert_eq!(second.id, 1);
 
         // Same inputs, same RNG values -> identical result.
         let mut rng = SeqRng::new(&[0.0, 0.0]);
-        let again = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
+        let again = select_pair(
+            &pool,
+            None,
+            Recent::default(),
+            &[],
+            &nothing_apart,
+            &mut rng,
+        )
+        .unwrap();
         assert_eq!((first.id, second.id), (again.0.id, again.1.id));
     }
 
@@ -766,6 +816,7 @@ mod tests {
             None,
             Recent::default(),
             &[],
+            &nothing_apart,
             &mut SeqRng::new(&[0.0]),
         )
         .unwrap();
@@ -783,13 +834,29 @@ mod tests {
         ];
         // Uniform draw 0.9 over candidates [1, 3]: floor(0.9 * 2) = 1 -> id 3.
         let mut rng = SeqRng::new(&[0.0, 0.9]);
-        let (first, second) = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
+        let (first, second) = select_pair(
+            &pool,
+            None,
+            Recent::default(),
+            &[],
+            &nothing_apart,
+            &mut rng,
+        )
+        .unwrap();
         assert_eq!(first.id, 2);
         assert_eq!(second.id, 3);
 
         // Draw 0.1 picks the other one; determinism holds either way.
         let mut rng = SeqRng::new(&[0.0, 0.1]);
-        let (_, second) = select_pair(&pool, None, Recent::default(), &[], &mut rng).unwrap();
+        let (_, second) = select_pair(
+            &pool,
+            None,
+            Recent::default(),
+            &[],
+            &nothing_apart,
+            &mut rng,
+        )
+        .unwrap();
         assert_eq!(second.id, 1);
     }
 
@@ -813,8 +880,15 @@ mod tests {
         let mut out = Vec::new();
         for a in DRAWS {
             for b in DRAWS {
-                let (first, second) =
-                    select_pair(pool, bar, recent, exclude, &mut SeqRng::new(&[a, b])).unwrap();
+                let (first, second) = select_pair(
+                    pool,
+                    bar,
+                    recent,
+                    exclude,
+                    &nothing_apart,
+                    &mut SeqRng::new(&[a, b]),
+                )
+                .unwrap();
                 out.push((first.id, second.id));
             }
         }
@@ -1043,7 +1117,14 @@ mod tests {
         let runs = 50;
         let start = std::time::Instant::now();
         for _ in 0..runs {
-            std::hint::black_box(select_pair(&pool, Some(20.0), recent, &[1, 2], &mut rng));
+            std::hint::black_box(select_pair(
+                &pool,
+                Some(20.0),
+                recent,
+                &[1, 2],
+                &nothing_apart,
+                &mut rng,
+            ));
         }
         let each = start.elapsed() / runs;
         // A debug build is several times slower than what ships, and a shared CI
@@ -1055,6 +1136,124 @@ mod tests {
             std::time::Duration::from_millis(1)
         };
         assert!(each < limit, "{each:?} per selection");
+    }
+
+    /// No two wallpapers are an unanswered Near-duplicate pair.
+    fn nothing_apart(_: i64, _: i64) -> bool {
+        false
+    }
+
+    /// The `pairs` are the unanswered Near-duplicate pairs, each in either order.
+    fn kept_apart(pairs: &[[i64; 2]]) -> impl Fn(i64, i64) -> bool + '_ {
+        |a, b| pairs.contains(&[a, b]) || pairs.contains(&[b, a])
+    }
+
+    /// The pair for each draw in [`DRAWS`] when the `apart` pairs may not meet,
+    /// every pair as its two ids lowest first.
+    fn pairs_kept_apart(pool: &[WallpaperSummary], apart: &[[i64; 2]]) -> Vec<(i64, i64)> {
+        let mut out = Vec::new();
+        for a in DRAWS {
+            for b in DRAWS {
+                for c in DRAWS {
+                    let (first, second) = select_pair(
+                        pool,
+                        None,
+                        Recent::default(),
+                        &[],
+                        &kept_apart(apart),
+                        &mut SeqRng::new(&[a, b, c]),
+                    )
+                    .unwrap();
+                    out.push((first.id.min(second.id), first.id.max(second.id)));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_pair_kept_apart_is_never_drawn_together() {
+        let pool = [
+            summary(1, MU, SIGMA, 0),
+            summary(2, MU, SIGMA, 0),
+            summary(3, MU, SIGMA, 0),
+            summary(4, MU, SIGMA, 0),
+        ];
+        // Given highest id first, the same as lowest first.
+        for apart in [[1, 2], [2, 1]] {
+            for pair in pairs_kept_apart(&pool, &[apart]) {
+                assert_ne!(pair, (1, 2));
+            }
+        }
+    }
+
+    #[test]
+    fn each_wallpaper_of_a_pair_kept_apart_still_meets_the_others() {
+        let pool = [
+            summary(1, MU, SIGMA, 2),
+            summary(2, MU, SIGMA, 2),
+            summary(3, MU, SIGMA, 2),
+            summary(4, MU, SIGMA, 2),
+        ];
+        let drawn = pairs_kept_apart(&pool, &[[1, 2]]);
+        for pair in [(1, 3), (1, 4), (2, 3), (2, 4)] {
+            assert!(drawn.contains(&pair), "{pair:?} never drawn in {drawn:?}");
+        }
+    }
+
+    #[test]
+    fn a_wallpaper_kept_apart_from_every_other_is_never_drawn() {
+        // 1 may meet neither 2 nor 3, so drawing it first would leave it no
+        // opponent: the pair is the one left, 2 and 3.
+        let pool = [
+            summary(1, MU, SIGMA, 0),
+            summary(2, MU, SIGMA, 0),
+            summary(3, MU, SIGMA, 0),
+        ];
+        for pair in pairs_kept_apart(&pool, &[[1, 2], [3, 1]]) {
+            assert_eq!(pair, (2, 3));
+        }
+    }
+
+    #[test]
+    fn the_pair_on_screen_gives_way_rather_than_leave_only_a_pair_kept_apart() {
+        // Leaving out 3 leaves 1 and 2, which may not meet, so the pair on
+        // screen is drawn from again, the way it is in a two-wallpaper library.
+        let pool = [
+            summary(1, MU, SIGMA, 0),
+            summary(2, MU, SIGMA, 0),
+            summary(3, MU, SIGMA, 0),
+        ];
+        for a in DRAWS {
+            for b in DRAWS {
+                let (first, second) = select_pair(
+                    &pool,
+                    None,
+                    Recent::default(),
+                    &[3],
+                    &kept_apart(&[[1, 2]]),
+                    &mut SeqRng::new(&[a, b]),
+                )
+                .unwrap();
+                assert!([first.id, second.id].contains(&3));
+            }
+        }
+    }
+
+    #[test]
+    fn a_pool_that_is_only_a_pair_kept_apart_draws_nothing() {
+        let pool = [summary(1, MU, SIGMA, 0), summary(2, MU, SIGMA, 0)];
+        assert_eq!(
+            select_pair(
+                &pool,
+                None,
+                Recent::default(),
+                &[],
+                &kept_apart(&[[1, 2]]),
+                &mut SeqRng::new(&[0.5])
+            ),
+            None
+        );
     }
 
     #[test]
