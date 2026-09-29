@@ -268,6 +268,17 @@ The Score a wallpaper has to clear to stay. A wallpaper below the Bar is one
 the curator would clear out; being below it is a standing, not a Status, so
 nothing about the wallpaper changes until the curator acts on it.
 
+The Bar is a stated preference, not a fact about the library. The curator
+states it as a position, the worst so many percent, and the Bar is the Score
+at that position among every wallpaper that has a Score: Active, Kept and
+Rejected alike. Unrated wallpapers have no Score, so they do not count.
+
+Because Rejected wallpapers still count, clearing out a wallpaper below the Bar
+does not move it, and clearing out comes to an end. A scan, or a vote that
+reorders Scores, can move it either way. There is one Bar, at the bottom:
+confirming favourites is Review worked from the other end, not a second line.
+See [ADR 0056](docs/adr/0056-the-bar-is-a-position-over-every-scored-wallpaper.md).
+
 _Avoid_: cull line, cutoff, reject line, keep line
 
 ## Decided / Undecided
