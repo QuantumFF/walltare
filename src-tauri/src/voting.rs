@@ -72,7 +72,7 @@ pub struct VoteOutcome {
 /// still ranks.
 ///
 /// An unanswered Near-duplicate pair is never drawn together, since a vote
-/// between two copies of one image says nothing about where it stands.
+/// between two Near-duplicates says nothing about where either stands.
 ///
 /// The Bar, the latest Comparisons and the unanswered Near-duplicate pairs are
 /// read here on every draw, never held as state (ADR 0060).
