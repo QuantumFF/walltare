@@ -25,7 +25,12 @@ const progress: ScanProgress = { scanned: 12, added: 3 };
 const complete: ScanComplete = { added_count: 3, scanned_count: 12 };
 const failed: ScanFailed = { message: "permission denied" };
 const pregen: PregenProgress = { done: 4, total: 42 };
-const pregenDone: PregenComplete = { generated: 40, failed: 2, cancelled: false };
+const pregenDone: PregenComplete = {
+  generated: 40,
+  failed: 2,
+  cancelled: false,
+  near_duplicate_pairs: 0,
+};
 
 test("every backend event reaches the handler named for it, payload intact", () => {
   const seen: Array<[string, unknown]> = [];

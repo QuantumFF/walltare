@@ -656,6 +656,12 @@ export interface PregenComplete {
   /** Wallpapers whose source was gone or would not decode; one bad file stops nothing. */
   failed: number;
   cancelled: boolean;
+  /**
+   * Near-duplicate pairs waiting once the pass stopped, counted after its last
+   * hash so the wallpapers it just hashed are in it (#404). A cancelled pass
+   * counts too.
+   */
+  near_duplicate_pairs: number;
 }
 
 /**
