@@ -586,7 +586,8 @@ mod tests {
     }
 
     /// A fixture decoded, put through `edit`, and encoded again as a JPEG at
-    /// `quality`: the copy a second download or a colour edit leaves behind.
+    /// `quality`: the Near-duplicate a second download or a colour edit leaves
+    /// behind.
     fn edited(name: &str, quality: u8, edit: impl Fn(DynamicImage) -> DynamicImage) -> Vec<u8> {
         let img = edit(image::load_from_memory(&fixture(name)).unwrap()).to_rgb8();
         let mut bytes = Vec::new();
@@ -920,25 +921,28 @@ mod tests {
     }
 
     #[test]
-    fn a_re_encoded_copy_hashes_within_ten_bits_of_the_original() {
+    fn a_re_encoded_near_duplicate_hashes_within_ten_bits_of_the_original() {
         // A second download of the same wallpaper: resized and saved again at a
         // lower quality, so not one byte of it is the same.
         let library = Library::new();
         let original = library.hashed("train.jpg", &fixture("train.jpg"));
 
-        let copy = library.hashed(
+        let near_duplicate = library.hashed(
             "train-again.jpg",
             &edited("train.jpg", 40, |img| {
                 img.resize_exact(1600, 900, image::imageops::FilterType::Triangle)
             }),
         );
 
-        let bits = distance(original, copy);
-        assert!(bits <= 10, "a re-encoded copy was {bits} bits away");
+        let bits = distance(original, near_duplicate);
+        assert!(
+            bits <= 10,
+            "a re-encoded Near-duplicate was {bits} bits away"
+        );
     }
 
     #[test]
-    fn a_recoloured_copy_hashes_within_ten_bits_of_the_original() {
+    fn a_recoloured_near_duplicate_hashes_within_ten_bits_of_the_original() {
         let library = Library::new();
         let original = library.hashed("train.jpg", &fixture("train.jpg"));
 

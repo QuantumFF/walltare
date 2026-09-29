@@ -128,10 +128,9 @@ pub enum Warmed {
     Generated,
     /// Nothing was generated: a wallpaper whose cache was already warm and that
     /// was on the list for its pixel dimensions or its perceptual hash alone
-    /// (ADR 0044). It says what
-    /// the pass did not do rather than what it wrote — a source that will not
-    /// give up its dimensions lands here too, because there is no thumbnail to
-    /// report either way.
+    /// (ADR 0044). It says what the pass did not do rather than what it wrote —
+    /// a source that will not give up its dimensions lands here too, because
+    /// there is no thumbnail to report either way.
     ///
     /// Apart from `Generated` because the curator's ending counts thumbnails.
     /// A backfill over a warm library would otherwise report every wallpaper in
