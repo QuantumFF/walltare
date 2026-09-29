@@ -45,11 +45,23 @@ impl Library {
     }
 }
 
+/// Where the Bar sits right now, and what it rests on.
+#[derive(Clone, Copy, Debug)]
+pub struct Bar {
+    /// The Bar as a Score.
+    pub score: f64,
+    /// σ of the wallpapers sitting at the Bar position: the root mean square
+    /// of the two whose μ straddle it.
+    pub sigma: f64,
+    /// How many Scores the Bar rests on: wallpapers with a Comparison.
+    pub scored: usize,
+}
+
 /// Chooses what the curator is shown next. Two indices for a pair, more for
 /// a best-of-N pick. `bar` is the current Bar, for selectors that aim at it.
 pub trait Selector {
     fn name(&self) -> String;
-    fn select(&mut self, lib: &Library, bar: f64, decided: &dyn DecidedRule, rng: &mut Prng)
+    fn select(&mut self, lib: &Library, bar: &Bar, decided: &dyn DecidedRule, rng: &mut Prng)
         -> Vec<usize>;
 }
 
@@ -73,8 +85,8 @@ pub trait Prior: Sync {
 
 pub trait BarRule: Sync {
     fn name(&self) -> String;
-    /// The Bar, as a Score, given the current Ratings.
-    fn bar(&self, lib: &Library, scratch: &mut Vec<f64>) -> f64;
+    /// The Bar, given the current Ratings.
+    fn bar(&self, lib: &Library, scratch: &mut Vec<Rating>) -> Bar;
     /// Which wallpapers truly belong below the Bar.
     fn truly_below(&self, quality: &[f64]) -> Vec<bool>;
 }
@@ -82,7 +94,7 @@ pub trait BarRule: Sync {
 pub trait DecidedRule: Sync {
     fn name(&self) -> String;
     /// `Some(true)` Decided below, `Some(false)` Decided above, `None` Undecided.
-    fn side(&self, rating: Rating, bar: f64) -> Option<bool>;
+    fn side(&self, rating: Rating, bar: &Bar) -> Option<bool>;
 }
 
 // --- default parts ---------------------------------------------------------
@@ -196,7 +208,7 @@ impl BarRule for QuantileBar {
     fn name(&self) -> String {
         format!("worst {}% of the Scored", self.share * 100.0)
     }
-    fn bar(&self, lib: &Library, scratch: &mut Vec<f64>) -> f64 {
+    fn bar(&self, lib: &Library, scratch: &mut Vec<Rating>) -> Bar {
         // Midway between the last wallpaper below and the first above.
         scratch.clear();
         scratch.extend(
@@ -204,18 +216,28 @@ impl BarRule for QuantileBar {
                 .iter()
                 .zip(&lib.counts)
                 .filter(|(_, &c)| c > 0)
-                .map(|(r, _)| r.mu),
+                .map(|(r, _)| *r),
         );
-        if scratch.len() < 2 {
-            return ranking::MU;
+        let scored = scratch.len();
+        if scored < 2 {
+            return Bar {
+                score: ranking::MU,
+                sigma: ranking::SIGMA,
+                scored,
+            };
         }
-        let k = self.rank(scratch.len());
-        let (_, &mut above, _) = scratch.select_nth_unstable_by(k, f64::total_cmp);
+        let k = self.rank(scored);
+        let (_, &mut above, _) = scratch.select_nth_unstable_by(k, |a, b| a.mu.total_cmp(&b.mu));
         let below = scratch[..k]
             .iter()
             .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        (below + above) / 2.0
+            .max_by(|a, b| a.mu.total_cmp(&b.mu))
+            .expect("k ≥ 1");
+        Bar {
+            score: (below.mu + above.mu) / 2.0,
+            sigma: ((below.sigma.powi(2) + above.sigma.powi(2)) / 2.0).sqrt(),
+            scored,
+        }
     }
     fn truly_below(&self, quality: &[f64]) -> Vec<bool> {
         let mut sorted = quality.to_vec();
@@ -235,13 +257,43 @@ impl DecidedRule for ZSigma {
     fn name(&self) -> String {
         format!("|μ − Bar| ≥ {}σ", self.z)
     }
-    fn side(&self, rating: Rating, bar: f64) -> Option<bool> {
-        let gap = rating.mu - bar;
-        if gap.abs() >= self.z * rating.sigma {
-            Some(gap < 0.0)
-        } else {
-            None
+    fn side(&self, rating: Rating, bar: &Bar) -> Option<bool> {
+        let gap = rating.mu - bar.score;
+        (gap.abs() >= self.z * rating.sigma).then_some(gap < 0.0)
+    }
+}
+
+/// `ZSigma`, but nothing is Decided until the Bar rests on `min_scored` Scores.
+pub struct Warmup {
+    pub z: f64,
+    pub min_scored: usize,
+}
+
+impl DecidedRule for Warmup {
+    fn name(&self) -> String {
+        format!("|μ − Bar| ≥ {}σ once the Bar rests on {} Scores", self.z, self.min_scored)
+    }
+    fn side(&self, rating: Rating, bar: &Bar) -> Option<bool> {
+        if bar.scored < self.min_scored {
+            return None;
         }
+        ZSigma { z: self.z }.side(rating, bar)
+    }
+}
+
+/// Counts the Bar's own uncertainty too: |μ − Bar| ≥ z·√(σ² + σ_bar²).
+pub struct BarSigma {
+    pub z: f64,
+}
+
+impl DecidedRule for BarSigma {
+    fn name(&self) -> String {
+        format!("|μ − Bar| ≥ {}·√(σ² + σ_bar²)", self.z)
+    }
+    fn side(&self, rating: Rating, bar: &Bar) -> Option<bool> {
+        let gap = rating.mu - bar.score;
+        let spread = (rating.sigma.powi(2) + bar.sigma.powi(2)).sqrt();
+        (gap.abs() >= self.z * spread).then_some(gap < 0.0)
     }
 }
 
@@ -270,14 +322,37 @@ pub struct Checkpoint {
     pub sigma_sum: f64,
 }
 
+/// One judgement, as an `Observer` sees it after the Ratings have changed.
+pub struct Vote<'a> {
+    /// 1-based judgement number.
+    pub index: usize,
+    /// `rate_1vs1` calls so far, this one included.
+    pub comparisons: usize,
+    pub shown: &'a [usize],
+    /// The Ratings of `shown`, in order, before this judgement.
+    pub before: &'a [Rating],
+    pub bar_before: &'a Bar,
+    pub bar: &'a Bar,
+}
+
+/// Watches every judgement of a run, for measurements a `Checkpoint` can't
+/// hold (what changed between two votes).
+pub trait Observer {
+    fn start(&mut self, lib: &Library, bar: &Bar);
+    fn vote(&mut self, lib: &Library, vote: &Vote);
+}
+
+/// Runs one library to the budget. Returns its checkpoints and the library
+/// as it ended.
 pub fn run(
     n: usize,
     selector: &mut dyn Selector,
     parts: &Parts,
     max_judgements: usize,
     checkpoint_every: usize,
+    observers: &mut [&mut dyn Observer],
     rng: &mut Prng,
-) -> Vec<Checkpoint> {
+) -> (Vec<Checkpoint>, Library) {
     let quality: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
     let ratings = quality.iter().map(|&q| parts.prior.initial(q, rng)).collect();
     let truly_below = parts.bar.truly_below(&quality);
@@ -291,21 +366,39 @@ pub fn run(
     let mut comparisons = 0;
     let mut out = Vec::new();
     let mut bar = parts.bar.bar(&lib, &mut scratch);
-    out.push(measure(&lib, bar, parts.decided, 0, 0));
+    out.push(measure(&lib, &bar, parts.decided, 0, 0));
+    for o in observers.iter_mut() {
+        o.start(&lib, &bar);
+    }
+    let mut before = Vec::new();
     for j in 1..=max_judgements {
-        let shown = selector.select(&lib, bar, parts.decided, rng);
+        let shown = selector.select(&lib, &bar, parts.decided, rng);
         let winner = parts.voter.pick(&lib.quality, &shown, rng);
+        before.clear();
+        before.extend(shown.iter().map(|&i| lib.ratings[i]));
         parts.updater.apply(&mut lib, &shown, winner);
         comparisons += shown.len() - 1;
+        let bar_before = bar;
         bar = parts.bar.bar(&lib, &mut scratch);
+        let vote = Vote {
+            index: j,
+            comparisons,
+            shown: &shown,
+            before: &before,
+            bar_before: &bar_before,
+            bar: &bar,
+        };
+        for o in observers.iter_mut() {
+            o.vote(&lib, &vote);
+        }
         if j % checkpoint_every == 0 || j == max_judgements {
-            out.push(measure(&lib, bar, parts.decided, j, comparisons));
+            out.push(measure(&lib, &bar, parts.decided, j, comparisons));
         }
     }
-    out
+    (out, lib)
 }
 
-fn measure(lib: &Library, bar: f64, rule: &dyn DecidedRule, j: usize, c: usize) -> Checkpoint {
+fn measure(lib: &Library, bar: &Bar, rule: &dyn DecidedRule, j: usize, c: usize) -> Checkpoint {
     let mut cp = Checkpoint {
         judgements: j,
         comparisons: c,
@@ -373,8 +466,44 @@ mod tests {
     #[test]
     fn z_sigma_needs_the_full_gap() {
         let rule = ZSigma { z: 2.0 };
-        assert_eq!(rule.side(Rating::new(10.0, 2.0), 15.0), Some(true));
-        assert_eq!(rule.side(Rating::new(20.0, 2.0), 15.0), Some(false));
-        assert_eq!(rule.side(Rating::new(12.0, 2.0), 15.0), None);
+        let bar = at(15.0, 0.0, 100);
+        assert_eq!(rule.side(Rating::new(10.0, 2.0), &bar), Some(true));
+        assert_eq!(rule.side(Rating::new(20.0, 2.0), &bar), Some(false));
+        assert_eq!(rule.side(Rating::new(12.0, 2.0), &bar), None);
+    }
+
+    fn at(score: f64, sigma: f64, scored: usize) -> Bar {
+        Bar { score, sigma, scored }
+    }
+
+    #[test]
+    fn warmup_waits_for_enough_scores() {
+        let rule = Warmup { z: 2.0, min_scored: 25 };
+        let r = Rating::new(10.0, 2.0);
+        assert_eq!(rule.side(r, &at(15.0, 0.0, 24)), None);
+        assert_eq!(rule.side(r, &at(15.0, 0.0, 25)), Some(true));
+    }
+
+    #[test]
+    fn bar_sigma_widens_the_gap() {
+        // σ 3, σ_bar 4 → spread 5, so z 2 needs a gap of 10.
+        let rule = BarSigma { z: 2.0 };
+        assert_eq!(rule.side(Rating::new(6.0, 3.0), &at(15.0, 4.0, 100)), None);
+        assert_eq!(rule.side(Rating::new(5.0, 3.0), &at(15.0, 4.0, 100)), Some(true));
+    }
+
+    #[test]
+    fn quantile_bar_reports_the_straddling_sigma() {
+        let lib = Library {
+            quality: vec![0.0; 5],
+            ratings: (0..5).map(|i| Rating::new(i as f64, 1.0 + i as f64)).collect(),
+            counts: vec![1, 1, 1, 1, 0],
+            truly_below: vec![false; 5],
+        };
+        // 4 Scored, worst 50% → between μ 1 (σ 2) and μ 2 (σ 3).
+        let bar = QuantileBar { share: 0.5 }.bar(&lib, &mut Vec::new());
+        assert_eq!(bar.scored, 4);
+        assert_eq!(bar.score, 1.5);
+        assert!((bar.sigma - (6.5f64).sqrt()).abs() < 1e-12);
     }
 }

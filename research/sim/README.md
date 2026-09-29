@@ -15,6 +15,8 @@ wrong side.
 cd research/sim
 cargo run --release -- --help
 cargo run --release -- --selector baseline,random --noise 0.5,1.0 --reps 20   # results/baseline.md
+cargo run --release -- --report decided --sizes 120,500 --noise 0.5,1.0 \
+  --rules plain,warmup,participated,bar-sigma --voter bradley-terry          # results/decided-rule.md
 cargo test --release   # the voter, Bar and Decided checks, plus ranking.rs's own tests
 ```
 
@@ -39,7 +41,15 @@ No dependencies and no Tauri build. `src/main.rs` compiles the app's
   midway between the μ ranked just below that share and the one just above
   it, recomputed after every vote. The truth is the same share of true
   quality over the whole library. Nothing is rejected during a run.
+  The Bar also carries σ_bar, the root mean square σ of the two wallpapers
+  whose μ straddle it, and how many Scores it rests on.
 - **Decided**: `ZSigma`. Decided when |μ − Bar| ≥ `--z`·σ (default 2).
+  `--report decided` compares rules instead (`src/decided_report.rs`): each
+  of `--rules` at each of `--ks`, all followed through the same runs by one
+  `Tracker` apiece (`src/track.rs`), since no current selector reads the
+  Decided rule. `plain` is `ZSigma`, `warmup` holds everything Undecided
+  until the Bar rests on `--warmup` Scores, `participated` until every
+  wallpaper has a Comparison, and `bar-sigma` is |μ − Bar| ≥ k·√(σ² + σ_bar²).
 - **Update**: `WinnerBeatsEach`: one `rate_1vs1` per loser shown. For a pair
   this is exactly what the app records.
 - **Prior**: `Uniform`: every wallpaper starts at μ = 25, σ = 8.333.
@@ -61,6 +71,9 @@ Every part is a trait in `src/sim.rs`:
 | `Prior` | a wallpaper's starting Rating, given its true quality (a triage pass or embedding prediction is a noisy function of it) | `Uniform` |
 | `BarRule` | where the Bar is and which side is true | `QuantileBar` |
 | `DecidedRule` | when a wallpaper is Decided | `ZSigma` |
+
+`Observer` is not a strategy: it sees every vote with the Ratings and Bar
+from just before it, for measurements that need what changed between votes.
 
 A new selector goes in `src/selectors.rs` and gets a name in `by_name`. A new
 prior, updater, Bar or Decided rule needs a flag in `main.rs`. Group selectors

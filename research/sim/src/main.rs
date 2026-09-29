@@ -4,23 +4,30 @@
 #[allow(dead_code)]
 mod ranking;
 
+mod decided_report;
 mod prng;
 mod selectors;
 mod sim;
+mod track;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use prng::Prng;
-use sim::{BarRule, Checkpoint, DecidedRule, Parts, Voter};
+use sim::{BarRule, Checkpoint, DecidedRule, Observer, Parts, Voter};
+use track::{Trace, Tracker};
 
-struct Args {
+pub struct Args {
     sizes: Vec<usize>,
     selectors: Vec<String>,
     voter: String,
     noises: Vec<f64>,
     bar_share: f64,
     z: f64,
+    report: String,
+    ks: Vec<f64>,
+    rules: Vec<String>,
+    warmup: usize,
     reps: usize,
     budget: f64,
     seed: u64,
@@ -35,6 +42,16 @@ usage: walltare-sim [options]
   --noise 0.5              comma list; curator noise in units of the quality spread
   --bar-share 0.2          the Bar clears out the worst share of the Scored
   --z 2                    Decided when |μ − Bar| ≥ z·σ
+  --report votes           votes | decided. `decided` follows every rule in
+                           --rules at every k in --ks through the same runs
+  --ks 1.5,2,2.5,3         (decided report) the k of each rule
+  --rules plain,warmup,bar-sigma
+                           (decided report) comma list of:
+                             plain         |μ − Bar| ≥ kσ
+                             warmup        plain, once the Bar rests on --warmup Scores
+                             participated  plain, once every wallpaper has a Comparison
+                             bar-sigma     |μ − Bar| ≥ k·√(σ² + σ_bar²)
+  --warmup 25              Scores the Bar must rest on for `warmup`
   --reps 20                replicate libraries per configuration
   --budget 40              stop at this many Comparisons per wallpaper on average
   --seed 1
@@ -48,6 +65,10 @@ fn parse() -> Args {
         noises: vec![0.5],
         bar_share: 0.2,
         z: 2.0,
+        report: "votes".into(),
+        ks: vec![1.5, 2.0, 2.5, 3.0],
+        rules: vec!["plain".into(), "warmup".into(), "bar-sigma".into()],
+        warmup: 25,
         reps: 20,
         budget: 40.0,
         seed: 1,
@@ -69,6 +90,10 @@ fn parse() -> Args {
             "--noise" => a.noises = list().map(|s| num(s)).collect(),
             "--bar-share" => a.bar_share = num(val),
             "--z" => a.z = num(val),
+            "--report" => a.report = val.clone(),
+            "--ks" => a.ks = list().map(|s| num(s)).collect(),
+            "--rules" => a.rules = list().map(String::from).collect(),
+            "--warmup" => a.warmup = num(val),
             "--reps" => a.reps = num(val),
             "--budget" => a.budget = num(val),
             "--seed" => a.seed = num(val),
@@ -79,6 +104,14 @@ fn parse() -> Args {
     for s in &a.selectors {
         if selectors::by_name(s).is_none() {
             die(&format!("unknown selector {s}; have {:?}", selectors::NAMES));
+        }
+    }
+    if !["votes", "decided"].contains(&a.report.as_str()) {
+        die(&format!("unknown report {}", a.report));
+    }
+    for r in &a.rules {
+        if !decided_report::RULES.contains(&r.as_str()) {
+            die(&format!("unknown rule {r}; have {:?}", decided_report::RULES));
         }
     }
     if a.sizes.iter().any(|&n| n < 4) {
@@ -110,10 +143,10 @@ fn job_seed(seed: u64, n: usize, rep: usize) -> u64 {
     seed.wrapping_mul(0x100_0000_01B3) ^ ((n as u64) << 32) ^ rep as u64
 }
 
-struct Config {
-    n: usize,
-    selector: String,
-    noise: f64,
+pub struct Config {
+    pub n: usize,
+    pub selector: String,
+    pub noise: f64,
 }
 
 fn main() {
@@ -142,7 +175,8 @@ fn main() {
     let jobs: Vec<(usize, usize)> = (0..configs.len())
         .flat_map(|c| (0..args.reps).map(move |r| (c, r)))
         .collect();
-    let results: Mutex<Vec<Vec<Vec<Checkpoint>>>> =
+    type Run = (usize, Vec<Checkpoint>, Vec<Trace>);
+    let results: Mutex<Vec<Vec<Run>>> =
         Mutex::new((0..configs.len()).map(|_| Vec::new()).collect());
     let next = AtomicUsize::new(0);
     let started = std::time::Instant::now();
@@ -164,12 +198,44 @@ fn main() {
                 let mut rng = Prng::new(job_seed(args.seed, cfg.n, rep));
                 let max = (args.budget * cfg.n as f64 / 2.0).ceil() as usize;
                 let every = (cfg.n / 20).max(1);
-                let trace = sim::run(cfg.n, selector.as_mut(), &parts, max, every, &mut rng);
-                results.lock().unwrap()[c].push(trace);
+                let mut trackers: Vec<Tracker> = if args.report == "decided" {
+                    decided_report::rules(&args, cfg.n)
+                        .into_iter()
+                        .map(|r| Tracker::new(r, cfg.n))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let mut observers: Vec<&mut dyn Observer> =
+                    trackers.iter_mut().map(|t| t as &mut dyn Observer).collect();
+                let (trace, lib) =
+                    sim::run(cfg.n, selector.as_mut(), &parts, max, every, &mut observers, &mut rng);
+                let traces = trackers.into_iter().map(|t| t.finish(&lib)).collect();
+                results.lock().unwrap()[c].push((rep, trace, traces));
             });
         }
     });
-    let results = results.into_inner().unwrap();
+    // In rep order, so float sums (and the output) don't depend on which
+    // thread finished first.
+    let results: Vec<Vec<(Vec<Checkpoint>, Vec<Trace>)>> = results
+        .into_inner()
+        .unwrap()
+        .into_iter()
+        .map(|mut runs| {
+            runs.sort_by_key(|r| r.0);
+            runs.into_iter().map(|(_, cps, traces)| (cps, traces)).collect()
+        })
+        .collect();
+    let elapsed = started.elapsed().as_secs_f64();
+
+    if args.report == "decided" {
+        decided_report::print(&args, &configs, &results, bar.name(), elapsed);
+        return;
+    }
+    let results: Vec<Vec<Vec<Checkpoint>>> = results
+        .into_iter()
+        .map(|runs| runs.into_iter().map(|(cps, _)| cps).collect())
+        .collect();
 
     println!("# Votes until Decided\n");
     println!(
@@ -182,7 +248,7 @@ fn main() {
         args.reps,
         args.budget,
         args.seed,
-        started.elapsed().as_secs_f64()
+        elapsed
     );
     println!("\"Each\" is the mean number of Comparisons per wallpaper, which is roughly the Round.");
     println!("\"Wrong\" is the share of Decided wallpapers sitting on the side the truth says they don't belong on.\n");

@@ -2,7 +2,7 @@
 
 use crate::prng::Prng;
 use crate::ranking;
-use crate::sim::{DecidedRule, Library, Selector};
+use crate::sim::{Bar, DecidedRule, Library, Selector};
 
 pub fn by_name(name: &str) -> Option<Box<dyn Selector>> {
     match name {
@@ -26,7 +26,7 @@ impl Selector for Baseline {
     fn name(&self) -> String {
         "baseline (select_pair)".into()
     }
-    fn select(&mut self, lib: &Library, _bar: f64, _: &dyn DecidedRule, rng: &mut Prng) -> Vec<usize> {
+    fn select(&mut self, lib: &Library, _bar: &Bar, _: &dyn DecidedRule, rng: &mut Prng) -> Vec<usize> {
         let all = lib.summaries();
         let narrowed: Vec<_> = all
             .iter()
@@ -47,7 +47,7 @@ impl Selector for RandomPair {
     fn name(&self) -> String {
         "random pair".into()
     }
-    fn select(&mut self, lib: &Library, _bar: f64, _: &dyn DecidedRule, rng: &mut Prng) -> Vec<usize> {
+    fn select(&mut self, lib: &Library, _bar: &Bar, _: &dyn DecidedRule, rng: &mut Prng) -> Vec<usize> {
         let n = lib.len();
         let a = rng.below(n);
         let mut b = rng.below(n - 1);
