@@ -16,7 +16,8 @@ import {
 } from "@/lib/client";
 import { counted } from "@/lib/copy";
 import { useBackendEvents } from "@/lib/useBackendEvents";
-import { Check, CheckCheck } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Check, CheckCheck, History, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 export interface NearDuplicates {
@@ -150,14 +151,14 @@ const pairKey = ({ wallpapers: [a, b] }: NearDuplicatePair) =>
   `${a.id}-${b.id}`;
 
 /**
- * The Near-duplicate pairs waiting in Review, each side by side, with a
- * keep-one answer under each wallpaper and keep both under the two.
+ * The Near-duplicate pairs waiting in Review, each side by side. A `keep_one`
+ * pair has a keep-one answer under each wallpaper and keep both under the two.
+ * A `rejected_before` pair says so, and offers keeping or rejecting the
+ * arrival, which are the same two commands: keeping it is keep both, and
+ * rejecting it is keep one with the Rejected wallpaper kept.
  *
  * Only ever mounted with a pair to show: the section is hidden while nothing is
  * waiting, so an empty one is never drawn. Answering is `useNearDuplicates`'s.
- *
- * Every pair is `keep_one` for now. The pair carries its `kind` so the answers
- * a later kind offers can be drawn from it rather than guessed here.
  */
 export function NearDuplicatesSection({
   pairs,
@@ -195,18 +196,29 @@ export function NearDuplicatesSection({
               aria-label={`${a.filename} and ${b.filename}`}
               className="grid w-[28rem] max-w-full shrink-0 grid-cols-2 gap-3 rounded-xl border border-border bg-card p-3"
             >
-              <Side kept={a} other={b} onKeepOne={onKeepOne} />
-              <Side kept={b} other={a} onKeepOne={onKeepOne} />
-              <Button
-                size="sm"
-                variant="ghost"
-                className="col-span-2 gap-2"
-                aria-label={`Keep both ${a.filename} and ${b.filename}`}
-                onClick={() => onKeepBoth(pair)}
-              >
-                <CheckCheck />
-                Keep both
-              </Button>
+              {pair.kind === "rejected_before" ? (
+                <RejectedBefore
+                  arrival={a}
+                  rejected={b}
+                  onKeep={() => onKeepBoth(pair)}
+                  onReject={() => onKeepOne(/* kept */ b, /* other */ a)}
+                />
+              ) : (
+                <>
+                  <Side kept={a} other={b} onKeepOne={onKeepOne} />
+                  <Side kept={b} other={a} onKeepOne={onKeepOne} />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="col-span-2 gap-2"
+                    aria-label={`Keep both ${a.filename} and ${b.filename}`}
+                    onClick={() => onKeepBoth(pair)}
+                  >
+                    <CheckCheck />
+                    Keep both
+                  </Button>
+                </>
+              )}
             </li>
           );
         })}
@@ -215,7 +227,32 @@ export function NearDuplicatesSection({
   );
 }
 
-/** One wallpaper of a pair, and the answer that keeps it. */
+/** One wallpaper of a pair, drawn the same whichever answer sits under it. */
+function Thumbnail({
+  wallpaper,
+  caption,
+  className,
+}: {
+  wallpaper: Wallpaper;
+  caption: string;
+  className?: string;
+}) {
+  return (
+    <>
+      <img
+        src={wallpaperImageUrl(wallpaper.id, "small")}
+        alt={wallpaper.filename}
+        className={cn(
+          "aspect-video w-full rounded-lg bg-black/20 object-cover",
+          className,
+        )}
+      />
+      <span className="truncate text-xs text-muted-foreground">{caption}</span>
+    </>
+  );
+}
+
+/** One wallpaper of a keep-one pair, and the answer that keeps it. */
 function Side({
   kept,
   other,
@@ -227,14 +264,7 @@ function Side({
 }) {
   return (
     <div className="flex min-w-0 flex-col gap-2">
-      <img
-        src={wallpaperImageUrl(kept.id, "small")}
-        alt={kept.filename}
-        className="aspect-video w-full rounded-lg bg-black/20 object-cover"
-      />
-      <span className="truncate text-xs text-muted-foreground">
-        {kept.filename}
-      </span>
+      <Thumbnail wallpaper={kept} caption={kept.filename} />
       <Button
         size="sm"
         variant="outline"
@@ -246,5 +276,64 @@ function Side({
         Keep this one
       </Button>
     </div>
+  );
+}
+
+/**
+ * A rejected-before pair: the arrival beside the Rejected wallpaper it is a
+ * Near-duplicate of, and the two answers about the arrival under them. The
+ * Rejected one is dimmed, since it is out of the library already and nothing
+ * here changes it.
+ */
+function RejectedBefore({
+  arrival,
+  rejected,
+  onKeep,
+  onReject,
+}: {
+  arrival: Wallpaper;
+  rejected: Wallpaper;
+  onKeep: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <>
+      <p className="col-span-2 flex items-center gap-2 text-xs font-medium">
+        <History className="size-3.5" aria-hidden />
+        You rejected this before
+      </p>
+      <div className="flex min-w-0 flex-col gap-2">
+        <Thumbnail wallpaper={arrival} caption={arrival.filename} />
+      </div>
+      <div className="flex min-w-0 flex-col gap-2">
+        <Thumbnail
+          wallpaper={rejected}
+          caption={`${rejected.filename} · Rejected`}
+          className="opacity-60"
+        />
+      </div>
+      <div className="col-span-2 grid grid-cols-2 gap-3">
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-2"
+          aria-label={`Keep ${arrival.filename}`}
+          onClick={onKeep}
+        >
+          <Check />
+          Keep
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-2"
+          aria-label={`Reject ${arrival.filename}`}
+          onClick={onReject}
+        >
+          <X />
+          Reject
+        </Button>
+      </div>
+    </>
   );
 }

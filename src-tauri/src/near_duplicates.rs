@@ -11,6 +11,12 @@
 //! Answering never writes a Comparison. Keeping one is the ordinary soft
 //! reject of the other, so a Restore undoes it and the pair is waiting again,
 //! unless it is Distinct. Keeping both makes it Distinct.
+//!
+//! A wallpaper that arrives after a Near-duplicate of it was rejected is
+//! offered as one the curator rejected before. Keeping it makes the pair
+//! Distinct, as keeping both does, and rejecting it is keeping the Rejected
+//! one. A wallpaper that was already there when the other was rejected is no
+//! arrival, which is what keeps a keep-one answer from being asked again.
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,25 +33,33 @@ use crate::soft_reject;
 /// 12, while the closest two unrelated wallpapers were 16 apart.
 pub const HAMMING_LIMIT: u32 = 10;
 
-/// Every Near-duplicate pair waiting for an answer, lowest ids first.
+/// Every Near-duplicate pair waiting for an answer, in order of each pair's
+/// lower id, whichever side the kind shows it on.
 ///
-/// Two Active or Kept wallpapers, Kept treated as Active is, whose hashes are
-/// within [`HAMMING_LIMIT`]. A wallpaper pre-generation has not hashed yet is in
-/// no pair, rather than in a pair with something it might not resemble. A
+/// Two wallpapers whose hashes are within [`HAMMING_LIMIT`], offered by
+/// [`offering`]'s Status matrix. A wallpaper pre-generation has not hashed yet
+/// is in no pair, rather than in a pair with something it might not resemble. A
 /// Distinct pair is never waiting. Three wallpapers of one image are three
 /// pairs, so answering one leaves the others.
 pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppError> {
-    let mut stmt = conn.prepare_cached(&format!(
-        "SELECT id, perceptual_hash FROM wallpapers
-         WHERE perceptual_hash IS NOT NULL AND {}
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, perceptual_hash, status, created_at, rejected_at FROM wallpapers
+         WHERE perceptual_hash IS NOT NULL
          ORDER BY id",
-        Status::ELIGIBLE_SQL
-    ))?;
+    )?;
     // SQLite's integers are signed, so the hash went in as the same bits read
     // as an `i64` (`db::record_perceptual_hash`) and comes back out the same way.
-    let hashes = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u64)))?
-        .collect::<Result<Vec<(i64, u64)>, _>>()?;
+    let hashed = stmt
+        .query_map([], |row| {
+            Ok(Candidate {
+                id: row.get(0)?,
+                hash: row.get::<_, i64>(1)? as u64,
+                status: row.get(2)?,
+                created_at: row.get(3)?,
+                rejected_at: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     let distinct = distinct_pairs(conn)?;
 
     // Each row read once, however many pairs it is in.
@@ -60,13 +74,16 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
     };
 
     let mut pairs = Vec::new();
-    for (i, &(a, a_hash)) in hashes.iter().enumerate() {
-        for &(b, b_hash) in &hashes[i + 1..] {
+    for (i, a) in hashed.iter().enumerate() {
+        for b in &hashed[i + 1..] {
             // `a` is below `b`, the order a Distinct record is keyed in.
-            if within_limit(a_hash, b_hash) && !distinct.contains(&(a, b)) {
+            if !within_limit(a.hash, b.hash) || distinct.contains(&(a.id, b.id)) {
+                continue;
+            }
+            if let Some((kind, [first, second])) = offering(a, b) {
                 pairs.push(NearDuplicatePair {
-                    kind: PairKind::KeepOne,
-                    wallpapers: [row(a)?, row(b)?],
+                    kind,
+                    wallpapers: [row(first)?, row(second)?],
                 });
             }
         }
@@ -74,12 +91,52 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
     Ok(pairs)
 }
 
+/// How two Near-duplicates are offered, with the ids in the order the kind
+/// shows them, or `None` when they are not.
+///
+/// - Active or Kept against Active or Kept: keep one, lower id first.
+/// - Active or Kept against Rejected: rejected before, the arrival first, but
+///   only if it arrived after the reject. One already there was in the library
+///   beside the other when the curator rejected it.
+/// - Two Rejected wallpapers: never offered, since both are gone already.
+fn offering(a: &Candidate, b: &Candidate) -> Option<(PairKind, [i64; 2])> {
+    match (a.status.is_eligible(), b.status.is_eligible()) {
+        (true, true) => Some((PairKind::KeepOne, [a.id, b.id])),
+        (true, false) => arrived_after(a, b).then_some((PairKind::RejectedBefore, [a.id, b.id])),
+        (false, true) => arrived_after(b, a).then_some((PairKind::RejectedBefore, [b.id, a.id])),
+        (false, false) => None,
+    }
+}
+
+/// Whether `arrival` came into the library after `rejected`'s reject.
+///
+/// Strictly after: both are whole seconds, and the wallpaper a keep-one answer
+/// kept may share the second the answer rejected the other in.
+fn arrived_after(arrival: &Candidate, rejected: &Candidate) -> bool {
+    rejected
+        .rejected_at
+        .is_some_and(|at| arrival.created_at > at)
+}
+
+/// A hashed wallpaper as [`waiting_pairs`] reads it: enough to pair it and to
+/// say how the pair is offered.
+struct Candidate {
+    id: i64,
+    hash: u64,
+    status: Status,
+    /// When the wallpaper arrived, in Unix seconds.
+    created_at: i64,
+    /// When its current soft reject happened, `None` unless it is Rejected.
+    rejected_at: Option<i64>,
+}
+
 /// The unanswered Near-duplicate pairs among the Eligible wallpapers, which
 /// pair selection keeps apart (#403).
 ///
-/// These are the pairs [`waiting_pairs`] offers as keep-one. An answer either
-/// soft-rejects one of the two or makes the pair Distinct, and both take it
-/// out, so a Distinct pair can be drawn together. Reading it costs one pass
+/// These are the pairs [`waiting_pairs`] offers as keep-one. A rejected-before
+/// pair is not among them, since its Rejected wallpaper is never drawn. An
+/// answer either soft-rejects one of the two or makes the pair Distinct, and
+/// both take it out, so a Distinct pair can be drawn together. Reading it costs one pass
 /// over the hashes, and each pair asked about is worked out then, so a draw
 /// never pays for every pair in the library.
 pub fn unanswered_pairs(conn: &Connection) -> Result<UnansweredPairs, AppError> {
@@ -127,10 +184,14 @@ fn within_limit(a: u64, b: u64) -> bool {
 /// Keeps `kept` and soft-rejects `other` into `destination_folder`, answering
 /// with the row the reject wrote.
 ///
+/// A rejected-before pair is answered this way too when the curator rejects
+/// the arrival: `kept` is the Rejected wallpaper, which stays as it is.
+///
 /// Refused with [`AppError::InvalidTransition`], rejecting nothing, unless the
-/// two are still a waiting pair. The listing the curator answered from may be
-/// out of date: had `kept` been rejected since, keeping it would take the
-/// pair's last wallpaper out of the library.
+/// two are still a waiting pair and `other` is one this pair may reject. The
+/// listing the curator answered from may be out of date: had `kept` been
+/// rejected since, keeping it would take the pair's last wallpaper out of the
+/// library.
 ///
 /// The check reads with the connection released and the reject takes it again,
 /// because [`soft_reject::reject_in`] stages a cross-device copy between its
@@ -142,12 +203,24 @@ pub fn keep_one(
     other: i64,
     destination_folder: &str,
 ) -> Result<Wallpaper, AppError> {
-    db.read(|conn| refuse_unless_waiting(conn, kept, other))?;
+    db.read(|conn| {
+        let pair = refuse_unless_waiting(conn, kept, other)?;
+        if pair.kind == PairKind::RejectedBefore && pair.wallpapers[0].id != other {
+            return Err(AppError::InvalidTransition(format!(
+                "wallpaper {other} is the Rejected one of its pair, so only the other can be rejected"
+            )));
+        }
+        Ok(())
+    })?;
     soft_reject::reject_in(db, other, destination_folder)
 }
 
 /// Keeps both `a` and `b`, recording the pair as Distinct so it is never
 /// offered again, across scans and restarts.
+///
+/// A rejected-before pair is answered this way when the curator keeps the
+/// arrival: the Rejected wallpaper stays Rejected, and the two are no longer
+/// one image as far as the listing goes, even once both are Active.
 ///
 /// Refused with [`AppError::InvalidTransition`], recording nothing, unless the
 /// two are still a waiting pair, for [`keep_one`]'s reason. The check and the
@@ -162,19 +235,20 @@ pub fn keep_both(conn: &Connection, a: i64, b: i64) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Refuses an answer to `a` and `b` unless they are a waiting pair, in either
-/// order.
-fn refuse_unless_waiting(conn: &Connection, a: i64, b: i64) -> Result<(), AppError> {
-    let waiting = waiting_pairs(conn)?.iter().any(|pair| {
-        let ids = (pair.wallpapers[0].id, pair.wallpapers[1].id);
-        ids == (a, b) || ids == (b, a)
-    });
-    if !waiting {
-        return Err(AppError::InvalidTransition(format!(
-            "wallpapers {a} and {b} are not a waiting Near-duplicate pair"
-        )));
-    }
-    Ok(())
+/// The waiting pair `a` and `b` are, in either order, refusing an answer to
+/// them if they are not one.
+fn refuse_unless_waiting(conn: &Connection, a: i64, b: i64) -> Result<NearDuplicatePair, AppError> {
+    waiting_pairs(conn)?
+        .into_iter()
+        .find(|pair| {
+            let ids = (pair.wallpapers[0].id, pair.wallpapers[1].id);
+            ids == (a, b) || ids == (b, a)
+        })
+        .ok_or_else(|| {
+            AppError::InvalidTransition(format!(
+                "wallpapers {a} and {b} are not a waiting Near-duplicate pair"
+            ))
+        })
 }
 
 /// Every Distinct pair, lowest id first in each.
@@ -194,14 +268,14 @@ pub struct NearDuplicatePair {
 }
 
 /// How a pair is offered, which decides the answers it is given.
-///
-/// One kind so far: two Active or Kept wallpapers, answered by keeping one or
-/// keeping both. A pair against a Rejected wallpaper is offered differently
-/// (#402), and is a second kind rather than a flag on this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairKind {
+    /// Two Active or Kept wallpapers, answered by keeping one or keeping both.
     KeepOne,
+    /// An Active or Kept arrival first and the Rejected wallpaper it arrived
+    /// after second, answered by keeping the arrival or rejecting it.
+    RejectedBefore,
 }
 
 #[cfg(test)]
@@ -469,6 +543,243 @@ mod tests {
 
         assert!(matches!(err, AppError::InvalidTransition(_)));
         assert!(distinct_rows(&conn).is_empty());
+    }
+
+    /// Sets when `id` arrived, in Unix seconds, the way a scan at that time
+    /// would have.
+    fn arrived_at(conn: &Connection, id: i64, at: i64) {
+        conn.execute(
+            "UPDATE wallpapers SET created_at = ?2 WHERE id = ?1",
+            [id, at],
+        )
+        .unwrap();
+    }
+
+    /// Sets when `id`'s soft reject happened, the way a reject at that time
+    /// would have.
+    fn rejected_at(conn: &Connection, id: i64, at: i64) {
+        conn.execute(
+            "UPDATE wallpapers SET rejected_at = ?2 WHERE id = ?1",
+            [id, at],
+        )
+        .unwrap();
+    }
+
+    fn pairs_of_kind(conn: &Connection, kind: PairKind) -> Vec<(i64, i64)> {
+        waiting_pairs(conn)
+            .unwrap()
+            .iter()
+            .filter(|p| p.kind == kind)
+            .map(|p| (p.wallpapers[0].id, p.wallpapers[1].id))
+            .collect()
+    }
+
+    #[test]
+    fn an_active_or_kept_wallpaper_arriving_after_a_rejected_one_is_a_rejected_before_pair() {
+        // Arrival first and the Rejected wallpaper second, whichever id is
+        // lower, since the two sides are answered differently.
+        let conn = library();
+        let arrival = hashed(&conn, "/w/new.jpg", "active", 0b11_1111_1111);
+        let rejected = hashed(&conn, "/w/rejected/old.jpg", "rejected", 0);
+        let kept = hashed(&conn, "/w/kept.jpg", "kept", 1);
+        rejected_at(&conn, rejected, 100);
+        arrived_at(&conn, arrival, 200);
+        arrived_at(&conn, kept, 101);
+
+        assert_eq!(
+            pairs_of_kind(&conn, PairKind::RejectedBefore),
+            vec![(arrival, rejected), (kept, rejected)]
+        );
+        assert_eq!(
+            pairs_of_kind(&conn, PairKind::KeepOne),
+            vec![(arrival, kept)]
+        );
+    }
+
+    #[test]
+    fn a_wallpaper_already_there_when_the_other_was_rejected_is_no_pair() {
+        // The curator saw both and rejected one, so asking again would be
+        // asking about a pair they already answered.
+        let conn = library();
+        let earlier = hashed(&conn, "/w/a.jpg", "active", 0);
+        let same_second = hashed(&conn, "/w/b.jpg", "kept", 0);
+        let rejected = hashed(&conn, "/w/rejected/old.jpg", "rejected", 0);
+        rejected_at(&conn, rejected, 100);
+        arrived_at(&conn, earlier, 99);
+        arrived_at(&conn, same_second, 100);
+
+        assert!(pairs_of_kind(&conn, PairKind::RejectedBefore).is_empty());
+    }
+
+    #[test]
+    fn a_rejected_before_pair_still_needs_to_be_within_ten_bits() {
+        let conn = library();
+        let arrival = hashed(&conn, "/w/new.jpg", "active", 0b111_1111_1111);
+        let rejected = hashed(&conn, "/w/rejected/old.jpg", "rejected", 0);
+        rejected_at(&conn, rejected, 100);
+        arrived_at(&conn, arrival, 200);
+
+        assert!(pair_ids(&conn).is_empty());
+    }
+
+    #[test]
+    fn a_rejection_from_before_its_time_was_recorded_is_offered_against_everything_there() {
+        // The migration backfills those at the earliest time there is, so
+        // every Near-duplicate already in the library counts as arriving
+        // after it and is offered once.
+        let conn = library();
+        let there = hashed(&conn, "/w/a.jpg", "active", 0);
+        let rejected = hashed(&conn, "/w/rejected/old.jpg", "rejected", 0);
+        rejected_at(&conn, rejected, 0);
+
+        assert_eq!(
+            pairs_of_kind(&conn, PairKind::RejectedBefore),
+            vec![(there, rejected)]
+        );
+    }
+
+    #[test]
+    fn two_rejected_wallpapers_are_never_offered() {
+        let conn = library();
+        let a = hashed(&conn, "/w/rejected/a.jpg", "rejected", 0);
+        let b = hashed(&conn, "/w/rejected/b.jpg", "rejected", 0);
+        rejected_at(&conn, a, 0);
+        rejected_at(&conn, b, 100);
+        arrived_at(&conn, b, 50);
+
+        assert!(pair_ids(&conn).is_empty());
+    }
+
+    #[test]
+    fn a_rejected_before_pair_crosses_the_ipc_as_its_own_kind() {
+        let conn = library();
+        hashed(&conn, "/w/new.jpg", "active", 0);
+        let rejected = hashed(&conn, "/w/rejected/old.jpg", "rejected", 0);
+        rejected_at(&conn, rejected, 0);
+
+        let json = serde_json::to_value(&waiting_pairs(&conn).unwrap()[0]).unwrap();
+
+        assert_eq!(json["kind"], "rejected_before");
+        assert_eq!(json["wallpapers"][0]["filename"], "new.jpg");
+        assert_eq!(json["wallpapers"][1]["filename"], "old.jpg");
+    }
+
+    #[test]
+    fn a_keep_one_answer_is_not_asked_again_as_rejected_before() {
+        // Keeping one rejects the other, which leaves an Active wallpaper
+        // beside a Rejected one of the same image. It was there first, so it
+        // is no arrival.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, a, b) = real_pair(tmp.path());
+
+        keep_one(&db, b, a, "rejected").unwrap();
+
+        db.read(|conn| assert!(pair_ids(conn).is_empty()));
+    }
+
+    /// A real Rejected file and a real arrival carrying its hash, behind a
+    /// `Db`: the rejected wallpaper went through the ordinary soft reject, and
+    /// the arrival came in after it.
+    fn real_rejected_before(dir: &Path) -> (crate::Db, i64, i64) {
+        let (db, rejected, arrival) = real_pair(dir);
+        crate::soft_reject::reject_in(&db, rejected, "rejected").unwrap();
+        db.write(|conn| {
+            let at = rejected_at_of(conn, rejected).unwrap();
+            arrived_at(conn, arrival, at + 1);
+        });
+        db.read(|conn| {
+            assert_eq!(
+                pairs_of_kind(conn, PairKind::RejectedBefore),
+                vec![(arrival, rejected)]
+            )
+        });
+        (db, arrival, rejected)
+    }
+
+    #[test]
+    fn keeping_a_rejected_before_arrival_leaves_it_as_it_is_and_makes_the_pair_distinct() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, arrival, rejected) = real_rejected_before(tmp.path());
+
+        db.write(|conn| keep_both(conn, arrival, rejected)).unwrap();
+
+        db.read(|conn| {
+            assert_eq!(status_of(conn, arrival), "active");
+            assert_eq!(status_of(conn, rejected), "rejected");
+            assert!(pair_ids(conn).is_empty());
+            assert_eq!(distinct_rows(conn), vec![(rejected, arrival)]);
+        });
+        assert!(tmp.path().join("b.jpg").is_file());
+    }
+
+    #[test]
+    fn a_kept_rejected_before_pair_never_returns_even_once_both_are_active() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, arrival, rejected) = real_rejected_before(tmp.path());
+        db.write(|conn| keep_both(conn, arrival, rejected)).unwrap();
+
+        crate::soft_reject::restore_in(&db, rejected).unwrap();
+
+        db.read(|conn| assert!(pair_ids(conn).is_empty()));
+    }
+
+    #[test]
+    fn rejecting_a_rejected_before_arrival_soft_rejects_it_and_the_pair_goes() {
+        // The answer is keep one with the Rejected wallpaper as the one kept:
+        // the arrival goes through the ordinary soft reject, so its Undo is a
+        // Restore, which brings the pair back.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, arrival, rejected) = real_rejected_before(tmp.path());
+
+        let wrote = keep_one(&db, rejected, arrival, "rejected").unwrap();
+
+        assert_eq!(wrote.id, arrival);
+        assert_eq!(wrote.status, Status::Rejected);
+        assert!(tmp.path().join("rejected").join("b.jpg").is_file());
+        db.read(|conn| {
+            assert!(pair_ids(conn).is_empty());
+            assert!(distinct_rows(conn).is_empty());
+        });
+
+        crate::soft_reject::restore_in(&db, arrival).unwrap();
+        db.read(|conn| {
+            assert_eq!(
+                pairs_of_kind(conn, PairKind::RejectedBefore),
+                vec![(arrival, rejected)]
+            )
+        });
+    }
+
+    #[test]
+    fn keep_one_of_a_rejected_before_pair_that_would_reject_the_rejected_one_is_refused() {
+        // Its only keep-one answer is rejecting the arrival.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, arrival, rejected) = real_rejected_before(tmp.path());
+
+        let err = keep_one(&db, arrival, rejected, "rejected").unwrap_err();
+
+        assert!(matches!(err, AppError::InvalidTransition(_)));
+        db.read(|conn| assert_eq!(status_of(conn, arrival), "active"));
+    }
+
+    #[test]
+    fn neither_answer_to_a_rejected_before_pair_writes_a_comparison() {
+        for reject in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (db, arrival, rejected) = real_rejected_before(tmp.path());
+
+            if reject {
+                keep_one(&db, rejected, arrival, "rejected").unwrap();
+            } else {
+                db.write(|conn| keep_both(conn, arrival, rejected)).unwrap();
+            }
+
+            db.read(|conn| {
+                assert_eq!(count_comparisons(conn), 0);
+                assert_eq!(get_wallpaper(conn, arrival).unwrap().comparisons_count, 0);
+                assert_eq!(get_wallpaper(conn, rejected).unwrap().comparisons_count, 0);
+            });
+        }
     }
 
     #[test]
