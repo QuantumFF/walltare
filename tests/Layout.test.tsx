@@ -485,14 +485,14 @@ test("the chrome row is the same row on every view, and each page carries the ba
   ).toEqual([1, 1, 1, 1]);
 });
 
-test("Rank's Round headline lives in Rank's own bar", async () => {
+test("Rank's Undecided headline lives in Rank's own bar", async () => {
   await openApp();
 
   const bar = mountedViews()[0].querySelector('[data-slot="page-bar"]');
-  expect(bar?.textContent).toContain("Round 3");
-  expect(bar?.textContent).toContain("2 / 10 Evaluated");
+  expect(bar?.textContent).toContain("6 / 10 Undecided");
+  expect(bar?.textContent).toContain("18 Comparisons");
   // And not in the chrome, which would make its height depend on the page.
-  expect(chromeRow().textContent).not.toContain("Round");
+  expect(chromeRow().textContent).not.toContain("Undecided");
 });
 
 test("Library draws the shared card in the shared grid, under the bar's two controls", async () => {

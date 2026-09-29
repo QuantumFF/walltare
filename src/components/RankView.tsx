@@ -1,7 +1,6 @@
 import { PageBar } from "@/components/PageBar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
-import { Progress } from "@/components/ui/progress";
 import { useApp } from "@/context/AppContext";
 import { useAppEvent, useAppEvents } from "@/context/AppEventsContext";
 import {
@@ -27,29 +26,21 @@ const VOTE_FAILED_ERROR = "That vote didn't save. Pick again.";
 const NOT_ENOUGH_ERROR =
   "Ranking needs at least two wallpapers that aren't rejected.";
 const LOAD_FAILED_ERROR = "Failed to load wallpapers.";
-const ROUND_EXPLANATION_ID = "rank-round-explanation";
+const UNDECIDED_EXPLANATION_ID = "rank-undecided-explanation";
 
 type Side = "left" | "right";
 
 /**
- * Within-Round progress, as a whole percent. An empty Eligible pool is a
- * library that is about to start Round 1, not one at NaN%.
+ * The Undecided count split by the Bar, in real counts. Decided is worked out on
+ * every read, so the count can rise, and the explanation has to say so before
+ * a rise reads as a bug (ADR 0059).
  */
-function roundPercent(stats: Stats | null): number {
-  if (!stats || stats.eligible_count === 0) return 0;
-  return Math.round(
-    (stats.round_participated_count / stats.eligible_count) * 100,
-  );
-}
-
-/**
- * The Round rule in real counts. The Round is derived from comparison counts
- * the user never sees (ADR 0008), so the number has to explain itself.
- */
-function roundExplanation(stats: Stats | null): string {
-  const round = stats?.round ?? 1;
-  const times = round === 1 ? "1 time" : `${round} times`;
-  return `Round ${round}: ${stats?.round_participated_count ?? 0} of ${stats?.eligible_count ?? 0} wallpapers have been compared at least ${times}.`;
+function undecidedExplanation(stats: Stats | null): string {
+  const undecided = stats?.undecided_count ?? 0;
+  const eligible = stats?.eligible_count ?? 0;
+  const below = stats?.decided_below_count ?? 0;
+  const above = stats?.decided_above_count ?? 0;
+  return `${undecided} of ${eligible} wallpapers are Undecided: the app isn't sure yet which side of the Bar they fall on. ${below} are Decided below it and ${above} above. It can go up as well as down: a surprising vote can make the app unsure again.`;
 }
 
 /**
@@ -462,38 +453,30 @@ export function RankView() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleVote, view]);
 
-  const percent = roundPercent(stats);
-  const explanation = roundExplanation(stats);
+  const explanation = undecidedExplanation(stats);
 
-  // The Round headline, in the bar this page owns below the chrome. It renders
-  // in every state, including while the first pair is still loading, so that the
-  // page's own height never depends on what the backend has answered yet.
+  // The Undecided headline, in the bar this page owns below the chrome. It
+  // renders in every state, including while the first pair is still loading, so
+  // that the page's own height never depends on what the backend has answered
+  // yet. Shown raw, with no percentage or bar: the count can rise, and a
+  // fraction moving backwards reads as a bug (ADR 0059).
   const header = (
     <>
       <h1 className="sr-only">Rank</h1>
       <PageBar>
-        <span className="font-medium" aria-live="polite">
-          <span
-            tabIndex={0}
-            title={explanation}
-            aria-describedby={ROUND_EXPLANATION_ID}
-            className="rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
-            Round {stats?.round ?? 1}
-          </span>{" "}
-          · {percent}%
+        <span
+          tabIndex={0}
+          title={explanation}
+          aria-describedby={UNDECIDED_EXPLANATION_ID}
+          aria-live="polite"
+          className="rounded-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          {stats?.undecided_count ?? 0} / {stats?.eligible_count ?? 0} Undecided
         </span>
-        <span id={ROUND_EXPLANATION_ID} className="sr-only">
+        <span id={UNDECIDED_EXPLANATION_ID} className="sr-only">
           {explanation}
         </span>
-        <Progress value={percent} className="h-1.5 w-40" />
         <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
-          <span aria-live="polite">
-            <span className="font-medium text-foreground">
-              {stats?.evaluated_count ?? 0}
-            </span>{" "}
-            / {stats?.eligible_count ?? 0} Evaluated
-          </span>
           <span>
             <span className="font-medium text-foreground">
               {stats?.total_comparisons}

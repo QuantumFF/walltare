@@ -9,6 +9,7 @@
 
 use rusqlite::Connection;
 
+use crate::bar::Side;
 use crate::db;
 use crate::error::AppError;
 use crate::ranking::{self, Rng};
@@ -48,6 +49,10 @@ pub struct Stats {
     /// `undecided_count`, nothing is left to decide and Rank suggests Review
     /// (ADR 0060).
     pub close_call_count: u32,
+    /// Eligible wallpapers Decided below and above the Bar. With
+    /// `undecided_count` they add up to `eligible_count` (ADR 0059).
+    pub decided_below_count: u32,
+    pub decided_above_count: u32,
     pub total_comparisons: u32,
 }
 
@@ -244,13 +249,16 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
     )?;
     let round = floor.map_or(1, |f| count_u32(f).saturating_add(1));
 
-    // Decided reads the Bar, which SQL cannot work out, so these two count in
+    // Decided reads the Bar, which SQL cannot work out, so these count in
     // Rust over the pool pair selection reads.
     let bar = bar(conn)?;
-    let (mut undecided_count, mut close_call_count) = (0u32, 0u32);
+    let (mut undecided_count, mut decided_below_count, mut decided_above_count) = (0u32, 0, 0);
+    let mut close_call_count = 0u32;
     for w in eligible_summaries(conn)? {
-        if !w.is_decided(bar) {
-            undecided_count += 1;
+        match w.decided(bar) {
+            None => undecided_count += 1,
+            Some(Side::Below) => decided_below_count += 1,
+            Some(Side::Above) => decided_above_count += 1,
         }
         if w.is_close_call(bar) {
             close_call_count += 1;
@@ -264,6 +272,8 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
         evaluated_count,
         undecided_count,
         close_call_count,
+        decided_below_count,
+        decided_above_count,
         total_comparisons,
     })
 }
@@ -1095,5 +1105,69 @@ mod tests {
         assert!((bar(&conn).unwrap().unwrap() - 12.45).abs() < 1e-9);
         assert_eq!(s.undecided_count, 3);
         assert_eq!(s.close_call_count, 1);
+    }
+
+    /// The Undecided count with the two Decided sides, the way the headline
+    /// splits the Eligible pool.
+    fn split(s: &Stats) -> (u32, u32, u32) {
+        (
+            s.decided_below_count,
+            s.undecided_count,
+            s.decided_above_count,
+        )
+    }
+
+    #[test]
+    fn a_library_with_no_scores_is_all_undecided() {
+        let conn = test_conn();
+        for _ in 0..3 {
+            seed_on(&conn, "active", MU, SIGMA, 0);
+        }
+        seed_on(&conn, "kept", MU, SIGMA, 0);
+        let s = get_stats(&conn).unwrap();
+        assert_eq!(s.eligible_count, 4);
+        assert_eq!(split(&s), (0, 4, 0));
+    }
+
+    #[test]
+    fn decided_below_undecided_and_decided_above_add_up_to_the_eligible_pool() {
+        let conn = test_conn();
+        // Ten Scores 11 through 20 put the Bar at 12.5; with σ 0.1 every one
+        // sits more than 2.5σ from it, two below and eight above.
+        for mu in 11..=20 {
+            seed_on(&conn, "active", f64::from(mu), 0.1, 9);
+        }
+        // Two more Scores, high but too unsure to be Decided (Kept counts).
+        // Both land above the share, so they leave the Bar at 12.5.
+        seed_on(&conn, "active", 30.0, 10.0, 2);
+        seed_on(&conn, "kept", 31.0, 10.0, 2);
+        let s = get_stats(&conn).unwrap();
+        assert!((bar(&conn).unwrap().unwrap() - 12.5).abs() < 1e-9);
+        assert_eq!(split(&s), (2, 2, 8));
+        assert_eq!(
+            s.decided_below_count + s.undecided_count + s.decided_above_count,
+            s.eligible_count
+        );
+    }
+
+    #[test]
+    fn rejected_wallpapers_are_left_out_and_unrated_ones_are_undecided() {
+        let conn = test_conn();
+        for mu in 11..=20 {
+            seed_on(&conn, "active", f64::from(mu), 0.1, 9);
+        }
+        // Rejected Scores far either side of the Bar would be Decided if they
+        // were the curator's. With them the twelve Scores put the Bar at 11.5,
+        // which leaves 11 below it and 12 through 20 above.
+        seed_on(&conn, "rejected", 1.0, 0.1, 9);
+        seed_on(&conn, "rejected", 40.0, 0.1, 9);
+        // An Unrated arrival whose confident starting Score sits far above the
+        // Bar is still Undecided: no Comparison, no Score.
+        seed_on(&conn, "active", 40.0, 0.1, 0);
+        seed_on(&conn, "active", MU, SIGMA, 0);
+        let s = get_stats(&conn).unwrap();
+        assert!((bar(&conn).unwrap().unwrap() - 11.5).abs() < 1e-9);
+        assert_eq!(s.eligible_count, 12);
+        assert_eq!(split(&s), (1, 2, 9));
     }
 }

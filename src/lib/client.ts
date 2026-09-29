@@ -97,6 +97,12 @@ export interface Stats {
    * non-empty pool, means nothing is left to decide (ADR 0060).
    */
   close_call_count: number;
+  /**
+   * Eligible and Decided below and above the Bar. With `undecided_count` they
+   * add up to `eligible_count` (ADR 0059).
+   */
+  decided_below_count: number;
+  decided_above_count: number;
   total_comparisons: number;
 }
 

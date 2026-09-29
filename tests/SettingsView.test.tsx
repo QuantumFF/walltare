@@ -2166,15 +2166,10 @@ test("a preference the store refused stays on screen as the one it holds", async
 // chosen, and a line saying what the choice means and what the default is. What
 // the curator reads is the words on the control and that line; the write is
 // pinned by key and value, because a threshold stored in the wrong form is a
-// count and a wall of badges that disagree on the next launch (#260, ADR 0046).
-//
-// That this page is where the count moves from is not asserted here. The
-// headline is Rank's, the count is the backend's, and both are `voting.rs`'s
-// tests — this page's job ends at the row.
+// wall of badges that disagree on the next launch (#260, ADR 0046). The Rank
+// headline no longer counts Evaluated (ADR 0059), so the badges are all it moves.
 
 const evaluatedSection = () => sectionNamed("Evaluated threshold");
-/** Rank's Evaluated count, which stays mounted behind Settings (ADR 0015). */
-const evaluatedHeadline = () => screen.getByText(/Evaluated$/).textContent;
 const evaluatedLine = () =>
   document.querySelector(
     '[data-slot="evaluated-threshold-status"]',
@@ -2240,48 +2235,6 @@ test("choosing Lenient and then Balanced again writes both, which is the reset",
     { key: "evaluated_threshold", value: "4" },
   ]);
   expect(chosenConfidence()).toEqual(["Balanced"]);
-});
-
-test("changing the threshold moves the Evaluated count on Rank, not only the badges", async () => {
-  // The whole of what the setting is for, and the half a write on its own does
-  // not buy: the badges read the threshold out of `AppContext` and move with the
-  // write, and the count is the backend's. A curator who changes this and walks
-  // back to Rank must not find the old number waiting (#260, ADR 0046).
-  //
-  // The mock counts the way `voting.rs` does — a fixed eligible pool, against
-  // whatever row the settings table holds — so what is asserted here is that the
-  // page asks again, not what the answer is.
-  const POOL = [5.5, 4.5, 3.5, 2.5];
-  mockCommand("get_stats", () => {
-    statsCalls++;
-    return stats({
-      eligible_count: POOL.length,
-      // Coherent with the pool rather than the fixture's default, so the Round
-      // fraction beside the count is a fraction and not 150%.
-      round_participated_count: POOL.length,
-      evaluated_count: POOL.filter(
-        (sigma) => sigma < storedSettings.evaluated_threshold,
-      ).length,
-    });
-  });
-
-  await openApp();
-  expect(evaluatedHeadline()).toBe("2 / 4 Evaluated");
-
-  await click(gear());
-  await click(screen.getByRole("radio", { name: "Lenient" }));
-  await click(screen.getByRole("button", { name: /^Back to/ }));
-
-  // Rank never unmounted, so this is a patch onto the headline rather than a
-  // page rebuilding: `stats-changed` is how every other number up there moves
-  // (ADR 0015).
-  expect(evaluatedHeadline()).toBe("3 / 4 Evaluated");
-
-  await click(gear());
-  await click(screen.getByRole("radio", { name: "Strict" }));
-  await click(screen.getByRole("button", { name: /^Back to/ }));
-
-  expect(evaluatedHeadline()).toBe("1 / 4 Evaluated");
 });
 
 // The Thumbnails section, which is the only maintenance on the page: one line,
