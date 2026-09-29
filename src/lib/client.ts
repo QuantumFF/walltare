@@ -90,6 +90,13 @@ export interface Stats {
   /** Eligible wallpapers with `comparisons_count >= round`. */
   round_participated_count: number;
   evaluated_count: number;
+  /** Eligible and not yet Decided, Unrated included (ADR 0058). */
+  undecided_count: number;
+  /**
+   * The Undecided ones that are Close calls. Equal to `undecided_count`, over a
+   * non-empty pool, means nothing is left to decide (ADR 0060).
+   */
+  close_call_count: number;
   total_comparisons: number;
 }
 

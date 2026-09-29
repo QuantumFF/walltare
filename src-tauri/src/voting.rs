@@ -41,6 +41,13 @@ pub struct Stats {
     /// the curator's Evaluated threshold rather than against a constant — so the
     /// headline and the badge on every card move together (ADR 0046).
     pub evaluated_count: u32,
+    /// Eligible wallpapers the app is not yet sure which side of the Bar they
+    /// fall on, Unrated included (ADR 0058).
+    pub undecided_count: u32,
+    /// The Undecided ones that are Close calls. Once it matches
+    /// `undecided_count`, nothing is left to decide and Rank suggests Review
+    /// (ADR 0060).
+    pub close_call_count: u32,
     pub total_comparisons: u32,
 }
 
@@ -54,36 +61,40 @@ pub struct VoteOutcome {
 
 /// Picks two eligible wallpapers via the pure pair-selection module.
 ///
-/// The two are shuffled before returning. `select_pair` always yields the
-/// least-compared wallpaper first, and the UI renders slot 0 on the left, so
-/// without this the left side is systematically the newer wallpaper — feeding
+/// The two are shuffled before returning. `select_pair` always yields its
+/// first pick first, and the UI renders slot 0 on the left, so without this the
+/// left side is systematically the newer or less-compared wallpaper — feeding
 /// the well-known left-position bias of pairwise comparison straight into the
 /// ratings the app exists to measure.
 ///
 /// `exclude` keeps the wallpapers the user is already looking at out of the
-/// draw. Nothing in the selection rule stops a fresh pair reusing one of them,
-/// and against a 120-wallpaper library that happened to 4% of successive
-/// pairs: the pane does not appear to change, so the user re-picks the same
-/// wallpaper and the Comparison is worthless. Ignored when honouring it would
-/// leave fewer than two candidates, so a small library still ranks.
+/// draw. Without it, against a 120-wallpaper library, 4% of successive pairs
+/// reused one of them: the pane does not appear to change, so the user re-picks
+/// the same wallpaper and the Comparison is worthless. `select_pair` ignores it
+/// when honouring it would leave fewer than two candidates, so a small library
+/// still ranks.
+///
+/// The Bar and the latest Comparisons are read here on every draw, never held
+/// as state (ADR 0060).
 pub fn get_pair<R: Rng>(
     conn: &Connection,
     exclude: &[i64],
     rng: &mut R,
 ) -> Result<[Wallpaper; 2], AppError> {
-    let all = eligible_summaries(conn)?;
-    let narrowed: Vec<ranking::WallpaperSummary> = all
-        .iter()
-        .filter(|w| !exclude.contains(&w.id))
-        .copied()
-        .collect();
-    let pool = if narrowed.len() >= 2 { narrowed } else { all };
-    let (first, second) = ranking::select_pair(&pool, rng).ok_or_else(|| {
-        AppError::NotEnoughWallpapers(format!(
-            "pair selection needs at least two eligible wallpapers, found {}",
-            pool.len()
-        ))
-    })?;
+    let pool = eligible_summaries(conn)?;
+    let bar = bar(conn)?;
+    let (pairs, last_was_a_first) = recent_comparisons(conn)?;
+    let recent = ranking::Recent {
+        pairs: &pairs,
+        last_was_a_first,
+    };
+    let (first, second) =
+        ranking::select_pair(&pool, bar, recent, exclude, rng).ok_or_else(|| {
+            AppError::NotEnoughWallpapers(format!(
+                "pair selection needs at least two eligible wallpapers, found {}",
+                pool.len()
+            ))
+        })?;
     let (first, second) = if rng.next_f64() < 0.5 {
         (first, second)
     } else {
@@ -93,6 +104,34 @@ pub fn get_pair<R: Rng>(
         db::get_wallpaper(conn, first.id)?,
         db::get_wallpaper(conn, second.id)?,
     ])
+}
+
+/// The latest [`ranking::REPEAT_WINDOW`] Comparisons, newest first, and
+/// whether the latest was the first for either of its wallpapers.
+///
+/// "Its first" reads `comparisons_count`, which the vote that inserted the row
+/// raised in the same transaction: a count of one means that row is the only
+/// Comparison the wallpaper has. `comparisons` has no index on its two ids, so
+/// looking for an earlier row would scan the whole record on every pair.
+fn recent_comparisons(conn: &Connection) -> Result<(Vec<[i64; 2]>, bool), AppError> {
+    let mut stmt = conn
+        .prepare_cached("SELECT winner_id, loser_id FROM comparisons ORDER BY id DESC LIMIT ?1")?;
+    let pairs = stmt
+        .query_map([ranking::REPEAT_WINDOW as i64], |r| {
+            Ok([r.get(0)?, r.get(1)?])
+        })?
+        .collect::<Result<Vec<[i64; 2]>, _>>()?;
+    let last_was_a_first = match pairs.first() {
+        Some(&[a, b]) => conn.query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM wallpapers WHERE id IN (?1, ?2) AND comparisons_count = 1
+             )",
+            [a, b],
+            |r| r.get(0),
+        )?,
+        None => false,
+    };
+    Ok((pairs, last_was_a_first))
 }
 
 /// Applies a vote atomically, then returns the next pair with fresh stats.
@@ -204,12 +243,27 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
     let round = floor.map_or(1, |f| count_u32(f).saturating_add(1));
+
+    // Decided reads the Bar, which SQL cannot work out, so these two count in
+    // Rust over the pool pair selection reads.
+    let bar = bar(conn)?;
+    let (mut undecided_count, mut close_call_count) = (0u32, 0u32);
+    for w in eligible_summaries(conn)? {
+        if !w.is_decided(bar) {
+            undecided_count += 1;
+        }
+        if w.is_close_call(bar) {
+            close_call_count += 1;
+        }
+    }
     Ok(Stats {
         total_wallpapers,
         eligible_count,
         round,
         round_participated_count,
         evaluated_count,
+        undecided_count,
+        close_call_count,
         total_comparisons,
     })
 }
@@ -237,7 +291,7 @@ fn eligible_summaries(conn: &Connection) -> Result<Vec<ranking::WallpaperSummary
     // so row order isn't load-bearing, and sorting the whole library costs a
     // temp B-tree on every pair fetch.
     let mut stmt = conn.prepare_cached(&format!(
-        "SELECT id, rating_mu, rating_sigma, comparisons_count
+        "SELECT id, rating_mu, rating_sigma, comparisons_count, status
          FROM wallpapers WHERE {}",
         db::Status::ELIGIBLE_SQL,
     ))?;
@@ -247,6 +301,7 @@ fn eligible_summaries(conn: &Connection) -> Result<Vec<ranking::WallpaperSummary
             rating_mu: row.get(1)?,
             rating_sigma: row.get(2)?,
             comparisons_count: count_u32(row.get::<_, i64>(3)?),
+            kept: db::Status::read(&row.get::<_, String>(4)?) == db::Status::Kept,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
@@ -275,6 +330,7 @@ fn fetch_summary(conn: &Connection, id: i64) -> Result<ranking::WallpaperSummary
         rating_mu: row.rating_mu,
         rating_sigma: row.rating_sigma,
         comparisons_count: count_u32(row.comparisons_count),
+        kept: row.status == db::Status::Kept,
     })
 }
 
@@ -964,5 +1020,80 @@ mod tests {
         .unwrap();
 
         assert_eq!(get_stats(&conn).unwrap().evaluated_count, 1);
+    }
+
+    #[test]
+    fn get_pair_keeps_the_last_ten_comparisons_out_of_the_first_pick() {
+        let conn = test_conn();
+        // The least-compared wallpaper sits in the latest Comparison, so the
+        // next-least goes first.
+        let shown = seed_on(&conn, "active", 25.0, 5.0, 1);
+        let other = seed_on(&conn, "active", 25.0, 5.0, 4);
+        let next = seed_on(&conn, "active", 25.0, 5.0, 2);
+        add_comparison(&conn, shown, other);
+
+        for draw in [[0.0], [0.5], [0.99]] {
+            let ids = get_pair(&conn, &[], &mut SeqRng::new(&draw))
+                .unwrap()
+                .map(|p| p.id);
+            assert!(ids.contains(&next), "{ids:?}");
+        }
+    }
+
+    #[test]
+    fn a_vote_that_was_an_arrivals_first_is_followed_by_a_pair_with_no_unrated() {
+        // Four of seven have a Score before the vote, five after: past half.
+        let library = || {
+            let conn = test_conn();
+            let scored: Vec<i64> = (0..4)
+                .map(|i| seed_on(&conn, "active", 20.0 + f64::from(i), 5.0, 3))
+                .collect();
+            let arrival = seed_on(&conn, "active", MU, SIGMA, 0);
+            let unrated: Vec<i64> = (0..2)
+                .map(|_| seed_on(&conn, "active", MU, SIGMA, 0))
+                .collect();
+            (conn, scored, arrival, unrated)
+        };
+
+        for draw in [[0.0], [0.3], [0.6], [0.99]] {
+            let (conn, scored, arrival, unrated) = library();
+            let outcome = vote(&conn, arrival, scored[0], &[], &mut SeqRng::new(&draw)).unwrap();
+            let ids = outcome.next_pair.unwrap().map(|p| p.id);
+            assert!(
+                !ids.iter().any(|id| unrated.contains(id)),
+                "an arrival came straight back: {ids:?}"
+            );
+        }
+
+        // After a vote between two Scores, an arrival goes first again.
+        let (conn, scored, arrival, unrated) = library();
+        vote(&conn, arrival, scored[0], &[], &mut rng()).unwrap();
+        let outcome = vote(&conn, scored[1], scored[2], &[], &mut rng()).unwrap();
+        let ids = outcome.next_pair.unwrap().map(|p| p.id);
+        assert!(ids.iter().any(|id| unrated.contains(id)), "{ids:?}");
+    }
+
+    #[test]
+    fn stats_count_the_undecided_and_the_close_calls_against_the_bar() {
+        let conn = test_conn();
+        // Ten Scores 11 through 20 put the Bar at 12.5; with σ 0.1 every one
+        // sits more than 2.5σ from it and is Decided.
+        for mu in 11..=20 {
+            seed_on(&conn, "active", f64::from(mu), 0.1, 9);
+        }
+        let s = get_stats(&conn).unwrap();
+        assert_eq!((s.undecided_count, s.close_call_count), (0, 0));
+
+        // Undecided on the Bar, a Close call beside it (Kept counts), an
+        // Unrated arrival, and a Rejected Close call that is not the curator's.
+        // The three with Scores move the Bar to 12.45, still between 12 and 13.
+        seed_on(&conn, "active", 12.5, 3.0, 2);
+        seed_on(&conn, "kept", 12.6, 1.0, 12);
+        seed_on(&conn, "active", MU, SIGMA, 0);
+        seed_on(&conn, "rejected", 12.4, 1.0, 12);
+        let s = get_stats(&conn).unwrap();
+        assert!((bar(&conn).unwrap().unwrap() - 12.45).abs() < 1e-9);
+        assert_eq!(s.undecided_count, 3);
+        assert_eq!(s.close_call_count, 1);
     }
 }
