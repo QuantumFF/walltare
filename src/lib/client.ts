@@ -78,7 +78,8 @@ export interface Wallpaper {
 /**
  * Mirrors near_duplicates::NearDuplicatePair: two wallpapers the app judges to
  * be one image, and how the pair is offered. `keep_one` is two Active or Kept
- * wallpapers, answered by keeping one and soft-rejecting the other.
+ * wallpapers, answered by keeping one and soft-rejecting the other, or by
+ * keeping both, which makes the pair Distinct.
  */
 export interface NearDuplicatePair {
   kind: "keep_one";
@@ -745,6 +746,7 @@ export type Command =
   | "restore_wallpaper"
   | "list_near_duplicates"
   | "keep_one"
+  | "keep_both"
   | "get_settings"
   | "set_setting"
   | "wallhaven_search"
@@ -809,6 +811,7 @@ export interface BackendCommands {
     args: { keptId: number; otherId: number; destinationFolder: string };
     answer: Wallpaper;
   };
+  keep_both: { args: { firstId: number; secondId: number }; answer: null };
   get_settings: { args: undefined; answer: Settings };
   /** The value crosses as a string, which is what the column holds (`setSetting`). */
   set_setting: {
@@ -1239,6 +1242,17 @@ export const client = {
    */
   keepOne: (keptId: number, otherId: number, destinationFolder: string) =>
     call("keep_one", { keptId, otherId, destinationFolder }),
+
+  /**
+   * Answers a Near-duplicate pair by keeping both, which records it as
+   * Distinct so it is never offered again, whichever way round the ids are
+   * given. Neither wallpaper's Status changes and no Comparison is written.
+   *
+   * Rejects with `invalid_transition` when the two are no longer a waiting
+   * pair, and records nothing.
+   */
+  keepBoth: (firstId: number, secondId: number) =>
+    call("keep_both", { firstId, secondId }),
 
   /**
    * Starts the thumbnail pre-generation pass and resolves as soon as it is

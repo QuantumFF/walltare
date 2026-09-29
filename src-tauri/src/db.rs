@@ -11,7 +11,8 @@ use crate::scanner;
 ///
 /// Adding a whole table is not such a change: `init_schema` runs the DDL before
 /// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
-/// why `settings` arrived without a bump, and `thumbnail_failures` after it.
+/// why `settings` arrived without a bump, and `thumbnail_failures` and
+/// `distinct_pairs` after it.
 const SCHEMA_VERSION: i64 = 6;
 
 const DDL: &str = "
@@ -55,6 +56,18 @@ CREATE TABLE IF NOT EXISTS comparisons (
     winner_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
     loser_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
     voted_at  INTEGER NOT NULL
+);
+
+-- Near-duplicate pairs the curator kept both of, so neither is offered again.
+-- A record like `comparisons`, and never deleted like it. Keyed by the two ids
+-- lowest first, so one pair is one row whichever way round it was answered. A
+-- whole new table, which the DDL reaches in an old file too (ADR 0005).
+CREATE TABLE IF NOT EXISTS distinct_pairs (
+    low_id      INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+    high_id     INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+    answered_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    PRIMARY KEY (low_id, high_id),
+    CHECK (low_id < high_id)
 );
 
 CREATE TABLE IF NOT EXISTS thumbnails (
@@ -1405,6 +1418,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(count_wallpapers(&conn), 1);
+    }
+
+    #[test]
+    fn a_database_written_before_distinct_pairs_gains_them_without_a_version_bump() {
+        // A v6 file, the last shape before Distinct was recorded, reopened by
+        // this build: the table comes out of the DDL, so no step runs and no
+        // version moves (ADR 0005). Without it, the first listing of waiting
+        // Near-duplicate pairs on an existing library would fail.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+        init_schema(&conn).unwrap();
+        let a = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+        let b = seed_wallpaper(&conn, "/w/b.jpg", "active", 25.0);
+        conn.execute_batch("DROP TABLE distinct_pairs").unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 6);
+
+        init_schema(&conn).unwrap();
+
+        assert!(table_exists(&conn, "distinct_pairs").unwrap());
+        assert_eq!(schema_version(&conn).unwrap(), 6);
+        conn.execute(
+            "INSERT INTO distinct_pairs (low_id, high_id) VALUES (?1, ?2)",
+            [a, b],
+        )
+        .unwrap();
+        assert_eq!(count_wallpapers(&conn), 2);
     }
 
     #[test]

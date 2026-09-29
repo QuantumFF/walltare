@@ -609,6 +609,19 @@ async fn keep_one(
     .await
 }
 
+/// Answers a Near-duplicate pair by keeping both, which records it as Distinct
+/// so it is never offered again. No Status changes and no Comparison is
+/// written. Off the main thread for [`list_near_duplicates`]'s reason, since
+/// the pair is checked against the waiting listing before it is recorded.
+#[tauri::command]
+async fn keep_both(first_id: i64, second_id: i64, app: AppHandle) -> Result<(), error::AppError> {
+    off_main_thread(app, move |app| {
+        app.state::<Db>()
+            .write(|conn| near_duplicates::keep_both(conn, first_id, second_id))
+    })
+    .await
+}
+
 /// Runs a command's body on the blocking pool rather than the thread it was
 /// invoked on.
 ///
@@ -808,6 +821,7 @@ pub fn run() {
             restore_wallpaper,
             list_near_duplicates,
             keep_one,
+            keep_both,
             get_settings,
             set_setting,
             wallhaven_search,

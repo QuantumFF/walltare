@@ -16,7 +16,7 @@ import {
 } from "@/lib/client";
 import { counted } from "@/lib/copy";
 import { useBackendEvents } from "@/lib/useBackendEvents";
-import { Check } from "lucide-react";
+import { Check, CheckCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 export interface NearDuplicates {
@@ -29,10 +29,15 @@ export interface NearDuplicates {
    * the way a card's Reject is, and the toast says so with the same Undo.
    */
   keepOne: (kept: Wallpaper, other: Wallpaper) => void;
+  /**
+   * The keep-both answer: the pair is recorded as Distinct and leaves the
+   * section, and neither wallpaper's Status changes.
+   */
+  keepBoth: (pair: NearDuplicatePair) => void;
 }
 
 /**
- * The Near-duplicate pairs waiting in Review, and the keep-one answer to them.
+ * The Near-duplicate pairs waiting in Review, and the answers to them.
  *
  * `restore` is the page's own Restore, which is what the answer's Undo presses:
  * it brings the rejected wallpaper back, and the pair with it.
@@ -110,16 +115,44 @@ export function useNearDuplicates({
     }
   };
 
+  /**
+   * Hands the keyboard back for `keepOne`'s reason. No toast on success: there
+   * is nothing to undo, since Distinct is a record, and the pair leaving is
+   * the answer landing. Only this pair leaves, so the others stay as listed.
+   */
+  const keepBoth = async (pair: NearDuplicatePair) => {
+    const [a, b] = pair.wallpapers;
+    try {
+      await client.keepBoth(a.id, b.id);
+      setPairs((listed) => listed.filter((p) => !samePair(p, pair)));
+      handOff();
+    } catch (error) {
+      console.error("Failed to keep both Near-duplicates:", error);
+      show({
+        kind: "save-failed",
+        noun: `keep both for ${a.filename} and ${b.filename}`,
+        error,
+      });
+      if (isStaleRow(error)) refresh();
+    }
+  };
+
   return {
     pairs,
     refresh,
     keepOne: (kept, other) => void keepOne(kept, other),
+    keepBoth: (pair) => void keepBoth(pair),
   };
 }
 
+/** Whether two listed pairs are the same two wallpapers. */
+const samePair = (p: NearDuplicatePair, q: NearDuplicatePair) =>
+  p.wallpapers[0].id === q.wallpapers[0].id &&
+  p.wallpapers[1].id === q.wallpapers[1].id;
+
 /**
  * The Near-duplicate pairs waiting in Review, each side by side, with a
- * keep-one answer under each wallpaper.
+ * keep-one answer under each wallpaper and keep both under the two.
  *
  * Only ever mounted with a pair to show: the section is hidden while nothing is
  * waiting, so an empty one is never drawn. Answering is `useNearDuplicates`'s.
@@ -130,9 +163,11 @@ export function useNearDuplicates({
 export function NearDuplicatesSection({
   pairs,
   onKeepOne,
+  onKeepBoth,
 }: {
   pairs: NearDuplicatePair[];
   onKeepOne: (kept: Wallpaper, other: Wallpaper) => void;
+  onKeepBoth: (pair: NearDuplicatePair) => void;
 }) {
   return (
     <section
@@ -149,20 +184,33 @@ export function NearDuplicatesSection({
         </h2>
         <span className="text-sm text-muted-foreground">
           {counted(pairs.length, "pair")} waiting · keeping one rejects the
-          other
+          other, keeping both stops asking
         </span>
       </div>
       <ul className="flex gap-4 overflow-x-auto pb-2">
-        {pairs.map(({ wallpapers: [a, b] }) => (
-          <li
-            key={`${a.id}-${b.id}`}
-            aria-label={`${a.filename} and ${b.filename}`}
-            className="grid w-[28rem] max-w-full shrink-0 grid-cols-2 gap-3 rounded-xl border border-border bg-card p-3"
-          >
-            <Side kept={a} other={b} onKeepOne={onKeepOne} />
-            <Side kept={b} other={a} onKeepOne={onKeepOne} />
-          </li>
-        ))}
+        {pairs.map((pair) => {
+          const [a, b] = pair.wallpapers;
+          return (
+            <li
+              key={`${a.id}-${b.id}`}
+              aria-label={`${a.filename} and ${b.filename}`}
+              className="grid w-[28rem] max-w-full shrink-0 grid-cols-2 gap-3 rounded-xl border border-border bg-card p-3"
+            >
+              <Side kept={a} other={b} onKeepOne={onKeepOne} />
+              <Side kept={b} other={a} onKeepOne={onKeepOne} />
+              <Button
+                size="sm"
+                variant="ghost"
+                className="col-span-2 gap-2"
+                aria-label={`Keep both ${a.filename} and ${b.filename}`}
+                onClick={() => onKeepBoth(pair)}
+              >
+                <CheckCheck />
+                Keep both
+              </Button>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
