@@ -79,6 +79,10 @@ its card would read "File is gone" (ADR 0032).
   toast. It carries the scan ending's "back to Round 1" sentence when it
   applies, because every download is a wallpaper with no comparisons. Any
   failure ends the batch pinned.
+
+  > **Superseded by [ADR 0059](0059-the-headline-counts-undecided-and-round-is-retired.md),
+  > 2026-09-29.** Round is retired, so the batch's ending carries no "back to
+  > Round 1" sentence.
 - **Two checks.** The Download folder is checked when you click Download, and
   a failure refuses the call there. It is checked again for each file, because
   the answer expires (ADR 0035).

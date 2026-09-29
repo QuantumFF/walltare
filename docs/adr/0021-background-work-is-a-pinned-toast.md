@@ -171,6 +171,10 @@ frontend can tell by comparing the `Stats` it holds against the one it
 refetches on `library-scanned`. This is the home ADR 0008 asked for and could
 not name.
 
+> **Superseded by [ADR 0059](0059-the-headline-counts-undecided-and-round-is-retired.md),
+> 2026-09-29.** Round is retired, so the `scan-complete` row's description is
+> gone: `412 wallpapers added` stands alone.
+
 The two empty rows are the decision, not an omission. A pass that finishes
 cleanly has nothing to report: nobody acts on "1,204 thumbnails ready", the
 pass runs on essentially every first launch, and a notification whose only
