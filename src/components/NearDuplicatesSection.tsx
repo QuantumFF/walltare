@@ -124,13 +124,13 @@ export function useNearDuplicates({
     const [a, b] = pair.wallpapers;
     try {
       await client.keepBoth(a.id, b.id);
-      setPairs((listed) => listed.filter((p) => !samePair(p, pair)));
+      setPairs((listed) => listed.filter((p) => pairKey(p) !== pairKey(pair)));
       handOff();
     } catch (error) {
       console.error("Failed to keep both Near-duplicates:", error);
       show({
         kind: "save-failed",
-        noun: `keep both for ${a.filename} and ${b.filename}`,
+        noun: `${a.filename} and ${b.filename} as Distinct`,
         error,
       });
       if (isStaleRow(error)) refresh();
@@ -145,10 +145,9 @@ export function useNearDuplicates({
   };
 }
 
-/** Whether two listed pairs are the same two wallpapers. */
-const samePair = (p: NearDuplicatePair, q: NearDuplicatePair) =>
-  p.wallpapers[0].id === q.wallpapers[0].id &&
-  p.wallpapers[1].id === q.wallpapers[1].id;
+/** Which two wallpapers a listed pair is, as one string. */
+const pairKey = ({ wallpapers: [a, b] }: NearDuplicatePair) =>
+  `${a.id}-${b.id}`;
 
 /**
  * The Near-duplicate pairs waiting in Review, each side by side, with a
@@ -192,7 +191,7 @@ export function NearDuplicatesSection({
           const [a, b] = pair.wallpapers;
           return (
             <li
-              key={`${a.id}-${b.id}`}
+              key={pairKey(pair)}
               aria-label={`${a.filename} and ${b.filename}`}
               className="grid w-[28rem] max-w-full shrink-0 grid-cols-2 gap-3 rounded-xl border border-border bg-card p-3"
             >

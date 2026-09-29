@@ -2,10 +2,11 @@
 //!
 //! A pair is a standing and never a record, so nothing here writes one down:
 //! the waiting pairs are worked out from the stored perceptual hashes each time
-//! somebody asks. What is recorded is the curator's judgement that a pair is
-//! Distinct, which keeps it out of the listing for good. A scan over a few thousand 64-bit hashes is cheap, and a
+//! somebody asks. A scan over a few thousand 64-bit hashes is cheap, and a
 //! stored list would have to be kept in step with every reject, Restore and
-//! newly hashed wallpaper (CONTEXT.md, #393).
+//! newly hashed wallpaper (CONTEXT.md, #393). What is recorded is the curator's
+//! judgement that a pair is Distinct, which keeps it out of the listing for
+//! good.
 //!
 //! Answering never writes a Comparison. Keeping one is the ordinary soft
 //! reject of the other, so a Restore undoes it and the pair is waiting again,

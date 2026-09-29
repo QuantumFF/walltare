@@ -1517,7 +1517,7 @@ test("a keep both that fails says so and leaves the pair waiting", async () => {
   );
 
   expect(toast()).toEqual({
-    title: "Couldn't save keep both for dawn.jpg and dawn-2.jpg",
+    title: "Couldn't save dawn.jpg and dawn-2.jpg as Distinct",
     description: "database is locked",
   });
   expect(nearDuplicates()).not.toBeNull();
