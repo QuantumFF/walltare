@@ -28,6 +28,7 @@ const REVIEW_WORKLIST_SIZE: &str = "review_worklist_size";
 const STARTUP_VIEW: &str = "startup_view";
 const REVIEW_ORDERING: &str = "review_ordering";
 const EVALUATED_THRESHOLD: &str = "evaluated_threshold";
+const BAR_SHARE: &str = "bar_share";
 // Discover's remembered filters. Written by a successful search and by nothing
 // else, so `set` refuses them like any unknown key (ADR 0054).
 const WALLHAVEN_PURITY: &str = "wallhaven_purity";
@@ -57,6 +58,15 @@ pub const DEFAULT_EVALUATED_THRESHOLD: f64 = 4.0;
 /// explain. Three named confidences bracket the starting σ of 8.333 — half of
 /// it, and a step either side.
 pub const EVALUATED_THRESHOLDS: [f64; 3] = [5.0, DEFAULT_EVALUATED_THRESHOLD, 3.0];
+/// The share of scored wallpapers the Bar sits above, unless the curator says
+/// otherwise: the worst fifth (ADR 0056).
+pub const DEFAULT_BAR_SHARE: f64 = 0.2;
+
+/// The four positions Settings offers for the Bar, as fractions, smallest first.
+///
+/// A preset list for ADR 0046's reason, and a fraction stored rather than a
+/// Score because a position is what the curator can picture (ADR 0056).
+pub const BAR_SHARES: [f64; 4] = [0.1, DEFAULT_BAR_SHARE, 0.3, 0.5];
 /// The screen to assume when the platform will not name one.
 ///
 /// Detection failing is not an error state: the curator gets a working app with
@@ -591,6 +601,27 @@ impl Vocabulary for Threshold {
     }
 }
 
+/// One of the [`BAR_SHARES`], on its way in or out of the table.
+///
+/// Private and unwrapped at every edge, as [`Threshold`] is: [`Settings`] and
+/// [`bar_share`] carry the bare fraction.
+#[derive(Clone, Copy)]
+struct BarShare(f64);
+
+impl Vocabulary for BarShare {
+    const NOUN: &'static str = "a Bar share";
+
+    fn values() -> impl Iterator<Item = Self> {
+        BAR_SHARES.into_iter().map(Self)
+    }
+
+    fn spelling(self) -> String {
+        // `f64::to_string` writes each offered share the way `String(number)`
+        // does: `0.2`, never `.2` or `0.20`.
+        self.0.to_string()
+    }
+}
+
 /// Every setting, with the gaps filled from the defaults.
 ///
 /// `Eq` is deliberately absent: [`Settings::evaluated_threshold`] is a float, and
@@ -656,6 +687,13 @@ pub struct Settings {
     /// number (`CONTEXT.md`,
     /// [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
     pub evaluated_threshold: f64,
+    /// Where the Bar sits, as the share of scored wallpapers below it: the worst
+    /// 10, 20, 30 or 50 percent.
+    ///
+    /// The fraction and not a Score, because the Score at that position moves as
+    /// Scores do and is worked out on every read (`CONTEXT.md`,
+    /// [ADR 0056](../../docs/adr/0056-the-bar-is-a-position-over-every-scored-wallpaper.md)).
+    pub bar_share: f64,
     /// The filters Discover opens with, as the last successful search left them.
     ///
     /// Not keys `set` takes: a search writes them through [`remember`], so a
@@ -709,6 +747,7 @@ impl Settings {
             // What Evaluated meant while it was a constant, so nothing moves for
             // a curator who ignores the control.
             evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
+            bar_share: DEFAULT_BAR_SHARE,
             discover_filters: DiscoverFilters::default(),
             // Anonymous until a key is saved.
             wallhaven_key_set: false,
@@ -728,6 +767,12 @@ impl Settings {
 pub fn evaluated_threshold(conn: &Connection) -> Result<f64, AppError> {
     Ok(read(&stored(conn)?, EVALUATED_THRESHOLD, Threshold::parse)
         .map_or(DEFAULT_EVALUATED_THRESHOLD, |threshold| threshold.0))
+}
+
+/// The Bar share alone, for the Bar, which is worked out where there is no
+/// [`Detected`] to hand, the way [`evaluated_threshold`] is.
+pub fn bar_share(conn: &Connection) -> Result<f64, AppError> {
+    Ok(read(&stored(conn)?, BAR_SHARE, BarShare::parse).map_or(DEFAULT_BAR_SHARE, |share| share.0))
 }
 
 /// Every setting, with the gaps filled from the defaults, so a caller always
@@ -936,6 +981,8 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         crop_preview: read(stored, CROP_PREVIEW, bool::parse).unwrap_or(defaults.crop_preview),
         evaluated_threshold: read(stored, EVALUATED_THRESHOLD, Threshold::parse)
             .map_or(defaults.evaluated_threshold, |threshold| threshold.0),
+        bar_share: read(stored, BAR_SHARE, BarShare::parse)
+            .map_or(defaults.bar_share, |share| share.0),
         discover_filters: resolve_filters(stored),
         // A flag derived from the key's row, and never the key (ADR 0052).
         wallhaven_key_set: stored
@@ -1006,6 +1053,7 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         REVIEW_LAYOUT => Ok(ReviewLayout::written(value)? == without.review_layout),
         CROP_PREVIEW => Ok(bool::written(value)? == without.crop_preview),
         EVALUATED_THRESHOLD => Ok(Threshold::written(value)?.0 == without.evaluated_threshold),
+        BAR_SHARE => Ok(BarShare::written(value)?.0 == without.bar_share),
         // The key's default is no key, so the one value equal to it is the
         // empty one, which is how Remove deletes the row. Any other value is a
         // key, and `wallhaven_key_set` is what reads it back.
@@ -1118,6 +1166,7 @@ mod tests {
                 review_layout: ReviewLayout::Grid,
                 crop_preview: false,
                 evaluated_threshold: 4.0,
+                bar_share: 0.2,
                 discover_filters: DiscoverFilters::default(),
                 wallhaven_key_set: false,
                 detected_screen: size(3840, 2160),
@@ -1613,6 +1662,7 @@ mod tests {
         set(&conn, "startup_view", "library", detected()).unwrap();
         set(&conn, "review_ordering", "score_desc", detected()).unwrap();
         set(&conn, "evaluated_threshold", "3", detected()).unwrap();
+        set(&conn, "bar_share", "0.5", detected()).unwrap();
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
         set(&conn, "reject_destination", "./rejected", detected()).unwrap();
@@ -1623,6 +1673,7 @@ mod tests {
         set(&conn, "review_worklist_size", "50", detected()).unwrap();
         set(&conn, "startup_view", "rank", detected()).unwrap();
         set(&conn, "review_ordering", "score_asc", detected()).unwrap();
+        set(&conn, "bar_share", "0.2", detected()).unwrap();
         set(&conn, "evaluated_threshold", "4", detected()).unwrap(); // The minimum resolution goes back first, against the overridden screen
                                                                      // it currently defaults to. Doing it the other way round would mean
                                                                      // writing 3840x2160 into a key whose default had already moved there,
@@ -1860,7 +1911,7 @@ mod tests {
         // refusal may not name a value the parse refuses, and the parse may not
         // take a spelling the refusal did not name. A new enumerated key needs
         // a row here, or that guarantee lapses for it without a failure.
-        let table: [(&str, &[&str]); 8] = [
+        let table: [(&str, &[&str]); 9] = [
             ("theme", &["System", " dark", "solarized"]),
             ("library_layout", &["Grid", "masonry ", "mosaic"]),
             ("review_layout", &["Strip", "grid\n", "masonry"]),
@@ -1872,6 +1923,7 @@ mod tests {
             ("crop_preview", &["True", "1", "yes"]),
             ("review_worklist_size", &["+10", "050", "37"]),
             ("evaluated_threshold", &["4.0", "+3", "5e0"]),
+            ("bar_share", &[".2", "0.20", "20"]),
         ];
 
         for (key, near_misses) in table {
@@ -1967,6 +2019,9 @@ mod tests {
         // three numbers on both sides of the IPC, which is the duplication this
         // epic already refused over the Screen (ADR 0046).
         assert_eq!(json["evaluated_threshold"], 4.0);
+        // The Bar share crosses as the fraction, which is what is stored; the
+        // percentage is the page's to print (ADR 0056).
+        assert_eq!(json["bar_share"], 0.2);
     }
 
     #[test]
@@ -2114,6 +2169,52 @@ mod tests {
             evaluated_threshold(&conn).unwrap(),
             DEFAULT_EVALUATED_THRESHOLD
         );
+    }
+
+    #[test]
+    fn the_bar_share_defaults_to_the_worst_fifth() {
+        let conn = store();
+        assert_eq!(get(&conn, detected()).unwrap().bar_share, 0.2);
+        assert_eq!(bar_share(&conn).unwrap(), DEFAULT_BAR_SHARE);
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn every_offered_bar_share_round_trips_and_the_default_deletes_the_row() {
+        // Written the way `client.ts` writes a number, which is `String(value)`.
+        let conn = store();
+        for offered in BAR_SHARES {
+            let written = set(&conn, "bar_share", &offered.to_string(), detected()).unwrap();
+            assert_eq!(written.bar_share, offered);
+            assert_eq!(bar_share(&conn).unwrap(), offered);
+        }
+        set(&conn, "bar_share", "0.2", detected()).unwrap();
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn a_bar_share_off_the_list_is_a_bad_request_and_changes_nothing() {
+        let conn = store();
+        set(&conn, "bar_share", "0.3", detected()).unwrap();
+        let before = get(&conn, detected()).unwrap();
+
+        for refused in ["0.25", "0", "1", "-0.2", "", "20%", "NaN"] {
+            let err = set(&conn, "bar_share", refused, detected()).unwrap_err();
+            assert!(
+                matches!(err, AppError::BadRequest(_)),
+                "{refused:?}: {err:?}"
+            );
+        }
+
+        assert_eq!(get(&conn, detected()).unwrap(), before);
+    }
+
+    #[test]
+    fn a_bar_share_row_that_will_not_read_falls_back_to_the_default() {
+        let conn = store();
+        write_raw_row(&conn, "bar_share", "most of them");
+        assert_eq!(get(&conn, detected()).unwrap().bar_share, DEFAULT_BAR_SHARE);
+        assert_eq!(bar_share(&conn).unwrap(), DEFAULT_BAR_SHARE);
     }
 
     fn toplist_of_anime_and_sketchy() -> DiscoverFilters {

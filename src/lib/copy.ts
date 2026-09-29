@@ -106,6 +106,15 @@ export const STATUS_LABEL: Record<Status, string> = {
  * can see right now, which is why the word is `gone` rather than a term the
  * glossary would have to carry (ADR 0032).
  */
+/**
+ * A Bar share as the curator reads it: `0.2` is `20%`. The stored value is the
+ * fraction and the page prints the percentage (ADR 0056), in Settings and on
+ * Review's rule alike.
+ */
+export function sharePercent(share: number): string {
+  return `${Math.round(share * 100)}%`;
+}
+
 export const FILE_IS_GONE = "File is gone";
 
 /**

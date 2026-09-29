@@ -51,7 +51,18 @@ import type { MarkedResult, Wallpaper } from "@/lib/client";
  * alone rather than answering it with nothing.
  */
 export type ListingSurface =
-  | { kind: "grid"; columns: number; cell: () => Element | null }
+  | {
+      kind: "grid";
+      columns: number;
+      cell: () => Element | null;
+      /**
+       * Where a rule across the grid starts a new row, as the position of the
+       * first card after it: Review's Bar (#386). The row before it stops
+       * short, so Up and Down count by the rows drawn rather than by a stride
+       * through the list.
+       */
+      breakAt?: number;
+    }
   | { kind: "strip" }
   | { kind: "lightbox"; crop: boolean };
 
@@ -567,16 +578,42 @@ function intentOf<T, A extends string>(
   }
 
   const last = length - 1;
-  const stride = surface.kind === "grid" ? surface.columns : 1;
+  const rows =
+    surface.kind === "grid"
+      ? drawnRows(surface.columns, surface.breakAt)
+      : drawnRows(1, undefined);
+  const up = rows.slot(index) - rows.stride;
+  const down = rows.slot(index) + rows.stride;
   const to = {
     previous: Math.max(index - 1, 0),
     next: Math.min(index + 1, last),
-    up: index - stride < 0 ? index : index - stride,
-    down: index + stride > last ? index : index + stride,
+    up: up < 0 ? index : rows.at(up),
+    down: down > rows.slot(last) ? index : rows.at(down),
     first: 0,
     last,
   }[does.move];
   return { kind: "move", to };
+}
+
+/**
+ * Positions in a grid as the rows are drawn, for a grid whose rule at
+ * `breakAt` leaves the row before it short.
+ *
+ * A slot is where a card sits counting the empty cells the short row leaves,
+ * so a stride of `columns` slots is one drawn row. A slot in those empty cells
+ * holds no card, and the nearest one is the short row's end. With no rule, a
+ * slot is the card's own position.
+ */
+function drawnRows(columns: number, breakAt: number | undefined) {
+  const at = breakAt ?? Infinity;
+  const gap =
+    breakAt === undefined ? 0 : (columns - (breakAt % columns)) % columns;
+  return {
+    stride: columns,
+    slot: (index: number) => (index < at ? index : index + gap),
+    at: (slot: number) =>
+      slot < at ? slot : slot < at + gap ? at - 1 : slot - gap,
+  };
 }
 
 /**

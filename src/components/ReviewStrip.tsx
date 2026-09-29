@@ -1,4 +1,5 @@
 import { ActionButton } from "@/components/ActionButton";
+import type { GridRule } from "@/components/ItemGrid";
 import { CropPreviewToggle, useCropPreview } from "@/components/CropPreview";
 import {
   HeroPicture,
@@ -36,6 +37,7 @@ import type { Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { ImageOff } from "lucide-react";
 import {
+  Fragment,
   memo,
   useCallback,
   useRef,
@@ -184,6 +186,12 @@ export interface ReviewStripProps {
    * it outlives this strip (see `HeldDensity`). Absent, the strip holds its own.
    */
   filmstripStep?: HeldDensity;
+  /**
+   * A rule drawn across the filmstrip before the entry at `before`: Review's
+   * Bar, the same one the grid draws (#386). The filmstrip is one line, so the
+   * arrows need nothing from it.
+   */
+  rule?: GridRule;
 }
 
 /**
@@ -221,6 +229,7 @@ export function ReviewStrip({
   ref,
   startOn,
   filmstripStep,
+  rule,
 }: ReviewStripProps) {
   const stripRef = useRef<HTMLDivElement>(null);
   const filmstripRef = useRef<HTMLDivElement>(null);
@@ -491,14 +500,25 @@ export function ReviewStrip({
         }}
       >
         {wallpapers.map((entry, at) => (
-          <FilmstripEntry
-            key={entry.id}
-            wallpaper={entry}
-            at={at}
-            current={at === index}
-            onSelect={moveTo}
-            height={entryHeight}
-          />
+          <Fragment key={entry.id}>
+            {at === rule?.before && (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={rule.label}
+                title={rule.label}
+                data-slot="filmstrip-rule"
+                className="h-full w-0.5 shrink-0 rounded-full bg-primary/50"
+              />
+            )}
+            <FilmstripEntry
+              wallpaper={entry}
+              at={at}
+              current={at === index}
+              onSelect={moveTo}
+              height={entryHeight}
+            />
+          </Fragment>
         ))}
       </div>
     </div>

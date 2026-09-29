@@ -462,3 +462,52 @@ test("on Discover, Enter opens, and the lightbox answers P and D but not Escape"
     action: "Open the selection",
   });
 });
+
+// A grid with a rule across it: the row before the rule stops short, and the
+// cards after it start a row of their own, so Up and Down move by what the eye
+// sees rather than by a stride through the list (#386).
+test("up and down cross a row break by column, and into a short row land on its end", () => {
+  // Four columns, the rule before card 6: cards 4 and 5 are a short row, and
+  // cards 6 to 9 start at the first column of the row below it.
+  const move = (key: string, index: number) =>
+    answerKey(
+      {
+        key,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        repeat: false,
+        target: null,
+        preventDefault: () => {},
+      },
+      {
+        surface: {
+          kind: "grid",
+          columns: 4,
+          cell: () => null,
+          breakAt: 6,
+        },
+        selected: wallpaper(1),
+        index,
+        length: 12,
+      },
+      STATUS_KEYS,
+    );
+
+  // Above the short row, straight down where there is a card below.
+  expect(move("ArrowDown", 1)).toMatchObject({ kind: "move", to: 5 });
+  // And onto the short row's end where there is none.
+  expect(move("ArrowDown", 3)).toMatchObject({ kind: "move", to: 5 });
+  // From the short row, down past the rule into the same column.
+  expect(move("ArrowDown", 4)).toMatchObject({ kind: "move", to: 6 });
+  expect(move("ArrowDown", 5)).toMatchObject({ kind: "move", to: 7 });
+  // Up from past the rule, into the short row or onto its end.
+  expect(move("ArrowUp", 7)).toMatchObject({ kind: "move", to: 5 });
+  expect(move("ArrowUp", 9)).toMatchObject({ kind: "move", to: 5 });
+  // Rows after the rule move by the stride among themselves.
+  expect(move("ArrowDown", 6)).toMatchObject({ kind: "move", to: 10 });
+  expect(move("ArrowUp", 10)).toMatchObject({ kind: "move", to: 6 });
+  // Past the last row, the cursor stays.
+  expect(move("ArrowDown", 9)).toMatchObject({ kind: "move", to: 9 });
+});

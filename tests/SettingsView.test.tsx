@@ -104,6 +104,9 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
     // right for the card and the count to agree (#260).
     case "evaluated_threshold":
       return { evaluated_threshold: Number(value) };
+    // The fraction, back as the number the Settings struct carries (ADR 0056).
+    case "bar_share":
+      return { bar_share: Number(value) };
   }
 }
 
@@ -346,7 +349,7 @@ async function openSettingsFromLibrary() {
   expect(showingView()).toBe("settings");
 }
 
-test("the page is one column of thirteen sections, in first-run order", async () => {
+test("the page is one column of fourteen sections, in first-run order", async () => {
   await openSettingsFromLibrary();
 
   // Missing files is last for the rule that put Thumbnails next to last:
@@ -368,6 +371,7 @@ test("the page is one column of thirteen sections, in first-run order", async ()
     "Startup view",
     "Review worklist",
     "Review ordering",
+    "Bar",
     "API key",
     "Download folder",
     "Thumbnails",
@@ -375,7 +379,7 @@ test("the page is one column of thirteen sections, in first-run order", async ()
   ]);
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert — and the width is the decision: thirteen sections of one or two controls
+  // assert — and the width is the decision: fourteen sections of one or two controls
   // read as a page at this measure and as a form at full width (ADR 0020).
   const column = document
     .querySelector('[data-slot="settings-section"]')
@@ -407,6 +411,7 @@ test("the sections sit in five groups, and the jump row scrolls to each", async 
         "Startup view",
         "Review worklist",
         "Review ordering",
+        "Bar",
       ],
     },
     { title: "Wallhaven", sections: ["API key", "Download folder"] },
@@ -678,6 +683,7 @@ test("Retry re-reads the library, and a read that succeeds clears the block", as
     "Startup view",
     "Review worklist",
     "Review ordering",
+    "Bar",
     "API key",
     "Download folder",
     "Thumbnails",
@@ -690,7 +696,7 @@ test("neither block is up when boot found a library it could read", async () => 
 
   expect(screen.queryByRole("status")).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
-  expect(sectionHeadings().length).toBe(13);
+  expect(sectionHeadings().length).toBe(14);
 });
 
 // The Library root section. Most of what follows came from `tests/ScanView.test.tsx`
@@ -2084,6 +2090,40 @@ test("picking an ordering writes the listing's own name for it", async () => {
     { key: "review_ordering", value: "score_asc" },
   ]);
   expect(chosenIn(orderingSection())).toEqual(["Lowest Score"]);
+});
+
+const barSection = () => sectionNamed("Bar");
+
+test("the Bar offers four shares as percentages, with the worst fifth taken", async () => {
+  await openSettingsFromLibrary();
+
+  // The percentage is printed, because a position is a number the curator can
+  // picture and a Score is not (ADR 0056).
+  expect(choicesIn(barSection())).toEqual([
+    "Worst 10%",
+    "Worst 20%",
+    "Worst 30%",
+    "Worst 50%",
+  ]);
+  expect(chosenIn(barSection())).toEqual(["Worst 20%"]);
+});
+
+test("picking a Bar share writes the fraction, and picking the fifth back writes that", async () => {
+  await openSettingsFromLibrary();
+
+  await click(choiceIn(barSection(), "Worst 30%"));
+
+  // The fraction is what is stored, not the percentage the control prints.
+  expect(settingWrites).toEqual([{ key: "bar_share", value: "0.3" }]);
+  expect(chosenIn(barSection())).toEqual(["Worst 30%"]);
+
+  await click(choiceIn(barSection(), "Worst 20%"));
+
+  expect(settingWrites).toEqual([
+    { key: "bar_share", value: "0.3" },
+    { key: "bar_share", value: "0.2" },
+  ]);
+  expect(chosenIn(barSection())).toEqual(["Worst 20%"]);
 });
 
 test("the three preferences leave each other and every other setting alone", async () => {

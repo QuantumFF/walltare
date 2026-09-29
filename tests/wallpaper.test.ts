@@ -1,4 +1,4 @@
-import { shapeOf } from "@/lib/wallpaper";
+import { barFallsAt, shapeOf } from "@/lib/wallpaper";
 import { expect, test } from "bun:test";
 import { wallpaper } from "./fixtures";
 
@@ -25,4 +25,34 @@ test("a wallpaper's shape comes off its own Dimensions, and is nothing at all wi
   // draw instead belongs to the layout, which is the only thing that knows
   // whether it is cropping.
   expect(shapeOf(wallpaper(5, { width: null, height: null }))).toBeNull();
+});
+
+test("the Bar falls before the first scored wallpaper not below it", () => {
+  const scored = (id: number, mu: number) =>
+    wallpaper(id, { rating_mu: mu, comparisons_count: 3 });
+  const worklist = [scored(1, 10), scored(2, 18), scored(3, 20), scored(4, 26)];
+
+  expect(barFallsAt(worklist, 19)).toBe(2);
+  // Strict about the side: a Score exactly on the Bar is not below it.
+  expect(barFallsAt(worklist, 20)).toBe(2);
+  // Every Score above it puts the rule at the top.
+  expect(barFallsAt(worklist, 5)).toBe(0);
+});
+
+test("no Bar, or none of the worklist's Scores at it, draws no rule", () => {
+  const scored = (id: number, mu: number) =>
+    wallpaper(id, { rating_mu: mu, comparisons_count: 3 });
+  // An Unrated tail has no Score to stand on either side, so it does not place
+  // the rule even with a starting Score above the Bar.
+  const worklist = [
+    scored(1, 10),
+    scored(2, 18),
+    wallpaper(3, { rating_mu: 40 }),
+  ];
+
+  expect(barFallsAt(worklist, null)).toBeNull();
+  // Everything here is below, and the Bar may be further down than the
+  // worklist reaches, so no line claims to know where.
+  expect(barFallsAt(worklist, 30)).toBeNull();
+  expect(barFallsAt([], 30)).toBeNull();
 });

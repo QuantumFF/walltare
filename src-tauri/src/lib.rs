@@ -1,3 +1,4 @@
+pub mod bar; // Decided and Close call are read by #384 and #387; kept Tauri-free
 mod db;
 mod download;
 mod download_folder;
@@ -126,6 +127,13 @@ fn vote(
             &mut voting::SystemRng::new(),
         )
     })
+}
+
+/// The Bar as it stands, or `null` when nothing has a Score yet. Worked out on
+/// every call and never stored (ADR 0056).
+#[tauri::command]
+fn get_bar(state: tauri::State<'_, Db>) -> Result<Option<f64>, error::AppError> {
+    state.read(voting::bar)
 }
 
 #[tauri::command]
@@ -756,6 +764,7 @@ pub fn run() {
             get_pair,
             vote,
             get_stats,
+            get_bar,
             list_wallpapers,
             keep_wallpaper,
             unkeep_wallpaper,

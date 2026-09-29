@@ -214,6 +214,24 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
     })
 }
 
+/// The Bar as it stands: the Score at the curator's share among every wallpaper
+/// with a Score, whatever its Status, or nothing when no wallpaper has one.
+///
+/// Worked out on every call and never stored (ADR 0056). Rejected rows count on
+/// purpose: their frozen Scores are what keep a soft reject below the Bar from
+/// lifting it. The share is read here rather than passed in, the way
+/// `get_stats` reads the Evaluated threshold, so every reader of the Bar reads
+/// it against the same row.
+pub fn bar(conn: &Connection) -> Result<Option<f64>, AppError> {
+    let share = crate::settings::bar_share(conn)?;
+    let mut stmt =
+        conn.prepare_cached("SELECT rating_mu FROM wallpapers WHERE comparisons_count > 0")?;
+    let scores = stmt
+        .query_map([], |row| row.get::<_, f64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(crate::bar::bar(&scores, share))
+}
+
 fn eligible_summaries(conn: &Connection) -> Result<Vec<ranking::WallpaperSummary>, AppError> {
     // No ORDER BY: `select_pair` scans for a minimum and indexes by RNG draw,
     // so row order isn't load-bearing, and sorting the whole library costs a
@@ -598,6 +616,77 @@ mod tests {
         let conn = test_conn();
         let err = db::get_wallpaper(&conn, 999).unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    /// Sets a wallpaper's Status the way a soft reject leaves the row: the rating
+    /// and the Comparison count untouched.
+    fn set_status(conn: &Connection, id: i64, status: &str) {
+        conn.execute(
+            "UPDATE wallpapers SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_bar_counts_every_status_and_leaves_the_unrated_out() {
+        let conn = test_conn();
+        // Ten Scores, 1 through 10, spread across all three Statuses.
+        for mu in 1..=10 {
+            let status = match mu % 3 {
+                0 => "rejected",
+                1 => "active",
+                _ => "kept",
+            };
+            seed_on(&conn, status, f64::from(mu), 3.0, 4);
+        }
+        // Unrated rows with starting Scores that would drag the Bar down if they
+        // counted.
+        for _ in 0..10 {
+            seed_on(&conn, "active", 0.5, SIGMA, 0);
+        }
+
+        assert_eq!(bar(&conn).unwrap(), Some(2.5));
+    }
+
+    #[test]
+    fn the_bar_follows_the_share_the_curator_set() {
+        let conn = test_conn();
+        for mu in 1..=10 {
+            seed_on(&conn, "active", f64::from(mu), 3.0, 4);
+        }
+        let detected = crate::settings::Detected::default();
+        for (share, expected) in [("0.1", 1.5), ("0.3", 3.5), ("0.5", 5.5), ("0.2", 2.5)] {
+            crate::settings::set(&conn, "bar_share", share, detected).unwrap();
+            assert_eq!(bar(&conn).unwrap(), Some(expected), "share {share}");
+        }
+    }
+
+    #[test]
+    fn an_empty_or_unrated_library_has_no_bar_and_one_score_is_its_own() {
+        let conn = test_conn();
+        assert_eq!(bar(&conn).unwrap(), None);
+        seed_on(&conn, "active", MU, SIGMA, 0);
+        assert_eq!(bar(&conn).unwrap(), None);
+        seed_on(&conn, "active", 27.0, 6.0, 1);
+        assert_eq!(bar(&conn).unwrap(), Some(27.0));
+    }
+
+    #[test]
+    fn rejecting_a_wallpaper_below_the_bar_leaves_the_bar_where_it_was() {
+        let conn = test_conn();
+        let ids: Vec<i64> = (1..=10)
+            .map(|mu| seed_on(&conn, "active", f64::from(mu), 3.0, 4))
+            .collect();
+        let before = bar(&conn).unwrap();
+        assert_eq!(before, Some(2.5));
+
+        // The worst two are the worst fifth; clearing both out is where
+        // clearing out ends, and the Bar has not moved to make a new worst fifth.
+        set_status(&conn, ids[0], "rejected");
+        assert_eq!(bar(&conn).unwrap(), before);
+        set_status(&conn, ids[1], "rejected");
+        assert_eq!(bar(&conn).unwrap(), before);
     }
 
     #[test]

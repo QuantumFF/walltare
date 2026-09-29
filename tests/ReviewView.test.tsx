@@ -507,6 +507,120 @@ test("a worklist lengthened from Settings is fetched when Review is next shown",
   expect(limits).toEqual([50, 100]);
 });
 
+// The Bar (#386): working from the lowest Score, a rule across the worklist
+// where the Bar falls. The Score at it is the backend's, worked out on every
+// read, so these tests serve it from `get_bar` and assert where the line lands.
+
+const rule = () => reviewView().querySelector('[role="separator"]');
+/** The names of the cards drawn before the rule, in order. */
+const cardsBeforeRule = () => {
+  const line = rule();
+  return inReview()
+    .getAllByRole("gridcell")
+    .filter(
+      (cell) =>
+        line !== null &&
+        line.compareDocumentPosition(cell) & Node.DOCUMENT_POSITION_PRECEDING,
+    )
+    .map((cell) => cell.getAttribute("aria-label"));
+};
+
+const scoredAt = (id: number, mu: number) =>
+  wallpaper(id, {
+    filename: `s${id}.jpg`,
+    rating_mu: mu,
+    comparisons_count: 4,
+  });
+
+test("working from the lowest Score, a rule falls where the Bar does", async () => {
+  mockCommand("get_bar", () => 20);
+
+  await openReview([
+    scoredAt(1, 12),
+    scoredAt(2, 18),
+    scoredAt(3, 22),
+    scoredAt(4, 30),
+  ]);
+
+  expect(rule()?.getAttribute("aria-label")).toBe("Bar · worst 20%");
+  expect(cardsBeforeRule()).toHaveLength(2);
+  expect(cardsBeforeRule()[0]).toContain("s1.jpg");
+  expect(cardsBeforeRule()[1]).toContain("s2.jpg");
+});
+
+test("working from the highest Score draws no rule", async () => {
+  mockCommand("get_bar", () => 20);
+
+  await openReview([scoredAt(4, 30), scoredAt(3, 22), scoredAt(2, 18)], {
+    review_ordering: "score_desc",
+  });
+
+  expect(rule()).toBeNull();
+});
+
+test("with no Bar the worklist stands with no rule", async () => {
+  await openReview([scoredAt(1, 12), scoredAt(2, 30)]);
+
+  expect(rule()).toBeNull();
+  expect(inReview().getAllByRole("gridcell")).toHaveLength(2);
+});
+
+test("a Bar that will not read leaves the worklist standing with no rule", async () => {
+  mockCommand("get_bar", () => Promise.reject(new Error("locked")));
+  expectConsoleError(/Failed to read the Bar/);
+
+  await openReview([scoredAt(1, 12), scoredAt(2, 30)]);
+
+  expect(rule()).toBeNull();
+  expect(inReview().getAllByRole("gridcell")).toHaveLength(2);
+});
+
+test("the strip draws the same rule across its filmstrip", async () => {
+  mockCommand("get_bar", () => 20);
+
+  await openReview([scoredAt(1, 12), scoredAt(2, 22)], {
+    review_layout: "strip",
+  });
+
+  const line = reviewView().querySelector('[data-slot="filmstrip-rule"]');
+  expect(line?.getAttribute("aria-label")).toBe("Bar · worst 20%");
+  expect(line?.previousElementSibling?.getAttribute("aria-label")).toBe(
+    "s1.jpg",
+  );
+  expect(line?.nextElementSibling?.getAttribute("aria-label")).toBe("s2.jpg");
+});
+
+test("a Bar share changed in Settings moves the rule when Review is next shown", async () => {
+  // The Score at each share over these four, the way the backend works it out.
+  const barAt: Record<string, number> = { "0.2": 15, "0.5": 20 };
+  let stored = settings();
+  mockCommand("get_settings", () => stored);
+  mockCommand("set_setting", (args) => {
+    stored = { ...stored, bar_share: Number(args.value) };
+    return stored;
+  });
+  mockCommand("get_bar", () => barAt[String(stored.bar_share)]);
+  mockCommand("get_cache_size", () => cacheSize());
+  const list = [
+    scoredAt(1, 10),
+    scoredAt(2, 18),
+    scoredAt(3, 22),
+    scoredAt(4, 30),
+  ];
+  reviewed = list;
+  mockCommand("list_wallpapers", () => list);
+
+  await openOnReview();
+  expect(cardsBeforeRule()).toHaveLength(1);
+
+  await click(screen.getByRole("button", { name: "Settings" }));
+  await click(screen.getByRole("radio", { name: "Worst 50%" }));
+  await click(screen.getByRole("tab", { name: "Review" }));
+
+  expect(rule()?.getAttribute("aria-label")).toBe("Bar · worst 50%");
+  expect(cardsBeforeRule()).toHaveLength(2);
+});
+
 test("keep records the decision and removes the card without waiting for a refetch", async () => {
   const keptIds: unknown[] = [];
   const pending = deferred<Wallpaper>();

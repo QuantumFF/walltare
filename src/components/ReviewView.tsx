@@ -16,7 +16,9 @@ import { SegmentedGroup } from "@/components/ui/segmented";
 import { useApp } from "@/context/AppContext";
 import { useKeyboardSurface } from "@/context/KeyboardHandoffContext";
 import { client, type ReviewLayout, type ReviewOrdering } from "@/lib/client";
+import { sharePercent } from "@/lib/copy";
 import { cn } from "@/lib/utils";
+import { barFallsAt } from "@/lib/wallpaper";
 import {
   Check,
   Columns2,
@@ -75,8 +77,16 @@ export function ReviewView() {
   // stated in Settings. The `limit` is still the only one the listing is given —
   // the library page asks for everything (ADR 0028) — and the ordering is a
   // member of that same listing vocabulary, so it is handed over as read (#259).
-  const { review_worklist_size: worklistSize, review_ordering: ordering } =
-    settings;
+  const {
+    review_worklist_size: worklistSize,
+    review_ordering: ordering,
+    bar_share: barShare,
+  } = settings;
+  // The Score the Bar sits at, fetched beside the list it is drawn across, so
+  // the rule and the cards come from the same moment (#386). Only working from
+  // the lowest Score draws it, and it is not movable from here: the share is
+  // Settings', and the Score at it is the backend's to work out (ADR 0056).
+  const [bar, setBar] = useState<number | null>(null);
   // `settings.minimum_resolution` is here for the undersized badge alone, which
   // is what the cards below wear it off. It is a display fact and nothing more:
   // what this worklist holds is the listing above, before and after, because
@@ -100,12 +110,18 @@ export function ReviewView() {
     async (setRows: SetRows) => {
       setLoading(true);
       try {
-        const list = await client.listWallpapers(
-          "active",
-          ordering,
-          worklistSize,
-        );
+        const [list, standing] = await Promise.all([
+          client.listWallpapers("active", ordering, worklistSize),
+          // A Bar that will not read costs the rule and not the worklist.
+          ordering === "score_asc"
+            ? client.getBar().catch((err: unknown) => {
+                console.error("Failed to read the Bar:", err);
+                return null;
+              })
+            : null,
+        ]);
         setRows(list);
+        setBar(standing);
       } catch (err) {
         console.error("Failed to fetch review list:", err);
         show({ kind: "load-failed", noun: "the review list", error: err });
@@ -113,7 +129,10 @@ export function ReviewView() {
         setLoading(false);
       }
     },
-    [ordering, worklistSize, show],
+    // `barShare` is read by the backend rather than here, and it is a
+    // dependency for that reason: a share changed in Settings is a refetch owed,
+    // the way a changed worklist size is.
+    [ordering, worklistSize, barShare, show],
   );
 
   /**
@@ -147,6 +166,16 @@ export function ReviewView() {
     optimistic: { selectId },
   });
   const wallpapers = rows ?? [];
+  // Where the rule falls in what is on screen now, so a card that leaves takes
+  // its place with it and the rule stays between the same two Scores.
+  const barAt = ordering === "score_asc" ? barFallsAt(wallpapers, bar) : null;
+  const rule =
+    barAt === null
+      ? undefined
+      : {
+          before: barAt,
+          label: `Bar · worst ${sharePercent(barShare)}`,
+        };
   // The spinner's whole condition: a fetch is out and there is nothing to show
   // while it is. Every later fetch has rows on screen already, and it replaces
   // them where they stand, the way Library's does — so the surface drawing them
@@ -437,6 +466,7 @@ export function ReviewView() {
               evaluatedThreshold={settings.evaluated_threshold}
               startOn={resumeOn}
               filmstripStep={filmstripStep}
+              rule={rule}
             />
           ) : (
             /* The grid's `density` is the same gesture Library answers, on
@@ -457,6 +487,7 @@ export function ReviewView() {
               startOn={resumeOn}
               density="review"
               zoom={gridZoom}
+              rule={rule}
             />
           )}
         </div>

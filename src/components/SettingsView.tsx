@@ -11,6 +11,7 @@ import {
 import { ApiKeySection } from "@/components/ApiKeySection";
 import {
   AppearanceSection,
+  BarSection,
   ReviewOrderingSection,
   ReviewWorklistSection,
   StartupViewSection,
@@ -89,7 +90,7 @@ export function Section({
 }
 
 /**
- * The groups the sections are gathered under, in page order. Thirteen sections
+ * The groups the sections are gathered under, in page order. Fourteen sections
  * in one flat column read as a wall; five named groups give the page something
  * to scan and the jump row something to point at. The section order is
  * ADR 0020's first-run-first, maintenance-last order, unchanged (ADR 0020, as
@@ -521,7 +522,7 @@ function DownloadFolderSection({ libraryRoot }: { libraryRoot: string }) {
 /**
  * The Settings page.
  *
- * One column at `max-w-2xl` holding thirteen sections in five groups, in first-run order, a slot
+ * One column at `max-w-2xl` holding fourteen sections in five groups, in first-run order, a slot
  * above them for the two reasons boot has to open this page, and a bar naming
  * the way out (ADR 0020, ADR 0032).
  *
@@ -698,6 +699,7 @@ export function SettingsView() {
               <StartupViewSection />
               <ReviewWorklistSection />
               <ReviewOrderingSection />
+              <BarSection />
             </SettingsGroup>
             {/* Everything Discover needs from the curator: the optional key
                 that unlocks NSFW and the account's blacklists, then where the

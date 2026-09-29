@@ -446,6 +446,15 @@ export interface Settings {
    */
   evaluated_threshold: number;
   /**
+   * Where the Bar sits, as the share of scored wallpapers below it: the worst
+   * 10, 20, 30 or 50 percent (CONTEXT.md, ADR 0056).
+   *
+   * The fraction, which is what is stored, and not the Score at that position,
+   * which moves as Scores do and is `getBar`'s to answer. Only the values
+   * `BAR_SHARES` offers are writable; the backend refuses the rest.
+   */
+  bar_share: number;
+  /**
    * The filters Discover opens with, as the last successful search left them.
    * Not a `SettingKey`: a search writes them, and nothing else can.
    */
@@ -517,6 +526,18 @@ export const DEFAULT_EVALUATED_THRESHOLD = 4.0;
 export const EVALUATED_THRESHOLDS = [5.0, DEFAULT_EVALUATED_THRESHOLD, 3.0];
 
 /**
+ * The Bar share with no row in the table, mirroring `settings::DEFAULT_BAR_SHARE`:
+ * the worst fifth (ADR 0056).
+ */
+export const DEFAULT_BAR_SHARE = 0.2;
+
+/**
+ * The four Bar shares Settings offers, smallest first, mirroring
+ * `settings::BAR_SHARES`. The backend refuses anything else.
+ */
+export const BAR_SHARES = [0.1, DEFAULT_BAR_SHARE, 0.3, 0.5];
+
+/**
  * What every key means with no row in the table, mirroring `Settings::defaults`.
  *
  * settings.rs owns the answer; this copy exists only for the boot path, which
@@ -538,6 +559,7 @@ export const DEFAULT_SETTINGS: Settings = {
   review_layout: "grid",
   crop_preview: false,
   evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
+  bar_share: DEFAULT_BAR_SHARE,
   discover_filters: DEFAULT_DISCOVER_FILTERS,
   wallhaven_key_set: false,
   detected_screen: FALLBACK_SCREEN,
@@ -698,6 +720,7 @@ export type Command =
   | "get_pair"
   | "vote"
   | "get_stats"
+  | "get_bar"
   | "list_wallpapers"
   | "keep_wallpaper"
   | "unkeep_wallpaper"
@@ -749,6 +772,8 @@ export interface BackendCommands {
     answer: VoteOutcome;
   };
   get_stats: { args: undefined; answer: Stats };
+  /** The Score the Bar sits at, or `null` while nothing has a Score. */
+  get_bar: { args: undefined; answer: number | null };
   list_wallpapers: {
     args: { filter: StatusFilter; ordering: ListOrdering; limit?: number };
     answer: Wallpaper[];
@@ -1080,6 +1105,12 @@ export const client = {
     call("vote", { winnerId, loserId, exclude }),
 
   getStats: () => call("get_stats"),
+
+  /**
+   * The Bar as it stands, worked out by the backend on every call and never
+   * stored, so it moves with votes, scans and the share (ADR 0056).
+   */
+  getBar: () => call("get_bar"),
 
   getSettings: () => call("get_settings"),
 
