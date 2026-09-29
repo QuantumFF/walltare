@@ -332,7 +332,8 @@ Sure means the Score sits far enough from the Bar for its uncertainty. How far
 is the app's to say, not a stated preference: the curator states where the Bar
 is, and cannot see how consistent their own votes are, which is what the answer
 depends on. Close to the Bar is not a kind of Decided. A wallpaper there stays
-Undecided, even once more Comparisons stop being worth their cost.
+Undecided, even once more Comparisons stop being worth their cost: it is then a
+Close call.
 
 Decided is worked out from the rating and the Bar each time somebody asks,
 never stored. So it moves in whichever direction the truth does. A wallpaper can
@@ -345,3 +346,22 @@ says. See
 [ADR 0058](docs/adr/0058-decided-is-the-apps-rule-and-is-never-stored.md).
 
 _Avoid_: settled, resolved
+
+## Close call
+
+An Undecided wallpaper sitting so close to the Bar, with a Score so sure, that
+another Comparison is not worth its cost. It is still Undecided: the app does
+not know which side of the Bar it falls on, and it may never know, because the
+curator's taste has no sharper answer there. It is the fuzzy middle the curator
+settles by looking, in Review.
+
+Like Decided, it is worked out from the rating and the Bar each time somebody
+asks, never stored, and how sure is the app's to say, not a stated preference.
+An Unrated wallpaper is never a Close call.
+
+Rank stops drawing a Close call for more Comparisons. Once every Eligible
+wallpaper is Decided or a Close call, nothing is left to decide, and Rank
+suggests Review while still offering pairs to anyone who keeps ranking. See
+[ADR 0060](docs/adr/0060-pair-selection-draws-the-least-compared-undecided-wallpaper.md).
+
+_Avoid_: fuzzy, borderline, stopped, settled
