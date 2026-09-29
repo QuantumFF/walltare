@@ -79,10 +79,13 @@ export interface Wallpaper {
  * Mirrors near_duplicates::NearDuplicatePair: two wallpapers the app judges to
  * be one image, and how the pair is offered. `keep_one` is two Active or Kept
  * wallpapers, answered by keeping one and soft-rejecting the other, or by
- * keeping both, which makes the pair Distinct.
+ * keeping both, which makes the pair Distinct. `rejected_before` is an Active
+ * or Kept arrival first and the Rejected wallpaper it arrived after second,
+ * answered by keeping the arrival, which is `keep_both`, or by rejecting it,
+ * which is `keep_one` with the Rejected wallpaper kept.
  */
 export interface NearDuplicatePair {
-  kind: "keep_one";
+  kind: "keep_one" | "rejected_before";
   wallpapers: [Wallpaper, Wallpaper];
 }
 

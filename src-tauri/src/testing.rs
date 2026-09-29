@@ -76,6 +76,17 @@ pub(crate) fn origin_path_of(conn: &Connection, id: i64) -> Option<String> {
     .unwrap()
 }
 
+/// When a wallpaper's current soft reject happened, `None` unless it is
+/// Rejected.
+pub(crate) fn rejected_at_of(conn: &Connection, id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT rejected_at FROM wallpapers WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 /// A wallpaper's recorded pixel dimensions, `(None, None)` until something has
 /// read them off the file (ADR 0044).
 ///

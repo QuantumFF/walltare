@@ -595,7 +595,9 @@ async fn list_near_duplicates(
 /// wrote.
 ///
 /// The ordinary soft reject, so a Restore undoes it and no Comparison is
-/// written. Off the main thread for [`move_wallpaper`]'s reason.
+/// written. Rejecting the arrival of a rejected-before pair is this answer,
+/// with the Rejected wallpaper as `kept_id`. Off the main thread for
+/// [`move_wallpaper`]'s reason.
 #[tauri::command]
 async fn keep_one(
     kept_id: i64,
@@ -610,8 +612,9 @@ async fn keep_one(
 }
 
 /// Answers a Near-duplicate pair by keeping both, which records it as Distinct
-/// so it is never offered again. No Status changes and no Comparison is
-/// written. Off the main thread for [`list_near_duplicates`]'s reason, since
+/// so it is never offered again. Keeping the arrival of a rejected-before pair
+/// is this answer too. No Status changes and no Comparison is written. Off the
+/// main thread for [`list_near_duplicates`]'s reason, since
 /// the pair is checked against the waiting listing before it is recorded.
 #[tauri::command]
 async fn keep_both(first_id: i64, second_id: i64, app: AppHandle) -> Result<(), error::AppError> {
