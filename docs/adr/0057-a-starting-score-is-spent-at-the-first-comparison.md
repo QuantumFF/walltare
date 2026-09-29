@@ -20,6 +20,17 @@ updates them in place; nothing rebuilds them from the Comparison log.
 
 ## Decision
 
+> **Amended, 2026-09-29 ([#372](https://github.com/QuantumFF/walltare/issues/372)).**
+> The triage pass was ruled out of
+> [#362](https://github.com/QuantumFF/walltare/issues/362): it does not suit
+> the app. There is no triage mark, so a prediction is the only thing that gives
+> a wallpaper its own starting Score. Everything below about a mark falls away
+> with it. What stands: a starting Score is where the rating begins, it is spent
+> at the first Comparison, σ₀ stays above every Evaluated threshold, and a
+> prediction alone leaves a wallpaper Unrated. So Unrated means in no Comparison
+> again, `comparisons_count = 0` still means Unrated, and the switch the
+> Consequences section describes is not needed.
+
 **A starting Score is where the rating begins, not a number beside it.** A
 triage mark or a prediction sets the μ₀ and σ₀ the rating starts from in place
 of 25 / 8.333. The first Comparison updates from there as TrueSkill always does,
