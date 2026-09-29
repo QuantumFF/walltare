@@ -577,12 +577,17 @@ async fn restore_wallpaper(id: i64, app: AppHandle) -> Result<db::Wallpaper, err
 /// Every Near-duplicate pair waiting for an answer, each with both wallpapers.
 ///
 /// Worked out from the stored hashes on every call and never stored, since a
-/// pair is a standing and not a record (CONTEXT.md).
+/// pair is a standing and not a record (CONTEXT.md). Off the main thread, since
+/// Review asks after every Status change and the scan over the hashes grows
+/// with the square of the library.
 #[tauri::command]
-fn list_near_duplicates(
-    state: tauri::State<Db>,
+async fn list_near_duplicates(
+    app: AppHandle,
 ) -> Result<Vec<near_duplicates::NearDuplicatePair>, error::AppError> {
-    state.read(near_duplicates::waiting_pairs)
+    off_main_thread(app, |app| {
+        app.state::<Db>().read(near_duplicates::waiting_pairs)
+    })
+    .await
 }
 
 /// Answers a Near-duplicate pair by keeping `kept_id` and soft-rejecting

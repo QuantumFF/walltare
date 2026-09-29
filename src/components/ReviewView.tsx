@@ -1,7 +1,10 @@
 import { EmptyState } from "@/components/EmptyState";
 import { useLightbox } from "@/components/ItemLightbox";
 import { Lightbox } from "@/components/Lightbox";
-import { NearDuplicatesSection } from "@/components/NearDuplicatesSection";
+import {
+  NearDuplicatesSection,
+  useNearDuplicates,
+} from "@/components/NearDuplicatesSection";
 import { PageBar } from "@/components/PageBar";
 import {
   RejectDestinationLine,
@@ -15,26 +18,10 @@ import { useWallpaperRows, type SetRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { SegmentedGroup } from "@/components/ui/segmented";
 import { useApp } from "@/context/AppContext";
-import {
-  useAppEvent,
-  useAppEvents,
-  useRefetchWhenShown,
-} from "@/context/AppEventsContext";
-import {
-  useKeyboardHandoff,
-  useKeyboardSurface,
-} from "@/context/KeyboardHandoffContext";
-import {
-  client,
-  isStaleRow,
-  type NearDuplicatePair,
-  type ReviewLayout,
-  type ReviewOrdering,
-  type Wallpaper,
-} from "@/lib/client";
+import { useKeyboardSurface } from "@/context/KeyboardHandoffContext";
+import { client, type ReviewLayout, type ReviewOrdering } from "@/lib/client";
 import { sharePercent } from "@/lib/copy";
 import { cn } from "@/lib/utils";
-import { useBackendEvents } from "@/lib/useBackendEvents";
 import { barFallsAt } from "@/lib/wallpaper";
 import {
   Check,
@@ -208,73 +195,11 @@ export function ReviewView() {
 
   // The Near-duplicate pairs waiting, beside the worklist rather than in it: a
   // pair is a standing of two wallpapers, and either may be Kept, which never
-  // appears in review (CONTEXT.md). A listing that will not load costs the
-  // section and not the page.
-  const [pairs, setPairs] = useState<NearDuplicatePair[]>([]);
-  const fetchPairs = useCallback(async () => {
-    try {
-      setPairs(await client.listNearDuplicates());
-    } catch (err) {
-      console.error("Failed to list Near-duplicates:", err);
-    }
-  }, []);
-  // Owed rather than made while the page is hidden, for the reason every
-  // listing's refetch is (ADR 0015): after a scan, after pre-generation, which
-  // is what writes the hashes pairs are worked out from, and after any Status
-  // change, since a reject takes a pair away and a Restore brings one back.
-  const owePairs = useRefetchWhenShown(
-    "review",
-    useCallback(() => void fetchPairs(), [fetchPairs]),
-  );
-  useAppEvent((event) => {
-    if (event.type === "status-changed") owePairs();
+  // appears in review (CONTEXT.md). A keep one's Undo is this page's Restore.
+  const nearDuplicates = useNearDuplicates({
+    destination,
+    restore: (wallpaper) => perform("restore", wallpaper),
   });
-  useBackendEvents({ pregenComplete: owePairs });
-  useEffect(() => {
-    void fetchPairs();
-  }, [fetchPairs]);
-
-  const { publish } = useAppEvents();
-  const handOff = useKeyboardHandoff();
-  /**
-   * The keep-one answer: `other` is soft-rejected into the stored destination,
-   * the way a card's Reject is, and the toast says so with the same Undo — a
-   * Restore, which brings the pair back.
-   *
-   * It hands the keyboard back on every press, the keyboard's too, because the
-   * pair leaves with the button that answered it (ADR 0047).
-   */
-  const keepOne = async (kept: Wallpaper, other: Wallpaper) => {
-    try {
-      const wrote = await client.keepOne(
-        kept.id,
-        other.id,
-        destination.written,
-      );
-      publish({ type: "status-changed", wallpaper: wrote });
-      show({
-        kind: "rejected",
-        filename: other.filename,
-        renamed: wrote.filename !== other.filename,
-        moved: wrote.path !== other.path,
-        relativeDestination: destination.relative,
-        finalPath: wrote.path,
-        undo: () => perform("restore", wrote),
-      });
-      handOff();
-    } catch (error) {
-      console.error("Failed to keep one Near-duplicate:", error);
-      show({
-        kind: "failed",
-        action: "reject",
-        filename: other.filename,
-        error,
-      });
-      // A pair that stopped waiting underneath the page, which the listing is
-      // owed for.
-      if (isStaleRow(error)) void fetchPairs();
-    }
-  };
 
   // The grid, once it has mounted, and the whole of what this page knows about
   // the selection. The cursor is the grid's since #230, so nothing here holds it
@@ -436,7 +361,7 @@ export function ReviewView() {
           size="sm"
           onClick={() => {
             void fetchReviewList(setRows);
-            void fetchPairs();
+            nearDuplicates.refresh();
           }}
           className="gap-2"
           disabled={loading}
@@ -501,10 +426,10 @@ export function ReviewView() {
            It is its own scroller, the way the library page's rows are, so the
            bar above stays put while the worklist scrolls under it. */
         <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto p-4">
-          {pairs.length > 0 && (
+          {nearDuplicates.pairs.length > 0 && (
             <NearDuplicatesSection
-              pairs={pairs}
-              onKeepOne={(kept, other) => void keepOne(kept, other)}
+              pairs={nearDuplicates.pairs}
+              onKeepOne={nearDuplicates.keepOne}
             />
           )}
           {wallpapers.length === 0 ? (

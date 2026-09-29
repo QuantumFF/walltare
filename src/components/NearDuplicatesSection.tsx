@@ -1,20 +1,128 @@
+import type { RejectDestination } from "@/components/RejectDestination";
+import { useToaster } from "@/components/ToastSurface";
 import { Button } from "@/components/ui/button";
 import {
+  useAppEvent,
+  useAppEvents,
+  useRefetchWhenShown,
+} from "@/context/AppEventsContext";
+import { useKeyboardHandoff } from "@/context/KeyboardHandoffContext";
+import {
+  client,
+  isStaleRow,
   wallpaperImageUrl,
   type NearDuplicatePair,
   type Wallpaper,
 } from "@/lib/client";
 import { counted } from "@/lib/copy";
+import { useBackendEvents } from "@/lib/useBackendEvents";
 import { Check } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+
+export interface NearDuplicates {
+  /** The pairs waiting, empty until the first listing lands or while none are. */
+  pairs: NearDuplicatePair[];
+  /** Lists the pairs again now, for the page's Refresh. */
+  refresh: () => void;
+  /**
+   * The keep-one answer: `other` is soft-rejected into the stored destination,
+   * the way a card's Reject is, and the toast says so with the same Undo.
+   */
+  keepOne: (kept: Wallpaper, other: Wallpaper) => void;
+}
+
+/**
+ * The Near-duplicate pairs waiting in Review, and the keep-one answer to them.
+ *
+ * `restore` is the page's own Restore, which is what the answer's Undo presses:
+ * it brings the rejected wallpaper back, and the pair with it.
+ */
+export function useNearDuplicates({
+  destination,
+  restore,
+}: {
+  destination: RejectDestination;
+  restore: (wallpaper: Wallpaper) => void;
+}): NearDuplicates {
+  const [pairs, setPairs] = useState<NearDuplicatePair[]>([]);
+  const { publish } = useAppEvents();
+  const { show } = useToaster();
+  const handOff = useKeyboardHandoff();
+
+  // A listing that will not load costs the section and not the page.
+  const fetchPairs = useCallback(async () => {
+    try {
+      setPairs(await client.listNearDuplicates());
+    } catch (err) {
+      console.error("Failed to list Near-duplicates:", err);
+    }
+  }, []);
+  const refresh = useCallback(() => void fetchPairs(), [fetchPairs]);
+
+  // Owed rather than made while Review is hidden, for the reason every
+  // listing's refetch is (ADR 0015): after a scan, after pre-generation, which
+  // is what writes the hashes pairs are worked out from, and after any Status
+  // change, since a reject takes a pair away and a Restore brings one back.
+  const owe = useRefetchWhenShown("review", refresh);
+  useAppEvent((event) => {
+    if (event.type === "status-changed") owe();
+  });
+  useBackendEvents({ pregenComplete: owe });
+  useEffect(refresh, [refresh]);
+
+  /**
+   * It hands the keyboard back on every press that lands, the keyboard's too,
+   * because the pair leaves with the button that answered it (ADR 0047).
+   *
+   * The toast is built here rather than by `useWallpaperRows`, whose four
+   * transitions are the Status table's: this reject goes through `keep_one`,
+   * which refuses a pair that is no longer waiting.
+   */
+  const keepOne = async (kept: Wallpaper, other: Wallpaper) => {
+    try {
+      const rejected = await client.keepOne(
+        kept.id,
+        other.id,
+        destination.written,
+      );
+      publish({ type: "status-changed", wallpaper: rejected });
+      show({
+        kind: "rejected",
+        filename: other.filename,
+        renamed: rejected.filename !== other.filename,
+        moved: rejected.path !== other.path,
+        relativeDestination: destination.relative,
+        finalPath: rejected.path,
+        undo: () => restore(rejected),
+      });
+      handOff();
+    } catch (error) {
+      console.error("Failed to keep one Near-duplicate:", error);
+      show({
+        kind: "failed",
+        action: "reject",
+        filename: other.filename,
+        error,
+      });
+      // A pair that stopped waiting underneath the page, which the listing is
+      // owed for.
+      if (isStaleRow(error)) refresh();
+    }
+  };
+
+  return {
+    pairs,
+    refresh,
+    keepOne: (kept, other) => void keepOne(kept, other),
+  };
+}
 
 /**
  * The Near-duplicate pairs waiting in Review, each side by side, with a
  * keep-one answer under each wallpaper.
  *
  * Only ever mounted with a pair to show: the section is hidden while nothing is
- * waiting, so an empty one is never drawn. Answering is the page's, because a
- * keep one is a reject of the other and the page owns the toast, the Undo and
- * the patch every reject publishes.
+ * waiting, so an empty one is never drawn. Answering is `useNearDuplicates`'s.
  *
  * Every pair is `keep_one` for now. The pair carries its `kind` so the answers
  * a later kind offers can be drawn from it rather than guessed here.

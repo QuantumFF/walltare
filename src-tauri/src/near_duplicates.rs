@@ -1,4 +1,15 @@
 //! Near-duplicate pairs: which ones are waiting, and the keep-one answer.
+//!
+//! A pair is a standing and never a record, so nothing here writes one down:
+//! the waiting pairs are worked out from the stored perceptual hashes each time
+//! somebody asks. A scan over a few thousand 64-bit hashes is cheap, and a
+//! stored list would have to be kept in step with every reject, Restore and
+//! newly hashed wallpaper (CONTEXT.md, #393).
+//!
+//! Answering never writes a Comparison. Keeping one is the ordinary soft
+//! reject of the other, so a Restore undoes it and the pair is waiting again.
+
+use std::collections::HashMap;
 
 use rusqlite::Connection;
 
@@ -7,9 +18,18 @@ use crate::error::AppError;
 use crate::soft_reject;
 
 /// How many bits two perceptual hashes may differ by and still be one image.
+///
+/// Measured on the curator's library with the shipped hasher (#400): every
+/// re-encode, resize and colour edit landed within 2 bits and a 95% crop within
+/// 12, while the closest two unrelated wallpapers were 16 apart.
 pub const HAMMING_LIMIT: u32 = 10;
 
-/// Every Near-duplicate pair waiting for an answer.
+/// Every Near-duplicate pair waiting for an answer, lowest ids first.
+///
+/// Two Active or Kept wallpapers, Kept treated as Active is, whose hashes are
+/// within [`HAMMING_LIMIT`]. A wallpaper pre-generation has not hashed yet is in
+/// no pair, rather than in a pair with something it might not resemble. Three
+/// wallpapers of one image are three pairs, so answering one leaves the others.
 pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppError> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT id, perceptual_hash FROM wallpapers
@@ -17,17 +37,30 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
          ORDER BY id",
         Status::ELIGIBLE_SQL
     ))?;
+    // SQLite's integers are signed, so the hash went in as the same bits read
+    // as an `i64` (`db::record_perceptual_hash`) and comes back out the same way.
     let hashes = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u64)))?
         .collect::<Result<Vec<(i64, u64)>, _>>()?;
 
+    // Each row read once, however many pairs it is in.
+    let mut rows: HashMap<i64, Wallpaper> = HashMap::new();
+    let mut row = |id: i64| -> Result<Wallpaper, AppError> {
+        if let Some(row) = rows.get(&id) {
+            return Ok(row.clone());
+        }
+        let read = db::get_wallpaper(conn, id)?;
+        rows.insert(id, read.clone());
+        Ok(read)
+    };
+
     let mut pairs = Vec::new();
     for (i, &(a, a_hash)) in hashes.iter().enumerate() {
         for &(b, b_hash) in &hashes[i + 1..] {
-            if near(a_hash, b_hash) {
+            if (a_hash ^ b_hash).count_ones() <= HAMMING_LIMIT {
                 pairs.push(NearDuplicatePair {
                     kind: PairKind::KeepOne,
-                    wallpapers: [db::get_wallpaper(conn, a)?, db::get_wallpaper(conn, b)?],
+                    wallpapers: [row(a)?, row(b)?],
                 });
             }
         }
@@ -35,44 +68,34 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
     Ok(pairs)
 }
 
-/// Keeps `kept` and soft-rejects `other`, answering with the row the reject
-/// wrote.
+/// Keeps `kept` and soft-rejects `other` into `destination_folder`, answering
+/// with the row the reject wrote.
+///
+/// Refused with [`AppError::InvalidTransition`], rejecting nothing, unless the
+/// two are still a waiting pair. The listing the curator answered from may be
+/// out of date: had `kept` been rejected since, keeping it would take the
+/// pair's last wallpaper out of the library.
+///
+/// The check reads with the connection released and the reject takes it again,
+/// because [`soft_reject::reject_in`] stages a cross-device copy between its
+/// own read and write (ADR 0039). A Status change landing in between is still
+/// caught for `other` by the reject's own guard.
 pub fn keep_one(
     db: &crate::Db,
     kept: i64,
     other: i64,
     destination_folder: &str,
 ) -> Result<Wallpaper, AppError> {
-    let waiting = db.read(|conn| -> Result<bool, AppError> {
-        let (kept_row, kept_hash) = hashed_row(conn, kept)?;
-        let (other_row, other_hash) = hashed_row(conn, other)?;
-        Ok(kept != other
-            && kept_row.status.is_eligible()
-            && other_row.status.is_eligible()
-            && matches!((kept_hash, other_hash), (Some(a), Some(b)) if near(a, b)))
-    })?;
+    let waiting = db.read(waiting_pairs)?.iter().any(|pair| {
+        let [a, b] = &pair.wallpapers;
+        (a.id, b.id) == (kept, other) || (a.id, b.id) == (other, kept)
+    });
     if !waiting {
         return Err(AppError::InvalidTransition(format!(
             "wallpapers {kept} and {other} are not a waiting Near-duplicate pair"
         )));
     }
     soft_reject::reject_in(db, other, destination_folder)
-}
-
-/// Whether two perceptual hashes are close enough to be one image.
-fn near(a: u64, b: u64) -> bool {
-    (a ^ b).count_ones() <= HAMMING_LIMIT
-}
-
-/// A wallpaper's row and its perceptual hash, `None` until one is stored.
-fn hashed_row(conn: &Connection, id: i64) -> Result<(Wallpaper, Option<u64>), AppError> {
-    let row = db::get_wallpaper(conn, id)?;
-    let hash = conn.query_row(
-        "SELECT perceptual_hash FROM wallpapers WHERE id = ?1",
-        [id],
-        |row| row.get::<_, Option<i64>>(0),
-    )?;
-    Ok((row, hash.map(|bits| bits as u64)))
 }
 
 /// A waiting Near-duplicate pair and how it is offered.
@@ -82,7 +105,11 @@ pub struct NearDuplicatePair {
     pub wallpapers: [Wallpaper; 2],
 }
 
-/// How a pair is offered.
+/// How a pair is offered, which decides the answers it is given.
+///
+/// One kind so far: two Active or Kept wallpapers, answered by keeping one. A
+/// pair against a Rejected wallpaper is offered differently (#402), and is a
+/// second kind rather than a flag on this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairKind {
@@ -142,7 +169,7 @@ mod tests {
     #[test]
     fn a_wallpaper_with_no_hash_yet_is_in_no_pair() {
         // Pre-generation hashes in the background, so an unhashed wallpaper is
-        // one nothing has looked at yet rather than one that matches nothing.
+        // one nothing has looked at yet rather than one like no other.
         let conn = library();
         hashed(&conn, "/w/a.jpg", "active", 0);
         seed_wallpaper(&conn, "/w/b.jpg", "active", 25.0);
@@ -213,8 +240,8 @@ mod tests {
 
     #[test]
     fn keep_one_writes_no_comparison() {
-        // Choosing between two copies says nothing about where either stands
-        // among the others (CONTEXT.md).
+        // Choosing between two wallpapers of one image says nothing about
+        // where either stands among the others (CONTEXT.md).
         let tmp = tempfile::tempdir().unwrap();
         let (db, a, b) = real_pair(tmp.path());
 
@@ -229,8 +256,8 @@ mod tests {
 
     #[test]
     fn keep_one_of_a_pair_no_longer_waiting_is_refused_and_rejects_nothing() {
-        // The curator kept one copy elsewhere after this pair was listed, so
-        // answering it now would take the last copy out of the library.
+        // One of the pair was rejected elsewhere after the listing, so keeping
+        // it now would take the pair's last wallpaper out of the library.
         let tmp = tempfile::tempdir().unwrap();
         let (db, a, b) = real_pair(tmp.path());
         crate::soft_reject::reject_in(&db, a, "rejected").unwrap();
