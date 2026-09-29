@@ -2,6 +2,7 @@ import { Section } from "@/components/SettingsView";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useApp } from "@/context/AppContext";
 import {
+  BAR_SHARES,
   WORKLIST_SIZES,
   type ReviewOrdering,
   type SettingKey,
@@ -11,8 +12,8 @@ import {
   type WorklistSize,
 } from "@/lib/client";
 
-// The four settings that are one named thing out of a handful, in one module
-// because they are one section four times over: a heading, a sentence saying
+// The settings that are one named thing out of a handful, in one module
+// because they are one section several times over: a heading, a sentence saying
 // what the choice is for, and a segmented control that writes on change. That is
 // the same reason the two sizes are one `SizeSection` and the two Written paths
 // are one `PathFieldRow` — what differs between them is prose and which key is
@@ -20,7 +21,7 @@ import {
 // to drift (ADR 0026).
 //
 // A radio group and not a toggle group, which is the distinction ADR 0020 drew
-// for Appearance and applies unchanged to the other three: none of these keys
+// for Appearance and applies unchanged to the others: none of these keys
 // can hold "none", and `ToggleGroup type="single"` deselects on a second click
 // unless that is fought and announces as a row of pressed buttons rather than as
 // "System, radio button 1 of 3".
@@ -73,7 +74,7 @@ function ChoiceSection<K extends SettingKey>({
 
       <RadioGroup
         aria-label={heading}
-        // Radix speaks in strings, and two of these four settings do not: a
+        // Radix speaks in strings, and not every one of these settings does: a
         // worklist size is a number. So the value crosses the control as the
         // label's own key and comes back out of `choices`, rather than being
         // parsed back — which is the same rule `encodeSetting` follows at the
@@ -221,6 +222,37 @@ export function ReviewOrderingSection() {
       setting="review_ordering"
       purpose="Which end of the ranking Review works from: cull the worst, or confirm favourites."
       choices={REVIEW_ORDERINGS}
+    />
+  );
+}
+
+/**
+ * The four Bar shares, smallest first, mirroring `BAR_SHARES`.
+ *
+ * Derived from that list so the presets the backend enforces and the ones this
+ * control offers cannot drift apart. The label prints the percentage and the
+ * value stays the stored fraction (ADR 0056).
+ */
+const BAR_CHOICES: ReadonlyArray<Choice<number>> = BAR_SHARES.map((share) => ({
+  value: share,
+  label: `Worst ${Math.round(share * 100)}%`,
+}));
+
+/**
+ * The Bar section: which share of scored wallpapers falls below the Bar.
+ *
+ * Beside Review ordering because Review is where the Bar shows, as the rule
+ * across a worklist worked from the lowest Score. A position and not a Score,
+ * because a position is something a curator can picture and the Score at it
+ * moves as Scores do (ADR 0056).
+ */
+export function BarSection() {
+  return (
+    <ChoiceSection
+      heading="Bar"
+      setting="bar_share"
+      purpose="The share of scored wallpapers you would clear out. Review marks where it falls when working from the lowest Score."
+      choices={BAR_CHOICES}
     />
   );
 }

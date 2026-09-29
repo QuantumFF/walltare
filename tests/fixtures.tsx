@@ -103,6 +103,9 @@ export function mockBootedApp(): void {
   mockCommand("get_stats", () => stats());
   mockCommand("get_settings", () => settings());
   mockCommand("start_pregen", () => null);
+  // No Bar, as in a library with nothing scored: Review reads it beside its
+  // list, and a test about the rule arranges one (#386).
+  mockCommand("get_bar", () => null);
 }
 
 /** What a `list_wallpapers` call carries, so an answer can read the `limit`. */
@@ -292,6 +295,8 @@ export function settings(over: Partial<Settings> = {}): Settings {
     // reads as: a test that wants a stricter or looser curator arranges it
     // (#260).
     evaluated_threshold: 4.0,
+    // The worst fifth, which is what an empty table reads as (ADR 0056).
+    bar_share: 0.2,
     // Discover's filters with nothing remembered: a test that wants a search
     // to have left others arranges them.
     discover_filters: DEFAULT_DISCOVER_FILTERS,

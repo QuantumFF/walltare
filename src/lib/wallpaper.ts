@@ -102,3 +102,25 @@ export function shapeOf(wallpaper: Wallpaper): number | null {
   if (size === null || size.width <= 0) return null;
   return size.height / size.width;
 }
+
+/**
+ * Where the Bar falls in a worklist ordered from the lowest Score: the position
+ * of the first wallpaper with a Score not below it, or `null` when no rule
+ * belongs in this list.
+ *
+ * Strict about the side, as Decided is: a Score exactly on the Bar is not below
+ * it. An Unrated wallpaper has no Score, so the tail of them never places the
+ * rule. With no Bar, or every scored wallpaper here below it, the Bar lies past
+ * what the list reaches, and a rule at the end would claim a place the list
+ * cannot vouch for (CONTEXT.md, ADR 0056).
+ */
+export function barFallsAt(
+  wallpapers: readonly Wallpaper[],
+  bar: number | null,
+): number | null {
+  if (bar === null) return null;
+  const at = wallpapers.findIndex(
+    (w) => w.comparisons_count > 0 && w.rating_mu >= bar,
+  );
+  return at === -1 ? null : at;
+}

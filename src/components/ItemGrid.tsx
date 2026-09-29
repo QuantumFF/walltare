@@ -207,6 +207,22 @@ export interface ItemGridProps<T extends Keyed, A extends string> {
    * under.
    */
   followPointer?: boolean;
+  /**
+   * A rule drawn across the grid before the item at `before`, named `label`:
+   * Review's Bar (#386). The row before it stops short and the items after it
+   * start a row of their own, and the arrow keys move by those drawn rows.
+   *
+   * Only the grid that mounts every row draws one. A window cuts its rows by
+   * arithmetic that knows nothing of a short one, and Review, the one host,
+   * has no window.
+   */
+  rule?: GridRule;
+}
+
+/** Where a rule across the grid falls, and what it is called. */
+export interface GridRule {
+  before: number;
+  label: string;
 }
 
 /**
@@ -537,6 +553,7 @@ function Grid<T extends Keyed, A extends string>({
   ref,
   startOn,
   followPointer = false,
+  rule,
 }: GridProps<T, A>) {
   const gridRef = useRef<HTMLDivElement>(null);
   // How this layout finds a cell and brings one on screen, which is the whole of
@@ -586,6 +603,9 @@ function Grid<T extends Keyed, A extends string>({
     [windowed, items],
   );
   const cards = mounted ? mounted.cards : everyCard;
+  // The rule, for the grid that mounts every row and flows its own cards; any
+  // other shape leaves it out (see `rule`).
+  const drawnRule = windowed || placed ? undefined : rule;
 
   // How wide a uniform cell is drawn. See `useCellWidth`.
   const cellWidth = useCellWidth(gridRef, columns);
@@ -604,7 +624,12 @@ function Grid<T extends Keyed, A extends string>({
     const intent = answerKey(
       event,
       {
-        surface: { kind: "grid", columns, cell: () => focus.nodeAt(index) },
+        surface: {
+          kind: "grid",
+          columns,
+          cell: () => focus.nodeAt(index),
+          breakAt: drawnRule?.before,
+        },
         selected,
         index,
         length: items.length,
@@ -712,6 +737,9 @@ function Grid<T extends Keyed, A extends string>({
         const box = placed?.boxes[cardIndex];
         return (
           <Fragment key={item.id}>
+            {cardIndex === drawnRule?.before && (
+              <GridRuleLine label={drawnRule.label} />
+            )}
             {renderCard(item, {
               cellIndex: cardIndex,
               selected: cardIndex === index,
@@ -722,6 +750,25 @@ function Grid<T extends Keyed, A extends string>({
           </Fragment>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * The rule itself: a line across every column with its name in the middle. Its
+ * own row of the CSS grid, which is what leaves the row before it short.
+ */
+function GridRuleLine({ label }: { label: string }) {
+  return (
+    <div
+      role="separator"
+      aria-label={label}
+      data-slot="grid-rule"
+      className="col-span-full flex items-center gap-3 text-xs font-medium text-muted-foreground"
+    >
+      <span aria-hidden className="h-px flex-1 bg-primary/50" />
+      <span aria-hidden>{label}</span>
+      <span aria-hidden className="h-px flex-1 bg-primary/50" />
     </div>
   );
 }
