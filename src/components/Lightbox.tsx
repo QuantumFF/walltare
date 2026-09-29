@@ -144,8 +144,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
               `score` out of `copy.ts` and `isEvaluated` out of `wallpaper.ts`,
               so there is one definition of confidence in the app rather than
               one per surface (ADR 0013) — and both read it against the
-              curator's threshold, which is the number the Rank headline counted
-              with (ADR 0046).
+              curator's threshold (ADR 0046).
             */}
             <Badge
               title={

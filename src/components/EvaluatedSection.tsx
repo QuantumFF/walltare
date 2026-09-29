@@ -1,17 +1,15 @@
 import { Section } from "@/components/SettingsView";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useApp } from "@/context/AppContext";
-import { useAppEvents } from "@/context/AppEventsContext";
 import {
-  client,
   DEFAULT_EVALUATED_THRESHOLD,
   EVALUATED_THRESHOLDS,
 } from "@/lib/client";
 
 // The one setting that changes what a word in the app means rather than what the
 // app looks like. Evaluated used to be a fact about a wallpaper — σ below 4.0 —
-// and is now a threshold the curator sets, so the count in the Rank headline and
-// the Score badge on every card both read this row (CONTEXT.md, ADR 0046).
+// and is now a threshold the curator sets, so the Score badge on every card reads
+// this row (CONTEXT.md, ADR 0046).
 //
 // Three named confidences and not a number field, which is the rule the epic set
 // for the Review worklist size: σ is the app's own uncertainty scale and a
@@ -22,14 +20,9 @@ import {
 // No Reset control, which is ADR 0020's rule: pressing Balanced is what deletes
 // the row, and the line under the control says so.
 //
-// It is one of the two sections on this page that publish (Missing files, whose
-// reject changes the Eligible pool, is the other). Every badge in the app reads
-// the threshold out of `AppContext`, so those move on the write; the Evaluated
-// count in the Rank headline is the backend's and is patched onto Rank by
-// `stats-changed`. Without
-// that the two halves of the same claim would be a change apart until the next
-// vote — which is exactly what "the count and the badges agree" forbids
-// (ADR 0046).
+// Every badge in the app reads the threshold out of `AppContext`, so they all
+// move on the write. Nothing in `Stats` counts Evaluated any more (ADR 0059), so
+// a write has no headline to refetch.
 
 /** One offered confidence: the σ stored, the word on the control, and its cost. */
 interface Confidence {
@@ -91,30 +84,14 @@ const CONFIDENCES: Confidence[] = [
  * setting cannot hold "none", and `ToggleGroup type="single"` deselects on a
  * second click (ADR 0020). It writes on change rather than on blur, because a
  * confidence is one of three named things and not a string being typed a
- * character at a time (ADR 0010) — and the feedback is the count in the Rank
- * headline and every badge in the Library moving together, which is the whole
- * point of the setting.
+ * character at a time (ADR 0010) — and the feedback is every badge in the
+ * Library moving, which is the whole point of the setting.
  */
 export function EvaluatedSection() {
   const { settings, saveSetting } = useApp();
-  const { publish } = useAppEvents();
 
-  /**
-   * Store the threshold, then tell Rank what the count is now.
-   *
-   * The re-read is `get_stats` and not `readLibrary`, which is the same numbers
-   * plus two side effects this has no business causing: it sets `libraryTotal`
-   * and retires an unreadable-library notice. Nothing about a σ says either.
-   *
-   * A failed re-read leaves the old count standing rather than blanking it. The
-   * write has already landed, so the badges are right and the headline is one
-   * stats fetch behind — which is the state Rank is in after any other failure
-   * to read, and is recoverable by the next vote.
-   */
-  const choose = async (threshold: number) => {
-    await saveSetting("evaluated_threshold", threshold);
-    publish({ type: "stats-changed", stats: await client.getStats() });
-  };
+  const choose = (threshold: number) =>
+    saveSetting("evaluated_threshold", threshold);
 
   const chosen =
     CONFIDENCES.find(
@@ -124,8 +101,8 @@ export function EvaluatedSection() {
   return (
     <Section heading="Evaluated threshold">
       <p className="text-sm text-muted-foreground">
-        How many Comparisons make a Score trustworthy. It moves the Evaluated
-        count on Rank and the Score badge on every card together.
+        How many Comparisons make a Score trustworthy. It moves the Score badge
+        on every card.
       </p>
 
       <RadioGroup
