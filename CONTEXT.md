@@ -200,14 +200,14 @@ become part of the rating.
 
 ## Score
 
-A wallpaper's standing among the others: the μ of its rating. Every wallpaper
-starts at the same Score and moves from there with each Comparison it takes
-part in.
+A wallpaper's standing among the others: the μ of its rating. A wallpaper
+starts at its starting Score and moves from there with each Comparison it takes
+part in. Most wallpapers share the same starting Score; a triage mark or a
+prediction can give one its own.
 
 A Score is comparable only within one library, because it is a position among
-these wallpapers and nothing else. A wallpaper that has been in no Comparison
-has no Score yet; the number it starts on is the app's ignorance, not a
-judgement of the image.
+these wallpapers and nothing else. An Unrated wallpaper has no Score yet; the
+number it starts on is the app's ignorance, not a judgement of the image.
 
 A Rejected wallpaper sits out of voting, so its Score stops moving and stays
 the last thing the app knew about it.
@@ -216,6 +216,39 @@ Score answers how good. Evaluated answers how sure. Review orders by Score —
 from the lowest, to clear out the worst, or from the highest, to confirm favourites —
 so the wallpaper the app is least confident about is not thereby the wallpaper
 it likes least. See [ADR 0013](docs/adr/0013-review-orders-by-mu.md).
+
+## Starting Score
+
+The Score and the uncertainty a wallpaper's rating starts from, before its
+first Comparison. Every wallpaper has one. Most share the default, which is
+the app's ignorance; a triage mark or a prediction gives a wallpaper its own.
+
+A starting Score is where the rating begins, not a second number beside it:
+the first Comparison moves the Score from there, and later ones wash it out.
+It is spent at that first Comparison. Changing a triage mark or a prediction
+afterwards leaves the rating alone; only a wallpaper still in no Comparison
+takes a new starting Score.
+
+A triage mark is the curator's judgement and is kept as a record of its own. A
+prediction is the model's, and can be worked out again from the image.
+
+A starting Score never makes a wallpaper Evaluated: it is always less sure than
+the loosest Evaluated threshold. It may be sure enough to make it Decided.
+See [ADR 0057](docs/adr/0057-a-starting-score-is-spent-at-the-first-comparison.md).
+
+_Avoid_: prior, seed, estimate, guess, head start
+
+## Unrated
+
+A wallpaper the app knows nothing about yet: in no Comparison, and with no
+starting Score of its own from a triage mark. A prediction alone leaves it
+Unrated, because a model's guess is not something the curator would act on
+before looking.
+
+An Unrated wallpaper shows no Score, and it tails every ordering by Score
+rather than sorting into it. It belongs to Rank, which exists to give it a
+Comparison, not to Review. See
+[ADR 0028](docs/adr/0028-review-joins-the-listing-vocabulary.md).
 
 ## Eligible
 
