@@ -1300,7 +1300,7 @@ test("the Near-duplicates section is hidden while no pair is waiting", async () 
   expect(nearDuplicates()).toBeNull();
 });
 
-test("a waiting pair is shown side by side, with a keep-one answer under each", async () => {
+test("a waiting pair is shown side by side, with a keep-one answer under each and keep both beside them", async () => {
   mockCommand("list_near_duplicates", () => [keepOnePair()]);
   await openReview([wallpaper(1)]);
 
@@ -1314,6 +1314,7 @@ test("a waiting pair is shown side by side, with a keep-one answer under each", 
   ).toEqual([
     "Keep dawn.jpg, reject dawn-2.jpg",
     "Keep dawn-2.jpg, reject dawn.jpg",
+    "Keep both dawn.jpg and dawn-2.jpg",
   ]);
 });
 
@@ -1438,5 +1439,86 @@ test("pairs that pre-generation has just hashed show up without a Refresh", asyn
   });
   await flush();
 
+  expect(nearDuplicates()).not.toBeNull();
+});
+
+test("keep both makes the pair Distinct, rejects nothing, and the pair leaves", async () => {
+  let waiting = [keepOnePair()];
+  const asked: unknown[] = [];
+  const rejected: unknown[] = [];
+  mockCommand("list_near_duplicates", () => waiting);
+  await openReview([DAWN, DAWN_AGAIN, wallpaper(3)]);
+  mockCommand("keep_both", (args) => {
+    asked.push(args);
+    waiting = [];
+    return null;
+  });
+  mockCommand("keep_one", (args) => {
+    rejected.push(args);
+    return DAWN;
+  });
+
+  await click(
+    within(nearDuplicates()!).getByRole("button", {
+      name: "Keep both dawn.jpg and dawn-2.jpg",
+    }),
+  );
+
+  expect(asked).toEqual([{ firstId: 11, secondId: 12 }]);
+  expect(rejected).toEqual([]);
+  expect(nearDuplicates()).toBeNull();
+  // Both stay in the worklist, since neither's Status changed.
+  expect(cardNames()).toEqual([
+    "dawn.jpg, Active",
+    "dawn-2.jpg, Active",
+    "wall-3.jpg, Active",
+  ]);
+});
+
+test("keep both is reached and pressed by the keyboard", async () => {
+  let waiting = [keepOnePair()];
+  const asked: unknown[] = [];
+  mockCommand("list_near_duplicates", () => waiting);
+  await openReview([DAWN, DAWN_AGAIN]);
+  mockCommand("keep_both", (args) => {
+    asked.push(args);
+    waiting = [];
+    return null;
+  });
+
+  const keepBoth = within(nearDuplicates()!).getByRole("button", {
+    name: "Keep both dawn.jpg and dawn-2.jpg",
+  }) as HTMLButtonElement;
+  expect(keepBoth.tagName).toBe("BUTTON");
+  expect(keepBoth.tabIndex).toBe(0);
+  expect(keepBoth.disabled).toBe(false);
+  await act(async () => keepBoth.focus());
+  expect(document.activeElement).toBe(keepBoth);
+
+  // `click` is the one Enter or Space synthesises, with `detail` at 0.
+  await click(keepBoth);
+
+  expect(asked).toEqual([{ firstId: 11, secondId: 12 }]);
+  expect(nearDuplicates()).toBeNull();
+});
+
+test("a keep both that fails says so and leaves the pair waiting", async () => {
+  expectConsoleError(/Failed to keep both Near-duplicates/);
+  mockCommand("list_near_duplicates", () => [keepOnePair()]);
+  await openReview([wallpaper(1)]);
+  mockCommand("keep_both", () =>
+    Promise.reject({ kind: "db", message: "database is locked" }),
+  );
+
+  await click(
+    within(nearDuplicates()!).getByRole("button", {
+      name: "Keep both dawn.jpg and dawn-2.jpg",
+    }),
+  );
+
+  expect(toast()).toEqual({
+    title: "Couldn't save dawn.jpg and dawn-2.jpg as Distinct",
+    description: "database is locked",
+  });
   expect(nearDuplicates()).not.toBeNull();
 });

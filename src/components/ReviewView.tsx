@@ -430,6 +430,7 @@ export function ReviewView() {
             <NearDuplicatesSection
               pairs={nearDuplicates.pairs}
               onKeepOne={nearDuplicates.keepOne}
+              onKeepBoth={nearDuplicates.keepBoth}
             />
           )}
           {wallpapers.length === 0 ? (

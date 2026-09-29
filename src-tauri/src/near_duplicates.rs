@@ -1,15 +1,18 @@
-//! Near-duplicate pairs: which ones are waiting, and the keep-one answer.
+//! Near-duplicate pairs: which ones are waiting, and the answers to them.
 //!
 //! A pair is a standing and never a record, so nothing here writes one down:
 //! the waiting pairs are worked out from the stored perceptual hashes each time
 //! somebody asks. A scan over a few thousand 64-bit hashes is cheap, and a
 //! stored list would have to be kept in step with every reject, Restore and
-//! newly hashed wallpaper (CONTEXT.md, #393).
+//! newly hashed wallpaper (CONTEXT.md, #393). What is recorded is the curator's
+//! judgement that a pair is Distinct, which keeps it out of the listing for
+//! good.
 //!
 //! Answering never writes a Comparison. Keeping one is the ordinary soft
-//! reject of the other, so a Restore undoes it and the pair is waiting again.
+//! reject of the other, so a Restore undoes it and the pair is waiting again,
+//! unless it is Distinct. Keeping both makes it Distinct.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
@@ -28,8 +31,9 @@ pub const HAMMING_LIMIT: u32 = 10;
 ///
 /// Two Active or Kept wallpapers, Kept treated as Active is, whose hashes are
 /// within [`HAMMING_LIMIT`]. A wallpaper pre-generation has not hashed yet is in
-/// no pair, rather than in a pair with something it might not resemble. Three
-/// wallpapers of one image are three pairs, so answering one leaves the others.
+/// no pair, rather than in a pair with something it might not resemble. A
+/// Distinct pair is never waiting. Three wallpapers of one image are three
+/// pairs, so answering one leaves the others.
 pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppError> {
     let mut stmt = conn.prepare_cached(&format!(
         "SELECT id, perceptual_hash FROM wallpapers
@@ -42,6 +46,7 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
     let hashes = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as u64)))?
         .collect::<Result<Vec<(i64, u64)>, _>>()?;
+    let distinct = distinct_pairs(conn)?;
 
     // Each row read once, however many pairs it is in.
     let mut rows: HashMap<i64, Wallpaper> = HashMap::new();
@@ -57,7 +62,8 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
     let mut pairs = Vec::new();
     for (i, &(a, a_hash)) in hashes.iter().enumerate() {
         for &(b, b_hash) in &hashes[i + 1..] {
-            if (a_hash ^ b_hash).count_ones() <= HAMMING_LIMIT {
+            // `a` is below `b`, the order a Distinct record is keyed in.
+            if (a_hash ^ b_hash).count_ones() <= HAMMING_LIMIT && !distinct.contains(&(a, b)) {
                 pairs.push(NearDuplicatePair {
                     kind: PairKind::KeepOne,
                     wallpapers: [row(a)?, row(b)?],
@@ -86,16 +92,48 @@ pub fn keep_one(
     other: i64,
     destination_folder: &str,
 ) -> Result<Wallpaper, AppError> {
-    let waiting = db.read(waiting_pairs)?.iter().any(|pair| {
-        let [a, b] = &pair.wallpapers;
-        (a.id, b.id) == (kept, other) || (a.id, b.id) == (other, kept)
+    db.read(|conn| refuse_unless_waiting(conn, kept, other))?;
+    soft_reject::reject_in(db, other, destination_folder)
+}
+
+/// Keeps both `a` and `b`, recording the pair as Distinct so it is never
+/// offered again, across scans and restarts.
+///
+/// Refused with [`AppError::InvalidTransition`], recording nothing, unless the
+/// two are still a waiting pair, for [`keep_one`]'s reason. The check and the
+/// record share the one connection, so nothing lands between them. Neither
+/// wallpaper's Status changes and no Comparison is written.
+pub fn keep_both(conn: &Connection, a: i64, b: i64) -> Result<(), AppError> {
+    refuse_unless_waiting(conn, a, b)?;
+    conn.execute(
+        "INSERT INTO distinct_pairs (low_id, high_id) VALUES (?1, ?2)",
+        [a.min(b), a.max(b)],
+    )?;
+    Ok(())
+}
+
+/// Refuses an answer to `a` and `b` unless they are a waiting pair, in either
+/// order.
+fn refuse_unless_waiting(conn: &Connection, a: i64, b: i64) -> Result<(), AppError> {
+    let waiting = waiting_pairs(conn)?.iter().any(|pair| {
+        let ids = (pair.wallpapers[0].id, pair.wallpapers[1].id);
+        ids == (a, b) || ids == (b, a)
     });
     if !waiting {
         return Err(AppError::InvalidTransition(format!(
-            "wallpapers {kept} and {other} are not a waiting Near-duplicate pair"
+            "wallpapers {a} and {b} are not a waiting Near-duplicate pair"
         )));
     }
-    soft_reject::reject_in(db, other, destination_folder)
+    Ok(())
+}
+
+/// Every Distinct pair, lowest id first in each.
+fn distinct_pairs(conn: &Connection) -> Result<HashSet<(i64, i64)>, AppError> {
+    let mut stmt = conn.prepare_cached("SELECT low_id, high_id FROM distinct_pairs")?;
+    let pairs = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(pairs)
 }
 
 /// A waiting Near-duplicate pair and how it is offered.
@@ -107,9 +145,9 @@ pub struct NearDuplicatePair {
 
 /// How a pair is offered, which decides the answers it is given.
 ///
-/// One kind so far: two Active or Kept wallpapers, answered by keeping one. A
-/// pair against a Rejected wallpaper is offered differently (#402), and is a
-/// second kind rather than a flag on this one.
+/// One kind so far: two Active or Kept wallpapers, answered by keeping one or
+/// keeping both. A pair against a Rejected wallpaper is offered differently
+/// (#402), and is a second kind rather than a flag on this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PairKind {
@@ -141,6 +179,17 @@ mod tests {
             .iter()
             .map(|p| (p.wallpapers[0].id, p.wallpapers[1].id))
             .collect()
+    }
+
+    /// Every Distinct record, as the ids it is keyed by.
+    fn distinct_rows(conn: &Connection) -> Vec<(i64, i64)> {
+        let mut stmt = conn
+            .prepare("SELECT low_id, high_id FROM distinct_pairs ORDER BY low_id, high_id")
+            .unwrap();
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
     }
 
     #[test]
@@ -267,6 +316,109 @@ mod tests {
         assert!(matches!(err, AppError::InvalidTransition(_)));
         db.read(|conn| assert_eq!(status_of(conn, b), "active"));
         assert!(tmp.path().join("b.jpg").is_file());
+    }
+
+    #[test]
+    fn keep_both_makes_the_pair_distinct_and_it_is_no_longer_waiting() {
+        let conn = library();
+        let a = hashed(&conn, "/w/a.jpg", "active", 0);
+        let b = hashed(&conn, "/w/b.jpg", "kept", 0);
+
+        keep_both(&conn, a, b).unwrap();
+
+        assert!(pair_ids(&conn).is_empty());
+        assert_eq!(distinct_rows(&conn), vec![(a, b)]);
+    }
+
+    #[test]
+    fn keep_both_names_the_pair_whichever_way_round_it_is_given() {
+        // One pair, one record: answered highest id first, it is the same
+        // Distinct as the lowest first, and the listing leaves it out.
+        let conn = library();
+        let a = hashed(&conn, "/w/a.jpg", "active", 0);
+        let b = hashed(&conn, "/w/b.jpg", "active", 0);
+
+        keep_both(&conn, b, a).unwrap();
+
+        assert!(pair_ids(&conn).is_empty());
+        assert_eq!(distinct_rows(&conn), vec![(a, b)]);
+        let err = keep_both(&conn, a, b).unwrap_err();
+        assert!(matches!(err, AppError::InvalidTransition(_)));
+        assert_eq!(distinct_rows(&conn), vec![(a, b)]);
+    }
+
+    #[test]
+    fn a_distinct_pair_stays_out_across_a_reopen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        let (a, b) = {
+            let conn = db::open(&db_path).unwrap();
+            init_schema(&conn).unwrap();
+            let a = hashed(&conn, "/w/a.jpg", "active", 0);
+            let b = hashed(&conn, "/w/b.jpg", "active", 0);
+            keep_both(&conn, a, b).unwrap();
+            (a, b)
+        };
+
+        let conn = db::open(&db_path).unwrap();
+        init_schema(&conn).unwrap();
+
+        assert!(pair_ids(&conn).is_empty());
+        assert_eq!(distinct_rows(&conn), vec![(a, b)]);
+    }
+
+    #[test]
+    fn a_distinct_pair_stays_out_after_a_keep_one_and_a_restore() {
+        // Three wallpapers of one image are three pairs. Keeping c over b
+        // rejects b, and its Restore brings back the pairs b is in, except the
+        // one the curator already made Distinct.
+        let tmp = tempfile::tempdir().unwrap();
+        let (db, a, b) = real_pair(tmp.path());
+        let c = db.write(|conn| {
+            let c = seed_real_wallpaper(conn, tmp.path(), "c.jpg");
+            record_perceptual_hash(conn, c, 7).unwrap();
+            c
+        });
+        db.write(|conn| keep_both(conn, a, b)).unwrap();
+        db.read(|conn| assert_eq!(pair_ids(conn), vec![(a, c), (b, c)]));
+
+        keep_one(&db, c, b, "rejected").unwrap();
+        db.read(|conn| assert_eq!(pair_ids(conn), vec![(a, c)]));
+        crate::soft_reject::restore_in(&db, b).unwrap();
+
+        db.read(|conn| assert_eq!(pair_ids(conn), vec![(a, c), (b, c)]));
+    }
+
+    #[test]
+    fn keep_both_writes_no_comparison() {
+        let conn = library();
+        let a = hashed(&conn, "/w/a.jpg", "active", 0);
+        let b = hashed(&conn, "/w/b.jpg", "active", 0);
+
+        keep_both(&conn, a, b).unwrap();
+
+        assert_eq!(count_comparisons(&conn), 0);
+        assert_eq!(get_wallpaper(&conn, a).unwrap().comparisons_count, 0);
+        assert_eq!(get_wallpaper(&conn, b).unwrap().comparisons_count, 0);
+    }
+
+    #[test]
+    fn keep_both_of_a_pair_no_longer_waiting_is_refused_and_records_nothing() {
+        // One of the two was rejected after the listing the curator answered
+        // from, so the pair is no longer theirs to judge.
+        let conn = library();
+        let a = hashed(&conn, "/w/a.jpg", "active", 0);
+        let b = hashed(&conn, "/w/b.jpg", "active", 0);
+        conn.execute(
+            "UPDATE wallpapers SET status = 'rejected' WHERE id = ?1",
+            [b],
+        )
+        .unwrap();
+
+        let err = keep_both(&conn, a, b).unwrap_err();
+
+        assert!(matches!(err, AppError::InvalidTransition(_)));
+        assert!(distinct_rows(&conn).is_empty());
     }
 
     #[test]
