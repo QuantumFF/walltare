@@ -63,6 +63,20 @@ pub trait Selector {
     fn name(&self) -> String;
     fn select(&mut self, lib: &Library, bar: &Bar, decided: &dyn DecidedRule, rng: &mut Prng)
         -> Vec<usize>;
+    /// Counters a selector keeps about its own choices, read after a run.
+    fn stats(&self) -> SelectorStats {
+        SelectorStats::default()
+    }
+}
+
+/// What a selector did, for the reports that ask.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SelectorStats {
+    /// Votes whose first pick came from the fallback: no Undecided wallpaper
+    /// was left to pick by the index.
+    pub fallback_votes: u64,
+    /// The first vote that used the fallback.
+    pub first_fallback: Option<u64>,
 }
 
 /// The simulated curator: picks the best of what is shown.

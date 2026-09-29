@@ -102,7 +102,7 @@ pub fn main(argv: &[String]) {
 }
 
 /// Runs `f` over `jobs` on `threads` threads, keeping the order.
-fn par_map<J: Sync, T: Send>(jobs: &[J], threads: usize, f: impl Fn(&J) -> T + Sync) -> Vec<T> {
+pub(crate) fn par_map<J: Sync, T: Send>(jobs: &[J], threads: usize, f: impl Fn(&J) -> T + Sync) -> Vec<T> {
     let out: Mutex<Vec<Option<T>>> = Mutex::new((0..jobs.len()).map(|_| None).collect());
     let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {

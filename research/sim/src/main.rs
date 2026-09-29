@@ -5,6 +5,7 @@
 mod ranking;
 
 mod decided_report;
+mod pair_report;
 mod prng;
 mod selectors;
 mod sim;
@@ -38,7 +39,8 @@ pub struct Args {
 const USAGE: &str = "\
 usage: walltare-sim [options]
   --sizes 120,500,2000     library sizes
-  --selector baseline      comma list of: baseline, random
+  --selector baseline      comma list of: baseline, random, or a pair rule
+                           such as straddle+bald/m=3 (see PairRule::parse)
   --voter thurstone        thurstone | bradley-terry
   --noise 0.5              comma list; curator noise in units of the quality spread
   --bar-share 0.2          the Bar clears out the worst share of the Scored
@@ -58,7 +60,8 @@ usage: walltare-sim [options]
   --seed 1
   --threads <cores>
 
-walltare-sim starting --help   starting Score studies (#374)";
+walltare-sim starting --help   starting Score studies (#374)
+walltare-sim pair --help       pair-selection studies (#370)";
 
 fn parse() -> Args {
     let mut a = Args {
@@ -156,6 +159,9 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("starting") {
         return starting::main(&argv[1..]);
+    }
+    if argv.first().map(String::as_str) == Some("pair") {
+        return pair_report::main(&argv[1..]);
     }
     let args = parse();
     let bar = sim::QuantileBar {

@@ -23,6 +23,37 @@ cargo run --release -- starting cold        #   results/starting-score.md
 cargo run --release -- starting arrival --reps 100
 ```
 
+Pair-selection studies for [#370](https://github.com/QuantumFF/walltare/issues/370),
+`results/pair-selection.md` (`pair --help` for every flag):
+
+```sh
+S=baseline; for f in straddle apt0 apt0.5 apt1 apt2 apt4 lsa uleast; do
+  for o in mu bald look; do S="$S,$f+$o"; done; done
+cargo run --release -- pair runs --sizes 500 --noise 1.0 --reps 10 --selector $S   # screening
+TOP=baseline,uleast+bald,uleast+mu,lsa+look
+for v in thurstone bradley-terry; do                                               # full runs
+  cargo run --release -- pair runs --sizes 120,500,2000 --noise 0.5,1.0 --voter $v --selector $TOP
+done
+for k in 2 2.5 3; do                                                               # wrong side vs k
+  cargo run --release -- pair runs --sizes 120,500 --noise 1.0 --voter thurstone,bradley-terry \
+    --reps 50 --k $k --selector $TOP
+  cargo run --release -- pair runs --sizes 2000 --noise 1.0 --voter thurstone,bradley-terry \
+    --k $k --selector $TOP
+done
+# Opponent pools, variety, stop and fallback: the same `pair runs --sizes 500 --noise 1.0
+# --voter thurstone,bradley-terry` with selectors such as uleast+bald/pool=und,
+# lsa+look/m=10, straddle+look/top=8, uleast+mu/stop=1.5/fb=ratio.
+U=baseline,uleast+bald/u=forced,uleast+bald/u=index,uleast+bald/u=share,uleast+bald/uu=allow  # etc.
+cargo run --release -- pair arrival --new 200,50 --noise 0.5,1.0 --voter thurstone,bradley-terry --selector $U
+cargo run --release -- pair runs --sizes 30,60 --noise 0.5,1.0 --voter thurstone,bradley-terry \
+  --reps 100 --early --selector $U                                                 # young library
+cargo run --release -- pair runs --sizes 500 --noise 0.5,1.0 --voter thurstone,bradley-terry \
+  --early --selector $U                                                            # fresh 500
+cargo run --release -- pair timing --selector $TOP,straddle+look
+```
+
+The exact selector lists of every table are in the results file.
+
 No dependencies and no Tauri build. `src/main.rs` compiles the app's
 `src-tauri/src/ranking.rs` by `#[path]`, so every run uses the real
 `rate_1vs1` and `select_pair` as they stand on this branch.
@@ -80,7 +111,12 @@ Every part is a trait in `src/sim.rs`:
 `Observer` is not a strategy: it sees every vote with the Ratings and Bar
 from just before it, for measurements that need what changed between votes.
 
-A new selector goes in `src/selectors.rs` and gets a name in `by_name`. A new
+A new selector goes in `src/selectors.rs` and gets a name in `by_name`.
+The Bar-aware pair rules of #370 are one parametric selector, `PairRule`,
+named `<first>+<opponent>[/option...]`: first pick `straddle`, `apt<ε>`,
+`lsa` or `uleast` (least-compared Undecided); opponent `mu`, `bald` or
+`look`; options `/pool=und|anchor`, `/m=<pairs>`, `/top=<n>`, `/stop=<σ>`,
+`/fb=least|ratio`, `/u=forced|index|share`, `/uu=allow`, `/k=<k>`. A new
 prior, updater, Bar or Decided rule needs a flag in `main.rs`. Group selectors
 are counted per judgement ("Votes"), while "Each" counts the `rate_1vs1` calls
 behind them, so a best-of-4 pick costs one vote and three Comparisons.
