@@ -127,7 +127,8 @@ pub struct ThumbnailCache {
 pub enum Warmed {
     Generated,
     /// Nothing was generated: a wallpaper whose cache was already warm and that
-    /// was on the list for its pixel dimensions alone (ADR 0044). It says what
+    /// was on the list for its pixel dimensions or its perceptual hash alone
+    /// (ADR 0044). It says what
     /// the pass did not do rather than what it wrote — a source that will not
     /// give up its dimensions lands here too, because there is no thumbnail to
     /// report either way.
@@ -323,6 +324,7 @@ impl ThumbnailCache {
             }
         };
         measure_and_record(db, id, &source);
+        hash_and_record(db, id, &self.dir);
         Ok(warmed)
     }
 
@@ -854,6 +856,50 @@ fn measure_and_record(db: &Db, wallpaper_id: i64, source: &Path) {
     });
 }
 
+/// Hashes one wallpaper's Small and writes the hash to its row.
+///
+/// Off the Small rather than the source, because every branch of
+/// [`ThumbnailCache::warm`] ends with a fresh Small on disk and only one of them
+/// has the source decoded: a 400px JPEG decode is a few milliseconds against a
+/// pass already spending hundreds on the source, and one input for every
+/// branch means every hash in the library was taken off the same kind of
+/// image. On the real library the Small's hash and the source's differ by at
+/// most 2 bits (#393).
+///
+/// Like every branch's measurement, it runs whether or not the row has a hash:
+/// a wallpaper only reaches the generating branches because its source changed,
+/// and a hash of the old file would describe a picture that is gone. A Small
+/// that cannot be read leaves the row as it was, for
+/// [`measure_and_record`]'s reason, and the read happens with the connection
+/// released (ADR 0039).
+fn hash_and_record(db: &Db, wallpaper_id: i64, cache_dir: &Path) {
+    let Some(hash) = perceptual_hash(&cache_path(cache_dir, wallpaper_id, Size::Small)) else {
+        return;
+    };
+    db.write(|conn| {
+        if let Err(e) = db::record_perceptual_hash(conn, wallpaper_id, hash) {
+            eprintln!("could not record a perceptual hash: {e}");
+        }
+    });
+}
+
+/// The 64-bit DCT perceptual hash of one image file, `None` for one that will
+/// not decode.
+///
+/// pHash: an 8x8 hash, each bit whether one low-frequency DCT coefficient of the
+/// greyscale image sits above the median. Two hashes within 10 bits of each other
+/// are the same image re-encoded, resized, recoloured or lightly cropped (#393).
+fn perceptual_hash(path: &Path) -> Option<u64> {
+    let img = image::open(path).ok()?;
+    let hash = image_hasher::HasherConfig::new()
+        .hash_size(8, 8)
+        .hash_alg(image_hasher::HashAlg::Median)
+        .preproc_dct()
+        .to_hasher()
+        .hash_image(&img);
+    Some(u64::from_be_bytes(hash.as_bytes().try_into().ok()?))
+}
+
 /// Writes down a source that was read and would not decode, so the work list
 /// leaves it out until the file changes (ADR 0034).
 ///
@@ -1014,7 +1060,8 @@ pub struct Pending {
     /// the queue — from one rejected since, which is a snapshot gone stale.
     pub status: Status,
     /// Which pre-generated sizes this wallpaper is short of, or `None` when both
-    /// are fresh and it is on the list for its pixel dimensions alone.
+    /// are fresh and it is on the list for its pixel dimensions or its
+    /// perceptual hash alone.
     ///
     /// `None` is the backfill of ADR 0044, and it is the only thing the entry
     /// has to say about dimensions. Every wallpaper the pass reaches is measured
@@ -1048,13 +1095,16 @@ pub struct Candidate {
     pub failed_mtime: Option<i64>,
     /// Whether the row already carries the source's pixel dimensions (ADR 0044).
     pub dimensions_known: bool,
+    /// Whether the row already carries the perceptual hash of its Small.
+    pub hash_known: bool,
 }
 
 /// The query behind [`ThumbnailCache::candidates`].
 fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT w.id, w.path, w.status, s.source_mtime, m.source_mtime, f.source_mtime,
-                w.width IS NOT NULL AND w.height IS NOT NULL, w.comparisons_count
+                w.width IS NOT NULL AND w.height IS NOT NULL, w.comparisons_count,
+                w.perceptual_hash IS NOT NULL
          FROM wallpapers w
          LEFT JOIN thumbnails s ON s.wallpaper_id = w.id AND s.size = 'small'
          LEFT JOIN thumbnails m ON m.wallpaper_id = w.id AND m.size = 'medium'
@@ -1070,6 +1120,7 @@ fn candidates(conn: &Connection) -> Result<Vec<Candidate>, AppError> {
             failed_mtime: row.get(5)?,
             dimensions_known: row.get(6)?,
             comparisons_count: row.get(7)?,
+            hash_known: row.get(8)?,
         })
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)

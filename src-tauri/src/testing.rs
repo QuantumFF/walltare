@@ -90,6 +90,20 @@ pub(crate) fn dimensions_of(conn: &Connection, id: i64) -> (Option<i64>, Option<
     .unwrap()
 }
 
+/// A wallpaper's recorded perceptual hash, `None` until the pre-generation pass
+/// has hashed its Small.
+///
+/// Here because the schema adds the column and the pass writes it.
+pub(crate) fn perceptual_hash_of(conn: &Connection, id: i64) -> Option<u64> {
+    conn.query_row(
+        "SELECT perceptual_hash FROM wallpapers WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .unwrap()
+    .map(|bits| bits as u64)
+}
+
 /// The Wallhaven id a wallpaper's row carries, `None` for one that has none
 /// (ADR 0050).
 ///
