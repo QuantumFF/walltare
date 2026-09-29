@@ -75,6 +75,11 @@ no surface, and letting go is the whole of it.
 > is Settings' reason for its ways out. Its "Choose a library root to download"
 > is `data-moves-focus`, so it does not hand off.
 
+> **Amended by [#400](https://github.com/QuantumFF/walltare/issues/400),
+> 2026-09-30.** Review's Near-duplicate answers hand off on every press that
+> lands, the keyboard's as well as the pointer's, for the Picks tray's reason:
+> the pair leaves with the button that answered it.
+
 **The pointer, not the keyboard.** A control the keyboard pressed keeps the
 focus: a tablist's arrows are the ARIA pattern, and a curator who tabbed to a
 button expects to stay on it. `detail` tells the two apart, since the click Enter

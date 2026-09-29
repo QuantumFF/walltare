@@ -1,6 +1,10 @@
 import { EmptyState } from "@/components/EmptyState";
 import { useLightbox } from "@/components/ItemLightbox";
 import { Lightbox } from "@/components/Lightbox";
+import {
+  NearDuplicatesSection,
+  useNearDuplicates,
+} from "@/components/NearDuplicatesSection";
 import { PageBar } from "@/components/PageBar";
 import {
   RejectDestinationLine,
@@ -189,6 +193,14 @@ export function ReviewView() {
   // was.
   const firstLoad = loading && rows === null;
 
+  // The Near-duplicate pairs waiting, beside the worklist rather than in it: a
+  // pair is a standing of two wallpapers, and either may be Kept, which never
+  // appears in review (CONTEXT.md). A keep one's Undo is this page's Restore.
+  const nearDuplicates = useNearDuplicates({
+    destination,
+    restore: (wallpaper) => perform("restore", wallpaper),
+  });
+
   // The grid, once it has mounted, and the whole of what this page knows about
   // the selection. The cursor is the grid's since #230, so nothing here holds it
   // or hands it down: the lightbox below subscribes to the grid's own
@@ -347,7 +359,10 @@ export function ReviewView() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => void fetchReviewList(setRows)}
+          onClick={() => {
+            void fetchReviewList(setRows);
+            nearDuplicates.refresh();
+          }}
           className="gap-2"
           disabled={loading}
         >
@@ -411,6 +426,12 @@ export function ReviewView() {
            It is its own scroller, the way the library page's rows are, so the
            bar above stays put while the worklist scrolls under it. */
         <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto p-4">
+          {nearDuplicates.pairs.length > 0 && (
+            <NearDuplicatesSection
+              pairs={nearDuplicates.pairs}
+              onKeepOne={nearDuplicates.keepOne}
+            />
+          )}
           {wallpapers.length === 0 ? (
             /* The shared state, so this page's "nothing here" is built the same
                way the library page's two are (ADR 0015). The route out names

@@ -106,6 +106,9 @@ export function mockBootedApp(): void {
   // No Bar, as in a library with nothing scored: Review reads it beside its
   // list, and a test about the rule arranges one (#386).
   mockCommand("get_bar", () => null);
+  // No Near-duplicate pairs waiting, so Review's section stays hidden unless a
+  // test arranges some.
+  mockCommand("list_near_duplicates", () => []);
 }
 
 /** What a `list_wallpapers` call carries, so an answer can read the `limit`. */
