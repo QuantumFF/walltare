@@ -213,7 +213,7 @@ A Rejected wallpaper sits out of voting, so its Score stops moving and stays
 the last thing the app knew about it.
 
 Score answers how good. Evaluated answers how sure. Review orders by Score —
-from the lowest, to cull the worst, or from the highest, to confirm favourites —
+from the lowest, to clear out the worst, or from the highest, to confirm favourites —
 so the wallpaper the app is least confident about is not thereby the wallpaper
 it likes least. See [ADR 0013](docs/adr/0013-review-orders-by-mu.md).
 
@@ -261,3 +261,24 @@ Evaluated meant before the user could say otherwise.
 One threshold, because everything that asks whether a wallpaper is Evaluated —
 the count in the headline, the Score badge on every card — has to get the same
 answer. See [ADR 0046](docs/adr/0046-the-evaluated-threshold-is-the-curators.md).
+
+## Bar
+
+The Score a wallpaper has to clear to stay. A wallpaper below the Bar is one
+the curator would clear out; being below it is a standing, not a Status, so
+nothing about the wallpaper changes until the curator acts on it.
+
+_Avoid_: cull line, cutoff, reject line, keep line
+
+## Decided / Undecided
+
+**Decided**: the app is sure which side of the Bar a wallpaper's Score falls
+on, so more Comparisons would not change what the curator does with it.
+**Undecided**: not yet.
+
+Decided is not Evaluated. Evaluated asks how sure the Score is; Decided asks
+only whether it is sure enough to act on. A wallpaper far below the Bar can be
+Decided long before it is Evaluated, and one sitting right on the Bar can be
+Evaluated and still Undecided.
+
+_Avoid_: settled, resolved
