@@ -18,6 +18,9 @@ cargo run --release -- --selector baseline,random --noise 0.5,1.0 --reps 20   # 
 cargo run --release -- --report decided --sizes 120,500 --noise 0.5,1.0 \
   --rules plain,warmup,participated,bar-sigma --voter bradley-terry          # results/decided-rule.md
 cargo test --release   # the voter, Bar and Decided checks, plus ranking.rs's own tests
+cargo run --release -- starting calibrate   # starting Score studies for #374:
+cargo run --release -- starting cold        #   results/starting-score.md
+cargo run --release -- starting arrival --reps 100
 ```
 
 No dependencies and no Tauri build. `src/main.rs` compiles the app's
@@ -53,6 +56,8 @@ No dependencies and no Tauri build. `src/main.rs` compiles the app's
 - **Update**: `WinnerBeatsEach`: one `rate_1vs1` per loser shown. For a pair
   this is exactly what the app records.
 - **Prior**: `Uniform`: every wallpaper starts at μ = 25, σ = 8.333.
+  `Predicted` (the `starting` studies) gives a starting Score from a
+  prediction that correlates r with true quality; see `src/starting.rs`.
 - **Budget**: `--budget` Comparisons per wallpaper on average (default 40),
   so `budget × n / 2` pair votes.
 

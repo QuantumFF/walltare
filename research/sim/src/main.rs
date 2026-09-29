@@ -8,6 +8,7 @@ mod decided_report;
 mod prng;
 mod selectors;
 mod sim;
+mod starting;
 mod track;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -55,7 +56,9 @@ usage: walltare-sim [options]
   --reps 20                replicate libraries per configuration
   --budget 40              stop at this many Comparisons per wallpaper on average
   --seed 1
-  --threads <cores>";
+  --threads <cores>
+
+walltare-sim starting --help   starting Score studies (#374)";
 
 fn parse() -> Args {
     let mut a = Args {
@@ -150,6 +153,10 @@ pub struct Config {
 }
 
 fn main() {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("starting") {
+        return starting::main(&argv[1..]);
+    }
     let args = parse();
     let bar = sim::QuantileBar {
         share: args.bar_share,

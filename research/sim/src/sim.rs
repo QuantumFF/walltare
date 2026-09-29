@@ -188,6 +188,57 @@ impl Prior for Uniform {
     }
 }
 
+/// A starting Score from a prediction that correlates `r` with true quality,
+/// as an embedding model's ridge regression of μ would give (#374, ADR 0057).
+///
+/// The prediction is p = r·q + √(1 − r²)·N(0, 1), so corr(p, q) = r with q the
+/// standard-normal true quality. A regression fit on voted wallpapers returns
+/// E[μ | p], which is shrunk towards the mean: μ₀ = `mu` + `slope`·r·p, where
+/// `mu` + `slope`·q is the μ the ranking converges to (see `calibrate`). So
+/// r = 0 starts everyone at `mu` and only changes σ₀. σ₀ is `sigma0`, which
+/// ADR 0057 keeps between 5.0 and 8.333.
+pub struct Predicted {
+    pub r: f64,
+    pub sigma0: f64,
+    pub mu: f64,
+    pub slope: f64,
+}
+
+impl Predicted {
+    pub fn predict(&self, quality: f64, rng: &mut Prng) -> f64 {
+        let noise = rng.normal();
+        self.r * quality + (1.0 - self.r * self.r).max(0.0).sqrt() * noise
+    }
+}
+
+impl Prior for Predicted {
+    fn name(&self) -> String {
+        format!("predicted(r={}, σ₀={})", self.r, self.sigma0)
+    }
+    fn initial(&self, quality: f64, rng: &mut Prng) -> Rating {
+        let p = self.predict(quality, rng);
+        Rating::new(self.mu + self.slope * self.r * p, self.sigma0)
+    }
+}
+
+/// Least-squares fit of μ = a + b·q over the given wallpapers: how μ maps
+/// onto true quality at this point of the ranking. Returns (a, b, R²).
+pub fn fit_mu_on_quality(lib: &Library, which: impl Iterator<Item = usize>) -> (f64, f64, f64) {
+    let pts: Vec<(f64, f64)> = which.map(|i| (lib.quality[i], lib.ratings[i].mu)).collect();
+    let m = pts.len() as f64;
+    let (mx, my) = pts
+        .iter()
+        .fold((0.0, 0.0), |(a, b), &(x, y)| (a + x / m, b + y / m));
+    let (mut sxx, mut sxy, mut syy) = (0.0, 0.0, 0.0);
+    for &(x, y) in &pts {
+        sxx += (x - mx) * (x - mx);
+        sxy += (x - mx) * (y - my);
+        syy += (y - my) * (y - my);
+    }
+    let b = sxy / sxx;
+    (my - b * mx, b, sxy * sxy / (sxx * syy))
+}
+
 /// The Bar as "How the Bar is set" (#367) settled it: the worst `share` of
 /// every wallpaper with a Score. Unrated wallpapers (no Comparison yet) don't
 /// count. The simulator never rejects, so "Rejected included" doesn't come
@@ -320,6 +371,10 @@ pub struct Checkpoint {
     pub truly_below: usize,
     pub evaluated: usize,
     pub sigma_sum: f64,
+    /// Of the wallpapers measured: how many have been in a Comparison, and
+    /// the Comparisons they have been in between them.
+    pub participated: usize,
+    pub comparisons_in: usize,
 }
 
 /// One judgement, as an `Observer` sees it after the Ratings have changed.
@@ -364,9 +419,14 @@ pub fn run(
     };
     let mut scratch = Vec::with_capacity(n);
     let mut comparisons = 0;
-    let mut out = Vec::new();
+    // Before any vote nothing is Scored, so the app has no Bar. Each = 0 is
+    // measured against the Bar the starting Scores would give if they
+    // counted: the same rule, as if every wallpaper had a Comparison.
+    let unscored = std::mem::replace(&mut lib.counts, vec![1; n]);
+    let bar0 = parts.bar.bar(&lib, &mut scratch);
+    lib.counts = unscored;
+    let mut out = vec![measure(&lib, &bar0, parts.decided, 0, 0, 0..n)];
     let mut bar = parts.bar.bar(&lib, &mut scratch);
-    out.push(measure(&lib, &bar, parts.decided, 0, 0));
     for o in observers.iter_mut() {
         o.start(&lib, &bar);
     }
@@ -392,19 +452,86 @@ pub fn run(
             o.vote(&lib, &vote);
         }
         if j % checkpoint_every == 0 || j == max_judgements {
-            out.push(measure(&lib, &bar, parts.decided, j, comparisons));
+            out.push(measure(&lib, &bar, parts.decided, j, comparisons, 0..n));
         }
     }
     (out, lib)
 }
 
-fn measure(lib: &Library, bar: &Bar, rule: &dyn DecidedRule, j: usize, c: usize) -> Checkpoint {
+/// The arrival scenario: `n_old` wallpapers ranked from `parts.prior` until
+/// `each_before` Comparisons each, then a scan adds `n_new`. The new ones
+/// start from `new_prior(a, b)`, where μ ≈ a + b·q is the fit of the old
+/// wallpapers' current μ on their true quality: the scale a ridge regression
+/// on this library's votes would predict onto. The old ones keep their
+/// Ratings; voting carries on over the whole library.
+pub struct Arrival {
+    /// Judgements after the scan.
+    pub judgements: usize,
+    pub old: Checkpoint,
+    pub new: Checkpoint,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_arrival(
+    n_old: usize,
+    n_new: usize,
+    each_before: f64,
+    selector: &mut dyn Selector,
+    parts: &Parts,
+    new_prior: &dyn Fn(f64, f64) -> Box<dyn Prior>,
+    max_after: usize,
+    checkpoint_every: usize,
+    rng: &mut Prng,
+) -> Vec<Arrival> {
+    let before = (each_before * n_old as f64 / 2.0).ceil() as usize;
+    let (_, mut lib) = run(n_old, selector, parts, before, before.max(1), &mut [], rng);
+    let (a, b, _) = fit_mu_on_quality(&lib, 0..n_old);
+    let prior = new_prior(a, b);
+    let q_new: Vec<f64> = (0..n_new).map(|_| rng.normal()).collect();
+    for &q in &q_new {
+        lib.ratings.push(prior.initial(q, rng));
+    }
+    lib.quality.extend(q_new);
+    lib.counts.resize(n_old + n_new, 0);
+    lib.truly_below = parts.bar.truly_below(&lib.quality);
+
+    let n = n_old + n_new;
+    let mut scratch = Vec::with_capacity(n);
+    let mut bar = parts.bar.bar(&lib, &mut scratch);
+    let at = |lib: &Library, bar: &Bar, j: usize, c: usize| Arrival {
+        judgements: j,
+        old: measure(lib, bar, parts.decided, j, c, 0..n_old),
+        new: measure(lib, bar, parts.decided, j, c, n_old..n),
+    };
+    let mut out = vec![at(&lib, &bar, 0, 0)];
+    let mut comparisons = 0;
+    for j in 1..=max_after {
+        let shown = selector.select(&lib, &bar, parts.decided, rng);
+        let winner = parts.voter.pick(&lib.quality, &shown, rng);
+        parts.updater.apply(&mut lib, &shown, winner);
+        comparisons += shown.len() - 1;
+        bar = parts.bar.bar(&lib, &mut scratch);
+        if j % checkpoint_every == 0 || j == max_after {
+            out.push(at(&lib, &bar, j, comparisons));
+        }
+    }
+    out
+}
+
+fn measure(
+    lib: &Library,
+    bar: &Bar,
+    rule: &dyn DecidedRule,
+    j: usize,
+    c: usize,
+    which: std::ops::Range<usize>,
+) -> Checkpoint {
     let mut cp = Checkpoint {
         judgements: j,
         comparisons: c,
         ..Default::default()
     };
-    for i in 0..lib.len() {
+    for i in which {
         let r = lib.ratings[i];
         if lib.truly_below[i] {
             cp.truly_below += 1;
@@ -413,6 +540,8 @@ fn measure(lib: &Library, bar: &Bar, rule: &dyn DecidedRule, j: usize, c: usize)
         if r.sigma < EVALUATED_SIGMA {
             cp.evaluated += 1;
         }
+        cp.participated += (lib.counts[i] > 0) as usize;
+        cp.comparisons_in += lib.counts[i] as usize;
         if let Some(below) = rule.side(r, bar) {
             cp.decided += 1;
             if below {
@@ -505,5 +634,24 @@ mod tests {
         assert_eq!(bar.scored, 4);
         assert_eq!(bar.score, 1.5);
         assert!((bar.sigma - (6.5f64).sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn predicted_correlates_r_and_is_shrunk() {
+        let prior = Predicted { r: 0.6, sigma0: 6.5, mu: 25.0, slope: 8.0 };
+        let mut rng = Prng::new(3);
+        let n = 200_000;
+        let q: Vec<f64> = (0..n).map(|_| rng.normal()).collect();
+        let mu: Vec<f64> = q.iter().map(|&x| prior.initial(x, &mut rng).mu).collect();
+        let m = |v: &[f64]| v.iter().sum::<f64>() / n as f64;
+        let (mq, mm) = (m(&q), m(&mu));
+        let cov = q.iter().zip(&mu).map(|(a, b)| (a - mq) * (b - mm)).sum::<f64>() / n as f64;
+        let sd = |v: &[f64], c: f64| (v.iter().map(|x| (x - c).powi(2)).sum::<f64>() / n as f64).sqrt();
+        let corr = cov / (sd(&q, mq) * sd(&mu, mm));
+        assert!((corr - 0.6).abs() < 0.01, "{corr}");
+        // E[μ₀ | q] = 25 + slope·r²·q, and the spread of μ₀ is slope·r.
+        assert!((cov - 8.0 * 0.36).abs() < 0.05, "{cov}");
+        assert!((sd(&mu, mm) - 8.0 * 0.6).abs() < 0.05);
+        assert_eq!(prior.initial(0.0, &mut rng).sigma, 6.5);
     }
 }
