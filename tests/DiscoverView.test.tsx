@@ -853,6 +853,36 @@ test("the arrows walk the swatches as a grid of eight a row", async () => {
   expect(document.activeElement?.textContent).toBe("Any colour");
 });
 
+test("the expanded header sticks with a strip's height of itself still showing", async () => {
+  // The browser does the sticking, so the bar is there on the frame the
+  // header reaches the top rather than when the scroll event arrives.
+  await renderInApp(<DiscoverView />);
+  const scroller = document.querySelector(
+    '[data-slot="discover-page"]',
+  ) as HTMLElement;
+  const header = document.querySelector(
+    '[data-slot="discover-header"]',
+  ) as HTMLElement;
+  // happy-dom lays nothing out, so the header says how tall it is.
+  Object.defineProperty(header, "offsetHeight", {
+    get: () => (header.dataset.collapsed === "true" ? 44 : 200),
+  });
+  await act(async () => {
+    scroller.scrollTop = 100;
+    fireEvent.scroll(scroller);
+  });
+  expect(header.dataset.collapsed).toBe("false");
+  expect(header.className).toContain("sticky");
+  expect(header.style.top).toBe("-156px");
+
+  await act(async () => {
+    scroller.scrollTop = 600;
+    fireEvent.scroll(scroller);
+  });
+  expect(header.dataset.collapsed).toBe("true");
+  expect(header.style.top).toBe("");
+});
+
 test("a resize while collapsed measures the expanded header again", async () => {
   const observers: ResizeObserverCallback[] = [];
   const Real = globalThis.ResizeObserver;
