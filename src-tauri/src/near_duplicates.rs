@@ -33,7 +33,8 @@ use crate::soft_reject;
 /// 12, while the closest two unrelated wallpapers were 16 apart.
 pub const HAMMING_LIMIT: u32 = 10;
 
-/// Every Near-duplicate pair waiting for an answer, in order of the lower id.
+/// Every Near-duplicate pair waiting for an answer, in order of each pair's
+/// lower id, whichever side the kind shows it on.
 ///
 /// Two wallpapers whose hashes are within [`HAMMING_LIMIT`], offered by
 /// [`offering`]'s Status matrix. A wallpaper pre-generation has not hashed yet
@@ -50,7 +51,7 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
     // as an `i64` (`db::record_perceptual_hash`) and comes back out the same way.
     let hashed = stmt
         .query_map([], |row| {
-            Ok(Hashed {
+            Ok(Candidate {
                 id: row.get(0)?,
                 hash: row.get::<_, i64>(1)? as u64,
                 status: row.get(2)?,
@@ -98,7 +99,7 @@ pub fn waiting_pairs(conn: &Connection) -> Result<Vec<NearDuplicatePair>, AppErr
 ///   only if it arrived after the reject. One already there was in the library
 ///   beside the other when the curator rejected it.
 /// - Two Rejected wallpapers: never offered, since both are gone already.
-fn offering(a: &Hashed, b: &Hashed) -> Option<(PairKind, [i64; 2])> {
+fn offering(a: &Candidate, b: &Candidate) -> Option<(PairKind, [i64; 2])> {
     match (a.status.is_eligible(), b.status.is_eligible()) {
         (true, true) => Some((PairKind::KeepOne, [a.id, b.id])),
         (true, false) => arrived_after(a, b).then_some((PairKind::RejectedBefore, [a.id, b.id])),
@@ -111,14 +112,15 @@ fn offering(a: &Hashed, b: &Hashed) -> Option<(PairKind, [i64; 2])> {
 ///
 /// Strictly after: both are whole seconds, and the wallpaper a keep-one answer
 /// kept may share the second the answer rejected the other in.
-fn arrived_after(arrival: &Hashed, rejected: &Hashed) -> bool {
+fn arrived_after(arrival: &Candidate, rejected: &Candidate) -> bool {
     rejected
         .rejected_at
         .is_some_and(|at| arrival.created_at > at)
 }
 
-/// What [`waiting_pairs`] reads of each hashed wallpaper to pair and offer it.
-struct Hashed {
+/// A hashed wallpaper as [`waiting_pairs`] reads it: enough to pair it and to
+/// say how the pair is offered.
+struct Candidate {
     id: i64,
     hash: u64,
     status: Status,

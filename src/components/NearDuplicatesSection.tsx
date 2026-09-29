@@ -201,7 +201,7 @@ export function NearDuplicatesSection({
                   arrival={a}
                   rejected={b}
                   onKeep={() => onKeepBoth(pair)}
-                  onReject={() => onKeepOne(b, a)}
+                  onReject={() => onKeepOne(/* kept */ b, /* other */ a)}
                 />
               ) : (
                 <>
