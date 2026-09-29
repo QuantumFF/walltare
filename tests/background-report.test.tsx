@@ -20,9 +20,8 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 // the backend emits them.
 //
 // What is asserted is the words, where they appear and how long they stay. Which
-// ending a scan had — an empty folder against nothing new, whether the Round
-// moved backwards — is decided by the scan run before the toast hears of it, and
-// is `scan-run.test.tsx`'s.
+// ending a scan had — an empty folder against nothing new — is decided by the
+// scan run before the toast hears of it, and is `scan-run.test.tsx`'s.
 
 /** ADR 0009's eight seconds, which the provider applies when nothing overrides it. */
 const LIFETIME = 8000;
@@ -57,8 +56,7 @@ afterEach(() => {
 beforeEach(() => {
   scannedPaths = [];
 
-  // A mid-life library on Round 3, so boot lands on Rank and the Round has
-  // somewhere to move back from.
+  // A mid-life library, so boot lands on Rank.
   mockBootedApp();
   mockCommand("get_pair", () => [wallpaper(1), wallpaper(2)]);
   mockListings({
@@ -318,8 +316,7 @@ test("closing the progress does not suppress the ending", async () => {
   await emit("scan-complete", { added_count: 3, scanned_count: 40 });
 
   // The ending is news about the library rather than news about the work, and
-  // it lands in the upper slot, which nothing dismissed. With nothing to explain
-  // about the Round, the count is the whole of it.
+  // it lands in the upper slot, which nothing dismissed.
   expect(toast()).toEqual({ title: "3 wallpapers added", description: null });
 });
 
@@ -405,26 +402,22 @@ test("the report's action opens Settings from where the curator was, and stays u
   expect(toast()?.title).toBe("Preparing thumbnails… 5 of 10");
 });
 
-test("a scan that added wallpapers says how many, and explains the Round moving backwards", async () => {
+test("a scan that added wallpapers says how many, and nothing else", async () => {
   await openApp();
   await scanFrom("/library");
 
-  // 412 unseen files with no comparisons between them, so the Round the
-  // headline shows goes from 3 to 1 (ADR 0008).
+  // 412 unseen files, every one of them Undecided. The headline's count rising
+  // says so, and the toast has nothing to add to the count (ADR 0059).
   mockCommand("get_stats", () =>
     stats({
       total_wallpapers: 424,
       eligible_count: 422,
-      round: 1,
-      round_participated_count: 10,
+      undecided_count: 418,
     }),
   );
   await emit("scan-complete", { added_count: 412, scanned_count: 2000 });
 
-  expect(toast()).toEqual({
-    title: "412 wallpapers added",
-    description: "Back to Round 1. The new wallpapers have no comparisons yet.",
-  });
+  expect(toast()).toEqual({ title: "412 wallpapers added", description: null });
 });
 
 test("a rescan that added nothing says how many files it looked at", async () => {
@@ -604,7 +597,7 @@ test("a download running during a scan reports below it", async () => {
   expect(toast()?.title).toBe("Downloading… 1 of 4");
 });
 
-test("a batch where every file landed ends transient, saying when it sent the Round back", async () => {
+test("a batch where every file landed ends transient, saying how many and nothing else", async () => {
   freezeClock();
   mockCommand("get_settings", () => settings({ library_root: "/pics" }));
   mockCommand("wallhaven_search", () => ({
@@ -640,12 +633,14 @@ test("a batch where every file landed ends transient, saying when it sent the Ro
   await openApp();
   await click(tab("Discover"));
 
-  // Round 3 when the click was made, and Round 1 once the file has landed:
-  // a wallpaper with no comparisons sends the library back (ADR 0008).
+  // The landed file is Undecided, which the headline's count says without the
+  // toast having to (ADR 0059).
   await click(
     document.querySelector<HTMLElement>('button[aria-label^="Download"]')!,
   );
-  mockCommand("get_stats", () => stats({ round: 1 }));
+  mockCommand("get_stats", () =>
+    stats({ total_wallpapers: 13, eligible_count: 11, undecided_count: 7 }),
+  );
   await fileDone(1, 1, 0);
   await emit("download-complete", {
     total: 1,
@@ -656,7 +651,7 @@ test("a batch where every file landed ends transient, saying when it sent the Ro
 
   expect(toast()).toEqual({
     title: "1 wallpaper downloaded",
-    description: "Back to Round 1. The new wallpapers have no comparisons yet.",
+    description: null,
   });
 
   await runOut(LIFETIME);

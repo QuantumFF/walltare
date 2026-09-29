@@ -1148,48 +1148,6 @@ test("a batch's ending leaves alone a Result clicked after the backend closed it
   expect(downloadButton(second)).toBeNull();
 });
 
-test("a batch clicked before the last one's ending still says when it sent the Round back", async () => {
-  withLibraryRoot();
-  await renderInApp(<DiscoverView />);
-  const [first, second] = cards();
-  // Round 3 at the first click, and the first file fails, so nothing moves.
-  await click(downloadButton(first)!);
-  await fileDone(
-    "qrow67",
-    { kind: "failed", message: "gone" },
-    { total: 1, landed: 0, failed: 1 },
-  );
-  await click(downloadButton(second)!);
-  await act(async () => {
-    emitEvent("download-complete", {
-      total: 1,
-      landed: 0,
-      failed: 1,
-      first_error: "gone",
-    });
-  });
-  await flush();
-
-  // The second batch started without a click of its own being first, and is
-  // still judged against the Round it started from.
-  mockCommand("get_stats", () => stats({ round: 1 }));
-  await fileDone("jedzym", { kind: "landed" });
-  await act(async () => {
-    emitEvent("download-complete", {
-      total: 1,
-      landed: 1,
-      failed: 0,
-      first_error: null,
-    });
-  });
-  await flush();
-
-  expect(toast()).toEqual({
-    title: "1 wallpaper downloaded",
-    description: "Back to Round 1. The new wallpapers have no comparisons yet.",
-  });
-});
-
 test("a new search drops the captions of downloads it replaced", async () => {
   withLibraryRoot();
   await renderInApp(<DiscoverView />);
@@ -1229,14 +1187,25 @@ test("each file that lands refreshes the library and the headline, as a scan wou
       <DiscoverView />
     </>,
   );
-  mockCommand("get_stats", () => stats({ round: 1, total_wallpapers: 13 }));
+  let reads = 0;
+  mockCommand("get_stats", () => {
+    reads += 1;
+    return stats({ total_wallpapers: 13, undecided_count: 7 });
+  });
   await click(downloadButton(cards()[0])!);
+  // Nothing is read before the batch: its ending has nothing to compare
+  // against (ADR 0059).
+  expect(reads).toBe(0);
 
   await fileDone("qrow67", { kind: "landed" });
+  expect(reads).toBe(1);
 
   expect(heard).toEqual([
     { type: "library-scanned", added: 1 },
-    { type: "stats-changed", stats: stats({ round: 1, total_wallpapers: 13 }) },
+    {
+      type: "stats-changed",
+      stats: stats({ total_wallpapers: 13, undecided_count: 7 }),
+    },
   ]);
 
   // A file that failed changed nothing, and says nothing to the library.

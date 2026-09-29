@@ -405,8 +405,8 @@ export interface Settings {
    */
   startup_view: StartupView;
   /**
-   * Which end of the ranking Review works from: lowest Scores to cull the
-   * worst, highest to confirm favourites.
+   * Which end of the ranking Review works from: lowest Scores to clear out
+   * the worst, highest to confirm favourites.
    */
   review_ordering: ReviewOrdering;
   /**

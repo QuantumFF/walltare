@@ -35,13 +35,16 @@ let run: ScanRun;
 afterEach(cleanup);
 
 beforeEach(() => {
-  // A mid-life library on Round 3, so the Round has somewhere to move back from.
+  // A mid-life library.
   library = stats();
   calls = [];
   outcomes = [];
   published = [];
 
-  mockCommand("get_stats", () => library);
+  mockCommand("get_stats", () => {
+    calls.push("get_stats");
+    return library;
+  });
   mockCommand("start_scan", (args) => {
     calls.push(`start_scan ${args.path}`);
     return null;
@@ -92,7 +95,8 @@ test("a scan stores the folder, then walks it, and runs from the click", async (
   await start("~/pics");
 
   // The order ADR 0010 fixed: the store learns the folder, then the walk starts
-  // on the same string, unexpanded (ADR 0011).
+  // on the same string, unexpanded (ADR 0011). Nothing is read before the
+  // walk: the ending has nothing to compare against (ADR 0059).
   expect(calls).toEqual(["store ~/pics", "start_scan ~/pics"]);
   // Running before any event, because the walk emits nothing until it is over.
   expect(run.state).toEqual({ running: true, run: 1, progress: null });
@@ -106,6 +110,8 @@ test("a scan stores the folder, then walks it, and runs from the click", async (
 
   await emit("scan-complete", { added_count: 38, scanned_count: 412 });
   expect(run.state).toEqual({ running: false });
+  // And one read after it, for the headline the new wallpapers moved.
+  expect(calls).toEqual(["store ~/pics", "start_scan ~/pics", "get_stats"]);
 });
 
 test("a second start while one is running does nothing", async () => {
@@ -163,41 +169,23 @@ test("a rescan that found files and added none is nothing new, not an empty fold
   expect(outcomes).toEqual([{ kind: "nothing-new", scanned: 2000 }]);
 });
 
-test("a scan that added wallpapers says how many, and the Round it sent the library back to", async () => {
+test("a scan that added wallpapers says how many, and nothing else", async () => {
   await mount();
   await start("/library");
 
-  // 412 unseen files with no comparisons between them, so the Round goes from
-  // 3 to 1 (ADR 0008).
+  // 412 unseen files, every one of them Undecided. That is the headline's to
+  // say, so the ending carries the count alone (ADR 0059).
   library = stats({
     total_wallpapers: 424,
     eligible_count: 422,
-    round: 1,
-    round_participated_count: 10,
+    undecided_count: 418,
   });
   await emit("scan-complete", { added_count: 412, scanned_count: 2000 });
 
-  expect(outcomes).toEqual([{ kind: "added", added: 412, backToRound: 1 }]);
+  expect(outcomes).toEqual([{ kind: "added", added: 412 }]);
 });
 
-test("a scan that added wallpapers to a library already on Round 1 moved no Round", async () => {
-  // A number that did not move needs no explanation, which is why this is a
-  // comparison against the Round before the walk and not a sentence attached
-  // to every count.
-  library = stats({
-    round: 1,
-    round_participated_count: 10,
-    evaluated_count: 0,
-  });
-  await mount();
-  await start("/library");
-
-  await emit("scan-complete", { added_count: 6, scanned_count: 18 });
-
-  expect(outcomes).toEqual([{ kind: "added", added: 6, backToRound: null }]);
-});
-
-test("a scan the frontend did not start has no Round to compare, and reports anyway", async () => {
+test("a scan the frontend did not start reports anyway", async () => {
   await mount();
 
   await emit("scan-progress", { scanned: 40, added: 3 });
@@ -208,12 +196,9 @@ test("a scan the frontend did not start has no Round to compare, and reports any
     progress: { scanned: 40, added: 3 },
   });
 
-  library = stats({ round: 1 });
   await emit("scan-complete", { added_count: 3, scanned_count: 40 });
 
-  // Nobody read the Round before this walk, so there is nothing to say it moved
-  // from — and an explanation the frontend cannot back up is not given.
-  expect(outcomes).toEqual([{ kind: "added", added: 3, backToRound: null }]);
+  expect(outcomes).toEqual([{ kind: "added", added: 3 }]);
 });
 
 test("a scan that failed ends with the backend's own account, and is not running", async () => {
@@ -228,22 +213,24 @@ test("a scan that failed ends with the backend's own account, and is not running
   ]);
 });
 
-test("every finished scan tells the views which rows exist, and one that added tells Rank the Round", async () => {
+test("every finished scan tells the views which rows exist, and one that added tells Rank the new stats", async () => {
   await mount();
   await start("/library");
 
-  library = stats({ total_wallpapers: 15, round: 1 });
+  library = stats({ total_wallpapers: 15, undecided_count: 9 });
   await emit("scan-complete", { added_count: 3, scanned_count: 40 });
   await start("/library");
   await emit("scan-complete", { added_count: 0, scanned_count: 40 });
 
   // `library-scanned` on both, zero included, because zero is the answer
   // "nothing changed" and the views owe no refetch for it. `stats-changed` only
-  // where the scan could have moved the headline, carrying the read the ending
-  // was judged on (ADR 0015).
+  // where the scan could have moved the headline (ADR 0015).
   expect(published).toEqual([
     { type: "library-scanned", added: 3 },
-    { type: "stats-changed", stats: stats({ total_wallpapers: 15, round: 1 }) },
+    {
+      type: "stats-changed",
+      stats: stats({ total_wallpapers: 15, undecided_count: 9 }),
+    },
     { type: "library-scanned", added: 0 },
   ]);
 });
@@ -275,8 +262,8 @@ test("an ending that beats the reply to start_scan still names the folder, and i
   expect(run.state).toEqual({ running: false });
 });
 
-test("a Round that cannot be read after the scan still ends it, without an explanation", async () => {
-  expectConsoleError(/Failed to read the Round a scan left behind/);
+test("stats that cannot be read after the scan still end it", async () => {
+  expectConsoleError(/Failed to read the stats after a scan/);
   await mount();
   await start("/library");
 
@@ -287,6 +274,6 @@ test("a Round that cannot be read after the scan still ends it, without an expla
 
   // The count is still news, and the headline is told nothing it was not
   // measured to say.
-  expect(outcomes).toEqual([{ kind: "added", added: 3, backToRound: null }]);
+  expect(outcomes).toEqual([{ kind: "added", added: 3 }]);
   expect(published).toEqual([{ type: "library-scanned", added: 3 }]);
 });
