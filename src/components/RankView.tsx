@@ -20,6 +20,18 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { RankFourPrototype } from "./RankFourPrototype";
+
+// PROTOTYPE (#389): the remembered Pairs | Fours switch.
+const MODE_KEY = "prototype-rank-mode";
+type Mode = "pairs" | "fours";
+function storedMode(): Mode {
+  try {
+    return localStorage.getItem(MODE_KEY) === "fours" ? "fours" : "pairs";
+  } catch {
+    return "pairs";
+  }
+}
 
 const PICK_FEEDBACK_MS = 300;
 const IMAGE_SIZE = "medium";
@@ -213,6 +225,16 @@ export function RankView() {
   const [voting, setVoting] = useState<Side | null>(null);
   const [skipping, setSkipping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setModeState] = useState<Mode>(storedMode);
+  const setMode = (m: Mode) => {
+    setModeState(m);
+    try {
+      localStorage.setItem(MODE_KEY, m);
+    } catch {
+      /* prototype */
+    }
+  };
+  const fours = mode === "fours" && (stats?.eligible_count ?? 4) >= 4;
   // Keep ranking puts the suggestion away until it is next true, so it resets
   // the moment a vote or a scan leaves something to decide again. Adjusted
   // during render rather than in an effect, so the suggestion never flashes
@@ -445,7 +467,7 @@ export function RankView() {
   // lightbox will — and to the view only when nothing in it does. An element
   // that has already answered the key marks it, and this fallback stands down.
   useEffect(() => {
-    if (view !== "rank") return;
+    if (view !== "rank" || fours) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       const pair = currentPairRef.current;
@@ -460,7 +482,7 @@ export function RankView() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleVote, view]);
+  }, [handleVote, view, fours]);
 
   const percent = roundPercent(stats);
   const explanation = roundExplanation(stats);
@@ -487,6 +509,29 @@ export function RankView() {
           {explanation}
         </span>
         <Progress value={percent} className="h-1.5 w-40" />
+        <div
+          role="radiogroup"
+          aria-label="Show"
+          className="flex rounded-md border border-border p-0.5 text-xs"
+        >
+          {(["pairs", "fours"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="radio"
+              aria-checked={mode === m}
+              onClick={() => setMode(m)}
+              className={cn(
+                "rounded px-2 py-0.5 capitalize",
+                mode === m
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
         <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
           <span aria-live="polite">
             <span className="font-medium text-foreground">
@@ -554,6 +599,15 @@ export function RankView() {
             Go to Review
           </Button>
         </div>
+      </>
+    );
+  }
+
+  if (fours) {
+    return (
+      <>
+        {header}
+        <RankFourPrototype active={view === "rank"} />
       </>
     );
   }
