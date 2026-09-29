@@ -231,7 +231,9 @@ Score. A prediction is the model's, and can be worked out again from the image,
 so it is not a record the way a Comparison is.
 
 A starting Score never makes a wallpaper Evaluated: it is always less sure than
-the loosest Evaluated threshold. It may be sure enough to make it Decided.
+the loosest Evaluated threshold. It never makes a wallpaper Decided either,
+because an Unrated wallpaper is never Decided, but it can be sure enough that
+the first Comparison does.
 See [ADR 0057](docs/adr/0057-a-starting-score-is-spent-at-the-first-comparison.md).
 
 _Avoid_: prior, seed, estimate, guess, head start
@@ -321,5 +323,21 @@ Decided is not Evaluated. Evaluated asks how sure the Score is; Decided asks
 only whether it is sure enough to act on. A wallpaper far below the Bar can be
 Decided long before it is Evaluated, and one sitting right on the Bar can be
 Evaluated and still Undecided.
+
+Sure means the Score sits far enough from the Bar for its uncertainty. How far
+is the app's to say, not a stated preference: the curator states where the Bar
+is, and cannot see how consistent their own votes are, which is what the answer
+depends on. Close to the Bar is not a kind of Decided. A wallpaper there stays
+Undecided, even once more Comparisons stop being worth their cost.
+
+Decided is worked out from the rating and the Bar each time somebody asks,
+never stored. So it moves in whichever direction the truth does. A wallpaper can
+become Undecided again, or change sides, when the Bar moves or an upset pulls
+its Score back toward the Bar.
+
+It reads only the rating and the Bar, whatever the wallpaper's Status. An
+Unrated wallpaper has no Score, so it is never Decided, whatever a prediction
+says. See
+[ADR 0058](docs/adr/0058-decided-is-the-apps-rule-and-is-never-stored.md).
 
 _Avoid_: settled, resolved
