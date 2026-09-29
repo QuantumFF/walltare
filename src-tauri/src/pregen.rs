@@ -166,7 +166,7 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
         cancel,
         &EventReport(app),
         |pending| warm_on_the_pool(app, cancel, pending),
-        || waiting_pairs(&db),
+        || count_waiting_pairs(&db),
     );
 }
 
@@ -176,7 +176,7 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
 /// A count that cannot be read is none rather than a lost ending: the database
 /// being gone is already fatal everywhere else, and the thumbnails the pass
 /// made are still worth reporting.
-fn waiting_pairs(db: &Db) -> u64 {
+fn count_waiting_pairs(db: &Db) -> u64 {
     match db.read(near_duplicates::waiting_pairs) {
         Ok(pairs) => pairs.len() as u64,
         Err(e) => {
@@ -332,7 +332,7 @@ fn pass(
     cancel: &AtomicBool,
     report: &impl Report,
     warm: impl Fn(&Pending) -> Result<Warmed, error::AppError>,
-    waiting_pairs: impl FnOnce() -> u64,
+    count_waiting: impl FnOnce() -> u64,
 ) {
     if work.is_empty() {
         return;
@@ -361,7 +361,7 @@ fn pass(
         generated: tally.generated,
         failed: tally.failed,
         cancelled,
-        near_duplicate_pairs: waiting_pairs(),
+        near_duplicate_pairs: count_waiting(),
     });
 }
 
@@ -550,7 +550,7 @@ mod tests {
 
         fn pass(&self, work: &[Pending], report: &impl Report, cancel: &AtomicBool) {
             super::pass(work, cancel, report, self.warm(), || {
-                super::waiting_pairs(&self.db)
+                super::count_waiting_pairs(&self.db)
             });
         }
 
