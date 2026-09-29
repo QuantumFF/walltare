@@ -63,10 +63,7 @@ import { mockCommand } from "./ipc-mocks";
  * would be asserting against a wallpaper nothing produces. Pass `path` to
  * override it, which is what a Rejected row does.
  */
-export function wallpaper(
-  id: number,
-  over: Partial<Wallpaper> = {},
-): Wallpaper {
+export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper {
   const filename = over.filename ?? `wall-${id}.jpg`;
   return {
     id,

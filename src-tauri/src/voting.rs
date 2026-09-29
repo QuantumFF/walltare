@@ -249,11 +249,10 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
     let bar = bar(conn)?;
     let (mut undecided_count, mut close_call_count) = (0u32, 0u32);
     for w in eligible_summaries(conn)? {
-        let rating = ranking::Rating::new(w.rating_mu, w.rating_sigma);
-        if crate::bar::decided(rating, w.comparisons_count, bar).is_none() {
+        if !w.is_decided(bar) {
             undecided_count += 1;
         }
-        if crate::bar::close_call(rating, w.comparisons_count, bar) {
+        if w.is_close_call(bar) {
             close_call_count += 1;
         }
     }

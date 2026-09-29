@@ -28,7 +28,7 @@ pub struct WallpaperSummary {
 }
 
 impl WallpaperSummary {
-    fn rating(&self) -> Rating {
+    pub(crate) fn rating(&self) -> Rating {
         Rating::new(self.rating_mu, self.rating_sigma)
     }
 
@@ -37,10 +37,12 @@ impl WallpaperSummary {
         self.comparisons_count > 0
     }
 
-    /// Decided or a Close call: nothing a first pick has to spend a vote on.
-    fn is_settled(&self, bar: Option<f64>) -> bool {
+    pub(crate) fn is_decided(&self, bar: Option<f64>) -> bool {
         crate::bar::decided(self.rating(), self.comparisons_count, bar).is_some()
-            || crate::bar::close_call(self.rating(), self.comparisons_count, bar)
+    }
+
+    pub(crate) fn is_close_call(&self, bar: Option<f64>) -> bool {
+        crate::bar::close_call(self.rating(), self.comparisons_count, bar)
     }
 }
 
@@ -133,7 +135,7 @@ pub fn select_pair<'a, R: Rng>(
         let undecided: Vec<&WallpaperSummary> = scored
             .iter()
             .copied()
-            .filter(|w| !w.kept && !w.is_settled(bar))
+            .filter(|w| !w.kept && !w.is_decided(bar) && !w.is_close_call(bar))
             .collect();
         match least_compared_outside(&undecided, recent.pairs, rng)
             .or_else(|| least_compared_outside(&scored, recent.pairs, rng))
@@ -1048,5 +1050,33 @@ mod tests {
             std::time::Duration::from_millis(1)
         };
         assert!(each < limit, "{each:?} per selection");
+    }
+
+    #[test]
+    fn a_capped_pair_with_nothing_scored_to_draw_still_draws_a_pair() {
+        // Past half, straight after a first Comparison, but the only wallpaper
+        // with a Score is on screen: an Unrated one goes first rather than none.
+        let pool = [
+            undecided(1, 1),
+            undecided(2, 1),
+            summary(3, MU, SIGMA, 0),
+            summary(4, MU, SIGMA, 0),
+        ];
+        let recent = Recent {
+            pairs: &[[1, 2]],
+            last_was_a_first: true,
+        };
+        for (first, second) in pairs_over_draws(&pool, BAR, recent, &[1, 2]) {
+            assert!([3, 4].contains(&first) && [3, 4].contains(&second));
+        }
+    }
+
+    #[test]
+    fn with_only_kept_wallpapers_undecided_the_least_compared_goes_first() {
+        // Nothing is drawable under step 3, so step 4 draws, Kept included.
+        let pool = [kept(1, 22.0, 5.0, 7), decided(2, 3), decided(3, 9)];
+        for (first, _) in pairs_over_draws(&pool, BAR, Recent::default(), &[]) {
+            assert_eq!(first, 2);
+        }
     }
 }

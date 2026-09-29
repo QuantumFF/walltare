@@ -653,7 +653,8 @@ export interface PregenComplete {
  * and the batch's pinned ending print verbatim.
  */
 export type DownloadOutcome =
-  { kind: "landed" } | { kind: "failed"; message: string };
+  | { kind: "landed" }
+  | { kind: "failed"; message: string };
 
 /**
  * Payload of the `download-progress` event (download.rs Progress), after each

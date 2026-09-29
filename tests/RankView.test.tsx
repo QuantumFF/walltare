@@ -78,9 +78,7 @@ async function renderRankView() {
 
 function idOf(alt: string): number {
   const { src } = screen.getByAltText(alt) as HTMLImageElement;
-  const match = /^wallpaper:\/\/localhost\/image\/(\d+)\?size=medium$/.exec(
-    src,
-  );
+  const match = /^wallpaper:\/\/localhost\/image\/(\d+)\?size=medium$/.exec(src);
   if (!match) throw new Error(`unexpected image src: ${src}`);
   return Number(match[1]);
 }
