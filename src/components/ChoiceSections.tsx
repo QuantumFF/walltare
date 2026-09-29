@@ -1,6 +1,7 @@
 import { Section } from "@/components/SettingsView";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useApp } from "@/context/AppContext";
+import { sharePercent } from "@/lib/copy";
 import {
   BAR_SHARES,
   WORKLIST_SIZES,
@@ -235,7 +236,7 @@ export function ReviewOrderingSection() {
  */
 const BAR_CHOICES: ReadonlyArray<Choice<number>> = BAR_SHARES.map((share) => ({
   value: share,
-  label: `Worst ${Math.round(share * 100)}%`,
+  label: `Worst ${sharePercent(share)}`,
 }));
 
 /**

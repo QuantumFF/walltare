@@ -606,9 +606,9 @@ impl Vocabulary for Threshold {
 /// Private and unwrapped at every edge, as [`Threshold`] is: [`Settings`] and
 /// [`bar_share`] carry the bare fraction.
 #[derive(Clone, Copy)]
-struct Share(f64);
+struct BarShare(f64);
 
-impl Vocabulary for Share {
+impl Vocabulary for BarShare {
     const NOUN: &'static str = "a Bar share";
 
     fn values() -> impl Iterator<Item = Self> {
@@ -772,7 +772,7 @@ pub fn evaluated_threshold(conn: &Connection) -> Result<f64, AppError> {
 /// The Bar share alone, for the Bar, which is worked out where there is no
 /// [`Detected`] to hand, the way [`evaluated_threshold`] is.
 pub fn bar_share(conn: &Connection) -> Result<f64, AppError> {
-    Ok(read(&stored(conn)?, BAR_SHARE, Share::parse).map_or(DEFAULT_BAR_SHARE, |share| share.0))
+    Ok(read(&stored(conn)?, BAR_SHARE, BarShare::parse).map_or(DEFAULT_BAR_SHARE, |share| share.0))
 }
 
 /// Every setting, with the gaps filled from the defaults, so a caller always
@@ -981,7 +981,7 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
         crop_preview: read(stored, CROP_PREVIEW, bool::parse).unwrap_or(defaults.crop_preview),
         evaluated_threshold: read(stored, EVALUATED_THRESHOLD, Threshold::parse)
             .map_or(defaults.evaluated_threshold, |threshold| threshold.0),
-        bar_share: read(stored, BAR_SHARE, Share::parse)
+        bar_share: read(stored, BAR_SHARE, BarShare::parse)
             .map_or(defaults.bar_share, |share| share.0),
         discover_filters: resolve_filters(stored),
         // A flag derived from the key's row, and never the key (ADR 0052).
@@ -1053,7 +1053,7 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         REVIEW_LAYOUT => Ok(ReviewLayout::written(value)? == without.review_layout),
         CROP_PREVIEW => Ok(bool::written(value)? == without.crop_preview),
         EVALUATED_THRESHOLD => Ok(Threshold::written(value)?.0 == without.evaluated_threshold),
-        BAR_SHARE => Ok(Share::written(value)?.0 == without.bar_share),
+        BAR_SHARE => Ok(BarShare::written(value)?.0 == without.bar_share),
         // The key's default is no key, so the one value equal to it is the
         // empty one, which is how Remove deletes the row. Any other value is a
         // key, and `wallhaven_key_set` is what reads it back.

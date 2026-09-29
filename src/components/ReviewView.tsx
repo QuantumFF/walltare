@@ -16,6 +16,7 @@ import { SegmentedGroup } from "@/components/ui/segmented";
 import { useApp } from "@/context/AppContext";
 import { useKeyboardSurface } from "@/context/KeyboardHandoffContext";
 import { client, type ReviewLayout, type ReviewOrdering } from "@/lib/client";
+import { sharePercent } from "@/lib/copy";
 import { cn } from "@/lib/utils";
 import { barFallsAt } from "@/lib/wallpaper";
 import {
@@ -173,7 +174,7 @@ export function ReviewView() {
       ? undefined
       : {
           before: barAt,
-          label: `Bar · worst ${Math.round(barShare * 100)}%`,
+          label: `Bar · worst ${sharePercent(barShare)}`,
         };
   // The spinner's whole condition: a fetch is out and there is nothing to show
   // while it is. Every later fetch has rows on screen already, and it replaces

@@ -129,15 +129,16 @@ mod tests {
     #[test]
     fn an_unrated_wallpaper_is_never_decided_nor_a_close_call() {
         // A confident starting Score from a prediction still decides nothing.
-        let far = rating(2.0, 0.5);
-        assert_eq!(decided(far, 0, Some(20.0)), None);
+        assert_eq!(decided(rating(2.0, 0.5), 0, Some(20.0)), None);
+        assert_eq!(decided(rating(40.0, 0.5), 0, Some(20.0)), None);
         assert!(!close_call(rating(20.0, 0.5), 0, Some(20.0)));
     }
 
     #[test]
     fn with_no_bar_nothing_is_decided_or_a_close_call() {
         assert_eq!(decided(rating(2.0, 0.5), 9, None), None);
-        assert!(!close_call(rating(20.0, 0.5), 9, None));
+        assert!(!close_call(rating(19.5, 0.5), 9, None));
+        assert!(!close_call(rating(20.5, 0.5), 9, None));
     }
 
     #[test]
