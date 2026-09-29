@@ -118,8 +118,8 @@ export function MissingFilesSection() {
    * Every row goes out as its own `status-changed`, which is the patch Review
    * and Library already apply to a reject made anywhere else: Review drops the
    * rows and Library repaints their pills. The Eligible pool shrank, so Rank's
-   * headline is re-read the way `EvaluatedSection` re-reads it, and a failed
-   * re-read leaves the old one standing until the next vote.
+   * headline is re-read and published as `stats-changed`, and a failed re-read
+   * leaves the old one standing until the next vote.
    *
    * It rejects the rows the check counted, by id, and not whatever is missing
    * by the time of the press: a file that went missing since is not in the

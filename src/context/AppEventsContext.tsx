@@ -17,7 +17,7 @@ import {
  * These are the app's own in-process events and not the backend's: nothing here
  * crosses IPC, and `client.ts` stays the only place a Tauri event is listened
  * for. A reject in Review changes a row in Library, and a vote in Rank moves the
- * Round headline, and with the shell keeping all three views mounted there is no
+ * Undecided headline, and with the shell keeping all three views mounted there is no
  * remount left to make either of those true by accident (ADR 0015).
  *
  * Three of the four are **patches**. `status-changed` tells Library what
@@ -66,7 +66,7 @@ export type AppEvent =
    * backend for the two rows would be a query on the hot path of voting.
    */
   | { type: "score-changed"; ids: [number, number] }
-  /** The Round, the counts and the fractions, all of them, as the backend just reported them. */
+  /** Every count in the headline, as the backend just reported them. */
   | { type: "stats-changed"; stats: Stats }
   /**
    * Wallpapers a scan added, or the one a download landed (ADR 0051). Zero is

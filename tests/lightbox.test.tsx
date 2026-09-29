@@ -281,8 +281,7 @@ test("the row carries the identity, the read-out and the position", async () => 
 test("the Score badge reads against the curator's Evaluated threshold (#260)", async () => {
   // The lightbox is a second rendering of the selection rather than a child of
   // the grid, so it reads the threshold off the store itself — and it has to be
-  // the same σ the card behind it used and the same one `voting.rs` counted the
-  // Rank headline with (ADR 0022, ADR 0046).
+  // the same σ the card behind it used (ADR 0022, ADR 0046).
   mockCommand("get_settings", () => settings({ evaluated_threshold: 5 }));
   await enterReview([
     wallpaper(7, { filename: "first.jpg", rating_sigma: 4.5 }),

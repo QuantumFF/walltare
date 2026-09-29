@@ -698,8 +698,6 @@ test("a first scan that turns up a single wallpaper lands on Library", async () 
     stats({
       total_wallpapers: 1,
       eligible_count: 1,
-      round_participated_count: 0,
-      evaluated_count: 0,
       total_comparisons: 0,
     }),
   );

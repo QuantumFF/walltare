@@ -171,9 +171,9 @@ export interface WallpaperCardProps {
    * The number rather than the verdict, which is the opposite of `undersized`
    * above and for the reason given there: a prop has to be a value or a stable
    * identity for the memo to mean anything, and a threshold *is* a value, so
-   * there is nothing to resolve for the card. The comparison it feeds is the one
-   * `voting.rs` counts `evaluated_count` with, so the badge and the Rank
-   * headline move together (ADR 0046).
+   * there is nothing to resolve for the card. The comparison it feeds is
+   * `isEvaluated`, the one the lightbox and the Review hero use too, so every
+   * badge moves together (ADR 0046).
    *
    * Defaults to what Evaluated meant before it was a setting, which is what a
    * card mounted outside the app's settings gets — the right answer for every
@@ -481,12 +481,10 @@ export const WallpaperCard = memo(function WallpaperCard({
         number and not the word Score, which ADR 0013 keeps to the surfaces with
         room for it. Solid says Evaluated and dimmed says not yet, off the one σ
         threshold the curator set, so confidence is one fact with one definition
-        rather than a band scale invented here — and the same number the Rank
-        headline counts against, so a badge that says Evaluated is a badge the
-        headline counted (ADR 0046). Most badges on a young library are dimmed
-        and that is correct: σ is a late signal at every threshold offered. The
-        tooltip is what says which state the dimming is, since the badge itself
-        may not say `Score`.
+        rather than a band scale invented here (ADR 0046). Most badges on a young
+        library are dimmed and that is correct: σ is a late signal at every
+        threshold offered. The tooltip is what says which state the dimming is,
+        since the badge itself may not say `Score`.
 
         `Score moved` is the one other thing the badge can read, and it is not a
         way of writing a Score down at all — it is the app saying it no longer

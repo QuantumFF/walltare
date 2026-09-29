@@ -2202,7 +2202,7 @@ test("the section offers three confidences, with Balanced chosen to begin with",
   ).toEqual(["Lenient", "Balanced", "Strict"]);
 
   // The default, reached with nothing written: a curator who ignores this page
-  // has the count and the badges the app always had.
+  // has the badges the app always had.
   expect(chosenConfidence()).toEqual(["Balanced"]);
   expect(evaluatedLine()?.textContent).toBe(
     "Evaluated at roughly half the uncertainty a new wallpaper starts with. Balanced is the default.",
@@ -2223,6 +2223,23 @@ test("choosing Strict writes the threshold and the line follows it", async () =>
   expect(evaluatedLine()?.textContent).toBe(
     "Evaluated later, on more Comparisons. Balanced is the default.",
   );
+});
+
+test("the section says the badges are what it moves, and a choice reads no stats", async () => {
+  await openSettingsFromLibrary();
+  const statsBefore = statsCalls;
+
+  // Nothing in the Rank headline counts Evaluated (ADR 0059), so the section
+  // does not claim anything there moves, and a write has no count to refetch.
+  expect(evaluatedSection().textContent).toContain(
+    "How many Comparisons make a Score trustworthy. It moves the Score badge on every card.",
+  );
+  expect(evaluatedSection().textContent).not.toContain("Rank");
+
+  await click(screen.getByRole("radio", { name: "Strict" }));
+
+  expect(settingWrites).toEqual([{ key: "evaluated_threshold", value: "3" }]);
+  expect(statsCalls).toBe(statsBefore);
 });
 
 test("choosing Lenient and then Balanced again writes both, which is the reset", async () => {
@@ -2736,7 +2753,7 @@ test("rejecting the missing files says how many, and re-reads Rank's counts", as
     "2 wallpapers rejected · nothing moved",
   );
   expect(rejectButton()).toBeNull();
-  // The Eligible pool shrank, so the Round headline is read again.
+  // The Eligible pool shrank, so the Undecided headline is read again.
   expect(statsCalls).toBe(statsBefore + 1);
   // And no second walk of the library.
   expect(missingChecks).toBe(1);
@@ -2750,9 +2767,7 @@ test("a reject that found nothing left says so without guessing why", async () =
 
   await click(rejectButton()!);
 
-  expect(missingLine()?.textContent).toBe(
-    "Nothing left to reject",
-  );
+  expect(missingLine()?.textContent).toBe("Nothing left to reject");
 });
 
 test("a reject in flight says so on its button and holds both buttons", async () => {

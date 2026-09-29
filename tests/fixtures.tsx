@@ -242,19 +242,14 @@ export function worklistSize(value: string): WorklistSize {
 
 /**
  * A mid-life library the backend could actually report: 12 rows of which 10 are
- * eligible, every eligible one past two comparisons so the Round is 3, six of
- * them already through their third, and the two ahead of the pool confident
- * enough to count as Evaluated. Six are Undecided, one Decided below the Bar
- * and three above. 18 Comparisons is the pool's comparison counts halved, so a
- * test that overrides nothing reads a coherent library.
+ * eligible. Six are Undecided, one of them a Close call, one Decided below the
+ * Bar and three above. 18 Comparisons is the pool's comparison counts halved, so
+ * a test that overrides nothing reads a coherent library.
  */
 export function stats(over: Partial<Stats> = {}): Stats {
   return {
     total_wallpapers: 12,
     eligible_count: 10,
-    round: 3,
-    round_participated_count: 6,
-    evaluated_count: 2,
     undecided_count: 6,
     close_call_count: 1,
     decided_below_count: 1,
@@ -343,9 +338,6 @@ export function emptyStats(over: Partial<Stats> = {}): Stats {
   return {
     total_wallpapers: 0,
     eligible_count: 0,
-    round: 1,
-    round_participated_count: 0,
-    evaluated_count: 0,
     undecided_count: 0,
     close_call_count: 0,
     decided_below_count: 0,
