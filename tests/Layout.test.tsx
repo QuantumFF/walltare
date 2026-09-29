@@ -2,6 +2,7 @@ import App from "@/App";
 import {
   RESULT_KEYS,
   STATUS_KEYS,
+  rankShortcutLines,
   shortcutLines,
   type ShortcutLine,
 } from "@/components/keymap";
@@ -1077,10 +1078,9 @@ test("? opens a dialog listing every binding the epic defines", async () => {
     { keys: ["Ctrl", "Tab"], action: "Next tab" },
     { keys: ["Ctrl", "Shift", "Tab"], action: "Previous tab" },
   ]);
-  expect(rowsUnder(dialog, "Rank")).toEqual([
-    { keys: ["←"], action: "Pick the wallpaper on the left" },
-    { keys: ["→"], action: "Pick the wallpaper on the right" },
-  ]);
+  // Rank's rows are the keymap's too, read off the table its `window`
+  // listener classifies keys against (ADR 0061).
+  expect(rowsUnder(dialog, "Rank")).toEqual(rankShortcutLines());
 
   // The listing surfaces' rows are the keymap's, read off the table the grid,
   // the strip and the lightbox classify their keys against — so the list is

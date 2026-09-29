@@ -129,6 +129,44 @@ fn vote(
     })
 }
 
+/// A showing of four, or a pair while fewer than four wallpapers are Eligible
+/// (ADR 0061). `exclude` is what is on screen, as for `get_pair`.
+#[tauri::command]
+fn get_four(
+    state: tauri::State<'_, Db>,
+    exclude: Option<Vec<i64>>,
+) -> Result<Vec<voting::Wallpaper>, error::AppError> {
+    state.read(|conn| {
+        voting::get_four(
+            conn,
+            &exclude.unwrap_or_default(),
+            &mut voting::SystemRng::new(),
+        )
+    })
+}
+
+/// One vote on a showing of four: the best, the worst, and the two named
+/// neither.
+#[tauri::command]
+fn vote_four(
+    state: tauri::State<'_, Db>,
+    best_id: i64,
+    worst_id: i64,
+    other_ids: [i64; 2],
+    exclude: Option<Vec<i64>>,
+) -> Result<voting::FourOutcome, error::AppError> {
+    state.write(|conn| {
+        voting::vote_four(
+            conn,
+            best_id,
+            worst_id,
+            other_ids,
+            &exclude.unwrap_or_default(),
+            &mut voting::SystemRng::new(),
+        )
+    })
+}
+
 /// The Bar as it stands, or `null` when nothing has a Score yet. Worked out on
 /// every call and never stored (ADR 0056).
 #[tauri::command]
@@ -763,6 +801,8 @@ pub fn run() {
             check_download_folder,
             get_pair,
             vote,
+            get_four,
+            vote_four,
             get_stats,
             get_bar,
             list_wallpapers,

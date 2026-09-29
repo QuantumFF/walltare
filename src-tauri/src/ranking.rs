@@ -69,14 +69,15 @@ pub trait Rng {
 /// first (ADR 0060).
 pub const REPEAT_WINDOW: usize = 10;
 
-/// What pair selection reads of the Comparison record. Derived from it on every
+/// What selection reads of the Comparison record. Derived from it on every
 /// draw, never held as state (ADR 0060).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Recent<'a> {
-    /// The latest Comparisons, newest first, at most [`REPEAT_WINDOW`] of them.
-    pub pairs: &'a [[i64; 2]],
-    /// Whether the latest Comparison was the first for either of its
-    /// wallpapers.
+    /// The latest Comparisons, newest first, at most [`REPEAT_WINDOW`] of them,
+    /// each as every wallpaper in its showing. A showing of four is one entry,
+    /// because it was one vote (ADR 0061).
+    pub showings: &'a [Vec<i64>],
+    /// Whether the latest Comparison was the first for any of its wallpapers.
     pub last_was_a_first: bool,
 }
 
@@ -89,8 +90,8 @@ pub struct Recent<'a> {
 /// 1. While fewer than half the pool has a Score, a random Unrated wallpaper,
 ///    Kept included.
 /// 2. Past half, the same, unless the latest Comparison was the first for
-///    either of its wallpapers. Then the pair holds no Unrated wallpaper, so
-///    arrivals appear in at most every other pair.
+///    any of its wallpapers. Then the pair holds no Unrated wallpaper, so
+///    arrivals appear in at most every other showing.
 /// 3. The least-compared Undecided wallpaper with a Score, random among ties,
 ///    leaving out Kept wallpapers and Close calls.
 /// 4. When none is left, the least-compared wallpaper with a Score.
@@ -123,29 +124,8 @@ pub fn select_pair<'a, R: Rng>(
         return None;
     }
 
-    let scored_count = pool.iter().filter(|w| w.is_scored()).count();
-    let young = scored_count * 2 < pool.len();
-    let capped = !young && recent.last_was_a_first;
-
-    let (scored, unrated): (Vec<&WallpaperSummary>, Vec<&WallpaperSummary>) =
-        base.iter().copied().partition(|w| w.is_scored());
-    let first = if !unrated.is_empty() && !capped {
-        pick_random(&unrated, rng)
-    } else {
-        let undecided: Vec<&WallpaperSummary> = scored
-            .iter()
-            .copied()
-            .filter(|w| !w.kept && !w.is_decided(bar) && !w.is_close_call(bar))
-            .collect();
-        match least_compared_outside(&undecided, recent.pairs, rng)
-            .or_else(|| least_compared_outside(&scored, recent.pairs, rng))
-        {
-            Some(first) => first,
-            // Capped with nothing scored left to draw: an arrival after all,
-            // rather than no pair.
-            None => pick_random(&unrated, rng),
-        }
-    };
+    let capped = arrivals_capped(pool, recent);
+    let first = first_pick(&base, bar, recent, capped, rng);
 
     let others: Vec<&WallpaperSummary> =
         base.iter().copied().filter(|w| w.id != first.id).collect();
@@ -159,13 +139,113 @@ pub fn select_pair<'a, R: Rng>(
     Some((first, weighted_by_mu(first, &opponents, rng)))
 }
 
+/// Picks a showing of four from the Eligible pool (ADR 0061), in the order
+/// drawn: the first pick first. `None` for pools with fewer than four entries,
+/// which show a pair instead.
+///
+/// The first pick is [`select_pair`]'s. The other three are drawn one at a
+/// time, each weighted by μ proximity to the first pick the way a pair's
+/// opponent is, from every Eligible wallpaper not already drawn. Where there is
+/// a choice, in this order of precedence:
+///
+/// 1. Nothing in `exclude`, the showing on screen. It gives way one member at a
+///    time rather than all at once, so a library of five still changes at least
+///    one wallpaper between one showing and the next.
+/// 2. At most one member is Unrated: once one is drawn, the rest have a Score.
+///    Under the arrival cap none is, so an arrival appears in at most every
+///    other showing, whatever its size.
+///
+/// The order is the pair's: its opponent has a Score only when one is off the
+/// screen, so a young library whose scored wallpapers were all just shown
+/// pairs two arrivals rather than repeat one.
+pub fn select_four<'a, R: Rng>(
+    pool: &'a [WallpaperSummary],
+    bar: Option<f64>,
+    recent: Recent<'_>,
+    exclude: &[i64],
+    rng: &mut R,
+) -> Option<[&'a WallpaperSummary; 4]> {
+    if pool.len() < 4 {
+        return None;
+    }
+    let all: Vec<&WallpaperSummary> = pool.iter().collect();
+    let narrowed: Vec<&WallpaperSummary> =
+        pool.iter().filter(|w| !exclude.contains(&w.id)).collect();
+
+    let capped = arrivals_capped(pool, recent);
+    let base = if narrowed.is_empty() { &all } else { &narrowed };
+    let first = first_pick(base, bar, recent, capped, rng);
+
+    let mut chosen = vec![first];
+    while chosen.len() < 4 {
+        let need_score = capped || chosen.iter().any(|w| !w.is_scored());
+        let open = |w: &&WallpaperSummary| chosen.iter().all(|c| c.id != w.id);
+        let score_ok = |w: &&WallpaperSummary| !need_score || w.is_scored();
+        let tiers: [(&[&WallpaperSummary], bool); 4] = [
+            (&narrowed, true),
+            (&narrowed, false),
+            (&all, true),
+            (&all, false),
+        ];
+        let candidates = tiers
+            .iter()
+            .map(|&(from, scored)| {
+                from.iter()
+                    .copied()
+                    .filter(|w| open(w) && (!scored || score_ok(w)))
+                    .collect::<Vec<_>>()
+            })
+            .find(|tier| !tier.is_empty())?;
+        chosen.push(weighted_by_mu(first, &candidates, rng));
+    }
+    Some([chosen[0], chosen[1], chosen[2], chosen[3]])
+}
+
+/// Whether the showing about to be drawn holds no Unrated wallpaper: at least
+/// half the pool has a Score, and the latest Comparison was an arrival's first
+/// (ADR 0060).
+fn arrivals_capped(pool: &[WallpaperSummary], recent: Recent<'_>) -> bool {
+    let scored_count = pool.iter().filter(|w| w.is_scored()).count();
+    let young = scored_count * 2 < pool.len();
+    !young && recent.last_was_a_first
+}
+
+/// The first pick of a showing, steps 1 to 4 of [`select_pair`], from a
+/// `base` that is not empty.
+fn first_pick<'a, R: Rng>(
+    base: &[&'a WallpaperSummary],
+    bar: Option<f64>,
+    recent: Recent<'_>,
+    capped: bool,
+    rng: &mut R,
+) -> &'a WallpaperSummary {
+    let (scored, unrated): (Vec<&WallpaperSummary>, Vec<&WallpaperSummary>) =
+        base.iter().copied().partition(|w| w.is_scored());
+    if !unrated.is_empty() && !capped {
+        return pick_random(&unrated, rng);
+    }
+    let undecided: Vec<&WallpaperSummary> = scored
+        .iter()
+        .copied()
+        .filter(|w| !w.kept && !w.is_decided(bar) && !w.is_close_call(bar))
+        .collect();
+    match least_compared_outside(&undecided, recent.showings, rng)
+        .or_else(|| least_compared_outside(&scored, recent.showings, rng))
+    {
+        Some(first) => first,
+        // Capped with nothing scored left to draw: an arrival after all,
+        // rather than no showing.
+        None => pick_random(&unrated, rng),
+    }
+}
+
 /// The least-compared of `candidates`, random among ties, leaving out any in
-/// the latest `pairs`. The window is the widest that still leaves one, so it
-/// shrinks down to nothing rather than draw nothing. `None` only when
+/// the latest `showings`. The window is the widest that still leaves one, so
+/// it shrinks down to nothing rather than draw nothing. `None` only when
 /// `candidates` is empty.
 fn least_compared_outside<'a, R: Rng>(
     candidates: &[&'a WallpaperSummary],
-    pairs: &[[i64; 2]],
+    showings: &[Vec<i64>],
     rng: &mut R,
 ) -> Option<&'a WallpaperSummary> {
     // How many Comparisons back each candidate was last shown, or the whole
@@ -173,10 +253,10 @@ fn least_compared_outside<'a, R: Rng>(
     let ages: Vec<usize> = candidates
         .iter()
         .map(|w| {
-            pairs
+            showings
                 .iter()
                 .take(REPEAT_WINDOW)
-                .position(|p| p.contains(&w.id))
+                .position(|s| s.contains(&w.id))
                 .unwrap_or(REPEAT_WINDOW)
         })
         .collect();
@@ -267,6 +347,158 @@ pub fn rate_1vs1(winner: Rating, loser: Rating) -> (Rating, Rating) {
     lik_up(&mut s_l, &p_l);
 
     (s_w.value.rating(), s_l.value.rating())
+}
+
+/// Applies a vote on a showing of four: the best, the two neither named, and
+/// the worst (ADR 0061).
+///
+/// One joint update over the five relations the vote implies — the best over
+/// each of the other three, and each of the two in the middle over the worst —
+/// with one performance per wallpaper. Never the five `rate_1vs1` calls those
+/// relations would suggest: each of those gives the best a fresh performance,
+/// and the certainty compounds until the rating is surer than the one
+/// judgement the curator made.
+pub fn rate_four(
+    best: Rating,
+    middle: [Rating; 2],
+    worst: Rating,
+) -> (Rating, [Rating; 2], Rating) {
+    let after = joint_update(
+        &[best, middle[0], middle[1], worst],
+        &[(0, 1), (0, 2), (0, 3), (1, 3), (2, 3)],
+    );
+    (after[0], [after[1], after[2]], after[3])
+}
+
+/// Posterior Ratings once the performances satisfy pᵢ > pⱼ for every `(i, j)`
+/// in `relations`, with pᵢ ~ N(sᵢ, β²) and sᵢ ~ N(μᵢ, σᵢ² + τ²): one
+/// performance per wallpaper, one truncation site per relation, and EP on the
+/// joint Gaussian of the performances until the sites settle.
+///
+/// Ported from `research/sim/src/group.rs` on `research/votes-until-decided`,
+/// itself a port of `ep_skills` in the best-of-N research script. For two
+/// wallpapers and one relation it is [`rate_1vs1`] to within 1e-5, which is
+/// what lets one rule cover both kinds of showing; a pair still goes through
+/// `rate_1vs1`, whose agreement with python-trueskill is to 1e-7.
+fn joint_update(r: &[Rating], relations: &[(usize, usize)]) -> Vec<Rating> {
+    let n = r.len();
+    let k = relations.len();
+    let tau2 = TAU * TAU;
+    let beta2 = BETA * BETA;
+    let sp2: Vec<f64> = r.iter().map(|x| x.sigma * x.sigma + tau2).collect();
+    let v0: Vec<f64> = sp2.iter().map(|s| s + beta2).collect();
+    let mu: Vec<f64> = r.iter().map(|x| x.mu).collect();
+    // Each site's message in natural form: precision and precision-mean.
+    let (mut ts, mut ns) = (vec![0.0; k], vec![0.0; k]);
+    let mut s = vec![0.0; n * n];
+    let mut m = vec![0.0; n];
+    let posterior = |ts: &[f64], ns: &[f64], s: &mut Vec<f64>, m: &mut Vec<f64>| {
+        let mut p = vec![0.0; n * n];
+        let mut h: Vec<f64> = (0..n).map(|i| mu[i] / v0[i]).collect();
+        for i in 0..n {
+            p[i * n + i] = 1.0 / v0[i];
+        }
+        for (site, &(a, b)) in relations.iter().enumerate() {
+            let t = ts[site];
+            p[a * n + a] += t;
+            p[b * n + b] += t;
+            p[a * n + b] -= t;
+            p[b * n + a] -= t;
+            h[a] += ns[site];
+            h[b] -= ns[site];
+        }
+        invert(&mut p, s, n);
+        for i in 0..n {
+            m[i] = (0..n).map(|j| s[i * n + j] * h[j]).sum();
+        }
+    };
+    for _ in 0..200 {
+        let mut delta: f64 = 0.0;
+        for site in 0..k {
+            posterior(&ts, &ns, &mut s, &mut m);
+            let (a, b) = relations[site];
+            let mk = m[a] - m[b];
+            let vk = s[a * n + a] + s[b * n + b] - 2.0 * s[a * n + b];
+            // The cavity: the posterior of the difference without this site.
+            let tc = 1.0 / vk - ts[site];
+            let nc = mk / vk - ns[site];
+            if tc <= 0.0 || tc.is_nan() {
+                continue;
+            }
+            let (mc, vc) = (nc / tc, 1.0 / tc);
+            let z = mc / vc.sqrt();
+            let lam = v_trunc(z);
+            let mh = mc + vc.sqrt() * lam;
+            let vh = vc * (1.0 - lam * (lam + z));
+            if vh <= 0.0 || !vh.is_finite() {
+                continue;
+            }
+            let tn = 1.0 / vh - tc;
+            let nn = mh / vh - nc;
+            delta = delta.max((tn - ts[site]).abs()).max((nn - ns[site]).abs());
+            ts[site] = tn;
+            ns[site] = nn;
+        }
+        if delta < 1e-10 {
+            break;
+        }
+    }
+    posterior(&ts, &ns, &mut s, &mut m);
+    // Back from performances to skills: each skill is its performance with the
+    // β noise taken out again.
+    (0..n)
+        .map(|i| {
+            let kk = sp2[i] / v0[i];
+            let var = sp2[i] - kk * sp2[i] + kk * kk * s[i * n + i];
+            Rating::new(mu[i] + kk * (m[i] - mu[i]), var.sqrt())
+        })
+        .collect()
+}
+
+/// pdf(z)/cdf(z), the mean shift of a Gaussian truncated below zero.
+fn v_trunc(z: f64) -> f64 {
+    let c = cdf(z);
+    if c > 1e-300 {
+        pdf(z) / c
+    } else {
+        -z
+    }
+}
+
+/// Gauss–Jordan inverse of the n×n matrix `a` (destroyed) into `out`.
+fn invert(a: &mut [f64], out: &mut Vec<f64>, n: usize) {
+    out.clear();
+    out.resize(n * n, 0.0);
+    for i in 0..n {
+        out[i * n + i] = 1.0;
+    }
+    for c in 0..n {
+        let piv = (c..n)
+            .max_by(|&x, &y| a[x * n + c].abs().total_cmp(&a[y * n + c].abs()))
+            .unwrap_or(c);
+        if piv != c {
+            for j in 0..n {
+                a.swap(c * n + j, piv * n + j);
+                out.swap(c * n + j, piv * n + j);
+            }
+        }
+        let d = a[c * n + c];
+        for j in 0..n {
+            a[c * n + j] /= d;
+            out[c * n + j] /= d;
+        }
+        for r in 0..n {
+            if r != c {
+                let f = a[r * n + c];
+                if f != 0.0 {
+                    for j in 0..n {
+                        a[r * n + j] -= f * a[c * n + j];
+                        out[r * n + j] -= f * out[c * n + j];
+                    }
+                }
+            }
+        }
+    }
 }
 
 // --- factor-graph schedule (mirrors trueskill/factorgraph.py) --------------
@@ -641,6 +873,77 @@ mod tests {
         }
     }
 
+    fn close(a: Rating, mu: f64, sigma: f64, tol: f64) -> bool {
+        (a.mu - mu).abs() < tol && (a.sigma - sigma).abs() < tol
+    }
+
+    #[test]
+    fn a_joint_update_of_a_pair_is_rate_1vs1() {
+        for (w, l) in [
+            (rating(25.0, 8.333), rating(25.0, 8.333)),
+            (rating(22.0, 5.0), rating(30.0, 3.0)),
+            (rating(35.0, 2.0), rating(18.0, 6.0)),
+            (rating(10.0, 1.2), rating(40.0, 1.5)),
+        ] {
+            let (rw, rl) = rate_1vs1(w, l);
+            let joint = joint_update(&[w, l], &[(0, 1)]);
+            assert!(
+                close(joint[0], rw.mu, rw.sigma, 1e-5),
+                "{:?} vs {rw:?}",
+                joint[0]
+            );
+            assert!(
+                close(joint[1], rl.mu, rl.sigma, 1e-5),
+                "{:?} vs {rl:?}",
+                joint[1]
+            );
+        }
+    }
+
+    /// `ep_skills` in `docs/research/best-of-n-judgements/bestofn.py` on
+    /// `research/best-of-n-judgements`, on the same inputs, as the research
+    /// harness pins them.
+    #[test]
+    fn rate_four_matches_the_research_script() {
+        let fresh = rating(25.0, 8.333);
+        let (best, middle, worst) = rate_four(fresh, [fresh, fresh], fresh);
+        assert!(close(best, 32.729954, 6.275157, 1e-4), "{best:?}");
+        for m in middle {
+            assert!(close(m, 25.0, 6.305693, 1e-4), "{m:?}");
+        }
+        assert!(close(worst, 17.270046, 6.275157, 1e-4), "{worst:?}");
+
+        let (best, middle, worst) = rate_four(
+            rating(22.0, 3.0),
+            [rating(25.0, 4.0), rating(26.0, 2.5)],
+            rating(28.0, 6.0),
+        );
+        assert!(close(best, 24.398079, 2.69986, 1e-4), "{best:?}");
+        assert!(
+            close(middle[0], 24.589538, 3.40242, 1e-4),
+            "{:?}",
+            middle[0]
+        );
+        assert!(
+            close(middle[1], 25.617979, 2.333732, 1e-4),
+            "{:?}",
+            middle[1]
+        );
+        assert!(close(worst, 21.534947, 4.422606, 1e-4), "{worst:?}");
+    }
+
+    #[test]
+    fn best_of_four_alone_matches_the_research_script() {
+        // The best over each of the others and nothing more, which is what the
+        // joint update reads for relations it is not told about.
+        let fresh = [rating(25.0, 8.333); 4];
+        let after = joint_update(&fresh, &[(0, 1), (0, 2), (0, 3)]);
+        assert!(close(after[0], 32.662931, 6.37491, 1e-4), "{:?}", after[0]);
+        for r in &after[1..] {
+            assert!(close(*r, 22.44569, 7.276666, 1e-4), "{r:?}");
+        }
+    }
+
     #[test]
     fn update_is_symmetric_and_shrinks_sigma() {
         let (w, l) = rate_1vs1(rating(25.0, SIGMA), rating(25.0, SIGMA));
@@ -879,10 +1182,10 @@ mod tests {
         // The least-compared Undecided wallpaper was in the tenth Comparison
         // back, so the next-least goes first.
         let pool = [undecided(1, 1), undecided(2, 2), undecided(3, 5)];
-        let mut history = vec![[90, 91]; REPEAT_WINDOW];
-        history[REPEAT_WINDOW - 1] = [1, 90];
+        let mut history = vec![vec![90, 91]; REPEAT_WINDOW];
+        history[REPEAT_WINDOW - 1] = vec![1, 90];
         let recent = Recent {
-            pairs: &history,
+            showings: &history,
             last_was_a_first: false,
         };
         for (first, _) in pairs_over_draws(&pool, BAR, recent, &[]) {
@@ -890,9 +1193,9 @@ mod tests {
         }
 
         // An eleventh Comparison back is outside the window.
-        history.insert(0, [90, 91]);
+        history.insert(0, vec![90, 91]);
         let recent = Recent {
-            pairs: &history,
+            showings: &history,
             last_was_a_first: false,
         };
         for (first, _) in pairs_over_draws(&pool, BAR, recent, &[]) {
@@ -905,9 +1208,9 @@ mod tests {
         // Every wallpaper was in the last three Comparisons, so the window gives
         // way to the one shown longest ago.
         let pool = [undecided(1, 1), undecided(2, 5), undecided(3, 6)];
-        let history = [[1, 2], [2, 1], [3, 1]];
+        let history = [vec![1, 2], vec![2, 1], vec![3, 1]];
         let recent = Recent {
-            pairs: &history,
+            showings: &history,
             last_was_a_first: false,
         };
         for (first, second) in pairs_over_draws(&pool, BAR, recent, &[]) {
@@ -946,7 +1249,7 @@ mod tests {
         ];
         // Even straight after a first Comparison.
         let recent = Recent {
-            pairs: &[[1, 2]],
+            showings: &[vec![1, 2]],
             last_was_a_first: true,
         };
         let firsts: Vec<i64> = pairs_over_draws(&pool, BAR, recent, &[])
@@ -979,7 +1282,7 @@ mod tests {
             summary(4, MU, SIGMA, 0),
         ];
         let after_a_first = Recent {
-            pairs: &[[3, 9]],
+            showings: &[vec![3, 9]],
             last_was_a_first: true,
         };
         for (first, second) in pairs_over_draws(&pool, BAR, after_a_first, &[]) {
@@ -988,7 +1291,7 @@ mod tests {
 
         // And the pair after that goes back to an arrival first.
         let after_that = Recent {
-            pairs: &[[1, 2], [3, 9]],
+            showings: &[vec![1, 2], vec![3, 9]],
             last_was_a_first: false,
         };
         for (first, second) in pairs_over_draws(&pool, BAR, after_that, &[]) {
@@ -1010,7 +1313,7 @@ mod tests {
         }
         // Under the same window.
         let recent = Recent {
-            pairs: &[[3, 1]],
+            showings: &[vec![3, 1]],
             last_was_a_first: false,
         };
         for (first, _) in pairs_over_draws(&pool, BAR, recent, &[]) {
@@ -1030,9 +1333,11 @@ mod tests {
                 kept: i % 17 == 0,
             })
             .collect();
-        let history: Vec<[i64; 2]> = (0..REPEAT_WINDOW as i64).map(|i| [i, i + 5000]).collect();
+        let history: Vec<Vec<i64>> = (0..REPEAT_WINDOW as i64)
+            .map(|i| vec![i, i + 5000])
+            .collect();
         let recent = Recent {
-            pairs: &history,
+            showings: &history,
             last_was_a_first: false,
         };
         let mut rng = SeqRng::new(&[0.1, 0.4, 0.7, 0.9]);
@@ -1063,7 +1368,7 @@ mod tests {
             summary(4, MU, SIGMA, 0),
         ];
         let recent = Recent {
-            pairs: &[[1, 2]],
+            showings: &[vec![1, 2]],
             last_was_a_first: true,
         };
         for (first, second) in pairs_over_draws(&pool, BAR, recent, &[1, 2]) {

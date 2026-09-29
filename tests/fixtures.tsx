@@ -299,6 +299,8 @@ export function settings(over: Partial<Settings> = {}): Settings {
     evaluated_threshold: 4.0,
     // The worst fifth, which is what an empty table reads as (ADR 0056).
     bar_share: 0.2,
+    // Pairs, which is what an empty table reads as (ADR 0061).
+    rank_mode: "pairs",
     // Discover's filters with nothing remembered: a test that wants a search
     // to have left others arranges them.
     discover_filters: DEFAULT_DISCOVER_FILTERS,
@@ -592,13 +594,26 @@ export async function cardsInARow(): Promise<number> {
   return Number(/^wall-(\d+)\.jpg/.exec(name)?.[1]) - 1;
 }
 
-/** happy-dom never fetches an `<img>`; Rank refuses a pick until both arrive. */
+/**
+ * happy-dom never fetches an `<img>`; Rank refuses a pick until every one on
+ * screen arrives, the two panes of a pair or the four tiles of a showing of
+ * four.
+ */
 export async function panesArrive(): Promise<void> {
   for (const side of ["Left", "Right"] as const) {
     const pane = screen.queryByAltText(`${side} Wallpaper`);
     if (!pane) continue;
     await act(async () => {
       fireEvent.load(pane);
+    });
+  }
+  for (const tile of screen.queryAllByRole("button", {
+    name: /^Wallpaper [1-4]$/,
+  })) {
+    const img = tile.querySelector("img");
+    if (!img) continue;
+    await act(async () => {
+      fireEvent.load(img);
     });
   }
 }

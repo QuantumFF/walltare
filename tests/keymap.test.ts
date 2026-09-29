@@ -3,10 +3,14 @@ import {
   STATUS_KEYS,
   answerKey,
   printedKey,
+  rankKey,
+  rankShortcutLines,
   shortcutLines,
   type Intent,
   type KeyContext,
   type ListingSurface,
+  type RankIntent,
+  type ShowingKind,
 } from "@/components/keymap";
 import type { TransitionAction } from "@/components/transitions";
 import type { MarkedResult, Status, Wallpaper } from "@/lib/client";
@@ -510,4 +514,99 @@ test("up and down cross a row break by column, and into a short row land on its 
   expect(move("ArrowUp", 10)).toMatchObject({ kind: "move", to: 6 });
   // Past the last row, the cursor stays.
   expect(move("ArrowDown", 9)).toMatchObject({ kind: "move", to: 9 });
+});
+
+// Rank's keys, which answer on `window` for the showing on screen: the arrows
+// for a pair, `1`-`4` for a showing of four laid out `1 2 / 3 4`, and `S` for
+// either (ADR 0061).
+
+/** A keypress Rank reads, and whether it was prevented. */
+function rankPress(
+  key: string,
+  modifiers: Partial<
+    Record<"shiftKey" | "ctrlKey" | "altKey" | "metaKey" | "repeat", boolean>
+  > = {},
+) {
+  const press = {
+    key,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    shiftKey: false,
+    repeat: false,
+    target: null,
+    prevented: false,
+    preventDefault: () => {
+      press.prevented = true;
+    },
+    ...modifiers,
+  };
+  return press;
+}
+
+test("each showing answers its own keys, and S skips either", () => {
+  const cases: Array<[string, ShowingKind, RankIntent | undefined]> = [
+    ["ArrowLeft", "pair", { kind: "pick", slot: 0 }],
+    ["ArrowRight", "pair", { kind: "pick", slot: 1 }],
+    ["1", "four", { kind: "pick", slot: 0 }],
+    ["2", "four", { kind: "pick", slot: 1 }],
+    ["3", "four", { kind: "pick", slot: 2 }],
+    ["4", "four", { kind: "pick", slot: 3 }],
+    ["Backspace", "four", { kind: "take-back" }],
+    ["Escape", "four", { kind: "take-back" }],
+    ["s", "pair", { kind: "skip" }],
+    ["S", "pair", { kind: "skip" }],
+    ["s", "four", { kind: "skip" }],
+    // The arrows can record nothing in a showing of four, and the digits
+    // nothing in a pair.
+    ["ArrowLeft", "four", undefined],
+    ["ArrowRight", "four", undefined],
+    ["1", "pair", undefined],
+    ["Backspace", "pair", undefined],
+    ["5", "four", undefined],
+    ["ArrowUp", "four", undefined],
+  ];
+  for (const [key, showing, means] of cases) {
+    const press = rankPress(key);
+    expect([key, showing, rankKey(press, showing)]).toEqual([
+      key,
+      showing,
+      means,
+    ]);
+    // Answered means prevented, as on the listing surfaces.
+    expect([key, showing, press.prevented]).toEqual([
+      key,
+      showing,
+      means !== undefined,
+    ]);
+  }
+});
+
+test("a chord or a held key is not a Rank key", () => {
+  // `Ctrl+1` is the shell's, and a held digit would take back the best it had
+  // just named at the key repeat rate.
+  for (const modifiers of [
+    { ctrlKey: true },
+    { altKey: true },
+    { metaKey: true },
+    { repeat: true },
+  ]) {
+    expect(rankKey(rankPress("1", modifiers), "four")).toBeUndefined();
+    expect(rankKey(rankPress("ArrowLeft", modifiers), "pair")).toBeUndefined();
+    expect(rankKey(rankPress("s", modifiers), "pair")).toBeUndefined();
+  }
+});
+
+test("the shortcuts list prints every Rank key", () => {
+  expect(rankShortcutLines()).toEqual([
+    { keys: ["←"], action: "Pick the wallpaper on the left" },
+    { keys: ["→"], action: "Pick the wallpaper on the right" },
+    { keys: ["1"], action: "In fours, pick the top-left wallpaper" },
+    { keys: ["2"], action: "In fours, pick the top-right wallpaper" },
+    { keys: ["3"], action: "In fours, pick the bottom-left wallpaper" },
+    { keys: ["4"], action: "In fours, pick the bottom-right wallpaper" },
+    { keys: ["Backspace"], action: "In fours, take back the best" },
+    { keys: ["Esc"], action: "In fours, take back the best" },
+    { keys: ["S"], action: "Skip the showing" },
+  ]);
 });

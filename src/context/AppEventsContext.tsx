@@ -60,12 +60,12 @@ export type AppEvent =
    */
   | { type: "status-changed"; wallpaper: Wallpaper }
   /**
-   * The two wallpapers in a Comparison, which is every wallpaper whose Score
-   * just moved. The new Scores are deliberately not in here: a Comparison
-   * answers with the whole `Stats` and not with two ratings, and asking the
-   * backend for the two rows would be a query on the hot path of voting.
+   * The wallpapers in a Comparison, two or four, which is every wallpaper whose
+   * Score just moved. The new Scores are deliberately not in here: a Comparison
+   * answers with the whole `Stats` and not with the ratings, and asking the
+   * backend for the rows would be a query on the hot path of voting.
    */
-  | { type: "score-changed"; ids: [number, number] }
+  | { type: "score-changed"; ids: number[] }
   /** The Round, the counts and the fractions, all of them, as the backend just reported them. */
   | { type: "stats-changed"; stats: Stats }
   /**

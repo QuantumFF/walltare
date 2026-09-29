@@ -985,18 +985,14 @@ mod tests {
         init_schema(&conn).unwrap();
         let moved = seed_real_wallpaper(&conn, tmp.path(), "moved.jpg");
         let other = seed_real_wallpaper(&conn, tmp.path(), "other.jpg");
+        let [a, b] = ["a.jpg", "b.jpg"].map(|name| seed_real_wallpaper(&conn, tmp.path(), name));
         add_comparison(&conn, other, moved);
+        // A showing of four it was in and named neither best nor worst.
+        add_comparison_of_four(&conn, a, b, [moved, other]);
 
         reject(&conn, moved, dest.path().to_str().unwrap()).unwrap();
 
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM comparisons WHERE winner_id = ?1 OR loser_id = ?1",
-                rusqlite::params![moved],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(comparisons_of(&conn, moved), 2);
     }
 
     #[test]
