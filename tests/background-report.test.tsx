@@ -300,7 +300,7 @@ test("closing the report stops it for the run, and a later run reports again", a
   await runOut(LIFETIME);
   expect(toast()).toBeNull();
 
-  await emit("pregen-complete", { generated: 100, failed: 0, cancelled: false });
+  await emit("pregen-complete", { generated: 100, failed: 0, cancelled: false, near_duplicate_pairs: 0 });
   await emit("pregen-progress", { done: 1, total: 50 });
 
   // A different run, and one the curator's own scan or Generate now asked for.
@@ -487,7 +487,7 @@ test("a pass that lost files says so, and takes its eight seconds", async () => 
   await openApp();
   await emit("pregen-progress", { done: 1203, total: 1204 });
 
-  await emit("pregen-complete", { generated: 1201, failed: 3, cancelled: false });
+  await emit("pregen-complete", { generated: 1201, failed: 3, cancelled: false, near_duplicate_pairs: 0 });
 
   expect(toast()).toEqual({
     title: "1,201 thumbnails ready, 3 failed",
@@ -503,7 +503,7 @@ test("a pass that finished cleanly says nothing at all", async () => {
   await emit("pregen-progress", { done: 1203, total: 1204 });
   expect(toast()?.title).toBe("Preparing thumbnails… 1,203 of 1,204");
 
-  await emit("pregen-complete", { generated: 1204, failed: 0, cancelled: false });
+  await emit("pregen-complete", { generated: 1204, failed: 0, cancelled: false, near_duplicate_pairs: 0 });
 
   // The row most likely to be implemented as a toast by accident, and it is a
   // decision rather than an omission: nobody acts on "1,204 thumbnails ready",
@@ -518,12 +518,105 @@ test("a pass the curator cancelled says nothing either", async () => {
   await openApp();
   await emit("pregen-progress", { done: 40, total: 1204 });
 
-  await emit("pregen-complete", { generated: 38, failed: 2, cancelled: true });
+  await emit("pregen-complete", { generated: 38, failed: 2, cancelled: true, near_duplicate_pairs: 0 });
 
   // Even with files it could not read. They pressed the button; the report
   // disappearing is the answer, and a count of what a cancelled pass managed is
   // not something anyone acts on.
   expect(toast()).toBeNull();
+});
+
+// The Near-duplicate pairs a pass leaves waiting (#404). The count rides on
+// `pregen-complete` rather than `scan-complete`, because the arrivals a scan
+// adds are exactly the wallpapers the pass that follows it hashes.
+
+test("a pass that leaves Near-duplicate pairs waiting says how many", async () => {
+  freezeClock();
+  await openApp();
+  await emit("pregen-progress", { done: 1203, total: 1204 });
+
+  await emit("pregen-complete", {
+    generated: 1204,
+    failed: 0,
+    cancelled: false,
+    near_duplicate_pairs: 3,
+  });
+
+  expect(toast()).toEqual({
+    title: "3 Near-duplicate pairs waiting in Review",
+    description: null,
+  });
+
+  // A pointer to a page rather than an error, so it takes the ordinary eight
+  // seconds and the pairs keep waiting in Review regardless.
+  await runOut(LIFETIME);
+  expect(toast()).toBeNull();
+});
+
+test("one waiting pair is a pair, not pairs", async () => {
+  await openApp();
+
+  await emit("pregen-complete", {
+    generated: 1,
+    failed: 0,
+    cancelled: false,
+    near_duplicate_pairs: 1,
+  });
+
+  expect(toast()?.title).toBe("1 Near-duplicate pair waiting in Review");
+});
+
+test("a pass that lost files and left pairs waiting says both", async () => {
+  await openApp();
+
+  await emit("pregen-complete", {
+    generated: 1201,
+    failed: 3,
+    cancelled: false,
+    near_duplicate_pairs: 2,
+  });
+
+  expect(toast()).toEqual({
+    title: "1,201 thumbnails ready, 3 failed",
+    description: "2 Near-duplicate pairs waiting in Review",
+  });
+});
+
+test("a cancelled pass still says how many pairs it left waiting", async () => {
+  await openApp();
+  await emit("pregen-progress", { done: 40, total: 1204 });
+
+  await emit("pregen-complete", {
+    generated: 38,
+    failed: 2,
+    cancelled: true,
+    near_duplicate_pairs: 1,
+  });
+
+  // The cancel is still its own answer about the thumbnails, so the failures
+  // stay unsaid. The pairs are news about the library rather than about the
+  // pass, and the curator pressing Cancel says nothing about them (ADR 0021).
+  expect(toast()).toEqual({
+    title: "1 Near-duplicate pair waiting in Review",
+    description: null,
+  });
+});
+
+test("with no pairs waiting, no ending mentions Near-duplicates", async () => {
+  await openApp();
+
+  await emit("pregen-complete", {
+    generated: 1201,
+    failed: 3,
+    cancelled: false,
+    near_duplicate_pairs: 0,
+  });
+
+  expect(toast()).toEqual({
+    title: "1,201 thumbnails ready, 3 failed",
+    description: null,
+  });
+  expect(document.body.textContent).not.toMatch(/Near-duplicate/);
 });
 
 // Discover's downloads (ADR 0051). The batch's report ranks between the two

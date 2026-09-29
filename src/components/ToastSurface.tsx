@@ -657,20 +657,36 @@ export function ToastSurface({
       );
     },
 
-    pregenComplete: ({ generated, failed, cancelled: byRequest }) => {
+    pregenComplete: ({
+      generated,
+      failed,
+      cancelled: byRequest,
+      near_duplicate_pairs: pairs,
+    }) => {
       setPass(null);
-      // Two of the three endings say nothing at all, and that is the decision
-      // rather than an omission. Nobody acts on "1,204 thumbnails ready", the
-      // pass runs on essentially every launch, and a notification whose only
-      // content is that a background task stopped is what trains people to
-      // dismiss notifications unread. A cancel says it more directly still,
-      // since the curator pressed the button.
-      if (byRequest || failed === 0) return;
-      raise(
-        `${counted(generated, "thumbnail")} ready, ${grouped(failed)} failed`,
-        undefined,
-        false,
-      );
+      // Two of the three endings say nothing about the thumbnails, and that is
+      // the decision rather than an omission. Nobody acts on "1,204 thumbnails
+      // ready", the pass runs on essentially every launch, and a notification
+      // whose only content is that a background task stopped is what trains
+      // people to dismiss notifications unread. A cancel says it more directly
+      // still, since the curator pressed the button.
+      //
+      // The waiting Near-duplicate pairs are news about the library rather than
+      // the pass, so a cancel does not silence them, and they are only ever
+      // mentioned when there are some (#404).
+      const waiting =
+        pairs > 0
+          ? `${counted(pairs, "Near-duplicate pair")} waiting in Review`
+          : undefined;
+      if (!byRequest && failed > 0) {
+        raise(
+          `${counted(generated, "thumbnail")} ready, ${grouped(failed)} failed`,
+          waiting,
+          false,
+        );
+      } else if (waiting) {
+        raise(waiting, undefined, false);
+      }
     },
   });
 
