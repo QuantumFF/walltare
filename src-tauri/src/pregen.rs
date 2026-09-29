@@ -531,6 +531,22 @@ mod tests {
                 .read(|conn| crate::testing::dimensions_of(conn, wallpaper_id))
         }
 
+        /// The wallpaper row's perceptual hash, `None` until a pass has hashed
+        /// its Small.
+        fn hash(&self, wallpaper_id: i64) -> Option<u64> {
+            self.db
+                .read(|conn| crate::testing::perceptual_hash_of(conn, wallpaper_id))
+        }
+
+        /// Seeds `bytes` as a wallpaper, runs the step over it, and answers the
+        /// hash it came out with.
+        fn hashed(&self, name: &str, bytes: &[u8]) -> u64 {
+            let pending = self.seed_bytes(name, bytes);
+            self.step(&pending, &mut Tally::default());
+            self.hash(pending.wallpaper_id)
+                .unwrap_or_else(|| panic!("{name} came out of the step with no hash"))
+        }
+
         fn row(&self, wallpaper_id: i64, size: &str) -> Option<(u32, u32)> {
             self.db.read(|conn| {
                 conn.query_row(
@@ -559,6 +575,32 @@ mod tests {
                 .get_pixel(5, 5)
                 .0
         }
+    }
+
+    /// A real wallpaper from `fixtures/`, as the bytes a scan would find.
+    fn fixture(name: &str) -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join(name);
+        std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// A fixture decoded, put through `edit`, and encoded again as a JPEG at
+    /// `quality`: the Near-duplicate a second download or a colour edit leaves
+    /// behind.
+    fn edited(name: &str, quality: u8, edit: impl Fn(DynamicImage) -> DynamicImage) -> Vec<u8> {
+        let img = edit(image::load_from_memory(&fixture(name)).unwrap()).to_rgb8();
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
+            .encode_image(&img)
+            .unwrap();
+        bytes
+    }
+
+    /// How many bits two stored hashes differ in, which is the only question
+    /// anything will ask of them. Near-duplicate is Hamming 10 or under.
+    fn distance(a: u64, b: u64) -> u32 {
+        (a ^ b).count_ones()
     }
 
     /// Records what a pass reported, standing in for the two events, and can
@@ -746,6 +788,7 @@ mod tests {
         library.step(&pending, &mut tally);
 
         assert_eq!(library.dimensions(pending.wallpaper_id), (None, None));
+        assert_eq!(library.hash(pending.wallpaper_id), None);
         assert_eq!(tally.failed, 1);
         assert_eq!(tally.measured, 0);
     }
@@ -767,6 +810,7 @@ mod tests {
         library.step(&pending, &mut tally);
 
         assert_eq!(library.dimensions(pending.wallpaper_id), (None, None));
+        assert_eq!(library.hash(pending.wallpaper_id), None);
         assert_eq!(
             tally,
             Tally {
@@ -818,6 +862,143 @@ mod tests {
                 cancelled: false,
             }]
         );
+    }
+
+    #[test]
+    fn the_step_stores_a_perceptual_hash_on_the_wallpaper_it_generates() {
+        let library = Library::new();
+        let pending = library.seed_bytes("train.jpg", &fixture("train.jpg"));
+        assert_eq!(library.hash(pending.wallpaper_id), None);
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert!(library.hash(pending.wallpaper_id).is_some());
+        assert_eq!(tally.generated, 1);
+    }
+
+    #[test]
+    fn a_warm_wallpaper_with_no_perceptual_hash_is_hashed_by_the_next_pass() {
+        // The library a curator already has: every thumbnail warm, and no hash
+        // on any row, because the column is newer than the rows. The freshness
+        // rule alone would list none of them, so the missing hash has to be a
+        // reason of its own, the way the missing dimensions are (ADR 0044).
+        let library = Library::new();
+        let pending = library.seed_bytes("train.jpg", &fixture("train.jpg"));
+        library.step(&pending, &mut Tally::default());
+        let id = pending.wallpaper_id;
+        let hashed = library.hash(id).unwrap();
+        library.db.write(|conn| {
+            conn.execute(
+                "UPDATE wallpapers SET perceptual_hash = NULL WHERE id = ?1",
+                [id],
+            )
+            .unwrap()
+        });
+
+        let work = super::work_list(&library.db, &library.thumbnails).unwrap();
+        assert_eq!(
+            work.iter()
+                .map(|p| (p.wallpaper_id, p.missing))
+                .collect::<Vec<_>>(),
+            vec![(id, None)]
+        );
+        let recorder = Recorder::default();
+        library.pass(&work, &recorder, &AtomicBool::new(false));
+
+        assert_eq!(library.hash(id), Some(hashed));
+        // A backfill makes no thumbnails and says so.
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![Complete {
+                generated: 0,
+                failed: 0,
+                cancelled: false,
+            }]
+        );
+        // And once it has one, it is off the list for good.
+        assert!(library.work_list().is_empty());
+    }
+
+    #[test]
+    fn a_re_encoded_near_duplicate_hashes_within_ten_bits_of_the_original() {
+        // A second download of the same wallpaper: resized and saved again at a
+        // lower quality, so not one byte of it is the same.
+        let library = Library::new();
+        let original = library.hashed("train.jpg", &fixture("train.jpg"));
+
+        let near_duplicate = library.hashed(
+            "train-again.jpg",
+            &edited("train.jpg", 40, |img| {
+                img.resize_exact(1600, 900, image::imageops::FilterType::Triangle)
+            }),
+        );
+
+        let bits = distance(original, near_duplicate);
+        assert!(
+            bits <= 10,
+            "a re-encoded Near-duplicate was {bits} bits away"
+        );
+    }
+
+    #[test]
+    fn a_recoloured_near_duplicate_hashes_within_ten_bits_of_the_original() {
+        let library = Library::new();
+        let original = library.hashed("train.jpg", &fixture("train.jpg"));
+
+        for (name, bytes) in [
+            (
+                "brighter.jpg",
+                edited("train.jpg", 85, |img| {
+                    img.brighten(30).adjust_contrast(25.0)
+                }),
+            ),
+            ("grey.jpg", edited("train.jpg", 85, |img| img.grayscale())),
+        ] {
+            let bits = distance(original, library.hashed(name, &bytes));
+            assert!(bits <= 10, "{name} was {bits} bits away");
+        }
+    }
+
+    #[test]
+    fn an_unrelated_wallpaper_hashes_more_than_ten_bits_away() {
+        let library = Library::new();
+        let train = library.hashed("train.jpg", &fixture("train.jpg"));
+
+        let sparks = library.hashed("sparks.jpg", &fixture("sparks.jpg"));
+
+        let bits = distance(train, sparks);
+        assert!(
+            bits > 10,
+            "two unrelated wallpapers were only {bits} bits apart"
+        );
+    }
+
+    #[test]
+    fn a_re_exported_source_comes_out_of_the_step_with_a_new_hash() {
+        // The dimensions' staleness again (ADR 0044). The file's mtime moves, so
+        // the pass regenerates its Small, and a hash left over from the old file
+        // would describe a picture that is no longer there.
+        let library = Library::new();
+        let pending = library.seed_bytes("exported.jpg", &fixture("train.jpg"));
+        library.step(&pending, &mut Tally::default());
+        let before = library.hash(pending.wallpaper_id).unwrap();
+
+        std::fs::write(&pending.source, fixture("sparks.jpg")).unwrap();
+        std::fs::File::options()
+            .append(true)
+            .open(&pending.source)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        let work = super::work_list(&library.db, &library.thumbnails).unwrap();
+        assert_eq!(work.len(), 1);
+        library.step(&work[0], &mut Tally::default());
+
+        let after = library.hash(pending.wallpaper_id).unwrap();
+        let sparks = library.hashed("sparks.jpg", &fixture("sparks.jpg"));
+        assert!(distance(before, after) > 10);
+        assert!(distance(after, sparks) <= 10);
     }
 
     #[test]

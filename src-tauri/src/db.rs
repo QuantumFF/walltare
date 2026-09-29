@@ -12,7 +12,7 @@ use crate::scanner;
 /// Adding a whole table is not such a change: `init_schema` runs the DDL before
 /// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
 /// why `settings` arrived without a bump, and `thumbnail_failures` after it.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const DDL: &str = "
 CREATE TABLE IF NOT EXISTS wallpapers (
@@ -40,7 +40,11 @@ CREATE TABLE IF NOT EXISTS wallpapers (
     -- copy in a second folder carries the same one (ADR 0050). Its index is in
     -- `INDEXES`, because an index on a column the DDL cannot add to an old
     -- file would fail before `migrate` had added it.
-    wallhaven_id      TEXT
+    wallhaven_id      TEXT,
+    -- The 64-bit perceptual hash of the wallpaper's Small thumbnail, stored as
+    -- the signed integer with the same bits. NULL until the pre-generation pass
+    -- has hashed it, and a wallpaper with none is in no Near-duplicate pair.
+    perceptual_hash   INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallpapers_status_comparisons ON wallpapers (status, comparisons_count);
@@ -273,6 +277,15 @@ fn migrate_steps(conn: &Connection) -> Result<(), rusqlite::Error> {
         version = 5;
     }
 
+    if version < 6 {
+        // v6 added `wallpapers.perceptual_hash`. Nothing to backfill here, for
+        // the dimensions' reason: hashing reads a thumbnail per wallpaper, which
+        // is the pre-generation pass's work, and the pass lists every row
+        // without one (ADR 0044's backfill, ridden again).
+        conn.execute_batch("ALTER TABLE wallpapers ADD COLUMN perceptual_hash INTEGER;")?;
+        version = 6;
+    }
+
     set_schema_version(conn, version)
 }
 
@@ -381,6 +394,25 @@ pub fn record_dimensions(
     conn.execute(
         "UPDATE wallpapers SET width = ?2, height = ?3 WHERE id = ?1",
         rusqlite::params![id, width, height],
+    )?;
+    Ok(())
+}
+
+/// Writes one wallpaper's perceptual hash.
+///
+/// Like [`record_dimensions`], only ever called with a hash in hand: a Small
+/// that could not be read leaves the row with whatever it held, so a thumbnail
+/// that vanished for a moment never turns a hashed wallpaper into an unhashed
+/// one. The bits go in as the `i64` they are, because SQLite's integers are
+/// signed and a `u64` above `i64::MAX` would not fit.
+pub fn record_perceptual_hash(
+    conn: &Connection,
+    id: i64,
+    hash: u64,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE wallpapers SET perceptual_hash = ?2 WHERE id = ?1",
+        rusqlite::params![id, hash as i64],
     )?;
     Ok(())
 }
@@ -962,6 +994,50 @@ mod tests {
         PRAGMA user_version = 4;
     ";
 
+    const DDL_V5: &str = "
+        CREATE TABLE wallpapers (
+            id                INTEGER PRIMARY KEY,
+            filename          TEXT    NOT NULL,
+            path              TEXT    NOT NULL UNIQUE,
+            status            TEXT    NOT NULL DEFAULT 'active'
+                              CHECK (status IN ('active', 'kept', 'rejected')),
+            rating_mu         REAL    NOT NULL DEFAULT 25.0,
+            rating_sigma      REAL    NOT NULL DEFAULT 8.333,
+            comparisons_count INTEGER NOT NULL DEFAULT 0,
+            created_at        INTEGER NOT NULL DEFAULT (unixepoch()),
+            origin_path       TEXT,
+            width             INTEGER,
+            height            INTEGER,
+            wallhaven_id      TEXT
+        );
+        CREATE TABLE comparisons (
+            id        INTEGER PRIMARY KEY,
+            winner_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            loser_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+            voted_at  INTEGER NOT NULL
+        );
+        CREATE TABLE thumbnails (
+            wallpaper_id INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE CASCADE,
+            size         TEXT    NOT NULL CHECK (size IN ('small', 'medium', 'full')),
+            width        INTEGER NOT NULL,
+            height       INTEGER NOT NULL,
+            source_mtime INTEGER NOT NULL,
+            PRIMARY KEY (wallpaper_id, size)
+        );
+        CREATE TABLE thumbnail_failures (
+            wallpaper_id INTEGER PRIMARY KEY REFERENCES wallpapers(id) ON DELETE CASCADE,
+            source_mtime INTEGER NOT NULL,
+            message      TEXT    NOT NULL,
+            failed_at    INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+        CREATE TABLE settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE INDEX idx_wallpapers_wallhaven_id ON wallpapers (wallhaven_id);
+        PRAGMA user_version = 5;
+    ";
+
     fn index_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
         conn.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
@@ -996,8 +1072,9 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 5);
+        assert_eq!(SCHEMA_VERSION, 6);
         assert!(column_exists(&conn, "wallpapers", "origin_path").unwrap());
+        assert!(column_exists(&conn, "wallpapers", "perceptual_hash").unwrap());
         assert!(column_exists(&conn, "wallpapers", "wallhaven_id").unwrap());
         assert!(index_exists(&conn, "idx_wallpapers_wallhaven_id").unwrap());
         assert!(column_exists(&conn, "wallpapers", "width").unwrap());
@@ -1133,6 +1210,43 @@ mod tests {
         assert_eq!(status_of(&conn, rejected), "rejected");
         assert_eq!(count_wallpapers(&conn), 6);
         assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn a_v5_database_gains_the_perceptual_hash_column_with_nothing_in_it() {
+        // Nothing is hashed here, for the dimensions' reason: hashing reads a
+        // thumbnail per wallpaper, and the pre-generation pass lists every row
+        // without a hash. NULL is what says the app has not looked yet, and a
+        // wallpaper with none is in no Near-duplicate pair.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = open(&tmp.path().join("walltare.db")).unwrap();
+        conn.execute_batch(DDL_V5).unwrap();
+        let kept = seed_wallpaper(&conn, "/w/keeper.jpg", "kept", 30.0);
+        let rejected = seed_wallpaper(&conn, "/w/rejected/old.jpg", "rejected", 11.0);
+        add_comparison(&conn, kept, rejected);
+        assert!(!column_exists(&conn, "wallpapers", "perceptual_hash").unwrap());
+
+        init_schema(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        for id in [kept, rejected] {
+            assert_eq!(perceptual_hash_of(&conn, id), None);
+        }
+        assert_eq!(count_wallpapers(&conn), 2);
+        assert_eq!(count_comparisons(&conn), 1);
+    }
+
+    #[test]
+    fn a_perceptual_hash_with_its_top_bit_set_comes_back_with_the_same_bits() {
+        // SQLite's integers are signed, so half of all 64-bit hashes are stored
+        // as negative numbers. The bits are what matter, and they must survive.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_wallpaper(&conn, "/w/a.jpg", "active", 25.0);
+
+        record_perceptual_hash(&conn, id, 0xF0F0_0000_0000_000F).unwrap();
+
+        assert_eq!(perceptual_hash_of(&conn, id), Some(0xF0F0_0000_0000_000F));
     }
 
     #[test]

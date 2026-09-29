@@ -69,9 +69,9 @@ fn order(candidates: &mut [Candidate]) {
 /// re-learn the same answer (ADR 0034).
 ///
 /// Thumbnails are not the only thing that puts a wallpaper on the list. One
-/// whose pixel dimensions are unknown is listed for those alone, however warm
-/// its cache is, and comes off the list for good once they are written
-/// (ADR 0044).
+/// whose pixel dimensions or perceptual hash are unknown is listed for those
+/// alone, however warm its cache is, and comes off the list for good once they
+/// are written (ADR 0044).
 fn due(candidates: &[Candidate], cache: &ThumbnailCache) -> Result<Vec<Pending>, AppError> {
     let cached = cache.cached()?;
 
@@ -105,12 +105,12 @@ fn due(candidates: &[Candidate], cache: &ThumbnailCache) -> Result<Vec<Pending>,
             (false, true) => Some(Missing::Only(Size::Small)),
             (true, false) => Some(Missing::Only(Size::Medium)),
         };
-        // A fully warm wallpaper still joins the list when its dimensions are
-        // unknown, which is the whole cohort of a library scanned before the
-        // columns existed: their thumbnails are fresh, so the freshness rule
-        // above would drop every one of them and the backfill would never
-        // happen (ADR 0044).
-        if missing.is_none() && candidate.dimensions_known {
+        // A fully warm wallpaper still joins the list when its dimensions or
+        // its perceptual hash are unknown, which is the whole cohort of a
+        // library scanned before the columns existed: their thumbnails are
+        // fresh, so the freshness rule above would drop every one of them and
+        // the backfill would never happen (ADR 0044).
+        if missing.is_none() && candidate.dimensions_known && candidate.hash_known {
             continue;
         }
         pending.push(Pending {
@@ -517,6 +517,7 @@ mod tests {
                 medium_mtime: Some(warm_mtime),
                 failed_mtime: None,
                 dimensions_known: true,
+                hash_known: true,
                 comparisons_count: 0,
             },
             Candidate {
@@ -527,6 +528,7 @@ mod tests {
                 medium_mtime: None,
                 failed_mtime: None,
                 dimensions_known: true,
+                hash_known: true,
                 comparisons_count: 0,
             },
             Candidate {
@@ -537,6 +539,7 @@ mod tests {
                 medium_mtime: Some(donor_mtime),
                 failed_mtime: None,
                 dimensions_known: true,
+                hash_known: true,
                 comparisons_count: 0,
             },
             Candidate {
@@ -547,6 +550,7 @@ mod tests {
                 medium_mtime: None,
                 failed_mtime: Some(broken_mtime),
                 dimensions_known: true,
+                hash_known: true,
                 comparisons_count: 0,
             },
             // Recorded as warm against an mtime nothing can be compared to any
@@ -559,6 +563,7 @@ mod tests {
                 medium_mtime: Some(1),
                 failed_mtime: None,
                 dimensions_known: true,
+                hash_known: true,
                 comparisons_count: 0,
             },
         ];
