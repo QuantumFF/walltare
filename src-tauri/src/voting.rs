@@ -252,8 +252,8 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
     // Decided reads the Bar, which SQL cannot work out, so these count in
     // Rust over the pool pair selection reads.
     let bar = bar(conn)?;
-    let (mut undecided_count, mut close_call_count) = (0u32, 0u32);
-    let (mut decided_below_count, mut decided_above_count) = (0u32, 0u32);
+    let (mut undecided_count, mut decided_below_count, mut decided_above_count) = (0u32, 0, 0);
+    let mut close_call_count = 0u32;
     for w in eligible_summaries(conn)? {
         match w.decided(bar) {
             None => undecided_count += 1,
