@@ -76,6 +76,16 @@ export interface Wallpaper {
 }
 
 /**
+ * Mirrors near_duplicates::NearDuplicatePair: two wallpapers the app judges to
+ * be one image, and how the pair is offered. `keep_one` is two Active or Kept
+ * wallpapers, answered by keeping one and soft-rejecting the other.
+ */
+export interface NearDuplicatePair {
+  kind: "keep_one";
+  wallpapers: [Wallpaper, Wallpaper];
+}
+
+/**
  * Mirrors voting::Stats. Every count is measured against `eligible_count`, not
  * `total_wallpapers`, so rejecting a wallpaper does not drop the progress it
  * describes (ADR 0059).
@@ -733,6 +743,8 @@ export type Command =
   | "unkeep_wallpaper"
   | "move_wallpaper"
   | "restore_wallpaper"
+  | "list_near_duplicates"
+  | "keep_one"
   | "get_settings"
   | "set_setting"
   | "wallhaven_search"
@@ -792,6 +804,11 @@ export interface BackendCommands {
     answer: Wallpaper;
   };
   restore_wallpaper: { args: { id: number }; answer: Wallpaper };
+  list_near_duplicates: { args: undefined; answer: NearDuplicatePair[] };
+  keep_one: {
+    args: { keptId: number; otherId: number; destinationFolder: string };
+    answer: Wallpaper;
+  };
   get_settings: { args: undefined; answer: Settings };
   /** The value crosses as a string, which is what the column holds (`setSetting`). */
   set_setting: {
@@ -1203,6 +1220,25 @@ export const client = {
    * `file_missing` when the file has left the reject folder.
    */
   restoreWallpaper: (id: number) => call("restore_wallpaper", { id }),
+
+  /**
+   * Every Near-duplicate pair waiting for an answer, each with both
+   * wallpapers. Worked out from the stored hashes on every call, so a
+   * wallpaper pre-generation has not hashed yet is in none.
+   */
+  listNearDuplicates: () => call("list_near_duplicates"),
+
+  /**
+   * Answers a Near-duplicate pair by keeping `keptId` and soft-rejecting
+   * `otherId` into `destinationFolder`. Resolves with the row the reject wrote,
+   * exactly as `moveWallpaper` does, so a Restore of it undoes the answer.
+   *
+   * Rejects with `invalid_transition` when the two are no longer a waiting
+   * pair — one of them was rejected elsewhere since the listing, say — and
+   * rejects nothing.
+   */
+  keepOne: (keptId: number, otherId: number, destinationFolder: string) =>
+    call("keep_one", { keptId, otherId, destinationFolder }),
 
   /**
    * Starts the thumbnail pre-generation pass and resolves as soon as it is
