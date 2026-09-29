@@ -190,6 +190,26 @@ looks, not a Status, because it becomes true and false again without the user
 doing anything. The app shows such a wallpaper as gone. See
 [ADR 0032](docs/adr/0032-a-missing-file-reads-as-gone.md).
 
+## Near-duplicate
+
+Two wallpapers the app judges to be the same image: a copy, a re-encode, a
+resize, a colour edit or a light crop. A standing of a pair, not a Status, so
+nothing about either wallpaper changes until the curator answers it.
+
+The curator answers a Near-duplicate by keeping one, which soft-rejects the
+other, or by keeping both, which makes the pair **Distinct**. Distinct is a
+record, like a Comparison: the curator's judgement, kept so the pair is never
+offered again. Choosing between two copies is not a Comparison, because it says
+nothing about where either stands among the others, and a Near-duplicate pair
+is never drawn against each other in Rank.
+
+A wallpaper arriving as a Near-duplicate of a Rejected one is offered as
+something the curator rejected before. Two Rejected wallpapers are never
+offered.
+
+_Avoid_: dupe, twin, copy, match (a Wallhaven id already marks exact copies of
+a Result)
+
 ## Comparison
 
 One pairwise vote: two wallpapers, one winner, one loser. Permanent. Comparisons are never deleted.
