@@ -76,20 +76,15 @@ export interface Wallpaper {
 }
 
 /**
- * Mirrors voting::Stats. Every fraction is measured against `eligible_count`,
- * not `total_wallpapers`, so rejecting a wallpaper does not drop the progress
- * it describes (ADR 0008).
+ * Mirrors voting::Stats. Every count is measured against `eligible_count`, not
+ * `total_wallpapers`, so rejecting a wallpaper does not drop the progress it
+ * describes (ADR 0059).
  */
 export interface Stats {
   /** All rows, any status. The boot gate reads this one. */
   total_wallpapers: number;
   /** Active + Kept: the voting pool, and the denominator for everything below. */
   eligible_count: number;
-  /** `min(comparisons_count) + 1` over the pool; 1 when the pool is empty. */
-  round: number;
-  /** Eligible wallpapers with `comparisons_count >= round`. */
-  round_participated_count: number;
-  evaluated_count: number;
   /** Eligible and not yet Decided, Unrated included (ADR 0058). */
   undecided_count: number;
   /**
@@ -449,10 +444,9 @@ export interface Settings {
    *
    * The curator's answer to how many Comparisons make a Score trustworthy
    * (CONTEXT.md, ADR 0046). The number itself rather than a name for it, because
-   * the card compares a wallpaper's σ against it directly and the backend counts
-   * `evaluated_count` against the same row — a name would need the same three
-   * numbers written out on both sides of the IPC, which is exactly how the
-   * headline and the badges would come to disagree.
+   * the card compares a wallpaper's σ against it directly — a name would need
+   * the same three numbers written out on both sides of the IPC, which is
+   * exactly how the backend and the badges would come to disagree.
    *
    * Only the values `EVALUATED_THRESHOLDS` offers are writable; the backend
    * refuses the rest.

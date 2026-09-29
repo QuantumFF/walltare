@@ -330,8 +330,8 @@ export function RankView() {
         publish({ type: "score-changed", ids: [winner.id, loser.id] });
         // The headline updates through the bus rather than beside it, so there
         // is one path into it: Rank is the only publisher of this today, and
-        // #113's refetch after a scan is the next one, moving the same headline
-        // back to Round 1 without Rank needing to know a scan happened.
+        // #113's refetch after a scan is the next one, raising the same
+        // Undecided count without Rank needing to know a scan happened.
         publish({ type: "stats-changed", stats: outcome.stats });
 
         if (!mountedRef.current) return;

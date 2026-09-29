@@ -2736,7 +2736,7 @@ test("rejecting the missing files says how many, and re-reads Rank's counts", as
     "2 wallpapers rejected · nothing moved",
   );
   expect(rejectButton()).toBeNull();
-  // The Eligible pool shrank, so the Round headline is read again.
+  // The Eligible pool shrank, so the Undecided headline is read again.
   expect(statsCalls).toBe(statsBefore + 1);
   // And no second walk of the library.
   expect(missingChecks).toBe(1);

@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
  * The bar a page owns, directly under the chrome.
  *
  * The chrome is one fixed row on every view, which it can only be if whatever a
- * page needs to say sits below it rather than in it: Rank's Round headline,
+ * page needs to say sits below it rather than in it: Rank's Undecided headline,
  * Review's destination line, Library's filter row. So the height is declared
  * here once instead of in three pages that would each drift, and nothing jumps
  * as the curator navigates (ADR 0015).
