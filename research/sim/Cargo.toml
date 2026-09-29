@@ -1,0 +1,15 @@
+[package]
+name = "walltare-sim"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Throwaway simulator: votes until wallpapers are Decided against a Bar"
+
+# Not part of any workspace and never shipped. It compiles the app's own
+# `src-tauri/src/ranking.rs` by path, so there is no Tauri build to wait on.
+[workspace]
+
+[dependencies]
+
+[profile.release]
+debug = false
