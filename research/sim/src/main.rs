@@ -33,7 +33,7 @@ usage: walltare-sim [options]
   --selector baseline      comma list of: baseline, random
   --voter thurstone        thurstone | bradley-terry
   --noise 0.5              comma list; curator noise in units of the quality spread
-  --bar-share 0.25         the Bar clears out this bottom share
+  --bar-share 0.2          the Bar clears out the worst share of the Scored
   --z 2                    Decided when |μ − Bar| ≥ z·σ
   --reps 20                replicate libraries per configuration
   --budget 40              stop at this many Comparisons per wallpaper on average
@@ -46,7 +46,7 @@ fn parse() -> Args {
         selectors: vec!["baseline".into()],
         voter: "thurstone".into(),
         noises: vec![0.5],
-        bar_share: 0.25,
+        bar_share: 0.2,
         z: 2.0,
         reps: 20,
         budget: 40.0,

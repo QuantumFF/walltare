@@ -176,9 +176,12 @@ impl Prior for Uniform {
     }
 }
 
-/// The Bar sits at a fixed share of the pool: the curator would clear out the
-/// bottom `share`. In Score space it is that quantile of current μ; the truth
-/// is the same quantile of true quality.
+/// The Bar as "How the Bar is set" (#367) settled it: the worst `share` of
+/// every wallpaper with a Score. Unrated wallpapers (no Comparison yet) don't
+/// count. The simulator never rejects, so "Rejected included" doesn't come
+/// up. In Score space the Bar is that quantile of μ among the Scored; the
+/// truth is the same quantile of true quality over the whole library, since
+/// every wallpaper ends up with a Score.
 pub struct QuantileBar {
     pub share: f64,
 }
@@ -191,12 +194,21 @@ impl QuantileBar {
 
 impl BarRule for QuantileBar {
     fn name(&self) -> String {
-        format!("bottom {}%", self.share * 100.0)
+        format!("worst {}% of the Scored", self.share * 100.0)
     }
     fn bar(&self, lib: &Library, scratch: &mut Vec<f64>) -> f64 {
         // Midway between the last wallpaper below and the first above.
         scratch.clear();
-        scratch.extend(lib.ratings.iter().map(|r| r.mu));
+        scratch.extend(
+            lib.ratings
+                .iter()
+                .zip(&lib.counts)
+                .filter(|(_, &c)| c > 0)
+                .map(|(r, _)| r.mu),
+        );
+        if scratch.len() < 2 {
+            return ranking::MU;
+        }
         let k = self.rank(scratch.len());
         let (_, &mut above, _) = scratch.select_nth_unstable_by(k, f64::total_cmp);
         let below = scratch[..k]

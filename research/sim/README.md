@@ -33,10 +33,12 @@ No dependencies and no Tauri build. `src/main.rs` compiles the app's
   so `--noise 0.5` is a curator exactly as consistent as the rating model
   expects and `1.0` is one twice as noisy. `bradley-terry` is the logistic
   (Plackett–Luce for groups) equivalent, with heavier tails.
-- **Bar**: `QuantileBar`. The curator would clear out the bottom `--bar-share`
-  (default 25%). In Score space the Bar is midway between the μ ranked just
-  below that share and the one just above it, recomputed after every vote.
-  The truth is the same share of true quality.
+- **Bar**: `QuantileBar`, as "How the Bar is set" (#367) settled it: the
+  worst `--bar-share` (default 20%) of every wallpaper with a Score, so
+  wallpapers with no Comparison yet don't count. In Score space the Bar is
+  midway between the μ ranked just below that share and the one just above
+  it, recomputed after every vote. The truth is the same share of true
+  quality over the whole library. Nothing is rejected during a run.
 - **Decided**: `ZSigma`. Decided when |μ − Bar| ≥ `--z`·σ (default 2).
 - **Update**: `WinnerBeatsEach`: one `rate_1vs1` per loser shown. For a pair
   this is exactly what the app records.
