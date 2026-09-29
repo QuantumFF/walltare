@@ -275,29 +275,13 @@ A wallpaper the voting pool draws from: Active or Kept. Rejected wallpapers are
 not eligible. Every progress fraction is measured against the eligible pool, not
 against the whole library.
 
-## Round
+## Evaluated
 
-One pass over the eligible pool. Round 4 means every eligible wallpaper has been
-in at least three comparisons and the app is working through the fourth.
-
-A Round is derived from the comparison counts, never stored, so it moves in
-whichever direction the truth does: rejecting the least-compared wallpaper
-advances it, and scanning in unseen files sends it back. Progress within a Round
-is the share of the eligible pool that has already had its comparison for that
-Round. See [ADR 0008](docs/adr/0008-round-is-derived.md).
-
-## Evaluated / Participated
-
-Two distinct progress notions. **Participated**: has been in at least one
-comparison. **Evaluated**: its rating is confident enough to trust, meaning σ
-below the Evaluated threshold. Evaluated is a late signal at every threshold on
-offer, so a young library has none.
-
-Both are counted over the eligible pool. Participated is Round progress at
-Round 1, and is pinned to the size of the pool from Round 2 onwards, so the
-headline reports it per-Round rather than as a total. Evaluated headlines
-alongside it as the confidence signal: the two answer different questions and
-the app shows both.
+Its rating is confident enough to trust, meaning σ below the Evaluated
+threshold. Evaluated is a late signal at every threshold on offer, so a young
+library has none. It answers how sure one Score is, not how much voting is left:
+that is the count of Undecided wallpapers. See
+[ADR 0059](docs/adr/0059-the-headline-counts-undecided-and-round-is-retired.md).
 
 ## Evaluated threshold
 
@@ -311,7 +295,7 @@ offers three confidences and keeps whichever was chosen. It defaults to σ below
 Evaluated meant before the user could say otherwise.
 
 One threshold, because everything that asks whether a wallpaper is Evaluated —
-the count in the headline, the Score badge on every card — has to get the same
+the Score badge on every card, wherever it appears — has to get the same
 answer. See [ADR 0046](docs/adr/0046-the-evaluated-threshold-is-the-curators.md).
 
 ## Bar

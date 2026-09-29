@@ -1,6 +1,6 @@
 # ADR 0008: Round is derived, and progress is measured within the round
 
-**Status:** Accepted
+**Status:** Superseded by [ADR 0059](0059-the-headline-counts-undecided-and-round-is-retired.md)
 **Ticket:** [#38](https://github.com/QuantumFF/walltare/issues/38)
 **Date:** 2026-08-24
 
