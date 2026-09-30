@@ -723,3 +723,118 @@ export function shortcutLines(
     return action ? [{ keys: [binding.printed], action }] : [];
   });
 }
+
+// --- Rank ---------------------------------------------------------------------
+
+/**
+ * Which kind of showing Rank has on screen, which is what decides its keys
+ * rather than the mode: a library too small for four shows a pair in either.
+ */
+export type ShowingKind = "pair" | "four";
+
+/**
+ * What a key asks Rank to do. `pick` names a slot of the showing on screen:
+ * for a pair the winner, and for four the best or, once the best is named, the
+ * worst.
+ */
+export type RankIntent =
+  { kind: "pick"; slot: number } | { kind: "take-back" } | { kind: "skip" };
+
+interface RankBinding {
+  /** The `event.key` values it answers to, compared without case. */
+  keys: readonly string[];
+  printed: string;
+  on: readonly ShowingKind[];
+  does: RankIntent;
+  listed: string;
+}
+
+/**
+ * Every key Rank answers, in the order the shortcuts dialog lists them.
+ *
+ * The digits follow the grid a showing of four is laid out in, `1 2` over
+ * `3 4`, and are bound only while one is on screen; the arrows only while a
+ * pair is. So neither can record a vote on a showing it does not describe.
+ * `S` skips either, which is what gave pairs a skip key.
+ */
+const RANK_TABLE: readonly RankBinding[] = [
+  {
+    keys: ["ArrowLeft"],
+    printed: "←",
+    on: ["pair"],
+    does: { kind: "pick", slot: 0 },
+    listed: "Pick the wallpaper on the left",
+  },
+  {
+    keys: ["ArrowRight"],
+    printed: "→",
+    on: ["pair"],
+    does: { kind: "pick", slot: 1 },
+    listed: "Pick the wallpaper on the right",
+  },
+  ...(["top-left", "top-right", "bottom-left", "bottom-right"] as const).map(
+    (where, slot): RankBinding => ({
+      keys: [String(slot + 1)],
+      printed: String(slot + 1),
+      on: ["four"],
+      does: { kind: "pick", slot },
+      listed: `In fours, pick the ${where} wallpaper`,
+    }),
+  ),
+  {
+    keys: ["Backspace"],
+    printed: "Backspace",
+    on: ["four"],
+    does: { kind: "take-back" },
+    listed: "In fours, take back the best",
+  },
+  {
+    keys: ["Escape"],
+    printed: "Esc",
+    on: ["four"],
+    does: { kind: "take-back" },
+    listed: "In fours, take back the best",
+  },
+  {
+    keys: ["s"],
+    printed: "S",
+    on: ["pair", "four"],
+    does: { kind: "skip" },
+    listed: "Skip the showing",
+  },
+];
+
+/**
+ * What a keypress asks of Rank with `showing` on screen, with the key
+ * prevented whenever it means anything, or `undefined` and the key left alone.
+ *
+ * A chord is never Rank's: `Ctrl+1` is the shell's, and bare keys are the
+ * view's. Nor is a held key, because a held digit would name the best and take
+ * it back again at the key repeat rate. Whether Rank is the view being shown,
+ * and whether something else answered the key first, is Rank's own to check
+ * (ADR 0015 as amended, ADR 0019).
+ */
+export function rankKey(
+  event: KeyPress,
+  showing: ShowingKind,
+): RankIntent | undefined {
+  if (event.ctrlKey || event.altKey || event.metaKey || event.repeat) {
+    return undefined;
+  }
+  const key = event.key.toLowerCase();
+  const binding = RANK_TABLE.find(
+    ({ keys, on }) =>
+      on.includes(showing) && keys.some((k) => k.toLowerCase() === key),
+  );
+  if (!binding) return undefined;
+  event.preventDefault();
+  return binding.does;
+}
+
+/** The lines the shortcuts dialog prints under Rank. */
+export function rankShortcutLines(): ShortcutLine[] {
+  return RANK_TABLE.map(({ printed, listed }) => ({
+    keys: [printed],
+    action: listed,
+  }));
+}

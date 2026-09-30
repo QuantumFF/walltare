@@ -1,11 +1,11 @@
-//! Persistence seam for the voting loop: pair fetching, vote application,
-//! and stats — all taking a plain connection handle so they are testable
-//! against an initialized in-memory SQLite database.
+//! Persistence seam for the voting loop: fetching a showing of two or four,
+//! vote application, and stats — all taking a plain connection handle so they
+//! are testable against an initialized in-memory SQLite database.
 //!
 //! Eligibility: Status ∈ {Active, Kept}; Rejected sits out. Rating updates
-//! and pair selection delegate to the pure `ranking` module. A vote applies
-//! the TrueSkill update, increments both `comparisons_count`, and inserts the
-//! permanent Comparison row in one transaction.
+//! and selection delegate to the pure `ranking` module. A vote applies the
+//! TrueSkill update, adds one to every member's `comparisons_count`, and
+//! inserts the permanent Comparison row in one transaction.
 
 use rusqlite::Connection;
 
@@ -56,6 +56,16 @@ pub struct VoteOutcome {
     pub stats: Stats,
 }
 
+/// What a vote on a showing of four answers with: [`VoteOutcome`]'s contract,
+/// for the showing that follows one of four.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct FourOutcome {
+    /// Four wallpapers, or two once fewer than four are Eligible. `None` when
+    /// the vote was recorded but the follow-up fetch failed.
+    pub next_showing: Option<Vec<Wallpaper>>,
+    pub stats: Stats,
+}
+
 /// Picks two eligible wallpapers via the pure pair-selection module.
 ///
 /// The two are shuffled before returning. `select_pair` always yields its
@@ -81,23 +91,17 @@ pub fn get_pair<R: Rng>(
     exclude: &[i64],
     rng: &mut R,
 ) -> Result<[Wallpaper; 2], AppError> {
-    let pool = eligible_summaries(conn)?;
-    let bar = bar(conn)?;
-    let (pairs, last_was_a_first) = recent_comparisons(conn)?;
-    let recent = ranking::Recent {
-        pairs: &pairs,
-        last_was_a_first,
-    };
-    let unanswered = near_duplicates::unanswered_pairs(conn)?;
-    let apart = |a, b| unanswered.contains(a, b);
-    let (first, second) = ranking::select_pair(&pool, bar, recent, exclude, &apart, rng)
-        .ok_or_else(|| {
-            AppError::NotEnoughWallpapers(format!(
-                "pair selection needs two eligible wallpapers that are not an unanswered \
-                 Near-duplicate pair, found {} eligible",
-                pool.len()
-            ))
-        })?;
+    let draw = Draw::read(conn)?;
+    let apart = |a, b| draw.unanswered.contains(a, b);
+    let (first, second) =
+        ranking::select_pair(&draw.pool, draw.bar, draw.recent(), exclude, &apart, rng)
+            .ok_or_else(|| {
+                AppError::NotEnoughWallpapers(format!(
+                    "pair selection needs two eligible wallpapers that are not an unanswered \
+                     Near-duplicate pair, found {} eligible",
+                    draw.pool.len()
+                ))
+            })?;
     let (first, second) = if rng.next_f64() < 0.5 {
         (first, second)
     } else {
@@ -109,32 +113,112 @@ pub fn get_pair<R: Rng>(
     ])
 }
 
-/// The latest [`ranking::REPEAT_WINDOW`] Comparisons, newest first, and
-/// whether the latest was the first for either of its wallpapers.
+/// Picks a showing of four Eligible wallpapers, or a pair once fewer than four
+/// are Eligible, so a small library still ranks (ADR 0061).
+///
+/// Shuffled for the reason a pair is: `select_four` yields its first pick
+/// first, and where a wallpaper sits on screen must mean nothing. `exclude` is
+/// the showing on screen, and gives way as `select_four` says.
+pub fn get_four<R: Rng>(
+    conn: &Connection,
+    exclude: &[i64],
+    rng: &mut R,
+) -> Result<Vec<Wallpaper>, AppError> {
+    let draw = Draw::read(conn)?;
+    let apart = |a, b| draw.unanswered.contains(a, b);
+    let Some(four) =
+        ranking::select_four(&draw.pool, draw.bar, draw.recent(), exclude, &apart, rng)
+    else {
+        return Ok(get_pair(conn, exclude, rng)?.into());
+    };
+    let mut ids = four.map(|w| w.id);
+    // Fisher–Yates, every order equally likely.
+    for i in (1..ids.len()).rev() {
+        let j = ((rng.next_f64() * (i + 1) as f64) as usize).min(i);
+        ids.swap(i, j);
+    }
+    ids.iter().map(|&id| db::get_wallpaper(conn, id)).collect()
+}
+
+/// What a draw reads, all of it on every draw and none of it held as state
+/// (ADR 0060).
+struct Draw {
+    pool: Vec<ranking::WallpaperSummary>,
+    bar: Option<f64>,
+    showings: Vec<Vec<i64>>,
+    last_was_a_first: bool,
+    unanswered: near_duplicates::UnansweredPairs,
+}
+
+impl Draw {
+    fn read(conn: &Connection) -> Result<Self, AppError> {
+        let (showings, last_was_a_first) = recent_comparisons(conn)?;
+        Ok(Self {
+            pool: eligible_summaries(conn)?,
+            bar: bar(conn)?,
+            showings,
+            last_was_a_first,
+            unanswered: near_duplicates::unanswered_pairs(conn)?,
+        })
+    }
+
+    fn recent(&self) -> ranking::Recent<'_> {
+        ranking::Recent {
+            showings: &self.showings,
+            last_was_a_first: self.last_was_a_first,
+        }
+    }
+}
+
+/// The latest [`ranking::REPEAT_WINDOW`] Comparisons, newest first, each as
+/// every wallpaper in its showing, and whether the latest was the first for
+/// any of its wallpapers.
 ///
 /// "Its first" reads `comparisons_count`, which the vote that inserted the row
 /// raised in the same transaction: a count of one means that row is the only
 /// Comparison the wallpaper has. `comparisons` has no index on its two ids, so
 /// looking for an earlier row would scan the whole record on every pair.
-fn recent_comparisons(conn: &Connection) -> Result<(Vec<[i64; 2]>, bool), AppError> {
-    let mut stmt = conn
-        .prepare_cached("SELECT winner_id, loser_id FROM comparisons ORDER BY id DESC LIMIT ?1")?;
-    let pairs = stmt
-        .query_map([ranking::REPEAT_WINDOW as i64], |r| {
-            Ok([r.get(0)?, r.get(1)?])
-        })?
-        .collect::<Result<Vec<[i64; 2]>, _>>()?;
-    let last_was_a_first = match pairs.first() {
-        Some(&[a, b]) => conn.query_row(
-            "SELECT EXISTS (
-                 SELECT 1 FROM wallpapers WHERE id IN (?1, ?2) AND comparisons_count = 1
-             )",
-            [a, b],
-            |r| r.get(0),
-        )?,
+fn recent_comparisons(conn: &Connection) -> Result<(Vec<Vec<i64>>, bool), AppError> {
+    // The window first, then its members, which the primary key finds by
+    // Comparison. A pair has none, hence the outer join.
+    let mut stmt = conn.prepare_cached(
+        "WITH recent AS (
+             SELECT id, winner_id, loser_id FROM comparisons ORDER BY id DESC LIMIT ?1
+         )
+         SELECT r.id, r.winner_id, r.loser_id, m.wallpaper_id
+         FROM recent r LEFT JOIN comparison_members m ON m.comparison_id = r.id
+         ORDER BY r.id DESC",
+    )?;
+    let rows = stmt.query_map([ranking::REPEAT_WINDOW as i64], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, Option<i64>>(3)?,
+        ))
+    })?;
+    let mut showings: Vec<(i64, Vec<i64>)> = Vec::new();
+    for row in rows {
+        let (id, winner, loser, member) = row?;
+        match showings.last_mut() {
+            Some((last, members)) if *last == id => members.extend(member),
+            _ => showings.push((id, [winner, loser].into_iter().chain(member).collect())),
+        }
+    }
+    let showings: Vec<Vec<i64>> = showings.into_iter().map(|(_, members)| members).collect();
+    let last_was_a_first = match showings.first() {
+        Some(latest) => {
+            let slots = vec!["?"; latest.len()].join(", ");
+            conn.prepare_cached(&format!(
+                "SELECT EXISTS (
+                     SELECT 1 FROM wallpapers WHERE id IN ({slots}) AND comparisons_count = 1
+                 )"
+            ))?
+            .query_row(rusqlite::params_from_iter(latest), |r| r.get(0))?
+        }
         None => false,
     };
-    Ok((pairs, last_was_a_first))
+    Ok((showings, last_was_a_first))
 }
 
 /// Applies a vote atomically, then returns the next pair with fresh stats.
@@ -161,23 +245,8 @@ pub fn vote<R: Rng>(
         )));
     }
 
-    let (new_winner, new_loser) = ranking::rate_1vs1(
-        ranking::Rating::new(winner.rating_mu, winner.rating_sigma),
-        ranking::Rating::new(loser.rating_mu, loser.rating_sigma),
-    );
-
-    for (rating, id) in [(new_winner, winner_id), (new_loser, loser_id)] {
-        tx.execute(
-            "UPDATE wallpapers
-             SET rating_mu = ?1, rating_sigma = ?2, comparisons_count = comparisons_count + 1
-             WHERE id = ?3",
-            rusqlite::params![rating.mu, rating.sigma, id],
-        )?;
-    }
-    tx.execute(
-        "INSERT INTO comparisons (winner_id, loser_id, voted_at) VALUES (?1, ?2, unixepoch())",
-        rusqlite::params![winner_id, loser_id],
-    )?;
+    let (new_winner, new_loser) = ranking::rate_1vs1(winner.rating(), loser.rating());
+    record(&tx, &[(new_winner, winner_id), (new_loser, loser_id)], &[])?;
     tx.commit()?;
 
     // The Comparison is durable from here on, so the follow-up pair fetch must
@@ -193,6 +262,98 @@ pub fn vote<R: Rng>(
     let next_pair = get_pair(conn, &skip, rng).ok();
     let stats = get_stats(conn)?;
     Ok(VoteOutcome { next_pair, stats })
+}
+
+/// Applies a vote on a showing of four atomically, then returns the next
+/// showing with fresh stats (ADR 0061).
+///
+/// `others` are the two the curator named neither best nor worst, in no order.
+/// In one transaction: validates that the four are distinct and Eligible,
+/// applies one joint update via `ranking::rate_four`, adds one to each of the
+/// four counts, and inserts the one permanent Comparison with its members. Any
+/// failure rolls everything back, and a refusal writes nothing.
+///
+/// The follow-up fetch keeps [`vote`]'s contract: the four just voted on are
+/// always excluded, and a fetch that fails is `None` rather than an error.
+pub fn vote_four<R: Rng>(
+    conn: &Connection,
+    best_id: i64,
+    worst_id: i64,
+    others: [i64; 2],
+    exclude: &[i64],
+    rng: &mut R,
+) -> Result<FourOutcome, AppError> {
+    let ids = [best_id, others[0], others[1], worst_id];
+    let tx = conn.unchecked_transaction()?;
+    let [best, a, b, worst] = [
+        fetch_summary(&tx, ids[0])?,
+        fetch_summary(&tx, ids[1])?,
+        fetch_summary(&tx, ids[2])?,
+        fetch_summary(&tx, ids[3])?,
+    ];
+    if (1..4).any(|i| ids[..i].contains(&ids[i])) {
+        // A caller's mistake, as one id twice is for a pair (ADR 0025).
+        return Err(AppError::BadRequest(format!(
+            "a showing of four needs four distinct wallpapers, got {ids:?}"
+        )));
+    }
+
+    let (new_best, [new_a, new_b], new_worst) =
+        ranking::rate_four(best.rating(), [a.rating(), b.rating()], worst.rating());
+    record(
+        &tx,
+        &[
+            (new_best, best_id),
+            (new_worst, worst_id),
+            (new_a, others[0]),
+            (new_b, others[1]),
+        ],
+        &others,
+    )?;
+    tx.commit()?;
+
+    let mut skip = ids.to_vec();
+    skip.extend_from_slice(exclude);
+    let next_showing = get_four(conn, &skip, rng).ok();
+    let stats = get_stats(conn)?;
+    Ok(FourOutcome {
+        next_showing,
+        stats,
+    })
+}
+
+/// Writes one Comparison inside the caller's transaction: every member's new
+/// rating and one more Comparison each, then the permanent row.
+///
+/// `rated` holds the best first and the worst second, which become the row's
+/// winner and loser; `members` are the two of a showing of four named neither.
+/// A showing counts once for each wallpaper in it, however many relations the
+/// vote implies (ADR 0061).
+fn record(
+    tx: &Connection,
+    rated: &[(ranking::Rating, i64)],
+    members: &[i64],
+) -> Result<(), AppError> {
+    for (rating, id) in rated {
+        tx.execute(
+            "UPDATE wallpapers
+             SET rating_mu = ?1, rating_sigma = ?2, comparisons_count = comparisons_count + 1
+             WHERE id = ?3",
+            rusqlite::params![rating.mu, rating.sigma, id],
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO comparisons (winner_id, loser_id, voted_at) VALUES (?1, ?2, unixepoch())",
+        rusqlite::params![rated[0].1, rated[1].1],
+    )?;
+    let comparison = tx.last_insert_rowid();
+    for member in members {
+        tx.execute(
+            "INSERT INTO comparison_members (comparison_id, wallpaper_id) VALUES (?1, ?2)",
+            rusqlite::params![comparison, member],
+        )?;
+    }
+    Ok(())
 }
 
 pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
@@ -894,6 +1055,401 @@ mod tests {
         assert!((bar(&conn).unwrap().unwrap() - 12.45).abs() < 1e-9);
         assert_eq!(s.undecided_count, 3);
         assert_eq!(s.close_call_count, 1);
+    }
+
+    // --- showings of four (ADR 0061) ------------------------------------------
+
+    use crate::testing::add_comparison_of_four;
+
+    /// The members of every Comparison of four, sorted, oldest Comparison first.
+    fn members(conn: &Connection) -> Vec<Vec<i64>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT comparison_id, wallpaper_id FROM comparison_members
+                 ORDER BY comparison_id, wallpaper_id",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut out: Vec<(i64, Vec<i64>)> = Vec::new();
+        for (comparison, member) in rows {
+            match out.last_mut() {
+                Some((last, ids)) if *last == comparison => ids.push(member),
+                _ => out.push((comparison, vec![member])),
+            }
+        }
+        out.into_iter().map(|(_, ids)| ids).collect()
+    }
+
+    fn ids(showing: &[Wallpaper]) -> Vec<i64> {
+        showing.iter().map(|w| w.id).collect()
+    }
+
+    fn distinct(ids: &[i64]) -> bool {
+        (1..ids.len()).all(|i| !ids[..i].contains(&ids[i]))
+    }
+
+    /// Every draw a test sweeps, as a constant sequence.
+    const DRAWS: [f64; 6] = [0.0, 0.2, 0.4, 0.6, 0.8, 0.99];
+
+    #[test]
+    fn a_vote_on_four_writes_one_comparison_moves_all_four_and_counts_each_once() {
+        let conn = test_conn();
+        let [best, a, b, worst] = [0; 4].map(|_| seed_on(&conn, "active", MU, SIGMA, 0));
+
+        let outcome = vote_four(&conn, best, worst, [a, b], &[], &mut rng()).unwrap();
+
+        // One row, the best and the worst where the winner and the loser are.
+        assert_eq!(comparison_rows(&conn), vec![(best, worst)]);
+        assert_eq!(members(&conn), vec![vec![a.min(b), a.max(b)]]);
+
+        // The research script's vector for four fresh ratings.
+        let close = |(mu, sigma, count): (f64, f64, i64), m: f64, s: f64| {
+            (mu - m).abs() < 1e-4 && (sigma - s).abs() < 1e-4 && count == 1
+        };
+        assert!(close(ratings(&conn, best), 32.729954, 6.275157));
+        assert!(close(ratings(&conn, a), 25.0, 6.305693));
+        assert!(close(ratings(&conn, b), 25.0, 6.305693));
+        assert!(close(ratings(&conn, worst), 17.270046, 6.275157));
+
+        // One Comparison in the headline total, not the five it implies.
+        assert_eq!(outcome.stats.total_comparisons, 1);
+        // Four Eligible, so the next showing is the same four again.
+        let mut next = ids(&outcome.next_showing.expect("four remain"));
+        next.sort_unstable();
+        let mut all = vec![best, a, b, worst];
+        all.sort_unstable();
+        assert_eq!(next, all);
+    }
+
+    #[test]
+    fn a_vote_on_four_refuses_unknown_ineligible_and_repeated_ids_without_mutating() {
+        // The kinds `vote` answers with, for the same reasons (ADR 0025).
+        let conn = test_conn();
+        let [a, b, c, d] = [0; 4].map(|_| seed_on(&conn, "active", MU, SIGMA, 0));
+        let r = seed_on(&conn, "rejected", MU, SIGMA, 2);
+
+        for (best, worst, others) in [(999, a, [b, c]), (a, b, [c, 999])] {
+            match vote_four(&conn, best, worst, others, &[], &mut rng()) {
+                Err(AppError::NotFound(_)) => {}
+                other => panic!("expected NotFound, got {other:?}"),
+            }
+        }
+        for (best, worst, others) in [(r, a, [b, c]), (a, r, [b, c]), (a, b, [r, c])] {
+            match vote_four(&conn, best, worst, others, &[], &mut rng()) {
+                Err(AppError::UnknownWallpaper(_)) => {}
+                other => panic!("expected UnknownWallpaper, got {other:?}"),
+            }
+        }
+        for (best, worst, others) in [
+            (a, a, [b, c]),
+            (a, b, [c, c]),
+            (a, b, [a, c]),
+            (a, b, [c, b]),
+        ] {
+            match vote_four(&conn, best, worst, others, &[], &mut rng()) {
+                Err(AppError::BadRequest(_)) => {}
+                other => panic!("expected BadRequest, got {other:?}"),
+            }
+        }
+
+        for id in [a, b, c, d] {
+            assert_eq!(ratings(&conn, id), (MU, SIGMA, 0));
+        }
+        assert_eq!(ratings(&conn, r), (MU, SIGMA, 2));
+        assert!(comparison_rows(&conn).is_empty());
+        assert!(members(&conn).is_empty());
+    }
+
+    #[test]
+    fn a_failed_vote_on_four_rolls_back_ratings_counts_and_history() {
+        let conn = test_conn();
+        let [best, a, b, worst] = [0; 4].map(|_| seed_on(&conn, "active", MU, SIGMA, 0));
+        // The last write the vote makes, so everything before it has to undo.
+        conn.execute_batch(
+            "CREATE TRIGGER fail_member BEFORE INSERT ON comparison_members
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            vote_four(&conn, best, worst, [a, b], &[], &mut rng()),
+            Err(AppError::Db(_))
+        ));
+
+        for id in [best, a, b, worst] {
+            assert_eq!(ratings(&conn, id), (MU, SIGMA, 0));
+        }
+        assert!(comparison_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn a_showing_of_four_is_four_distinct_eligible_wallpapers_off_the_screen() {
+        let conn = test_conn();
+        let scored: Vec<i64> = (0..8)
+            .map(|i| seed_on(&conn, "active", 20.0 + f64::from(i), 4.0, 3))
+            .collect();
+        let kept = seed_on(&conn, "kept", 24.0, 4.0, 3);
+        let rejected: Vec<i64> = (0..3)
+            .map(|_| seed_on(&conn, "rejected", 24.0, 4.0, 0))
+            .collect();
+        let on_screen = &scored[..4];
+
+        let mut seen_kept = false;
+        for draw in DRAWS {
+            let showing = ids(&get_four(&conn, on_screen, &mut SeqRng::new(&[draw])).unwrap());
+            assert_eq!(showing.len(), 4, "{showing:?}");
+            assert!(distinct(&showing), "{showing:?}");
+            assert!(
+                !showing.iter().any(|id| rejected.contains(id)),
+                "{showing:?}"
+            );
+            assert!(
+                !showing.iter().any(|id| on_screen.contains(id)),
+                "{showing:?}"
+            );
+            seen_kept |= showing.contains(&kept);
+        }
+        assert!(seen_kept, "a Kept wallpaper is Eligible");
+    }
+
+    #[test]
+    fn a_showing_of_four_never_holds_an_unanswered_near_duplicate_pair() {
+        let conn = test_conn();
+        let a = seed_hashed(&conn, 0);
+        let b = seed_hashed(&conn, 0b11);
+        for hash in [u64::MAX, 0xFFFF_0000_FFFF_0000, 0x0F0F_0F0F_0F0F_0F0F] {
+            seed_hashed(&conn, hash);
+        }
+        seed_on(&conn, "active", MU, SIGMA, 0);
+
+        let (mut seen_a, mut seen_b) = (false, false);
+        for x in DRAWS {
+            for y in DRAWS {
+                for z in DRAWS {
+                    let showing = ids(&get_four(&conn, &[], &mut SeqRng::new(&[x, y, z])).unwrap());
+                    assert_eq!(showing.len(), 4, "{showing:?}");
+                    assert!(
+                        !(showing.contains(&a) && showing.contains(&b)),
+                        "Near-duplicates shown together in {showing:?}"
+                    );
+                    seen_a |= showing.contains(&a);
+                    seen_b |= showing.contains(&b);
+                }
+            }
+        }
+        // Each of the two still meets the others.
+        assert!(seen_a && seen_b);
+    }
+
+    #[test]
+    fn four_that_would_hold_an_unanswered_near_duplicate_pair_show_a_pair() {
+        let conn = test_conn();
+        let a = seed_hashed(&conn, 0);
+        let b = seed_hashed(&conn, 0b11);
+        seed_hashed(&conn, u64::MAX);
+        seed_on(&conn, "active", MU, SIGMA, 0);
+
+        let showing = ids(&get_four(&conn, &[], &mut rng()).unwrap());
+        assert_eq!(showing.len(), 2, "{showing:?}");
+        assert!(!(showing.contains(&a) && showing.contains(&b)));
+    }
+
+    #[test]
+    fn the_showing_on_screen_gives_way_one_member_at_a_time() {
+        // Five Eligible and four on screen: the fifth is in every showing, so
+        // the next one never repeats the one just answered.
+        let conn = test_conn();
+        let all: Vec<i64> = (0..5)
+            .map(|i| seed_on(&conn, "active", 20.0 + f64::from(i), 4.0, 3))
+            .collect();
+        for draw in DRAWS {
+            let showing = ids(&get_four(&conn, &all[..4], &mut SeqRng::new(&[draw])).unwrap());
+            assert!(distinct(&showing) && showing.len() == 4, "{showing:?}");
+            assert!(showing.contains(&all[4]), "{showing:?}");
+        }
+    }
+
+    #[test]
+    fn fewer_than_four_eligible_show_a_pair() {
+        let conn = test_conn();
+        let active: Vec<i64> = (0..3)
+            .map(|_| seed_on(&conn, "active", MU, SIGMA, 0))
+            .collect();
+        seed_on(&conn, "rejected", MU, SIGMA, 4);
+
+        let showing = ids(&get_four(&conn, &[], &mut rng()).unwrap());
+        assert_eq!(showing.len(), 2);
+        assert!(distinct(&showing) && showing.iter().all(|id| active.contains(id)));
+
+        // And a vote on four in a library that has since shrunk to three is
+        // followed by a pair.
+        let conn = test_conn();
+        let four: Vec<i64> = (0..4)
+            .map(|_| seed_on(&conn, "active", MU, SIGMA, 0))
+            .collect();
+        let extra = seed_on(&conn, "active", MU, SIGMA, 0);
+        set_status(&conn, extra, "rejected");
+        set_status(&conn, four[3], "kept");
+        let outcome =
+            vote_four(&conn, four[0], four[1], [four[2], four[3]], &[], &mut rng()).unwrap();
+        assert_eq!(outcome.next_showing.unwrap().len(), 4);
+        set_status(&conn, four[3], "rejected");
+        assert_eq!(get_four(&conn, &[], &mut rng()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn where_a_wallpaper_sits_in_a_showing_of_four_is_random() {
+        // `fresh` is always the first pick: the one Undecided wallpaper with
+        // the fewest Comparisons. Where it lands follows the shuffle alone.
+        let conn = test_conn();
+        let fresh = seed_on(&conn, "active", 25.0, 5.0, 1);
+        for _ in 0..3 {
+            seed_on(&conn, "active", 25.0, 5.0, 40);
+        }
+        let mut positions = Vec::new();
+        for draw in DRAWS {
+            let showing = ids(&get_four(&conn, &[], &mut SeqRng::new(&[draw])).unwrap());
+            positions.push(showing.iter().position(|&id| id == fresh).unwrap());
+        }
+        positions.sort_unstable();
+        positions.dedup();
+        assert!(positions.len() > 1, "always at {positions:?}");
+    }
+
+    #[test]
+    fn a_showing_of_four_holds_at_most_one_unrated() {
+        // Fewer than half have a Score, so an arrival is always the first pick,
+        // and the rest have a Score because some are available.
+        let conn = test_conn();
+        for i in 0..4 {
+            seed_on(&conn, "active", 20.0 + f64::from(i), 4.0, 3);
+        }
+        let unrated: Vec<i64> = (0..6)
+            .map(|_| seed_on(&conn, "active", MU, SIGMA, 0))
+            .collect();
+        for draw in DRAWS {
+            let showing = ids(&get_four(&conn, &[], &mut SeqRng::new(&[draw])).unwrap());
+            let arrivals = showing.iter().filter(|id| unrated.contains(id)).count();
+            assert_eq!(arrivals, 1, "{showing:?}");
+        }
+    }
+
+    #[test]
+    fn a_showing_of_four_that_was_an_arrivals_first_is_followed_by_none() {
+        // Eight of eleven have a Score before the vote: past half, so the cap
+        // is on, and enough of them are off the screen to fill a showing. The
+        // arrival is a member named neither best nor worst, and the cap reads
+        // it as it reads a winner or a loser.
+        let library = || {
+            let conn = test_conn();
+            let scored: Vec<i64> = (0..8)
+                .map(|i| seed_on(&conn, "active", 20.0 + f64::from(i), 4.0, 3))
+                .collect();
+            let arrival = seed_on(&conn, "active", MU, SIGMA, 0);
+            let unrated: Vec<i64> = (0..2)
+                .map(|_| seed_on(&conn, "active", MU, SIGMA, 0))
+                .collect();
+            (conn, scored, arrival, unrated)
+        };
+
+        for draw in DRAWS {
+            let (conn, scored, arrival, unrated) = library();
+            let outcome = vote_four(
+                &conn,
+                scored[0],
+                scored[1],
+                [arrival, scored[2]],
+                &[],
+                &mut SeqRng::new(&[draw]),
+            )
+            .unwrap();
+            let next = ids(&outcome.next_showing.unwrap());
+            assert!(
+                !next.iter().any(|id| unrated.contains(id)),
+                "an arrival came straight back: {next:?}"
+            );
+        }
+
+        // One showing later the cap has had its step, and an arrival goes
+        // first again.
+        let (conn, scored, arrival, unrated) = library();
+        vote_four(
+            &conn,
+            scored[0],
+            scored[1],
+            [arrival, scored[2]],
+            &[],
+            &mut rng(),
+        )
+        .unwrap();
+        let outcome = vote_four(
+            &conn,
+            scored[3],
+            scored[4],
+            [scored[5], arrival],
+            &[],
+            &mut rng(),
+        )
+        .unwrap();
+        let next = ids(&outcome.next_showing.unwrap());
+        assert_eq!(
+            next.iter().filter(|id| unrated.contains(id)).count(),
+            1,
+            "{next:?}"
+        );
+    }
+
+    #[test]
+    fn a_showing_of_four_is_one_entry_in_the_last_ten() {
+        // `m` has the fewest Comparisons of the two Undecided, and sat in a
+        // showing of four as a member named neither. It stays out of the first
+        // pick for exactly ten Comparisons: the four counts as one of them.
+        let conn = test_conn();
+        let m = seed_on(&conn, "active", 25.0, 5.0, 1);
+        let n = seed_on(&conn, "active", 25.0, 5.0, 2);
+        // Far above the Bar and sure of it, so Decided and never a first pick.
+        let decided: Vec<i64> = (0..4)
+            .map(|_| seed_on(&conn, "active", 60.0, 0.5, 50))
+            .collect();
+        add_comparison_of_four(&conn, decided[0], decided[1], [m, decided[2]]);
+        // A draw of 0.0 keeps selection order, so slot 0 is the first pick.
+        let first =
+            |conn: &Connection| get_pair(conn, &[], &mut SeqRng::new(&[0.0])).unwrap()[0].id;
+        for _ in 0..9 {
+            add_comparison(&conn, decided[0], decided[3]);
+            assert_eq!(first(&conn), n);
+        }
+        add_comparison(&conn, decided[0], decided[3]);
+        assert_eq!(first(&conn), m);
+    }
+
+    #[test]
+    fn a_votes_next_showing_of_four_never_holds_a_wallpaper_just_voted_on() {
+        let conn = test_conn();
+        let four: Vec<i64> = (0..4)
+            .map(|_| seed_on(&conn, "active", MU, SIGMA, 0))
+            .collect();
+        for _ in 0..5 {
+            seed_on(&conn, "active", MU, SIGMA, 0);
+        }
+        for draw in DRAWS {
+            let outcome = vote_four(
+                &conn,
+                four[0],
+                four[1],
+                [four[2], four[3]],
+                &[],
+                &mut SeqRng::new(&[draw]),
+            )
+            .unwrap();
+            let next = ids(&outcome.next_showing.expect("five others remain"));
+            assert_eq!(next.len(), 4);
+            assert!(!next.iter().any(|id| four.contains(id)), "{next:?}");
+        }
     }
 
     /// The Undecided count with the two Decided sides, the way the headline

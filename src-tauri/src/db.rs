@@ -12,7 +12,7 @@ use crate::scanner;
 /// Adding a whole table is not such a change: `init_schema` runs the DDL before
 /// it branches, so `CREATE TABLE IF NOT EXISTS` reaches old files too. That is
 /// why `settings` arrived without a bump, and `thumbnail_failures` and
-/// `distinct_pairs` after it.
+/// `comparison_members` and `distinct_pairs` after it.
 const SCHEMA_VERSION: i64 = 7;
 
 const DDL: &str = "
@@ -63,6 +63,16 @@ CREATE TABLE IF NOT EXISTS comparisons (
     loser_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
     voted_at  INTEGER NOT NULL
 );
+
+-- The two members of a showing of four named neither best nor worst, which
+-- `comparisons` holds as its winner and loser (ADR 0061). Unordered: nothing
+-- says which of the two is better. A pair has no rows here, so every
+-- Comparison from before showings of four is already complete.
+CREATE TABLE IF NOT EXISTS comparison_members (
+    comparison_id INTEGER NOT NULL REFERENCES comparisons(id) ON DELETE RESTRICT,
+    wallpaper_id  INTEGER NOT NULL REFERENCES wallpapers(id) ON DELETE RESTRICT,
+    PRIMARY KEY (comparison_id, wallpaper_id)
+) WITHOUT ROWID;
 
 -- Near-duplicate pairs the curator kept both of, so neither is offered again.
 -- A record like `comparisons`, and never deleted like it. Keyed by the two ids

@@ -150,6 +150,13 @@ export type Theme = "system" | "light" | "dark";
 export type ReviewLayout = "strip" | "grid";
 
 /**
+ * Mirrors settings::RankMode: whether Rank shows two wallpapers at a time or
+ * four (ADR 0061). `pairs` by default, so a curator who never touches the
+ * switch has the Rank they already had.
+ */
+export type RankMode = "pairs" | "fours";
+
+/**
  * Mirrors settings::LibraryLayout: how the Library draws its wallpapers.
  *
  * `grid` crops every wallpaper to one shape; `masonry` packs columns
@@ -476,6 +483,12 @@ export interface Settings {
    */
   bar_share: number;
   /**
+   * Whether Rank shows pairs or fours, remembered across launches. Offered on
+   * Rank's own bar and nowhere in the Settings view, for the reason the two
+   * layouts are.
+   */
+  rank_mode: RankMode;
+  /**
    * The filters Discover opens with, as the last successful search left them.
    * Not a `SettingKey`: a search writes them, and nothing else can.
    */
@@ -581,6 +594,7 @@ export const DEFAULT_SETTINGS: Settings = {
   crop_preview: false,
   evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
   bar_share: DEFAULT_BAR_SHARE,
+  rank_mode: "pairs",
   discover_filters: DEFAULT_DISCOVER_FILTERS,
   wallhaven_key_set: false,
   detected_screen: FALLBACK_SCREEN,
@@ -620,6 +634,25 @@ export interface VoteOutcome {
    * Comparison still counted, so this is a cue to re-fetch, not an error.
    */
   next_pair: [Wallpaper, Wallpaper] | null;
+  stats: Stats;
+}
+
+/**
+ * What Rank puts in front of the curator for one vote: two wallpapers or four
+ * (CONTEXT.md, ADR 0061). In random order, so where one sits means nothing.
+ */
+export type Showing =
+  | [Wallpaper, Wallpaper]
+  | [Wallpaper, Wallpaper, Wallpaper, Wallpaper];
+
+/** Mirrors voting::FourOutcome */
+export interface FourOutcome {
+  /**
+   * Four wallpapers, or two once fewer than four are Eligible. `null` when the
+   * vote was recorded but the follow-up fetch failed: the Comparison still
+   * counted, so this is a cue to re-fetch, not an error.
+   */
+  next_showing: Showing | null;
   stats: Stats;
 }
 
@@ -746,6 +779,8 @@ export type Command =
   | "check_download_folder"
   | "get_pair"
   | "vote"
+  | "get_four"
+  | "vote_four"
   | "get_stats"
   | "get_bar"
   | "list_wallpapers"
@@ -800,6 +835,16 @@ export interface BackendCommands {
   vote: {
     args: { winnerId: number; loserId: number; exclude?: number[] };
     answer: VoteOutcome;
+  };
+  get_four: { args: { exclude?: number[] }; answer: Showing };
+  vote_four: {
+    args: {
+      bestId: number;
+      worstId: number;
+      otherIds: [number, number];
+      exclude?: number[];
+    };
+    answer: FourOutcome;
   };
   get_stats: { args: undefined; answer: Stats };
   /** The Score the Bar sits at, or `null` while nothing has a Score. */
@@ -1139,6 +1184,25 @@ export const client = {
   /** `exclude` applies to the returned `next_pair`; the two voted on are always excluded. */
   vote: (winnerId: number, loserId: number, exclude?: number[]) =>
     call("vote", { winnerId, loserId, exclude }),
+
+  /**
+   * A showing of four, or a pair while fewer than four wallpapers are
+   * Eligible. `exclude` is what is on screen, as for `getPair`, and gives way
+   * one wallpaper at a time in a small library.
+   */
+  getFour: (exclude?: number[]) => call("get_four", { exclude }),
+
+  /**
+   * One vote on a showing of four: the best, the worst, and the two named
+   * neither, in no order. `exclude` applies to the returned `next_showing`; the
+   * four voted on are always excluded.
+   */
+  voteFour: (
+    bestId: number,
+    worstId: number,
+    otherIds: [number, number],
+    exclude?: number[],
+  ) => call("vote_four", { bestId, worstId, otherIds, exclude }),
 
   getStats: () => call("get_stats"),
 

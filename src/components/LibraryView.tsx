@@ -200,11 +200,11 @@ export function LibraryView() {
   const [ordering, setOrdering] = useState<ListOrdering>("score_desc");
   const [error, setError] = useState<string | null>(null);
   // Rows whose Score has moved since they were fetched. `score-changed` names
-  // the two wallpapers in a Comparison and cannot name their new Scores, so
-  // this is the whole of what the patch supports: the page knows those two
-  // numbers are a Comparison out of date and does not know what they became.
-  // Refetching every row because two Scores moved is the blunt shape ADR 0015
-  // turned a query library down over.
+  // the wallpapers in a Comparison and cannot name their new Scores, so this
+  // is the whole of what the patch supports: the page knows those numbers are
+  // a Comparison out of date and does not know what they became. Refetching
+  // every row because a few Scores moved is the blunt shape ADR 0015 turned a
+  // query library down over.
   const [scoresMoved, setScoresMoved] = useState<ReadonlySet<number>>(
     () => new Set(),
   );

@@ -15,6 +15,7 @@ import type {
   CacheSize,
   LibraryLayout,
   MissingFiles,
+  RankMode,
   Resolution,
   ReviewLayout,
   ReviewOrdering,
@@ -107,6 +108,9 @@ function storedAs(key: SettingKey, value: string): Partial<Settings> {
     // The fraction, back as the number the Settings struct carries (ADR 0056).
     case "bar_share":
       return { bar_share: Number(value) };
+    // Rank's own bar writes it, and the Settings page never does.
+    case "rank_mode":
+      return { rank_mode: value as RankMode };
   }
 }
 

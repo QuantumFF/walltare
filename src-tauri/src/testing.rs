@@ -67,6 +67,34 @@ pub(crate) fn add_comparison(conn: &Connection, winner_id: i64, loser_id: i64) {
     .unwrap();
 }
 
+/// A Comparison of four as a vote records it: the best and the worst as the
+/// winner and the loser, the other two as its members (ADR 0061).
+pub(crate) fn add_comparison_of_four(conn: &Connection, best: i64, worst: i64, others: [i64; 2]) {
+    add_comparison(conn, best, worst);
+    let comparison = conn.last_insert_rowid();
+    for member in others {
+        conn.execute(
+            "INSERT INTO comparison_members (comparison_id, wallpaper_id) VALUES (?1, ?2)",
+            rusqlite::params![comparison, member],
+        )
+        .unwrap();
+    }
+}
+
+/// How many Comparisons a wallpaper took part in, as the record says: the
+/// showings it was best or worst in, and the ones of four it was named neither
+/// in.
+pub(crate) fn comparisons_of(conn: &Connection, id: i64) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM comparisons
+         WHERE winner_id = ?1 OR loser_id = ?1
+            OR id IN (SELECT comparison_id FROM comparison_members WHERE wallpaper_id = ?1)",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 pub(crate) fn origin_path_of(conn: &Connection, id: i64) -> Option<String> {
     conn.query_row(
         "SELECT origin_path FROM wallpapers WHERE id = ?1",

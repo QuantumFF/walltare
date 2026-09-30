@@ -1,5 +1,12 @@
 import { RankView } from "@/components/RankView";
-import type { VoteOutcome, Wallpaper } from "@/lib/client";
+import { useApp } from "@/context/AppContext";
+import type {
+  FourOutcome,
+  RankMode,
+  Showing,
+  VoteOutcome,
+  Wallpaper,
+} from "@/lib/client";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { expectConsoleError } from "./console-guard";
@@ -13,6 +20,7 @@ import {
   panesArrive,
   press,
   renderInApp,
+  settings,
   stats,
   wallpaper,
 } from "./fixtures";
@@ -609,7 +617,7 @@ test("a vote with an empty slot and no follow-up pair fetches a fresh one", asyn
 });
 
 test("a library too small to rank says exactly that", async () => {
-  expectConsoleError(/Failed to load pair/);
+  expectConsoleError(/Failed to load a showing/);
   mockCommand("get_pair", () =>
     Promise.reject({
       kind: "not_enough_wallpapers",
@@ -625,7 +633,7 @@ test("a library too small to rank says exactly that", async () => {
 });
 
 test("a failed load offers a way out of the dead end", async () => {
-  expectConsoleError(/Failed to load pair/);
+  expectConsoleError(/Failed to load a showing/);
   mockCommand("get_pair", () =>
     Promise.reject({ kind: "db", message: "locked database" }),
   );
@@ -642,7 +650,7 @@ test("a failed load offers a way out of the dead end", async () => {
 });
 
 test("a skip that fails keeps the pair on screen and says so", async () => {
-  expectConsoleError(/Failed to fetch a fresh pair/);
+  expectConsoleError(/Failed to fetch a fresh showing/);
   mockCommand("get_pair", () => {
     getPairCalls++;
     if (getPairCalls === 1) return pair(1, 2);
@@ -782,4 +790,334 @@ test("the suggestion follows the state, and Keep ranking puts it away until it i
   expect(suggestion()).toBeNull();
   await pick();
   expect(suggestion()).toBe(NOTHING_LEFT);
+});
+
+// --- showings of four (ADR 0061) ---------------------------------------------
+
+function four(...ids: [number, number, number, number]): Showing {
+  return ids.map((id) => wallpaper(id)) as Showing;
+}
+
+let getFourCalls = 0;
+let fourExcludes: unknown[];
+let fourVotes: Array<{ best: number; worst: number; others: number[] }>;
+let settingWrites: Array<{ key: string; value: string }>;
+
+/** Rank in `mode`, as the settings table has it, with writes recorded. */
+function rankIn(mode: RankMode): void {
+  let stored = settings({ rank_mode: mode });
+  settingWrites = [];
+  mockCommand("get_settings", () => stored);
+  mockCommand("set_setting", (args) => {
+    settingWrites.push(args);
+    stored = { ...stored, rank_mode: args.value as RankMode };
+    return stored;
+  });
+}
+
+/** Serve `queue` to successive `get_four` calls; a call past the end fails. */
+function serveFours(...queue: Showing[]): void {
+  getFourCalls = 0;
+  fourExcludes = [];
+  mockCommand("get_four", (args) => {
+    fourExcludes.push(args.exclude);
+    const next = queue[getFourCalls++];
+    if (!next) {
+      throw new Error(
+        `get_four called ${getFourCalls} times; only ${queue.length} queued`,
+      );
+    }
+    return next;
+  });
+}
+
+function serveFourVote(response: () => FourOutcome | Promise<FourOutcome>) {
+  fourVotes = [];
+  mockCommand("vote_four", (args) => {
+    fourVotes.push({
+      best: args.bestId,
+      worst: args.worstId,
+      others: [...args.otherIds].sort((a, b) => a - b),
+    });
+    return response();
+  });
+}
+
+const tile = (n: number) =>
+  screen.getByRole("button", { name: `Wallpaper ${n}` });
+
+/** The wallpaper ids the four tiles are showing, in grid order. */
+function tileIds(): number[] {
+  return [1, 2, 3, 4].map((n) => {
+    const src = tile(n).querySelector("img")?.getAttribute("src") ?? "";
+    return Number(/image\/(\d+)\?/.exec(src)?.[1]);
+  });
+}
+
+const prompt = () => screen.getByText(/^(Pick the|Now the)/).textContent;
+const pressed = () =>
+  [1, 2, 3, 4].filter((n) => tile(n).getAttribute("aria-pressed") === "true");
+
+async function clickTile(n: number) {
+  await act(async () => {
+    fireEvent.click(tile(n));
+  });
+}
+
+test("fours shows four tiles named by their key, and a pick of best then worst is one vote", async () => {
+  rankIn("fours");
+  serveFours(four(1, 2, 3, 4), four(5, 6, 7, 8));
+  serveFourVote(() => ({ next_showing: four(9, 10, 11, 12), stats: stats() }));
+
+  await renderRankView();
+
+  expect(tileIds()).toEqual([1, 2, 3, 4]);
+  // The prefetch behind it avoids what is on screen.
+  expect(fourExcludes).toEqual([undefined, [1, 2, 3, 4]]);
+  expect(prompt()).toBe("Pick the best");
+  expect(screen.getByRole("button", { name: /skip these four/i })).toBeTruthy();
+
+  await clickTile(2);
+  expect(prompt()).toBe("Now the worst");
+  expect(pressed()).toEqual([2]);
+  expect(tile(2).textContent).toContain("Best");
+  expect(fourVotes).toEqual([]);
+
+  await clickTile(4);
+  // The two named neither dim through the beat; nothing has been sent yet.
+  expect(tile(1).className).toContain("opacity-50");
+  expect(tile(3).className).toContain("opacity-50");
+  expect(tile(2).className).not.toContain("opacity-50");
+  expect(tile(4).textContent).toContain("Worst");
+  expect(fourVotes).toEqual([]);
+
+  await runPickFeedback();
+  expect(fourVotes).toEqual([{ best: 2, worst: 4, others: [1, 3] }]);
+  // The prefetched four swapped in, with nothing named on it.
+  expect(tileIds()).toEqual([5, 6, 7, 8]);
+  expect(prompt()).toBe("Pick the best");
+  expect(pressed()).toEqual([]);
+});
+
+test("the best is taken back by a second click, by Backspace and by Esc", async () => {
+  rankIn("fours");
+  serveFours(four(1, 2, 3, 4), four(5, 6, 7, 8));
+  serveFourVote(() => ({ next_showing: four(9, 10, 11, 12), stats: stats() }));
+
+  await renderRankView();
+
+  await clickTile(3);
+  expect(pressed()).toEqual([3]);
+  await clickTile(3);
+  expect(pressed()).toEqual([]);
+  expect(prompt()).toBe("Pick the best");
+
+  for (const key of ["Backspace", "Escape"]) {
+    await clickTile(1);
+    expect(prompt()).toBe("Now the worst");
+    await press(key, { target: window });
+    expect(pressed()).toEqual([]);
+    expect(prompt()).toBe("Pick the best");
+  }
+
+  // Taken back and named again, the second pick is the worst of the new best.
+  await clickTile(4);
+  await clickTile(1);
+  await runPickFeedback();
+  expect(fourVotes).toEqual([{ best: 4, worst: 1, others: [2, 3] }]);
+});
+
+test("1 to 4 follow the grid, S skips, and the arrows record nothing in fours", async () => {
+  rankIn("fours");
+  serveFours(
+    four(1, 2, 3, 4),
+    four(5, 6, 7, 8),
+    four(13, 14, 15, 16),
+    four(17, 18, 19, 20),
+  );
+  serveFourVote(() => ({ next_showing: four(9, 10, 11, 12), stats: stats() }));
+  mockCommand("vote", () => {
+    throw new Error("a pair vote in fours");
+  });
+
+  await renderRankView();
+
+  await press("ArrowLeft", { target: window });
+  await press("ArrowRight", { target: window });
+  await advancePickFeedback();
+  expect(fourVotes).toEqual([]);
+  expect(pressed()).toEqual([]);
+
+  // Top right is the best, bottom left the worst.
+  await press("2", { target: window });
+  await press("3", { target: window });
+  await runPickFeedback();
+  expect(fourVotes).toEqual([{ best: 2, worst: 3, others: [1, 4] }]);
+  expect(tileIds()).toEqual([5, 6, 7, 8]);
+
+  // S is "not these four", and the next draw is told so.
+  await press("s", { target: window });
+  await flush();
+  expect(fourExcludes[2]).toEqual([5, 6, 7, 8]);
+  expect(tileIds()).toEqual([13, 14, 15, 16]);
+});
+
+test("S skips a pair too", async () => {
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6), pair(7, 8));
+  await renderRankView();
+
+  await press("S", { target: window });
+  await flush();
+
+  expect(shownIds()).toEqual([5, 6]);
+  expect(votes).toEqual([]);
+});
+
+/** The two views a test walks between, as the chrome's tabs would. */
+function ViewSwitch() {
+  const { setView } = useApp();
+  return (
+    <>
+      <button type="button" onClick={() => setView("library")}>
+        To Library
+      </button>
+      <button type="button" onClick={() => setView("rank")}>
+        To Rank
+      </button>
+    </>
+  );
+}
+
+test("a best left behind by a skip, a switch of mode or a switch of view records nothing", async () => {
+  rankIn("fours");
+  serveFours(
+    four(1, 2, 3, 4),
+    four(5, 6, 7, 8),
+    four(9, 10, 11, 12),
+    four(13, 14, 15, 16),
+  );
+  serveFourVote(() => {
+    throw new Error("a half-answered showing was sent");
+  });
+  servePairs(pair(21, 22), pair(23, 24));
+
+  await renderInApp(
+    <>
+      <ViewSwitch />
+      <RankView />
+    </>,
+  );
+  await flush();
+  await panesArrive();
+
+  // Skipped.
+  await clickTile(1);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: /skip these four/i }));
+  });
+  await flush();
+  await panesArrive();
+  expect(tileIds()).toEqual([9, 10, 11, 12]);
+  expect(pressed()).toEqual([]);
+
+  // Left for another view and come back to.
+  await clickTile(2);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "To Library" }));
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "To Rank" }));
+  });
+  expect(pressed()).toEqual([]);
+  expect(prompt()).toBe("Pick the best");
+
+  // Switched to pairs, which draws a pair in place of the four.
+  await clickTile(3);
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Pairs" }));
+  });
+  await flush();
+  expect(settingWrites).toEqual([{ key: "rank_mode", value: "pairs" }]);
+  expect(shownIds()).toEqual([21, 22]);
+  expect(votes).toEqual([]);
+});
+
+test("the switch is remembered through the settings command and draws the other size", async () => {
+  rankIn("pairs");
+  servePairs(pair(1, 2), pair(3, 4));
+  serveFours(four(5, 6, 7, 8), four(9, 10, 11, 12));
+
+  await renderRankView();
+  const group = screen.getByRole("group", { name: "Show" });
+  const fours = screen.getByRole("button", { name: "Fours" });
+  expect(group.contains(fours)).toBe(true);
+  expect(
+    screen.getByRole("button", { name: "Pairs" }).getAttribute("aria-pressed"),
+  ).toBe("true");
+
+  await act(async () => {
+    fireEvent.click(fours);
+  });
+  await flush();
+
+  expect(settingWrites).toEqual([{ key: "rank_mode", value: "fours" }]);
+  expect(fours.getAttribute("aria-pressed")).toBe("true");
+  // The pair on screen stays out of the four drawn for it.
+  expect(fourExcludes[0]).toEqual([1, 2]);
+  expect(tileIds()).toEqual([5, 6, 7, 8]);
+});
+
+test("a failed vote on four puts the showing back with the best cleared", async () => {
+  expectConsoleError(/Failed to submit vote/);
+  rankIn("fours");
+  serveFours(four(1, 2, 3, 4), four(5, 6, 7, 8));
+  serveFourVote(() => Promise.reject({ kind: "db", message: "disk full" }));
+
+  await renderRankView();
+
+  await clickTile(1);
+  await clickTile(2);
+  await runPickFeedback();
+
+  expect(fourVotes).toHaveLength(1);
+  expect(tileIds()).toEqual([1, 2, 3, 4]);
+  expect(pressed()).toEqual([]);
+  expect(prompt()).toBe("Pick the best");
+  expect(alertText()).toBe("That vote didn't save. Pick again.");
+});
+
+test("fours with fewer than four Eligible shows a pair and votes on it as one", async () => {
+  rankIn("fours");
+  serveFours(pair(1, 2), pair(1, 2), pair(1, 2));
+  serveVote(() => ({ next_pair: pair(1, 2), stats: stats() }));
+
+  await renderRankView();
+
+  expect(shownIds()).toEqual([1, 2]);
+  expect(screen.queryByRole("button", { name: "Wallpaper 1" })).toBeNull();
+  expect(screen.getByRole("button", { name: /skip pair/i })).toBeTruthy();
+
+  // The digits are not bound on a pair; the arrows are.
+  await press("1", { target: window });
+  await advancePickFeedback();
+  expect(votes).toEqual([]);
+  await press("ArrowRight", { target: window });
+  await runPickFeedback();
+  expect(votes).toEqual([[2, 1]]);
+  // What follows is still drawn for fours.
+  expect(getFourCalls).toBe(3);
+});
+
+test("a pick on four is refused until every tile has its wallpaper", async () => {
+  rankIn("fours");
+  serveFours(four(1, 2, 3, 4), four(5, 6, 7, 8));
+  serveFourVote(() => ({ next_showing: four(9, 10, 11, 12), stats: stats() }));
+
+  await renderInApp(<RankView />);
+  await flush();
+
+  await clickTile(1);
+  expect(pressed()).toEqual([]);
+  await press("1", { target: window });
+  expect(pressed()).toEqual([]);
 });

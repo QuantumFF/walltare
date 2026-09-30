@@ -1,4 +1,5 @@
 import {
+  rankShortcutLines,
   shortcutLines,
   type AnyActionTable,
   type ShortcutLine,
@@ -62,10 +63,7 @@ function groupsFor(actions: AnyActionTable): readonly {
     },
     {
       heading: "Rank",
-      bindings: [
-        { keys: ["←"], action: "Pick the wallpaper on the left" },
-        { keys: ["→"], action: "Pick the wallpaper on the right" },
-      ],
+      bindings: rankShortcutLines(),
     },
     {
       heading: "Grid and strip",
@@ -160,8 +158,10 @@ export function ShortcutsDialog({
                 </h3>
                 <dl className="mt-2 space-y-1.5">
                   {group.bindings.map((binding) => (
+                    // Keyed on the keys too: two keys may do one thing, as
+                    // Backspace and Esc both take back Rank's best.
                     <div
-                      key={binding.action}
+                      key={`${binding.keys.join("+")} ${binding.action}`}
                       className="flex items-baseline justify-between gap-4 text-sm"
                     >
                       <dt className="text-muted-foreground">

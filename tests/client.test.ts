@@ -20,6 +20,7 @@ const stored: Settings = {
   crop_preview: true,
   evaluated_threshold: 3.0,
   bar_share: 0.3,
+  rank_mode: "fours",
   discover_filters: {
     purity: { sfw: true, sketchy: true, nsfw: false },
     categories: { general: false, anime: true, people: false },

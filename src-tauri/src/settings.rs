@@ -29,6 +29,7 @@ const STARTUP_VIEW: &str = "startup_view";
 const REVIEW_ORDERING: &str = "review_ordering";
 const EVALUATED_THRESHOLD: &str = "evaluated_threshold";
 const BAR_SHARE: &str = "bar_share";
+const RANK_MODE: &str = "rank_mode";
 // Discover's remembered filters. Written by a successful search and by nothing
 // else, so `set` refuses them like any unknown key (ADR 0054).
 const WALLHAVEN_PURITY: &str = "wallhaven_purity";
@@ -209,6 +210,21 @@ vocabulary! {
         /// The uniform grid of cards Review has always drawn.
         #[default]
         Grid => "grid",
+    }
+}
+
+vocabulary! {
+    /// What Rank shows: two wallpapers at a time, or four (ADR 0061).
+    ///
+    /// Remembered because it is a choice about how the curator likes to work,
+    /// and one made every session is a control pressed every session. Pairs by
+    /// default, so a curator who never touches the switch has the Rank they
+    /// already had.
+    #[derive(Default)]
+    pub enum RankMode: "a Rank mode" {
+        #[default]
+        Pairs => "pairs",
+        Fours => "fours",
     }
 }
 
@@ -693,6 +709,12 @@ pub struct Settings {
     /// Scores do and is worked out on every read (`CONTEXT.md`,
     /// [ADR 0056](../../docs/adr/0056-the-bar-is-a-position-over-every-scored-wallpaper.md)).
     pub bar_share: f64,
+    /// Whether Rank shows pairs or fours, remembered across launches.
+    ///
+    /// Offered on Rank's own bar and nowhere in the Settings view, for the
+    /// reason the two layouts are: the control is where the curator is when
+    /// they want it changed.
+    pub rank_mode: RankMode,
     /// The filters Discover opens with, as the last successful search left them.
     ///
     /// Not keys `set` takes: a search writes them through [`remember`], so a
@@ -747,6 +769,7 @@ impl Settings {
             // a curator who ignores the control.
             evaluated_threshold: DEFAULT_EVALUATED_THRESHOLD,
             bar_share: DEFAULT_BAR_SHARE,
+            rank_mode: RankMode::default(),
             discover_filters: DiscoverFilters::default(),
             // Anonymous until a key is saved.
             wallhaven_key_set: false,
@@ -969,6 +992,7 @@ fn resolve(stored: &HashMap<String, String>, detected: Detected) -> Settings {
             .map_or(defaults.evaluated_threshold, |threshold| threshold.0),
         bar_share: read(stored, BAR_SHARE, BarShare::parse)
             .map_or(defaults.bar_share, |share| share.0),
+        rank_mode: read(stored, RANK_MODE, RankMode::parse).unwrap_or(defaults.rank_mode),
         discover_filters: resolve_filters(stored),
         // A flag derived from the key's row, and never the key (ADR 0052).
         wallhaven_key_set: stored
@@ -1040,6 +1064,7 @@ fn is_default(key: &str, value: &str, without: &Settings) -> Result<bool, AppErr
         CROP_PREVIEW => Ok(bool::written(value)? == without.crop_preview),
         EVALUATED_THRESHOLD => Ok(Threshold::written(value)?.0 == without.evaluated_threshold),
         BAR_SHARE => Ok(BarShare::written(value)?.0 == without.bar_share),
+        RANK_MODE => Ok(RankMode::written(value)? == without.rank_mode),
         // The key's default is no key, so the one value equal to it is the
         // empty one, which is how Remove deletes the row. Any other value is a
         // key, and `wallhaven_key_set` is what reads it back.
@@ -1153,6 +1178,7 @@ mod tests {
                 crop_preview: false,
                 evaluated_threshold: 4.0,
                 bar_share: 0.2,
+                rank_mode: RankMode::Pairs,
                 discover_filters: DiscoverFilters::default(),
                 wallhaven_key_set: false,
                 detected_screen: size(3840, 2160),
@@ -1649,6 +1675,7 @@ mod tests {
         set(&conn, "review_ordering", "score_desc", detected()).unwrap();
         set(&conn, "evaluated_threshold", "3", detected()).unwrap();
         set(&conn, "bar_share", "0.5", detected()).unwrap();
+        set(&conn, "rank_mode", "fours", detected()).unwrap();
         set(&conn, "theme", "system", detected()).unwrap();
         set(&conn, "library_root", "", detected()).unwrap();
         set(&conn, "reject_destination", "./rejected", detected()).unwrap();
@@ -1660,6 +1687,7 @@ mod tests {
         set(&conn, "startup_view", "rank", detected()).unwrap();
         set(&conn, "review_ordering", "score_asc", detected()).unwrap();
         set(&conn, "bar_share", "0.2", detected()).unwrap();
+        set(&conn, "rank_mode", "pairs", detected()).unwrap();
         set(&conn, "evaluated_threshold", "4", detected()).unwrap(); // The minimum resolution goes back first, against the overridden screen
                                                                      // it currently defaults to. Doing it the other way round would mean
                                                                      // writing 3840x2160 into a key whose default had already moved there,
@@ -1897,7 +1925,7 @@ mod tests {
         // refusal may not name a value the parse refuses, and the parse may not
         // take a spelling the refusal did not name. A new enumerated key needs
         // a row here, or that guarantee lapses for it without a failure.
-        let table: [(&str, &[&str]); 9] = [
+        let table: [(&str, &[&str]); 10] = [
             ("theme", &["System", " dark", "solarized"]),
             ("library_layout", &["Grid", "masonry ", "mosaic"]),
             ("review_layout", &["Strip", "grid\n", "masonry"]),
@@ -1910,6 +1938,7 @@ mod tests {
             ("review_worklist_size", &["+10", "050", "37"]),
             ("evaluated_threshold", &["4.0", "+3", "5e0"]),
             ("bar_share", &[".2", "0.20", "20"]),
+            ("rank_mode", &["Fours", "four", "pairs "]),
         ];
 
         for (key, near_misses) in table {
@@ -1964,6 +1993,7 @@ mod tests {
         set(&conn, "screen", "2560x1440", detected()).unwrap();
         set(&conn, "review_layout", "strip", detected()).unwrap();
         set(&conn, "crop_preview", "true", detected()).unwrap();
+        set(&conn, "rank_mode", "fours", detected()).unwrap();
 
         let json = serde_json::to_value(get(&conn, detected()).unwrap()).unwrap();
 
@@ -2008,6 +2038,38 @@ mod tests {
         // The Bar share crosses as the fraction, which is what is stored; the
         // percentage is the page's to print (ADR 0056).
         assert_eq!(json["bar_share"], 0.2);
+        // A mode crosses as the string a write accepts back, the way a layout
+        // does.
+        assert_eq!(json["rank_mode"], "fours");
+    }
+
+    #[test]
+    fn rank_shows_pairs_until_the_curator_says_fours_and_remembers_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("walltare.db");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            crate::db::init_schema(&conn).unwrap();
+            assert_eq!(get(&conn, detected()).unwrap().rank_mode, RankMode::Pairs);
+            assert_eq!(stored_rows(&conn), 0);
+            let written = set(&conn, "rank_mode", "fours", detected()).unwrap();
+            assert_eq!(written.rank_mode, RankMode::Fours);
+        }
+
+        let conn = crate::db::open(&db_path).unwrap();
+        crate::db::init_schema(&conn).unwrap();
+        assert_eq!(get(&conn, detected()).unwrap().rank_mode, RankMode::Fours);
+
+        // Back to pairs is the write that deletes the row.
+        set(&conn, "rank_mode", "pairs", detected()).unwrap();
+        assert_eq!(stored_rows(&conn), 0);
+    }
+
+    #[test]
+    fn a_rank_mode_row_that_will_not_read_falls_back_to_pairs() {
+        let conn = store();
+        write_raw_row(&conn, "rank_mode", "eights");
+        assert_eq!(get(&conn, detected()).unwrap().rank_mode, RankMode::Pairs);
     }
 
     #[test]

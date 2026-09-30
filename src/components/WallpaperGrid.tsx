@@ -28,7 +28,7 @@ export interface WallpaperGridProps extends Omit<
    * read `Score moved` rather than a number.
    *
    * A set of ids rather than a flag per card, because that is the shape the
-   * event arrives in: `score-changed` names the two wallpapers in a Comparison,
+   * event arrives in: `score-changed` names the wallpapers in a Comparison,
    * so the page holds a set and the grid is only carrying it the last step to
    * the card that computes its own badge (#129).
    */
