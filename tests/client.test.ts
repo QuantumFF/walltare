@@ -586,7 +586,7 @@ describe("client seam", () => {
     expect(emitEvent("pregen-progress", { done: 2, total: 42 })).toBe(0);
   });
 
-  test("subscribe unwraps a pregen-complete payload, cancelled flag included", async () => {
+  test("subscribe unwraps a pregen-complete payload, cancelled flag and pair count included", async () => {
     const seen: unknown[] = [];
     const unlisten = await client.subscribe("pregen-complete", (payload) =>
       seen.push(payload),
@@ -596,10 +596,13 @@ describe("client seam", () => {
       generated: 40,
       failed: 1,
       cancelled: true,
+      near_duplicate_pairs: 2,
     });
 
     expect(delivered).toBe(1);
-    expect(seen).toEqual([{ generated: 40, failed: 1, cancelled: true }]);
+    expect(seen).toEqual([
+      { generated: 40, failed: 1, cancelled: true, near_duplicate_pairs: 2 },
+    ]);
     unlisten();
   });
 

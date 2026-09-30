@@ -149,10 +149,12 @@ fn reject_with(
     // `origin_path = path` records where the file is coming from. SQLite
     // evaluates every right-hand side against the pre-update row, so this reads
     // the old path in the same statement that overwrites it — no second read,
-    // and no window where the Origin is half written.
+    // and no window where the Origin is half written. `rejected_at` is when,
+    // which a Near-duplicate arriving later is told apart by (#402).
     tx.execute(
         "UPDATE wallpapers
-         SET status = ?1, path = ?2, filename = ?3, origin_path = path
+         SET status = ?1, path = ?2, filename = ?3, origin_path = path,
+             rejected_at = unixepoch()
          WHERE id = ?4",
         rusqlite::params![Status::Rejected, dest_str, dest_name, wallpaper_id],
     )?;
@@ -192,12 +194,13 @@ pub fn reject_missing(conn: &Connection, ids: &[i64]) -> Result<Vec<Wallpaper>, 
 
 /// The reject of a gone file: the Status and the Origin, and nothing on disk.
 ///
-/// `origin_path = path` for the reason the moving reject's `UPDATE` gives, and
-/// here the two end up equal, which is what tells a Restore it has nothing to
-/// move back.
+/// `origin_path = path` and `rejected_at` for the reasons the moving reject's
+/// `UPDATE` gives, and here the Origin and the path end up equal, which is what
+/// tells a Restore it has nothing to move back.
 fn reject_in_place(tx: &Connection, wallpaper_id: i64) -> Result<(), AppError> {
     tx.execute(
-        "UPDATE wallpapers SET status = ?1, origin_path = path WHERE id = ?2",
+        "UPDATE wallpapers SET status = ?1, origin_path = path, rejected_at = unixepoch()
+         WHERE id = ?2",
         rusqlite::params![Status::Rejected, wallpaper_id],
     )?;
     Ok(())
@@ -311,10 +314,10 @@ fn restore_with(
 
     // Clearing the Origin is part of the same statement that spends it, so no
     // row ever claims Active and an Origin at once, and the next reject records
-    // a fresh one.
+    // a fresh one. The reject's time goes with it, for the same reason.
     tx.execute(
         "UPDATE wallpapers
-         SET status = ?1, path = ?2, filename = ?3, origin_path = NULL
+         SET status = ?1, path = ?2, filename = ?3, origin_path = NULL, rejected_at = NULL
          WHERE id = ?4",
         rusqlite::params![Status::Active, dest_str, dest_name, wallpaper_id],
     )?;
@@ -328,7 +331,8 @@ fn restore_with(
 /// and nothing on disk. The mirror of [`reject_in_place`].
 fn restore_in_place(tx: &Connection, wallpaper_id: i64) -> Result<(), AppError> {
     tx.execute(
-        "UPDATE wallpapers SET status = ?1, origin_path = NULL WHERE id = ?2",
+        "UPDATE wallpapers SET status = ?1, origin_path = NULL, rejected_at = NULL
+         WHERE id = ?2",
         rusqlite::params![Status::Active, wallpaper_id],
     )?;
     Ok(())
@@ -804,6 +808,55 @@ mod tests {
         // have overwritten it with the reject folder, which is the one place a
         // Restore must never send a file back to.
         assert_eq!(origin_path_of(&conn, id), Some(origin));
+    }
+
+    #[test]
+    fn a_reject_records_when_it_happened_and_a_restore_clears_it() {
+        // What tells a Near-duplicate that arrived after the reject from one
+        // that was already there (#402). A later reject records a fresh time.
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let (id, _) = seed_for_restore(&conn, tmp.path(), "a.jpg");
+        let before = now_secs();
+
+        reject(&conn, id, "rejected").unwrap();
+        let at = rejected_at_of(&conn, id).unwrap();
+        assert!(
+            at >= before && at <= now_secs(),
+            "{at} not in [{before}, now]"
+        );
+
+        restore(&conn, id).unwrap();
+        assert_eq!(rejected_at_of(&conn, id), None);
+
+        conn.execute("UPDATE wallpapers SET rejected_at = 5 WHERE id = ?1", [id])
+            .unwrap();
+        reject(&conn, id, "rejected").unwrap();
+        assert!(rejected_at_of(&conn, id).unwrap() >= before);
+    }
+
+    #[test]
+    fn a_reject_in_place_records_when_it_happened_and_its_restore_clears_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let id = seed_real_wallpaper(&conn, tmp.path(), "gone.jpg");
+        std::fs::remove_file(tmp.path().join("gone.jpg")).unwrap();
+        let before = now_secs();
+
+        reject_missing(&conn, &[id]).unwrap();
+        assert!(rejected_at_of(&conn, id).unwrap() >= before);
+
+        restore(&conn, id).unwrap();
+        assert_eq!(rejected_at_of(&conn, id), None);
+    }
+
+    fn now_secs() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
     }
 
     #[test]

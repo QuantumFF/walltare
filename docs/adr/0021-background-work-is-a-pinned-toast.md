@@ -175,6 +175,18 @@ not name.
 > 2026-09-29.** Round is retired, so the `scan-complete` row's description is
 > gone: `412 wallpapers added` stands alone.
 
+> **Amended by [#404](https://github.com/QuantumFF/walltare/issues/404),
+> 2026-09-30.** `pregen-complete` now also carries `near_duplicate_pairs`, the
+> Near-duplicate pairs waiting once the pass has stopped, counted after its
+> last hash so the arrivals a scan just added are in it. It rides on the pass's
+> ending rather than `scan-complete` because those arrivals are not hashed
+> until the pass reaches them. When it is above zero the two empty
+> `pregen-complete` rows, cancelled included, say `3 Near-duplicate pairs
+> waiting in Review` for 8s, and the `failed > 0` row keeps its title and takes
+> that line as its description. The pairs are news about the library rather
+> than the work, which is the line "Dismissing progress does not suppress the
+> ending" already draws. At zero every row is unchanged.
+
 The two empty rows are the decision, not an omission. A pass that finishes
 cleanly has nothing to report: nobody acts on "1,204 thumbnails ready", the
 pass runs on essentially every first launch, and a notification whose only

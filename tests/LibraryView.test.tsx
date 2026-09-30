@@ -1542,13 +1542,8 @@ test("switching between the uncropped layouts keeps the selection", async () => 
 });
 
 // The Evaluated threshold, on the surface that draws the most badges at once
-// (#260). The setting is the σ below which a Score badge goes solid, and the
-// same σ `voting.rs` counts `evaluated_count` with — so what these assert is
-// that the library's badges are the rows the Rank headline counted.
-//
-// The count itself is not asserted here. It is the backend's, and the arithmetic
-// is `voting.rs`'s; what this page can be wrong about is which cards it draws
-// solid, which is the half that lives on this side of the IPC.
+// (#260). The setting is the σ below which a Score badge goes solid, so what
+// these assert is which cards this page draws solid against it.
 
 /** Whether a card's Score badge says the app trusts the number, by its tooltip. */
 const evaluatedOn = (id: number) =>

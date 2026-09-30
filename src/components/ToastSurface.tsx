@@ -253,15 +253,6 @@ type Background =
 type Pass = Extract<Background, { kind: "pregen" }>;
 
 /**
- * ADR 0008's explanation for a Round that just moved backwards, which a scan's
- * ending and a download batch's both carry: every wallpaper either of them adds
- * has no comparisons yet.
- */
-function backToRound(round: number): string {
-  return `Back to Round ${grouped(round)}. The new wallpapers have no comparisons yet.`;
-}
-
-/**
  * What the toast says about how a scan ended: ADR 0021's four `scan-*` rows.
  *
  * Which row applies is the scan run's to decide, and it hands over the outcome
@@ -290,10 +281,7 @@ function scanEnding(outcome: ScanOutcome): {
     case "added":
       return {
         title: `${counted(outcome.added, "wallpaper")} added`,
-        description:
-          outcome.backToRound === null
-            ? undefined
-            : backToRound(outcome.backToRound),
+        description: undefined,
         pinned: false,
       };
     case "failed":
@@ -309,10 +297,9 @@ function scanEnding(outcome: ScanOutcome): {
  * What the toast says about how a batch of downloads ended (ADR 0051).
  *
  * A batch where every file landed is news about the library and goes in eight
- * seconds, with the Round line when the Round moved. Any failure pins, because
- * ADR 0017 pins errors and a file that did not arrive is one the curator has
- * to go back for; the first failure's sentence says why, and each failed card
- * carries its own.
+ * seconds. Any failure pins, because ADR 0017 pins errors and a file that did
+ * not arrive is one the curator has to go back for; the first failure's
+ * sentence says why, and each failed card carries its own.
  */
 function downloadEnding(ending: DownloadEnding): {
   title: string;
@@ -328,8 +315,7 @@ function downloadEnding(ending: DownloadEnding): {
   }
   return {
     title: `${counted(ending.landed, "wallpaper")} downloaded`,
-    description:
-      ending.backToRound === null ? undefined : backToRound(ending.backToRound),
+    description: undefined,
     pinned: false,
   };
 }
@@ -462,11 +448,11 @@ export function ToastSurface({
 }) {
   const { view, setView } = useApp();
   const handOffOnPointerPress = useHandOffOnPointerPress();
-  // The scan is read rather than followed. What it does — the IPC, the Rounds
-  // either side of it, the freshness events — is the scan run's, and this file
-  // turns its state into the report and its outcome into the ending, which is
-  // the part that is copy (ADR 0021). The transitions' own IPC left with the
-  // Undo closures (ADR 0023), so nothing here calls the backend at all.
+  // The scan is read rather than followed. What it does — the IPC and the
+  // freshness events — is the scan run's, and this file turns its state into
+  // the report and its outcome into the ending, which is the part that is copy
+  // (ADR 0021). The transitions' own IPC left with the Undo closures
+  // (ADR 0023), so nothing here calls the backend at all.
   const { state: scan } = useScanRun();
   const downloads = useDownloadState();
   const [transient, setTransient] = useState<Transient | null>(null);
@@ -671,20 +657,36 @@ export function ToastSurface({
       );
     },
 
-    pregenComplete: ({ generated, failed, cancelled: byRequest }) => {
+    pregenComplete: ({
+      generated,
+      failed,
+      cancelled: byRequest,
+      near_duplicate_pairs: pairs,
+    }) => {
       setPass(null);
-      // Two of the three endings say nothing at all, and that is the decision
-      // rather than an omission. Nobody acts on "1,204 thumbnails ready", the
-      // pass runs on essentially every launch, and a notification whose only
-      // content is that a background task stopped is what trains people to
-      // dismiss notifications unread. A cancel says it more directly still,
-      // since the curator pressed the button.
-      if (byRequest || failed === 0) return;
-      raise(
-        `${counted(generated, "thumbnail")} ready, ${grouped(failed)} failed`,
-        undefined,
-        false,
-      );
+      // Two of the three endings say nothing about the thumbnails, and that is
+      // the decision rather than an omission. Nobody acts on "1,204 thumbnails
+      // ready", the pass runs on essentially every launch, and a notification
+      // whose only content is that a background task stopped is what trains
+      // people to dismiss notifications unread. A cancel says it more directly
+      // still, since the curator pressed the button.
+      //
+      // The waiting Near-duplicate pairs are news about the library rather than
+      // the pass, so a cancel does not silence them, and they are only ever
+      // mentioned when there are some (#404).
+      const waiting =
+        pairs > 0
+          ? `${counted(pairs, "Near-duplicate pair")} waiting in Review`
+          : undefined;
+      if (!byRequest && failed > 0) {
+        raise(
+          `${counted(generated, "thumbnail")} ready, ${grouped(failed)} failed`,
+          waiting,
+          false,
+        );
+      } else if (waiting) {
+        raise(waiting, undefined, false);
+      }
     },
   });
 

@@ -76,20 +76,29 @@ export interface Wallpaper {
 }
 
 /**
- * Mirrors voting::Stats. Every fraction is measured against `eligible_count`,
- * not `total_wallpapers`, so rejecting a wallpaper does not drop the progress
- * it describes (ADR 0008).
+ * Mirrors near_duplicates::NearDuplicatePair: two wallpapers the app judges to
+ * be one image, and how the pair is offered. `keep_one` is two Active or Kept
+ * wallpapers, answered by keeping one and soft-rejecting the other, or by
+ * keeping both, which makes the pair Distinct. `rejected_before` is an Active
+ * or Kept arrival first and the Rejected wallpaper it arrived after second,
+ * answered by keeping the arrival, which is `keep_both`, or by rejecting it,
+ * which is `keep_one` with the Rejected wallpaper kept.
+ */
+export interface NearDuplicatePair {
+  kind: "keep_one" | "rejected_before";
+  wallpapers: [Wallpaper, Wallpaper];
+}
+
+/**
+ * Mirrors voting::Stats. Every count is measured against `eligible_count`, not
+ * `total_wallpapers`, so rejecting a wallpaper does not drop the progress it
+ * describes (ADR 0059).
  */
 export interface Stats {
   /** All rows, any status. The boot gate reads this one. */
   total_wallpapers: number;
   /** Active + Kept: the voting pool, and the denominator for everything below. */
   eligible_count: number;
-  /** `min(comparisons_count) + 1` over the pool; 1 when the pool is empty. */
-  round: number;
-  /** Eligible wallpapers with `comparisons_count >= round`. */
-  round_participated_count: number;
-  evaluated_count: number;
   /** Eligible and not yet Decided, Unrated included (ADR 0058). */
   undecided_count: number;
   /**
@@ -412,8 +421,8 @@ export interface Settings {
    */
   startup_view: StartupView;
   /**
-   * Which end of the ranking Review works from: lowest Scores to cull the
-   * worst, highest to confirm favourites.
+   * Which end of the ranking Review works from: lowest Scores to clear out
+   * the worst, highest to confirm favourites.
    */
   review_ordering: ReviewOrdering;
   /**
@@ -456,10 +465,9 @@ export interface Settings {
    *
    * The curator's answer to how many Comparisons make a Score trustworthy
    * (CONTEXT.md, ADR 0046). The number itself rather than a name for it, because
-   * the card compares a wallpaper's σ against it directly and the backend counts
-   * `evaluated_count` against the same row — a name would need the same three
-   * numbers written out on both sides of the IPC, which is exactly how the
-   * headline and the badges would come to disagree.
+   * the card compares a wallpaper's σ against it directly — a name would need
+   * the same three numbers written out on both sides of the IPC, which is
+   * exactly how the backend and the badges would come to disagree.
    *
    * Only the values `EVALUATED_THRESHOLDS` offers are writable; the backend
    * refuses the rest.
@@ -684,6 +692,12 @@ export interface PregenComplete {
   /** Wallpapers whose source was gone or would not decode; one bad file stops nothing. */
   failed: number;
   cancelled: boolean;
+  /**
+   * Near-duplicate pairs waiting once the pass stopped, counted after its last
+   * hash so the wallpapers it just hashed are in it (#404). A cancelled pass
+   * counts too.
+   */
+  near_duplicate_pairs: number;
 }
 
 /**
@@ -774,6 +788,9 @@ export type Command =
   | "unkeep_wallpaper"
   | "move_wallpaper"
   | "restore_wallpaper"
+  | "list_near_duplicates"
+  | "keep_one"
+  | "keep_both"
   | "get_settings"
   | "set_setting"
   | "wallhaven_search"
@@ -843,6 +860,12 @@ export interface BackendCommands {
     answer: Wallpaper;
   };
   restore_wallpaper: { args: { id: number }; answer: Wallpaper };
+  list_near_duplicates: { args: undefined; answer: NearDuplicatePair[] };
+  keep_one: {
+    args: { keptId: number; otherId: number; destinationFolder: string };
+    answer: Wallpaper;
+  };
+  keep_both: { args: { firstId: number; secondId: number }; answer: null };
   get_settings: { args: undefined; answer: Settings };
   /** The value crosses as a string, which is what the column holds (`setSetting`). */
   set_setting: {
@@ -1273,6 +1296,36 @@ export const client = {
    * `file_missing` when the file has left the reject folder.
    */
   restoreWallpaper: (id: number) => call("restore_wallpaper", { id }),
+
+  /**
+   * Every Near-duplicate pair waiting for an answer, each with both
+   * wallpapers. Worked out from the stored hashes on every call, so a
+   * wallpaper pre-generation has not hashed yet is in none.
+   */
+  listNearDuplicates: () => call("list_near_duplicates"),
+
+  /**
+   * Answers a Near-duplicate pair by keeping `keptId` and soft-rejecting
+   * `otherId` into `destinationFolder`. Resolves with the row the reject wrote,
+   * exactly as `moveWallpaper` does, so a Restore of it undoes the answer.
+   *
+   * Rejects with `invalid_transition` when the two are no longer a waiting
+   * pair — one of them was rejected elsewhere since the listing, say — and
+   * rejects nothing.
+   */
+  keepOne: (keptId: number, otherId: number, destinationFolder: string) =>
+    call("keep_one", { keptId, otherId, destinationFolder }),
+
+  /**
+   * Answers a Near-duplicate pair by keeping both, which records it as
+   * Distinct so it is never offered again, whichever way round the ids are
+   * given. Neither wallpaper's Status changes and no Comparison is written.
+   *
+   * Rejects with `invalid_transition` when the two are no longer a waiting
+   * pair, and records nothing.
+   */
+  keepBoth: (firstId: number, secondId: number) =>
+    call("keep_both", { firstId, secondId }),
 
   /**
    * Starts the thumbnail pre-generation pass and resolves as soon as it is

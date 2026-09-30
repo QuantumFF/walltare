@@ -4,6 +4,7 @@ mod download;
 mod download_folder;
 mod error;
 mod missing;
+mod near_duplicates;
 mod paths;
 mod pregen;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
@@ -611,6 +612,57 @@ async fn restore_wallpaper(id: i64, app: AppHandle) -> Result<db::Wallpaper, err
     .await
 }
 
+/// Every Near-duplicate pair waiting for an answer, each with both wallpapers.
+///
+/// Worked out from the stored hashes on every call and never stored, since a
+/// pair is a standing and not a record (CONTEXT.md). Off the main thread, since
+/// Review asks after every Status change and the scan over the hashes grows
+/// with the square of the library.
+#[tauri::command]
+async fn list_near_duplicates(
+    app: AppHandle,
+) -> Result<Vec<near_duplicates::NearDuplicatePair>, error::AppError> {
+    off_main_thread(app, |app| {
+        app.state::<Db>().read(near_duplicates::waiting_pairs)
+    })
+    .await
+}
+
+/// Answers a Near-duplicate pair by keeping `kept_id` and soft-rejecting
+/// `other_id` into `destination_folder`, and answers with the row the reject
+/// wrote.
+///
+/// The ordinary soft reject, so a Restore undoes it and no Comparison is
+/// written. Rejecting the arrival of a rejected-before pair is this answer,
+/// with the Rejected wallpaper as `kept_id`. Off the main thread for
+/// [`move_wallpaper`]'s reason.
+#[tauri::command]
+async fn keep_one(
+    kept_id: i64,
+    other_id: i64,
+    destination_folder: String,
+    app: AppHandle,
+) -> Result<db::Wallpaper, error::AppError> {
+    off_main_thread(app, move |app| {
+        near_duplicates::keep_one(&app.state::<Db>(), kept_id, other_id, &destination_folder)
+    })
+    .await
+}
+
+/// Answers a Near-duplicate pair by keeping both, which records it as Distinct
+/// so it is never offered again. Keeping the arrival of a rejected-before pair
+/// is this answer too. No Status changes and no Comparison is written. Off the
+/// main thread for [`list_near_duplicates`]'s reason, since
+/// the pair is checked against the waiting listing before it is recorded.
+#[tauri::command]
+async fn keep_both(first_id: i64, second_id: i64, app: AppHandle) -> Result<(), error::AppError> {
+    off_main_thread(app, move |app| {
+        app.state::<Db>()
+            .write(|conn| near_duplicates::keep_both(conn, first_id, second_id))
+    })
+    .await
+}
+
 /// Runs a command's body on the blocking pool rather than the thread it was
 /// invoked on.
 ///
@@ -810,6 +862,9 @@ pub fn run() {
             unkeep_wallpaper,
             move_wallpaper,
             restore_wallpaper,
+            list_near_duplicates,
+            keep_one,
+            keep_both,
             get_settings,
             set_setting,
             wallhaven_search,

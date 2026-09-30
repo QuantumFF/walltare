@@ -214,14 +214,14 @@ const REVIEW_ORDERINGS: ReadonlyArray<Choice<ReviewOrdering>> = [
  *
  * Two orderings and not the library page's four. Review is a decision queue, so
  * filename order in it means nothing, and the two that remain are the two jobs
- * it does: culling the worst, and confirming favourites (#259).
+ * it does: clearing out the worst, and confirming favourites (#259).
  */
 export function ReviewOrderingSection() {
   return (
     <ChoiceSection
       heading="Review ordering"
       setting="review_ordering"
-      purpose="Which end of the ranking Review works from: cull the worst, or confirm favourites."
+      purpose="Which end of the ranking Review works from: clear out the worst, or confirm favourites."
       choices={REVIEW_ORDERINGS}
     />
   );

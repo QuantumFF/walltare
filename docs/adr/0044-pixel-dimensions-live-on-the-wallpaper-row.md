@@ -151,6 +151,27 @@ appearing to stall — which does leave the Settings readout saying "N of M
 generated" about a pass that generated nothing. That line already counted failures
 and skips the same way; the wording is left to the ticket that owns that view.
 
+### Amendment: the perceptual hash rides the same backfill
+
+**[#399](https://github.com/QuantumFF/walltare/issues/399), 2026-09-30.** The
+Near-duplicate epic ([#393](https://github.com/QuantumFF/walltare/issues/393))
+needs a second fact on the row with the same shape as the dimensions: unknown
+for every row already in the library, and known once the pass has reached it.
+So it rides this section's mechanics rather than its own. `wallpapers.perceptual_hash`
+arrives nullable at schema version 6, and the migration adds it and nothing else.
+A warm wallpaper with no hash is listed with `missing: None`, the way one with no
+dimensions is, and comes back as `Warmed::Measured`. Every branch hashes and none of
+them asks whether the row already has a hash, for the re-export reason above. A
+Small that cannot be read leaves the row as it was.
+
+The input is different on purpose. The dimensions are a header read off the
+source. The hash is taken off the Small in the cache directory, which every
+branch has on disk by the time it measures, so every hash in the library is a
+hash of the same kind of image. That costs one 400px JPEG decode per wallpaper,
+against a pass already spending hundreds of milliseconds on the source. The
+64 bits are stored as the `i64` with the same bits, because SQLite's integers
+are signed.
+
 ## Alternatives rejected
 
 **Reading the dimensions off the decoded image the pass already holds.** This is

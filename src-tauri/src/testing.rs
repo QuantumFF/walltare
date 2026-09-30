@@ -104,6 +104,17 @@ pub(crate) fn origin_path_of(conn: &Connection, id: i64) -> Option<String> {
     .unwrap()
 }
 
+/// When a wallpaper's current soft reject happened, `None` unless it is
+/// Rejected.
+pub(crate) fn rejected_at_of(conn: &Connection, id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT rejected_at FROM wallpapers WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
 /// A wallpaper's recorded pixel dimensions, `(None, None)` until something has
 /// read them off the file (ADR 0044).
 ///
@@ -116,6 +127,20 @@ pub(crate) fn dimensions_of(conn: &Connection, id: i64) -> (Option<i64>, Option<
         |row| Ok((row.get(0)?, row.get(1)?)),
     )
     .unwrap()
+}
+
+/// A wallpaper's recorded perceptual hash, `None` until the pre-generation pass
+/// has hashed its Small.
+///
+/// Here because the schema adds the column and the pass writes it.
+pub(crate) fn perceptual_hash_of(conn: &Connection, id: i64) -> Option<u64> {
+    conn.query_row(
+        "SELECT perceptual_hash FROM wallpapers WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .unwrap()
+    .map(|bits| bits as u64)
 }
 
 /// The Wallhaven id a wallpaper's row carries, `None` for one that has none

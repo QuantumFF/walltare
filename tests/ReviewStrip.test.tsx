@@ -236,9 +236,8 @@ test("an undersized wallpaper is badged on the hero and still in the worklist (#
 
 test("the hero's Score badge reads against the curator's Evaluated threshold (#260)", async () => {
   // The same comparison the grid's cards make, on the one wallpaper being
-  // judged — and the same σ `voting.rs` counts the Rank headline with, so the
-  // hero cannot say Evaluated about a wallpaper the headline did not count
-  // (ADR 0046).
+  // judged, so the hero cannot say Evaluated about a wallpaper its card does
+  // not (ADR 0046).
   stored = settings({ review_layout: "strip", evaluated_threshold: 5 });
   await openStrip([
     wallpaper(1, { filename: "sure.jpg", rating_sigma: 4.5 }),

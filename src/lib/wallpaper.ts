@@ -18,10 +18,8 @@ import type { Resolution, Wallpaper } from "@/lib/client";
  * The threshold is a setting and not a constant, because how many Comparisons
  * make a Score trustworthy is the curator's call (ADR 0046). It is passed in
  * rather than read here so this stays a pure function of a row and a number —
- * and so the caller is obliged to have the same row the backend counted
- * `evaluated_count` against (`WHERE status IN ('active', 'kept') AND
- * rating_sigma < ?`). The two comparisons are the same comparison, which is why
- * the headline and the badges cannot drift apart.
+ * and so every surface that shows a Score badge (the card, the lightbox, the
+ * Review hero) answers off the same comparison and cannot drift apart.
  *
  * A Score badge dims until a wallpaper reaches the threshold, and that is the
  * whole of what the app says about confidence: no second number and no bands, so

@@ -47,7 +47,7 @@ const WALLHAVEN_API_KEY: &str = "wallhaven_api_key";
 /// the curator says otherwise.
 ///
 /// The number Evaluated meant when it was a constant, so a curator who never
-/// opens the control sees the same count and the same badges they always did
+/// opens the control sees the same badges they always did
 /// (`CONTEXT.md`, [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
 pub const DEFAULT_EVALUATED_THRESHOLD: f64 = 4.0;
 
@@ -698,9 +698,8 @@ pub struct Settings {
     /// The σ below which a wallpaper's rating counts as Evaluated.
     ///
     /// The curator's answer to how many Comparisons make a Score trustworthy,
-    /// rather than a fact about the wallpaper: it moves the count in the Rank
-    /// headline and the badge on every card together, because both read this one
-    /// number (`CONTEXT.md`,
+    /// rather than a fact about the wallpaper: it moves the badge on every card
+    /// and the lightbox together, because both read this one number (`CONTEXT.md`,
     /// [ADR 0046](../../docs/adr/0046-the-evaluated-threshold-is-the-curators.md)).
     pub evaluated_threshold: f64,
     /// Where the Bar sits, as the share of scored wallpapers below it: the worst
@@ -779,21 +778,8 @@ impl Settings {
     }
 }
 
-/// The Evaluated threshold alone, for the one caller that wants it without the
-/// rest of the struct.
-///
-/// `voting::get_stats` counts the Evaluated wallpapers against it and has no
-/// [`Detected`] to hand, which every other reader of this module arrives with.
-/// It goes through the same [`stored`], the same [`read`] and the same default as
-/// [`resolve`], so the count and the struct the card reads cannot disagree about
-/// what the row says.
-pub fn evaluated_threshold(conn: &Connection) -> Result<f64, AppError> {
-    Ok(read(&stored(conn)?, EVALUATED_THRESHOLD, Threshold::parse)
-        .map_or(DEFAULT_EVALUATED_THRESHOLD, |threshold| threshold.0))
-}
-
 /// The Bar share alone, for the Bar, which is worked out where there is no
-/// [`Detected`] to hand, the way [`evaluated_threshold`] is.
+/// [`Detected`] to hand.
 pub fn bar_share(conn: &Connection) -> Result<f64, AppError> {
     Ok(read(&stored(conn)?, BAR_SHARE, BarShare::parse).map_or(DEFAULT_BAR_SHARE, |share| share.0))
 }
@@ -2124,9 +2110,8 @@ mod tests {
         );
         assert_eq!(DEFAULT_EVALUATED_THRESHOLD, 4.0);
         // Nothing was written to reach it, so a curator who never opens the
-        // control has the count and the badges they always had.
+        // control has the badges they always had.
         assert_eq!(stored_rows(&conn), 0);
-        assert_eq!(evaluated_threshold(&conn).unwrap(), 4.0);
     }
 
     #[test]
@@ -2144,9 +2129,6 @@ mod tests {
         crate::db::init_schema(&conn).unwrap();
 
         assert_eq!(get(&conn, detected()).unwrap().evaluated_threshold, 3.0);
-        // The count reads the same row through the same default, which is what
-        // keeps the headline and the badges saying one thing (ADR 0046).
-        assert_eq!(evaluated_threshold(&conn).unwrap(), 3.0);
     }
 
     #[test]
@@ -2212,7 +2194,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(written.evaluated_threshold, offered);
-            assert_eq!(evaluated_threshold(&conn).unwrap(), offered);
+            assert_eq!(get(&conn, detected()).unwrap().evaluated_threshold, offered);
         }
     }
 
@@ -2225,10 +2207,6 @@ mod tests {
 
         assert_eq!(
             get(&conn, detected()).unwrap().evaluated_threshold,
-            DEFAULT_EVALUATED_THRESHOLD
-        );
-        assert_eq!(
-            evaluated_threshold(&conn).unwrap(),
             DEFAULT_EVALUATED_THRESHOLD
         );
     }

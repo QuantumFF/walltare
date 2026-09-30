@@ -23,7 +23,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::serving::ImageWorkers;
 use crate::thumbnails::{self, Pending, ThumbnailCache, Warmed};
-use crate::{error, Db};
+use crate::{error, near_duplicates, Db};
 
 mod work_list;
 
@@ -47,6 +47,11 @@ struct Complete {
     /// stops nothing, so this is a count rather than an error.
     failed: u64,
     cancelled: bool,
+    /// Near-duplicate pairs waiting for an answer once the pass has stopped,
+    /// counted after its last hash so the arrivals it just hashed are in it
+    /// (#404). News about the library rather than the pass, so a cancelled pass
+    /// counts too.
+    near_duplicate_pairs: u64,
 }
 
 /// A pre-generation pass: its cancel flag and its thread.
@@ -156,9 +161,29 @@ fn run(app: &AppHandle, cancel: &Arc<AtomicBool>) {
             return;
         }
     };
-    pass(&work, cancel, &EventReport(app), |pending| {
-        warm_on_the_pool(app, cancel, pending)
-    });
+    pass(
+        &work,
+        cancel,
+        &EventReport(app),
+        |pending| warm_on_the_pool(app, cancel, pending),
+        || count_waiting_pairs(&db),
+    );
+}
+
+/// How many Near-duplicate pairs are waiting, read off the one listing Review
+/// shows, so the count and the section can never disagree.
+///
+/// A count that cannot be read is none rather than a lost ending: the database
+/// being gone is already fatal everywhere else, and the thumbnails the pass
+/// made are still worth reporting.
+fn count_waiting_pairs(db: &Db) -> u64 {
+    match db.read(near_duplicates::waiting_pairs) {
+        Ok(pairs) => pairs.len() as u64,
+        Err(e) => {
+            eprintln!("pre-generation could not count the Near-duplicate pairs: {e}");
+            0
+        }
+    }
 }
 
 /// Warms one wallpaper on the pool that serves `wallpaper://`, and waits for it.
@@ -297,7 +322,8 @@ impl Tally {
 /// Where a wallpaper is warmed is a parameter, for [`Report`]'s reason.
 /// Production passes [`warm_on_the_pool`], which needs a running Tauri app; what
 /// the pass counts, the order it works in and where it stops are worth asserting
-/// without one.
+/// without one. How many Near-duplicate pairs are waiting is asked once, after
+/// the last wallpaper, since the pass's own hashes are what change it.
 ///
 /// An empty work list — every launch after the first — emits nothing at all,
 /// rather than flashing a finished progress bar for work that never happened.
@@ -306,6 +332,7 @@ fn pass(
     cancel: &AtomicBool,
     report: &impl Report,
     warm: impl Fn(&Pending) -> Result<Warmed, error::AppError>,
+    count_waiting: impl FnOnce() -> u64,
 ) {
     if work.is_empty() {
         return;
@@ -334,6 +361,7 @@ fn pass(
         generated: tally.generated,
         failed: tally.failed,
         cancelled,
+        near_duplicate_pairs: count_waiting(),
     });
 }
 
@@ -521,7 +549,9 @@ mod tests {
         }
 
         fn pass(&self, work: &[Pending], report: &impl Report, cancel: &AtomicBool) {
-            super::pass(work, cancel, report, self.warm());
+            super::pass(work, cancel, report, self.warm(), || {
+                super::count_waiting_pairs(&self.db)
+            });
         }
 
         /// The wallpaper row's own pixel dimensions, which is what the pass
@@ -529,6 +559,22 @@ mod tests {
         fn dimensions(&self, wallpaper_id: i64) -> (Option<i64>, Option<i64>) {
             self.db
                 .read(|conn| crate::testing::dimensions_of(conn, wallpaper_id))
+        }
+
+        /// The wallpaper row's perceptual hash, `None` until a pass has hashed
+        /// its Small.
+        fn hash(&self, wallpaper_id: i64) -> Option<u64> {
+            self.db
+                .read(|conn| crate::testing::perceptual_hash_of(conn, wallpaper_id))
+        }
+
+        /// Seeds `bytes` as a wallpaper, runs the step over it, and answers the
+        /// hash it came out with.
+        fn hashed(&self, name: &str, bytes: &[u8]) -> u64 {
+            let pending = self.seed_bytes(name, bytes);
+            self.step(&pending, &mut Tally::default());
+            self.hash(pending.wallpaper_id)
+                .unwrap_or_else(|| panic!("{name} came out of the step with no hash"))
         }
 
         fn row(&self, wallpaper_id: i64, size: &str) -> Option<(u32, u32)> {
@@ -559,6 +605,32 @@ mod tests {
                 .get_pixel(5, 5)
                 .0
         }
+    }
+
+    /// A real wallpaper from `fixtures/`, as the bytes a scan would find.
+    fn fixture(name: &str) -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join(name);
+        std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// A fixture decoded, put through `edit`, and encoded again as a JPEG at
+    /// `quality`: the Near-duplicate a second download or a colour edit leaves
+    /// behind.
+    fn edited(name: &str, quality: u8, edit: impl Fn(DynamicImage) -> DynamicImage) -> Vec<u8> {
+        let img = edit(image::load_from_memory(&fixture(name)).unwrap()).to_rgb8();
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
+            .encode_image(&img)
+            .unwrap();
+        bytes
+    }
+
+    /// How many bits two stored hashes differ in, which is the only question
+    /// anything will ask of them. Near-duplicate is Hamming 10 or under.
+    fn distance(a: u64, b: u64) -> u32 {
+        (a ^ b).count_ones()
     }
 
     /// Records what a pass reported, standing in for the two events, and can
@@ -746,6 +818,7 @@ mod tests {
         library.step(&pending, &mut tally);
 
         assert_eq!(library.dimensions(pending.wallpaper_id), (None, None));
+        assert_eq!(library.hash(pending.wallpaper_id), None);
         assert_eq!(tally.failed, 1);
         assert_eq!(tally.measured, 0);
     }
@@ -767,6 +840,7 @@ mod tests {
         library.step(&pending, &mut tally);
 
         assert_eq!(library.dimensions(pending.wallpaper_id), (None, None));
+        assert_eq!(library.hash(pending.wallpaper_id), None);
         assert_eq!(
             tally,
             Tally {
@@ -816,8 +890,204 @@ mod tests {
                 generated: 0,
                 failed: 0,
                 cancelled: false,
+                near_duplicate_pairs: 0,
             }]
         );
+    }
+
+    #[test]
+    fn the_step_stores_a_perceptual_hash_on_the_wallpaper_it_generates() {
+        let library = Library::new();
+        let pending = library.seed_bytes("train.jpg", &fixture("train.jpg"));
+        assert_eq!(library.hash(pending.wallpaper_id), None);
+        let mut tally = Tally::default();
+
+        library.step(&pending, &mut tally);
+
+        assert!(library.hash(pending.wallpaper_id).is_some());
+        assert_eq!(tally.generated, 1);
+    }
+
+    #[test]
+    fn a_warm_wallpaper_with_no_perceptual_hash_is_hashed_by_the_next_pass() {
+        // The library a curator already has: every thumbnail warm, and no hash
+        // on any row, because the column is newer than the rows. The freshness
+        // rule alone would list none of them, so the missing hash has to be a
+        // reason of its own, the way the missing dimensions are (ADR 0044).
+        let library = Library::new();
+        let pending = library.seed_bytes("train.jpg", &fixture("train.jpg"));
+        library.step(&pending, &mut Tally::default());
+        let id = pending.wallpaper_id;
+        let hashed = library.hash(id).unwrap();
+        library.db.write(|conn| {
+            conn.execute(
+                "UPDATE wallpapers SET perceptual_hash = NULL WHERE id = ?1",
+                [id],
+            )
+            .unwrap()
+        });
+
+        let work = super::work_list(&library.db, &library.thumbnails).unwrap();
+        assert_eq!(
+            work.iter()
+                .map(|p| (p.wallpaper_id, p.missing))
+                .collect::<Vec<_>>(),
+            vec![(id, None)]
+        );
+        let recorder = Recorder::default();
+        library.pass(&work, &recorder, &AtomicBool::new(false));
+
+        assert_eq!(library.hash(id), Some(hashed));
+        // A backfill makes no thumbnails and says so.
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![Complete {
+                generated: 0,
+                failed: 0,
+                cancelled: false,
+                near_duplicate_pairs: 0,
+            }]
+        );
+        // And once it has one, it is off the list for good.
+        assert!(library.work_list().is_empty());
+    }
+
+    #[test]
+    fn a_re_encoded_near_duplicate_hashes_within_ten_bits_of_the_original() {
+        // A second download of the same wallpaper: resized and saved again at a
+        // lower quality, so not one byte of it is the same.
+        let library = Library::new();
+        let original = library.hashed("train.jpg", &fixture("train.jpg"));
+
+        let near_duplicate = library.hashed(
+            "train-again.jpg",
+            &edited("train.jpg", 40, |img| {
+                img.resize_exact(1600, 900, image::imageops::FilterType::Triangle)
+            }),
+        );
+
+        let bits = distance(original, near_duplicate);
+        assert!(
+            bits <= 10,
+            "a re-encoded Near-duplicate was {bits} bits away"
+        );
+    }
+
+    #[test]
+    fn a_recoloured_near_duplicate_hashes_within_ten_bits_of_the_original() {
+        let library = Library::new();
+        let original = library.hashed("train.jpg", &fixture("train.jpg"));
+
+        for (name, bytes) in [
+            (
+                "brighter.jpg",
+                edited("train.jpg", 85, |img| {
+                    img.brighten(30).adjust_contrast(25.0)
+                }),
+            ),
+            ("grey.jpg", edited("train.jpg", 85, |img| img.grayscale())),
+        ] {
+            let bits = distance(original, library.hashed(name, &bytes));
+            assert!(bits <= 10, "{name} was {bits} bits away");
+        }
+    }
+
+    #[test]
+    fn an_unrelated_wallpaper_hashes_more_than_ten_bits_away() {
+        let library = Library::new();
+        let train = library.hashed("train.jpg", &fixture("train.jpg"));
+
+        let sparks = library.hashed("sparks.jpg", &fixture("sparks.jpg"));
+
+        let bits = distance(train, sparks);
+        assert!(
+            bits > 10,
+            "two unrelated wallpapers were only {bits} bits apart"
+        );
+    }
+
+    #[test]
+    fn a_pass_counts_the_near_duplicate_pairs_its_own_hashes_leave_waiting() {
+        // The arrivals a scan just added are exactly the wallpapers this pass
+        // hashes, so a count taken at `scan-complete` would miss the pair a
+        // second download makes. The pass counts after its last hash (#404).
+        let library = Library::new();
+        library.hashed("train.jpg", &fixture("train.jpg"));
+        let arrival = library.seed_bytes(
+            "train-again.jpg",
+            &edited("train.jpg", 80, |img| {
+                img.resize_exact(1600, 900, image::imageops::FilterType::Triangle)
+            }),
+        );
+        let unrelated = library.seed_bytes("sparks.jpg", &fixture("sparks.jpg"));
+        let recorder = Recorder::default();
+
+        library.pass(&[arrival, unrelated], &recorder, &AtomicBool::new(false));
+
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![Complete {
+                generated: 2,
+                failed: 0,
+                cancelled: false,
+                near_duplicate_pairs: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_pass_still_counts_the_pairs_it_left_waiting() {
+        // The pairs are news about the library rather than about the pass, and
+        // a hash stored before the cancel is as real as one stored after a clean
+        // finish (ADR 0021).
+        let library = Library::new();
+        library.hashed("train.jpg", &fixture("train.jpg"));
+        let arrival = library.seed_bytes("train-again.jpg", &fixture("train.jpg"));
+        let later = library.seed_bytes("sparks.jpg", &fixture("sparks.jpg"));
+        let flag = Arc::new(AtomicBool::new(false));
+        let recorder = Recorder {
+            cancel_at: Some((1, Arc::clone(&flag))),
+            ..Recorder::default()
+        };
+
+        library.pass(&[arrival, later], &recorder, &flag);
+
+        assert_eq!(
+            *recorder.complete.borrow(),
+            vec![Complete {
+                generated: 1,
+                failed: 0,
+                cancelled: true,
+                near_duplicate_pairs: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_re_exported_source_comes_out_of_the_step_with_a_new_hash() {
+        // The dimensions' staleness again (ADR 0044). The file's mtime moves, so
+        // the pass regenerates its Small, and a hash left over from the old file
+        // would describe a picture that is no longer there.
+        let library = Library::new();
+        let pending = library.seed_bytes("exported.jpg", &fixture("train.jpg"));
+        library.step(&pending, &mut Tally::default());
+        let before = library.hash(pending.wallpaper_id).unwrap();
+
+        std::fs::write(&pending.source, fixture("sparks.jpg")).unwrap();
+        std::fs::File::options()
+            .append(true)
+            .open(&pending.source)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        let work = super::work_list(&library.db, &library.thumbnails).unwrap();
+        assert_eq!(work.len(), 1);
+        library.step(&work[0], &mut Tally::default());
+
+        let after = library.hash(pending.wallpaper_id).unwrap();
+        let sparks = library.hashed("sparks.jpg", &fixture("sparks.jpg"));
+        assert!(distance(before, after) > 10);
+        assert!(distance(after, sparks) <= 10);
     }
 
     #[test]
@@ -980,6 +1250,7 @@ mod tests {
                 generated: 1,
                 failed: 1,
                 cancelled: false,
+                near_duplicate_pairs: 0,
             }]
         );
     }
@@ -1025,6 +1296,7 @@ mod tests {
                 generated: 1,
                 failed: 3,
                 cancelled: false,
+                near_duplicate_pairs: 0,
             }]
         );
         assert_eq!(recorder.progress.borrow().last().unwrap().done, 4);
@@ -1064,6 +1336,7 @@ mod tests {
                 generated: 0,
                 failed: 1,
                 cancelled: false,
+                near_duplicate_pairs: 0,
             }]
         );
     }
@@ -1131,12 +1404,14 @@ mod tests {
                 Progress { done: 2, total: 2 },
             ]
         );
+        // Two flat fills are one image as far as a perceptual hash can tell.
         assert_eq!(
             *recorder.complete.borrow(),
             vec![Complete {
                 generated: 2,
                 failed: 0,
                 cancelled: false,
+                near_duplicate_pairs: 1,
             }]
         );
     }
@@ -1172,6 +1447,7 @@ mod tests {
                 generated: 1,
                 failed: 0,
                 cancelled: true,
+                near_duplicate_pairs: 0,
             }]
         );
     }
@@ -1202,13 +1478,19 @@ mod tests {
         let most = AtomicUsize::new(0);
         let recorder = Recorder::default();
 
-        super::pass(&work, &AtomicBool::new(false), &recorder, |pending| {
-            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-            most.fetch_max(now, Ordering::SeqCst);
-            let warmed = library.thumbnails.warm(&library.db, pending);
-            in_flight.fetch_sub(1, Ordering::SeqCst);
-            warmed
-        });
+        super::pass(
+            &work,
+            &AtomicBool::new(false),
+            &recorder,
+            |pending| {
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                let warmed = library.thumbnails.warm(&library.db, pending);
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                warmed
+            },
+            || 0,
+        );
 
         assert_eq!(
             most.load(Ordering::SeqCst),
@@ -1221,6 +1503,7 @@ mod tests {
                 generated: 4,
                 failed: 0,
                 cancelled: false,
+                near_duplicate_pairs: 0,
             }]
         );
     }
@@ -1253,11 +1536,13 @@ mod tests {
             generated: 7,
             failed: 2,
             cancelled: true,
+            near_duplicate_pairs: 4,
         })
         .unwrap();
         assert_eq!(complete["generated"], 7);
         assert_eq!(complete["failed"], 2);
         assert_eq!(complete["cancelled"], true);
+        assert_eq!(complete["near_duplicate_pairs"], 4);
     }
 
     /// Passes that stay running until they are stood down, counting how many

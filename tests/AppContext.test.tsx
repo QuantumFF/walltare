@@ -39,9 +39,6 @@ function withEligible(eligible: number): Stats {
   return stats({
     total_wallpapers: 12,
     eligible_count: eligible,
-    round: 1,
-    round_participated_count: 0,
-    evaluated_count: 0,
     total_comparisons: 0,
   });
 }

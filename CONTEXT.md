@@ -204,8 +204,10 @@ nothing about where either stands among the others, and a Near-duplicate pair
 is never shown together in Rank.
 
 A wallpaper arriving as a Near-duplicate of a Rejected one is offered as
-something the curator rejected before. Two Rejected wallpapers are never
-offered.
+something the curator rejected before. It is arriving after the rejection that
+makes it one: a wallpaper already in the library when the other was rejected
+was in front of the curator when they decided, so it is not asked about again.
+Two Rejected wallpapers are never offered.
 
 _Avoid_: dupe, twin, copy, match (a Wallhaven id already marks exact copies of
 a Result)

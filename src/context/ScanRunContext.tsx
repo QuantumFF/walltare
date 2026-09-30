@@ -37,13 +37,10 @@ export type ScanOutcome =
    */
   | { kind: "nothing-new"; scanned: number }
   /**
-   * The scan added wallpapers. `backToRound` is the Round they sent the library
-   * back to, and `null` when the Round did not move backwards — which includes a
-   * library already on Round 1, and a read of the Round that failed on either
-   * side of the scan. A number that did not move needs no explanation, and one
-   * the frontend could not measure gets none (ADR 0008).
+   * The scan added wallpapers. Every one is Undecided, which the headline's
+   * count says, so the ending carries the count alone (ADR 0059).
    */
-  | { kind: "added"; added: number; backToRound: number | null }
+  | { kind: "added"; added: number }
   /** The backend's own account of a scan that could not finish (ADR 0034). */
   | { kind: "failed"; message: string };
 
@@ -120,10 +117,9 @@ const ScanRunControlsContext = createContext<ScanRunControls | undefined>(
  * page that remounts mid-scan reads the run that is still going (ADR 0015).
  *
  * What a scan does to the rest of the app is here too: the two freshness
- * events, and the reads of the Round on either side of the walk that decide
- * whether the headline just moved backwards. What it says is the toast's, and
- * what the shell does after one — restart pre-generation, rerun the boot rule —
- * is the shell's, each reading the outcome rather than the backend's events.
+ * events. What it says is the toast's, and what the shell does after one —
+ * restart pre-generation, rerun the boot rule — is the shell's, each reading
+ * the outcome rather than the backend's events.
  *
  * State and controls are two contexts so that a progress event re-renders the
  * surfaces that print it and not the shell, which only listens for endings and
@@ -146,13 +142,6 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
   const runs = useRef(0);
   /** The folder the running scan was asked for, as the curator wrote it. */
   const folder = useRef("");
-  /**
-   * The Round as it stood when the running scan started, which is the only thing
-   * the "back to Round N" ending can be judged against: a scan that adds unseen
-   * files sends the Round backwards, and one that adds files to a library still
-   * on its first Round moves nothing (ADR 0008).
-   */
-  const roundBefore = useRef<number | null>(null);
   const listeners = useRef(new Set<(outcome: ScanOutcome) => void>());
 
   const settle = useCallback((outcome: ScanOutcome) => {
@@ -164,13 +153,10 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
   /**
    * Give the scan its run: from the reply to `start_scan`, or from the first
    * event if that beats the reply. A scan this frontend did not start opens
-   * here too, with no folder and no Round to compare against.
+   * here too, with no folder.
    */
   const open = useCallback((progress: ScanProgress | null) => {
-    if (phase.current === "idle") {
-      folder.current = "";
-      roundBefore.current = null;
-    }
+    if (phase.current === "idle") folder.current = "";
     phase.current = "started";
     runs.current += 1;
     setState({ running: true, run: runs.current, progress });
@@ -190,7 +176,6 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
       // is the only place that knows it. Recorded before the walk is asked for,
       // because on an empty folder the ending can arrive before the reply.
       folder.current = next;
-      roundBefore.current = null;
       setState({ running: true, run: null, progress: null });
       try {
         await store(next);
@@ -202,20 +187,6 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
       // Already opened by an event that beat the reply, or already over.
       if (phase.current !== "starting") return;
       open(null);
-      const run = runs.current;
-      // Read now rather than held from boot, because "now" is the only moment
-      // this number is knowable: the walk takes minutes, the inserts that follow
-      // move the Round, and by the time `scan-complete` arrives the answer has
-      // already changed. A read that fails costs the explanation and nothing
-      // else.
-      void client
-        .getStats()
-        .then((stats) => {
-          if (runs.current === run) roundBefore.current = stats.round;
-        })
-        .catch((error: unknown) => {
-          console.error("Failed to read the Round before a scan:", error);
-        });
     },
     [open, end],
   );
@@ -246,27 +217,16 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const before = roundBefore.current;
-      roundBefore.current = null;
-      // The outcome waits on the read rather than being amended by it. A number
-      // moving backwards on Rank's headline needs its explanation in the same
-      // sentence the curator reads once, and `get_stats` costs 0.3ms.
+      // The outcome no longer waits on the read: it carries the count alone,
+      // and none of its listeners read the headline's stats (ADR 0059).
+      settle({ kind: "added", added: added_count });
+      // The headline moves through the bus, so Rank hears about the Undecided
+      // wallpapers a scan just added without knowing a scan happened.
       void client
         .getStats()
-        .then((stats) => {
-          // The headline moves through the bus, so Rank hears about the Round a
-          // scan just sent it back to without knowing a scan happened.
-          publish({ type: "stats-changed", stats });
-          settle({
-            kind: "added",
-            added: added_count,
-            backToRound:
-              before !== null && stats.round < before ? stats.round : null,
-          });
-        })
+        .then((stats) => publish({ type: "stats-changed", stats }))
         .catch((error: unknown) => {
-          console.error("Failed to read the Round a scan left behind:", error);
-          settle({ kind: "added", added: added_count, backToRound: null });
+          console.error("Failed to read the stats after a scan:", error);
         });
     },
 
