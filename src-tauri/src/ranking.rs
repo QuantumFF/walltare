@@ -168,8 +168,9 @@ pub fn select_pair<'a, R: Rng>(
 ///    other showing, whatever its size.
 ///
 /// No two members are `apart`, whatever the choice: that is a rule, not a
-/// preference, and a pool that cannot make four without breaking it answers
-/// `None`, which shows a pair.
+/// preference. The draw is one member at a time and never backtracks, so when
+/// what is already drawn leaves nothing open it answers `None`, which shows a
+/// pair, even where some other four would have held.
 ///
 /// The order is the pair's: its opponent has a Score only when one is off the
 /// screen, so a young library whose scored wallpapers were all just shown
