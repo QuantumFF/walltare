@@ -116,8 +116,9 @@ const ScanRunControlsContext = createContext<ScanRunControls | undefined>(
  * the shell, the ending is observed whichever tab is showing, and a Settings
  * page that remounts mid-scan reads the run that is still going (ADR 0015).
  *
- * What a scan does to the rest of the app is here too: the two freshness
- * events. What it says is the toast's, and what the shell does after one —
+ * What a scan does to the rest of the app is here too: `library-scanned`, which
+ * the views refetch on and the Stats are re-read on. What it says is the
+ * toast's, and what the shell does after one —
  * restart pre-generation, rerun the boot rule — is the shell's, each reading
  * the outcome rather than the backend's events.
  *
@@ -217,17 +218,9 @@ export function ScanRunProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // The outcome no longer waits on the read: it carries the count alone,
-      // and none of its listeners read the headline's stats (ADR 0059).
+      // The count alone, and no Stats: `library-scanned` above is what the
+      // headline is re-read on (ADR 0059, #418).
       settle({ kind: "added", added: added_count });
-      // The headline moves through the bus, so Rank hears about the Undecided
-      // wallpapers a scan just added without knowing a scan happened.
-      void client
-        .getStats()
-        .then((stats) => publish({ type: "stats-changed", stats }))
-        .catch((error: unknown) => {
-          console.error("Failed to read the stats after a scan:", error);
-        });
     },
 
     scanFailed: ({ message }) => {

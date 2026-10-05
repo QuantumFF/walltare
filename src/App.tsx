@@ -4,14 +4,15 @@ import { AppEventsProvider } from "@/context/AppEventsContext";
 
 function App() {
   return (
-    <AppProvider>
-      {/* Above the shell, because the shell is one of the publishers: a scan
-          finishes there and the mounted views have to hear about it. It holds
-          nothing that renders, so it costs a context and no re-renders. */}
-      <AppEventsProvider>
+    // Outermost, because both of the others hear it: the shell is one of the
+    // publishers — a scan finishes there and the mounted views have to hear
+    // about it — and `AppProvider` keeps the Stats current off the facts on it.
+    // It holds nothing that renders, so it costs a context and no re-renders.
+    <AppEventsProvider>
+      <AppProvider>
         <Layout />
-      </AppEventsProvider>
-    </AppProvider>
+      </AppProvider>
+    </AppEventsProvider>
   );
 }
 

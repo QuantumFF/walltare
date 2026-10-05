@@ -1094,12 +1094,12 @@ function DeepLink() {
 
 async function openSettingsOnTheDestination() {
   render(
-    <AppProvider>
-      <AppEventsProvider>
+    <AppEventsProvider>
+      <AppProvider>
         <DeepLink />
         <Layout />
-      </AppEventsProvider>
-    </AppProvider>,
+      </AppProvider>
+    </AppEventsProvider>,
   );
   await flush();
   await click(screen.getByRole("button", { name: "change in Settings" }));
@@ -2137,6 +2137,59 @@ test("picking a Bar share writes the fraction, and picking the fifth back writes
     { key: "bar_share", value: "0.2" },
   ]);
   expect(chosenIn(barSection())).toEqual(["Worst 20%"]);
+});
+
+/** Rank's headline, read through `display: none` from wherever the curator is. */
+const rankBar = () =>
+  document.querySelector(
+    '[data-view="rank"] [data-slot="page-bar"]',
+  ) as HTMLElement;
+
+test("a new Bar share moves Rank's headline, with no vote", async () => {
+  // Decided reads the Bar, so the Undecided count moves on the write itself
+  // (ADR 0059). Rank stays mounted behind Settings and is told by the Stats it
+  // reads, which were re-read once (ADR 0015).
+  await openSettingsFromLibrary();
+  expect(rankBar().textContent).toContain("6 / 10 Undecided");
+  const statsBefore = statsCalls;
+  mockCommand("get_stats", () => {
+    statsCalls++;
+    return stats({ undecided_count: 2, decided_below_count: 5 });
+  });
+
+  await click(choiceIn(barSection(), "Worst 30%"));
+
+  expect(statsCalls).toBe(statsBefore + 1);
+  expect(rankBar().textContent).toContain("2 / 10 Undecided");
+});
+
+test("a setting the headline does not read re-reads nothing", async () => {
+  await openSettingsFromLibrary();
+  const statsBefore = statsCalls;
+
+  await click(choiceIn(orderingSection(), "Highest Score"));
+
+  expect(statsCalls).toBe(statsBefore);
+});
+
+test("the count line follows a download that landed", async () => {
+  // A download lands as a scan of one file (ADR 0051), so the count it moves is
+  // the one this page prints.
+  await openSettingsFromLibrary();
+  expect(screen.queryByText("12 wallpapers in the library")).not.toBeNull();
+  mockCommand("get_stats", () => {
+    statsCalls++;
+    return stats({ total_wallpapers: 13, eligible_count: 11 });
+  });
+
+  await emit("download-progress", {
+    total: 1,
+    landed: 1,
+    failed: 0,
+    item: { wallhaven_id: "qrow67", outcome: { kind: "landed" } },
+  });
+
+  expect(screen.queryByText("13 wallpapers in the library")).not.toBeNull();
 });
 
 test("the three preferences leave each other and every other setting alone", async () => {

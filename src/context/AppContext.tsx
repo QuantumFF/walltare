@@ -1,3 +1,4 @@
+import { useAppEvent } from "@/context/AppEventsContext";
 import {
   client,
   DEFAULT_SETTINGS,
@@ -12,6 +13,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -193,44 +195,51 @@ interface AppContextType {
    */
   saveWallhavenKey: (key: string) => Promise<boolean>;
   /**
-   * How many wallpapers the library holds, as of the last read; `null` when
-   * that read failed and there is no honest number to show.
+   * Re-read the Stats, and resolve with what the read answered.
    *
-   * It is published from here rather than fetched by the page that prints it,
-   * because boot already reads the whole `Stats` to decide where to land
-   * (ADR 0020) and Settings arrives on a mount rather than on a fetch. Only the
-   * total is published: every other field of `Stats` moves with a vote, and
-   * `AppProvider` sits above the event bus and so cannot hear one, which would
-   * make the rest of the struct a set of numbers going stale between two
-   * clicks. A scan is the only thing that moves this one, and
-   * `readLibraryAfterScan` is what follows it.
-   */
-  libraryTotal: number | null;
-  /**
-   * Re-read what the library holds, and keep `libraryTotal` in step with it.
-   *
-   * Rejects with whatever the read rejected with, because its other caller is
-   * the failed-boot block's Retry, whose whole content is the fault it hit.
+   * Rejects with whatever the read rejected with, because its caller is the
+   * failed-boot block's Retry, whose whole content is the fault it hit.
    */
   readLibrary: () => Promise<Stats>;
   /**
-   * What the app re-reads after a scan, called by the shell on every scan run
-   * that finished rather than failed: the count the Library root section
-   * prints, and the boot rule's one rerun.
+   * The boot rule's one rerun, called by the shell on every scan run that
+   * finished rather than failed.
    *
-   * The rerun is a no-op unless the library was empty before the scan and is
-   * not after, which is what makes it happen at most once: a first run scans,
-   * and the app moves off the page that asked it to. Every other completion
-   * leaves the curator where they are, because a scan now starts from inside
-   * Settings and finishes minutes later on whatever page they wandered to
-   * (ADR 0015). The count follows every scan either way, since a rescan that
-   * adds files is the ordinary case and the number on screen would otherwise be
-   * the one boot read.
+   * A no-op unless the library was empty before the scan and is not after,
+   * which is what makes it happen at most once: a first run scans, and the app
+   * moves off the page that asked it to. Every other completion leaves the
+   * curator where they are, because a scan now starts from inside Settings and
+   * finishes minutes later on whatever page they wandered to (ADR 0015). The
+   * count the Library root section prints follows every scan without this,
+   * because `library-scanned` is one of the facts the Stats are re-read on.
    */
   readLibraryAfterScan: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+
+/**
+ * The settings whose write can move the Stats. Decided reads the Bar, so a new
+ * Bar share can move the Undecided count with nothing voted (ADR 0059). No
+ * other key reaches a field of `Stats`: the Evaluated threshold lost its count
+ * with ADR 0059, and the rest decide what a page shows.
+ */
+const MOVES_THE_STATS: ReadonlySet<SettingKey> = new Set(["bar_share"]);
+
+/** Every field of two `Stats` agrees, so the second is no news. */
+function sameStats(a: Stats | null, b: Stats): boolean {
+  return (
+    a !== null &&
+    (Object.keys(b) as (keyof Stats)[]).every((key) => a[key] === b[key])
+  );
+}
+
+/**
+ * The Stats as of the last read, published apart from the rest of the app's
+ * state so that a new count re-renders the pages that print one and nothing
+ * else.
+ */
+const StatsContext = createContext<Stats | null | undefined>(undefined);
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   // `null` until the boot read settles, which is the same fact as "nothing has
@@ -238,8 +247,87 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // so before that answer arrives there is no honest view to show.
   const [navigation, setNavigation] = useState<Navigation | null>(null);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [libraryTotal, setLibraryTotal] = useState<number | null>(null);
   const booted = navigation !== null;
+
+  // The Stats, and the one place in the frontend that reads them. Every module
+  // that changes something publishes the fact it already publishes, and this
+  // re-reads on the facts that can move a count; nothing else calls
+  // `get_stats` (#418). `null` until a read has landed, so a page with no
+  // honest number prints none rather than a zero nobody measured.
+  const [stats, setStats] = useState<Stats | null>(null);
+  // A read asked for and not yet sent. Facts published in one go — a reject of
+  // every missing file is one `status-changed` a row — join it, so they cost
+  // one read between them and not one each.
+  const queuedRead = useRef<Promise<Stats> | null>(null);
+  // Counts what has set the Stats, so a read that was overtaken — by a later
+  // read, or by a vote's answer — lands without undoing it.
+  const statsVersion = useRef(0);
+
+  const readStats = useCallback((): Promise<Stats> => {
+    if (queuedRead.current) return queuedRead.current;
+    const read = Promise.resolve().then(async () => {
+      queuedRead.current = null;
+      const version = ++statsVersion.current;
+      const answer = await client.getStats();
+      // An unchanged answer keeps the object it would replace, so a fact that
+      // moved no count — a keep, say — re-renders nobody.
+      if (version === statsVersion.current) {
+        setStats((held) => (sameStats(held, answer) ? held : answer));
+      }
+      // A read that now succeeds retires the account of one that did not. The
+      // notice is why boot opened Settings, and the page shows a boot landing —
+      // the block, and the Library root section on its own — for as long as one
+      // stands: a Retry that fixed nothing but the block would leave the
+      // curator on a page still missing every section but the first
+      // (ADR 0033).
+      //
+      // Only the fault. A first-run notice is about what the library holds
+      // rather than about whether it could be read, and this same read follows
+      // every scan — so clearing that one here would drop the invitation on a
+      // scan that found nothing, which is exactly when it is still true.
+      setNavigation((current) =>
+        current?.notice?.kind === "unreadable_library"
+          ? { ...current, notice: null }
+          : current,
+      );
+      return answer;
+    });
+    queuedRead.current = read;
+    return read;
+  }, []);
+
+  const rereadStats = useCallback(() => {
+    // A failed re-read leaves the old Stats standing rather than blanking
+    // them: the fact has landed, the counts are one read behind, and the next
+    // fact or vote catches them up (ADR 0046).
+    readStats().catch((error: unknown) => {
+      console.error("Failed to re-read the stats:", error);
+    });
+  }, [readStats]);
+
+  useAppEvent((event) => {
+    switch (event.type) {
+      // A vote answers with the whole `Stats`, so there is nothing to read.
+      case "stats-changed":
+        statsVersion.current += 1;
+        setStats((held) => (sameStats(held, event.stats) ? held : event.stats));
+        return;
+      // A reject or a Restore changes the Eligible pool. A keep does not, and
+      // the payload cannot tell the two apart, so every transition re-reads.
+      case "status-changed":
+        rereadStats();
+        return;
+      // A scan or a download. One that added nothing moved no count, and is
+      // read anyway: it is the read that retires a boot that could not read
+      // the library, and the read the boot rule's rerun joins.
+      case "library-scanned":
+        rereadStats();
+        return;
+      // The ids in a Comparison, whose `Stats` came with the vote's answer.
+      case "score-changed":
+        return;
+    }
+  });
 
   // Whether the library was empty the last time anything counted it, which is
   // the "before the scan" half of the rerun's condition. A ref rather than
@@ -280,7 +368,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // will not read must not lock the curator out of the app that would let
       // them fix it (ADR 0010).
       const [stats, stored] = await Promise.all([
-        client.getStats().catch((error: unknown) => {
+        readStats().catch((error: unknown) => {
           console.error("Failed to load library stats:", error);
           statsError = error;
           return null;
@@ -295,10 +383,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (stored) setSettings(stored);
 
       // A read that failed says nothing about whether the library is empty, so
-      // it does not arm the rerun below either, and leaves the count line with
-      // nothing to print rather than with a zero it did not measure.
+      // it does not arm the rerun below either.
       libraryEmpty.current = stats?.total_wallpapers === 0;
-      setLibraryTotal(stats?.total_wallpapers ?? null);
 
       // The startup view off the read that just landed rather than off the
       // state it is about to set, which has not re-rendered yet. A settings
@@ -321,13 +407,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [readStats]);
 
   const saveSetting = useCallback(
     async <K extends SettingKey>(key: K, value: Settings[K]) => {
       setSettings(await client.setSetting(key, value));
+      if (MOVES_THE_STATS.has(key)) rereadStats();
     },
-    [],
+    [rereadStats],
   );
 
   const saveWallhavenKey = useCallback(async (key: string) => {
@@ -336,36 +423,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return saved.verified;
   }, []);
 
-  const readLibrary = useCallback(async () => {
-    const stats = await client.getStats();
-    setLibraryTotal(stats.total_wallpapers);
-    // A read that now succeeds retires the account of one that did not. The
-    // notice is why boot opened Settings, and the page shows a boot landing —
-    // the block, and the Library root section on its own — for as long as one
-    // stands: a Retry that fixed nothing but the block would leave the curator
-    // on a page still missing every section but the first (ADR 0033).
-    //
-    // Only the fault. A first-run notice is about what the library holds rather
-    // than about whether it could be read, and this same read is what follows
-    // every scan — so clearing that one here would drop the invitation on a scan
-    // that found nothing, which is exactly when it is still true.
-    setNavigation((current) =>
-      current?.notice?.kind === "unreadable_library"
-        ? { ...current, notice: null }
-        : current,
-    );
-    return stats;
-  }, []);
-
   const readLibraryAfterScan = useCallback(() => {
+    // Armed only for a library that was empty before this scan.
+    if (!libraryEmpty.current) return;
     void (async () => {
-      const stats = await readLibrary().catch((error: unknown) => {
-        console.error("Failed to re-read library stats after a scan:", error);
-        return null;
-      });
-      // The count above follows every scan. Everything below is the rerun, which
-      // is armed only for a library that was empty before this one.
-      if (!libraryEmpty.current) return;
+      // The read `library-scanned` just queued, joined rather than repeated:
+      // the scan published it before its ending reached the shell. A failure
+      // is that read's to report.
+      const stats = await readStats().catch(() => null);
       // Neither a failed read nor a scan that added nothing can establish "and
       // is not after", so both leave the curator on the page that offered to
       // scan — with the folder they typed still in the field. A later scan of a
@@ -387,7 +452,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         notice: landing.notice,
       });
     })();
-  }, [readLibrary, startupView]);
+  }, [readStats, startupView]);
 
   // The palette is a class on the document element, because index.css keys both
   // the tokens and the `dark:` variant off one there. Nothing is written before
@@ -432,15 +497,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => desktop.removeEventListener("change", paint);
   }, [booted, settings.theme]);
 
-  // Nothing paints until both reads have settled, so a screen that reads a
-  // setting never renders once against the defaults and again against the
-  // stored choice, and no view paints before the boot rule has picked one. The
-  // palette in index.css covers the gap.
-  if (navigation === null) return null;
-
-  return (
-    <AppContext.Provider
-      value={{
+  // Memoised, so a new count re-renders the readers of `useStats` and not every
+  // reader of this: the shell and every mounted view are among them, and a
+  // hidden page re-rendered on each vote is the cost ADR 0043 priced.
+  const app = useMemo<AppContextType | null>(
+    () =>
+      navigation && {
         view: navigation.view,
         returnTo: navigation.returnTo,
         focus: navigation.focus,
@@ -449,12 +511,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         settings,
         saveSetting,
         saveWallhavenKey,
-        libraryTotal,
-        readLibrary,
+        readLibrary: readStats,
         readLibraryAfterScan,
-      }}
-    >
-      {children}
+      },
+    [
+      navigation,
+      setView,
+      settings,
+      saveSetting,
+      saveWallhavenKey,
+      readStats,
+      readLibraryAfterScan,
+    ],
+  );
+
+  // Nothing paints until both reads have settled, so a screen that reads a
+  // setting never renders once against the defaults and again against the
+  // stored choice, and no view paints before the boot rule has picked one. The
+  // palette in index.css covers the gap.
+  if (app === null) return null;
+
+  return (
+    <AppContext.Provider value={app}>
+      <StatsContext.Provider value={stats}>{children}</StatsContext.Provider>
     </AppContext.Provider>
   );
 }
@@ -465,4 +544,23 @@ export function useApp() {
     throw new Error("useApp must be used within an AppProvider");
   }
   return context;
+}
+
+/**
+ * The library's `Stats` as of the last read, kept current for as long as the
+ * app runs; `null` until a read has landed.
+ *
+ * Read here and never fetched by the page that prints them. Every fact that
+ * can move a count is on the bus — a transition's `status-changed`, a scan's
+ * or a download's `library-scanned`, a vote's `stats-changed` — and the one
+ * write that moves one, the Bar share, goes through `saveSetting`. So a module
+ * that changes something publishes what it already publishes, and the counts
+ * follow without it knowing who prints them (#418).
+ */
+export function useStats(): Stats | null {
+  const stats = useContext(StatsContext);
+  if (stats === undefined) {
+    throw new Error("useStats must be used within an AppProvider");
+  }
+  return stats;
 }

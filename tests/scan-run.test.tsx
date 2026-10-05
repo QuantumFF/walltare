@@ -10,10 +10,8 @@ import {
   type ScanOutcome,
   type ScanRun,
 } from "@/context/ScanRunContext";
-import type { Stats } from "@/lib/client";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { expectConsoleError } from "./console-guard";
 import { deferred, flush, stats } from "./fixtures";
 import { emitEvent, mockCommand } from "./ipc-mocks";
 
@@ -23,8 +21,6 @@ import { emitEvent, mockCommand } from "./ipc-mocks";
 // `Layout.test.tsx`'s. Here is which ending a scan had, what it told the other
 // views, and whether one is running.
 
-/** The `Stats` `get_stats` answers with right now, so a scan can move it. */
-let library: Stats;
 /** The commands the start sequence made, in the order the backend heard them. */
 let calls: string[];
 let outcomes: ScanOutcome[];
@@ -35,15 +31,15 @@ let run: ScanRun;
 afterEach(cleanup);
 
 beforeEach(() => {
-  // A mid-life library.
-  library = stats();
   calls = [];
   outcomes = [];
   published = [];
 
+  // Answered and counted, so a read this module should not make is one the
+  // order of `calls` shows.
   mockCommand("get_stats", () => {
     calls.push("get_stats");
-    return library;
+    return stats();
   });
   mockCommand("start_scan", (args) => {
     calls.push(`start_scan ${args.path}`);
@@ -110,8 +106,9 @@ test("a scan stores the folder, then walks it, and runs from the click", async (
 
   await emit("scan-complete", { added_count: 38, scanned_count: 412 });
   expect(run.state).toEqual({ running: false });
-  // And one read after it, for the headline the new wallpapers moved.
-  expect(calls).toEqual(["store ~/pics", "start_scan ~/pics", "get_stats"]);
+  // And no read after it: the Stats are re-read on `library-scanned` by the
+  // one module that holds them (#418).
+  expect(calls).toEqual(["store ~/pics", "start_scan ~/pics"]);
 });
 
 test("a second start while one is running does nothing", async () => {
@@ -175,11 +172,6 @@ test("a scan that added wallpapers says how many, and nothing else", async () =>
 
   // 412 unseen files, every one of them Undecided. That is the headline's to
   // say, so the ending carries the count alone (ADR 0059).
-  library = stats({
-    total_wallpapers: 424,
-    eligible_count: 422,
-    undecided_count: 418,
-  });
   await emit("scan-complete", { added_count: 412, scanned_count: 2000 });
 
   expect(outcomes).toEqual([{ kind: "added", added: 412 }]);
@@ -213,24 +205,20 @@ test("a scan that failed ends with the backend's own account, and is not running
   ]);
 });
 
-test("every finished scan tells the views which rows exist, and one that added tells Rank the new stats", async () => {
+test("every finished scan tells the views which rows exist, and nothing else", async () => {
   await mount();
   await start("/library");
 
-  library = stats({ total_wallpapers: 15, undecided_count: 9 });
   await emit("scan-complete", { added_count: 3, scanned_count: 40 });
   await start("/library");
   await emit("scan-complete", { added_count: 0, scanned_count: 40 });
 
   // `library-scanned` on both, zero included, because zero is the answer
-  // "nothing changed" and the views owe no refetch for it. `stats-changed` only
-  // where the scan could have moved the headline (ADR 0015).
+  // "nothing changed" and the views owe no refetch for it (ADR 0015). It is
+  // also the fact the Stats are re-read on, so the scan publishes no Stats of
+  // its own (#418).
   expect(published).toEqual([
     { type: "library-scanned", added: 3 },
-    {
-      type: "stats-changed",
-      stats: stats({ total_wallpapers: 15, undecided_count: 9 }),
-    },
     { type: "library-scanned", added: 0 },
   ]);
 });
@@ -260,20 +248,4 @@ test("an ending that beats the reply to start_scan still names the folder, and i
 
   expect(outcomes).toEqual([{ kind: "empty", folder: "~/Pictures/empty" }]);
   expect(run.state).toEqual({ running: false });
-});
-
-test("stats that cannot be read after the scan still end it", async () => {
-  expectConsoleError(/Failed to read the stats after a scan/);
-  await mount();
-  await start("/library");
-
-  mockCommand("get_stats", () =>
-    Promise.reject({ kind: "db", message: "database is locked" }),
-  );
-  await emit("scan-complete", { added_count: 3, scanned_count: 40 });
-
-  // The count is still news, and the headline is told nothing it was not
-  // measured to say.
-  expect(outcomes).toEqual([{ kind: "added", added: 3 }]);
-  expect(published).toEqual([{ type: "library-scanned", added: 3 }]);
 });

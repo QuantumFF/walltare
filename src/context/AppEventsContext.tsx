@@ -66,7 +66,12 @@ export type AppEvent =
    * backend for the rows would be a query on the hot path of voting.
    */
   | { type: "score-changed"; ids: number[] }
-  /** Every count in the headline, as the backend just reported them. */
+  /**
+   * Every count in the headline, as a vote's answer reported them. Rank is the
+   * only publisher and `AppProvider`, which holds the Stats, the only listener:
+   * every other fact that moves a count is one of the three beside this, and
+   * the Stats are re-read on those instead (#418).
+   */
   | { type: "stats-changed"; stats: Stats }
   /**
    * Wallpapers a scan added, or the one a download landed (ADR 0051). Zero is

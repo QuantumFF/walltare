@@ -64,9 +64,8 @@ const DownloadRunControlsContext = createContext<
  * Shell-level for the reason the scan run is: a batch runs in the background
  * while the curator browses, and its ending is news about the library wherever
  * they have got to by then (ADR 0021). What a landed file does to the rest of
- * the app is here too: each one publishes `library-scanned` and
- * `stats-changed`, so the views refresh as they do after a scan, with no
- * rescan (ADR 0051). What a batch *says* is the toast's, and what each card
+ * the app is here too: each one publishes `library-scanned`, so the views and
+ * the Stats refresh as they do after a scan, with no rescan (ADR 0051). What a batch *says* is the toast's, and what each card
  * says is Discover's, which reads the per-file events itself.
  *
  * State and controls are two contexts, so a progress event re-renders the
@@ -115,16 +114,9 @@ export function DownloadRunProvider({ children }: { children: ReactNode }) {
       setState({ running: true, run: runs.current, progress });
       if (progress.item.outcome.kind !== "landed") return;
       // A landed file is a new row, which only a refetch can place, and a new
-      // wallpaper with no comparisons, which moves the headline (ADR 0051).
+      // wallpaper with no comparisons, which moves the headline and the
+      // library's count: both follow this one fact (ADR 0051, #418).
       publish({ type: "library-scanned", added: 1 });
-      void client
-        .getStats()
-        .then((stats) => {
-          publish({ type: "stats-changed", stats });
-        })
-        .catch((error: unknown) => {
-          console.error("Failed to read the stats after a download:", error);
-        });
     },
 
     downloadComplete: ({ total, landed, failed, first_error }) => {
