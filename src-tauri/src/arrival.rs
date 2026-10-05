@@ -28,6 +28,7 @@
 //! it; a file that will not decode is noted the way the pass notes one
 //! (ADR 0034). Neither turns an arrived wallpaper into a failed one.
 
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use crate::db::{self, Added, Status};
@@ -67,7 +68,16 @@ pub enum Warm<'a> {
 /// the path is the wallpaper's identity and `UNIQUE(path)` compares strings.
 pub fn arrive(db: &Db, paths: &[PathBuf], warm: Warm) -> Result<Vec<Added>, rusqlite::Error> {
     let added = db.write(|conn| db::insert_new_wallpapers(conn, paths))?;
-    record_dimensions(db, added.iter().map(|row| (row.id, row.path.as_path())));
+    // Past the insert, a panic is a fact about one file's bytes like any other
+    // failure here, and must not unwind into a caller that would report rows
+    // already in the library as not arrived. `warm` catches its own; the header
+    // reads are the image crate's too.
+    let facts = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        record_dimensions(db, added.iter().map(|row| (row.id, row.path.as_path())));
+    }));
+    if facts.is_err() {
+        eprintln!("reading the dimensions of new wallpapers panicked");
+    }
     if let Warm::Now(cache) = warm {
         for row in &added {
             warm_now(db, cache, row);
@@ -114,8 +124,9 @@ pub fn record_dimensions<'a>(db: &Db, files: impl IntoIterator<Item = (i64, &'a 
 /// its id. Its Status is Active, because every row arrives Active; a reject that
 /// lands before this runs makes it a skip, which is the pass's Status re-check.
 /// The failure is the pass's too: written down against the file's mtime when it
-/// will not decode, and otherwise nobody's to report — the thumbnails are made
-/// on demand when the wallpaper is first shown, as ADR 0051 had them.
+/// will not decode. Nothing reports it beyond a log line, because the file has
+/// landed regardless, and the thumbnails are made on demand when the wallpaper
+/// is first shown, as ADR 0051 had them.
 fn warm_now(db: &Db, cache: &ThumbnailCache, arrived: &Added) {
     let pending = Pending {
         wallpaper_id: arrived.id,

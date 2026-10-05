@@ -845,8 +845,8 @@ fn write_size(
 /// a wallpaper only reaches the generating branches because its source changed,
 /// and a hash of the old file would describe a picture that is gone. A Small
 /// that cannot be read leaves the row as it was, for
-/// [`crate::arrival::record_dimensions`]'s reason, and the read happens with the connection
-/// released (ADR 0039).
+/// [`crate::arrival::record_dimensions`]'s reason, and the read happens with the
+/// connection released (ADR 0039).
 fn hash_and_record(db: &Db, wallpaper_id: i64, cache_dir: &Path) {
     let Some(hash) = perceptual_hash(&cache_path(cache_dir, wallpaper_id, Size::Small)) else {
         return;
