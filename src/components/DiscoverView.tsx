@@ -411,7 +411,7 @@ export function DiscoverView() {
     [setView],
   );
 
-  const { picks, offer: offerNow, clear: clearPicks } = basket;
+  const { picks, offer: offerNow, offered, clear: clearPicks } = basket;
   const { download: take, downloadPicks: takePicks, pick: toggle } = basket;
   const download = useCallback(
     (result: MarkedResult) => (noRoot ? chooseRoot() : take([result])),
@@ -439,6 +439,10 @@ export function DiscoverView() {
     () => ({ offer: offerNow, noRoot, download, pick, open: openOn }),
     [offerNow, noRoot, download, pick, openOn],
   );
+
+  // What the keys act on, asking the basket at each press what a Result
+  // offers, so a key does what the card's buttons do.
+  const keys = useMemo(() => resultKeys(offered), [offered]);
 
   // The keys on the cursor: `P` and `D` are the card's own Pick and Download
   // pressed by key, and with Picks `D` is the tray's Download and `Escape` its
@@ -686,7 +690,7 @@ export function DiscoverView() {
                 ref={setGrid}
                 items={results}
                 label="Results from Wallhaven"
-                actions={resultKeys(picks.length)}
+                actions={keys.grid(picks.length)}
                 onAct={act}
                 onOpen={openOn}
                 // The keys act on the card under the mouse.
@@ -757,13 +761,14 @@ export function DiscoverView() {
         />
       )}
 
-      {/* Handed `RESULT_KEYS` whatever the tray holds, so `D` in here is the
-          Result on screen, as its button says (see `RESULT_KEYS`). */}
+      {/* Handed the table with no Picks whatever the tray holds, so `D` in
+          here is the Result on screen, as its button says (see
+          `RESULT_KEYS`). */}
       <ItemLightbox
         grid={grid}
         open={lightbox.open}
         onClose={lightbox.close}
-        actions={RESULT_KEYS}
+        actions={keys.lightbox}
         onAct={act}
         picture={resultPicture}
         row={(result) => resultRow(result, resultControls)}

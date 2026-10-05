@@ -359,10 +359,11 @@ export type ResultAction =
 /**
  * The keys Discover acts on a Result with (#344).
  *
- * **`P` toggles a Pick**, and only an unmarked Result offers it, the same rule
- * the card's Download renders from: one the library already holds, or one the
- * curator rejected, is not downloaded again (ADR 0050), so it is not picked
- * either.
+ * **`P` toggles a Pick**, and only a Result the basket offers can be one: the
+ * rule the card's Pick and Download render from, `offer` in `basket.ts`. One the
+ * library already holds, or one the curator rejected, is not downloaded again
+ * (ADR 0050), and one already on its way is not downloaded twice, so neither is
+ * picked.
  *
  * **`D` names two actions**, and the Picks decide which applies: while there
  * are any it downloads them, whatever the cursor is on, and otherwise the
@@ -371,18 +372,19 @@ export type ResultAction =
  * is left alone when there are none, so it goes on meaning whatever else
  * answers it.
  *
- * So what a Result offers depends on whether there are Picks, which `offers`
- * cannot see from the Result alone. There are two tables, the same keys over
- * two rules, and the page hands the grid the one that holds: `resultKeys`.
- * `RESULT_KEYS` is the one with no Picks, which is also what the shortcuts
- * dialog prints, since its lines are the keys and not the rule.
+ * So what a Result offers depends on whether there are Picks, and on the
+ * basket, neither of which `offers` can see from the Result alone. The basket
+ * is asked at the keypress, through the function the page builds its tables
+ * from (`resultKeys`), and the Picks choose between two tables, the same keys
+ * over two rules. `RESULT_KEYS` is the keys alone, which is what the shortcuts
+ * dialog prints and a button reads its key from.
  *
  * **In the lightbox, `P` and `D` are the Result on screen** (#345), which is
  * what the Pick and Download buttons under the picture fire. The lightbox is
- * handed `RESULT_KEYS` whatever the tray holds, so there `D` is always the
- * Result's own Download: the curator opened one Result to decide about it, and
- * a key printed on its button that took the tray instead would be the button
- * lying. `Escape` stays the grid's, because in the lightbox it is the way out
+ * handed the table with no Picks whatever the tray holds, so there `D` is
+ * always the Result's own Download: the curator opened one Result to decide
+ * about it, and a key printed on its button that took the tray instead would
+ * be the button lying. `Escape` stays the grid's, because in the lightbox it is the way out
  * (ADR 0022), and Picks gathered before opening one survive closing it.
  */
 const RESULT_BINDINGS: readonly ActionBinding<ResultAction>[] = [
@@ -404,7 +406,7 @@ const RESULT_BINDINGS: readonly ActionBinding<ResultAction>[] = [
     listed: {
       listing:
         "Download your Picks, or the selected Result when there are none",
-      // Not the Picks in here: the lightbox is handed `RESULT_KEYS`.
+      // Not the Picks in here: see `ResultKeys.lightbox`.
       lightbox: "Download the Result on screen",
     },
   },
@@ -420,30 +422,59 @@ const RESULT_BINDINGS: readonly ActionBinding<ResultAction>[] = [
   },
 ];
 
-const unmarked = (result: MarkedResult) => result.mark === "unmarked";
-
-export const RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
+/**
+ * Discover's keys, read for the keys alone: the shortcuts dialog's lines and
+ * the key a button prints. What a Result offers is the page's tables' to say
+ * (`resultKeys`), so this one can be asked about no Result.
+ */
+export const RESULT_KEYS: ActionTable<never, ResultAction> = {
   bindings: RESULT_BINDINGS,
-  offers: (result) => (unmarked(result) ? ["pick", "download"] : []),
-};
-
-const PICKING_RESULT_KEYS: ActionTable<MarkedResult, ResultAction> = {
-  bindings: RESULT_BINDINGS,
-  offers: (result) =>
-    unmarked(result)
-      ? ["pick", "download-picks", "clear-picks"]
-      : ["download-picks", "clear-picks"],
+  offers: () => [],
 };
 
 /**
- * Discover's table while it holds `pickCount` Picks. One of two constants, so a
- * Pick that is not the first or the last hands the grid the table it already
- * has.
+ * Whether a Result can be picked and downloaded now: `offer(...).offered` in
+ * `basket.ts`, asked at the keypress.
  */
-export function resultKeys(
-  pickCount: number,
-): ActionTable<MarkedResult, ResultAction> {
-  return pickCount > 0 ? PICKING_RESULT_KEYS : RESULT_KEYS;
+export type ResultOffered = (result: MarkedResult) => boolean;
+
+/** The tables a Discover page acts on Results with, built by `resultKeys`. */
+export interface ResultKeys {
+  /**
+   * The grid's table while the page holds `pickCount` Picks. One of two, so a
+   * Pick that is not the first or the last hands the grid the table it
+   * already has.
+   */
+  grid: (pickCount: number) => ActionTable<MarkedResult, ResultAction>;
+  /** The lightbox's, whatever the tray holds: the table with no Picks. */
+  lightbox: ActionTable<MarkedResult, ResultAction>;
+}
+
+/**
+ * Discover's tables, answering off `offered` at each keypress, so the keys
+ * offer exactly what the card's Pick and Download do — a Queued Result
+ * included, which is unmarked and still offers neither.
+ *
+ * Built once per page from a function that keeps one identity for the page's
+ * life, so the tables do too: a basket that moves changes what they answer and
+ * not which table the grid holds.
+ */
+export function resultKeys(offered: ResultOffered): ResultKeys {
+  const idle: ActionTable<MarkedResult, ResultAction> = {
+    bindings: RESULT_BINDINGS,
+    offers: (result) => (offered(result) ? ["pick", "download"] : []),
+  };
+  const picking: ActionTable<MarkedResult, ResultAction> = {
+    bindings: RESULT_BINDINGS,
+    offers: (result) =>
+      offered(result)
+        ? ["pick", "download-picks", "clear-picks"]
+        : ["download-picks", "clear-picks"],
+  };
+  return {
+    grid: (pickCount) => (pickCount > 0 ? picking : idle),
+    lightbox: idle,
+  };
 }
 
 /** The table read at run time, where one entry's literal types are no help. */

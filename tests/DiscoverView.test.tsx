@@ -1050,8 +1050,10 @@ test("D downloads the Result under the cursor, and leaves a marked one alone", a
   expect(downloads).toEqual([["fresh1"]]);
   expect(caption(fresh)).toContain("Downloading");
 
-  // A second press on the one already downloading asks for nothing more.
-  await press("D");
+  // The one already downloading offers no Download, the way its card shows
+  // none, so a second press is not answered and asks for nothing more.
+  expect(await answered("D", fresh)).toBe(false);
+  expect(await answered("P", fresh)).toBe(false);
   expect(downloads).toEqual([["fresh1"]]);
 
   // A marked Result offers no Download, so its key is not answered at all.
@@ -1283,9 +1285,16 @@ test("P and the Pick button toggle a Pick, and a marked Result can't be picked",
   expect(await answered("p", held)).toBe(false);
   expect(tray()?.textContent).toContain("1 picked");
 
-  // Nor does a Result already on its way to the library.
+  // Nor does a Result already on its way to the library, Queued behind
+  // another, and its key goes unanswered too.
+  await click(downloadButton(first)!);
   await click(downloadButton(second)!);
+  expect(caption(second)).toContain("Queued");
   expect(pickButton(second)).toBeNull();
+  await press("ArrowLeft");
+  expect(document.activeElement).toBe(second);
+  expect(await answered("p", second)).toBe(false);
+  expect(tray()).toBeNull();
 });
 
 test("the tray shows the Picks' thumbnails, count and total size, and Clear empties it", async () => {

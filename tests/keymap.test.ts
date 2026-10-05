@@ -5,6 +5,7 @@ import {
   printedKey,
   rankKey,
   rankShortcutLines,
+  resultKeys,
   shortcutLines,
   type Intent,
   type KeyContext,
@@ -431,6 +432,7 @@ test("C goes unanswered on a lightbox that offers no crop preview", () => {
 // way out rather than the Picks' Clear.
 test("on Discover, Enter opens, and the lightbox answers P and D but not Escape", () => {
   const selected = { id: "qrow67", mark: "unmarked" } as MarkedResult;
+  const keys = resultKeys(() => true);
   const press = (key: string, surface: ListingSurface) =>
     answerKey(
       {
@@ -444,7 +446,7 @@ test("on Discover, Enter opens, and the lightbox answers P and D but not Escape"
         preventDefault: () => {},
       },
       { surface, selected, index: 5, length: 12 },
-      RESULT_KEYS,
+      surface.kind === "lightbox" ? keys.lightbox : keys.grid(0),
     );
   const grid = surfaceOf("grid");
   const lightbox: ListingSurface = { kind: "lightbox", crop: false };
@@ -465,6 +467,59 @@ test("on Discover, Enter opens, and the lightbox answers P and D but not Escape"
     keys: ["Enter"],
     action: "Open the selection",
   });
+});
+
+// What a Result offers is the basket's to say, asked at the keypress: a key on
+// one the basket does not offer, marked or already on its way, goes
+// unanswered, and the same tables answer differently once it changes (#421).
+test("Discover's tables ask the basket at each keypress, and keep their identity", () => {
+  const selected = { id: "qrow67", mark: "unmarked" } as MarkedResult;
+  let offered = false;
+  const keys = resultKeys(() => offered);
+  const grid = surfaceOf("grid");
+  const press = (key: string, pickCount: number) =>
+    answerKey(
+      {
+        key,
+        shiftKey: false,
+        ctrlKey: false,
+        altKey: false,
+        metaKey: false,
+        repeat: false,
+        target: cell,
+        preventDefault: () => {},
+      },
+      { surface: grid, selected, index: 5, length: 12 },
+      keys.grid(pickCount),
+    );
+
+  expect(press("p", 0)).toBeUndefined();
+  expect(press("d", 0)).toBeUndefined();
+  // With Picks, `D` is about the tray, whatever the cursor offers.
+  expect(press("p", 2)).toBeUndefined();
+  expect(press("d", 2)).toEqual({
+    kind: "act",
+    action: "download-picks",
+    item: selected,
+  });
+
+  offered = true;
+  expect(press("p", 0)).toEqual({
+    kind: "act",
+    action: "pick",
+    item: selected,
+  });
+  expect(press("d", 0)).toEqual({
+    kind: "act",
+    action: "download",
+    item: selected,
+  });
+
+  // One table per side of "any Picks", whatever the count, and the lightbox's
+  // is the one with none.
+  expect(keys.grid(1)).toBe(keys.grid(5));
+  expect(keys.grid(0)).toBe(keys.lightbox);
+  expect(keys.grid(0)).not.toBe(keys.grid(1));
 });
 
 // A grid with a rule across it: the row before the rule stops short, and the
