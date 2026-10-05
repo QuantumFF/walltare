@@ -17,7 +17,7 @@ import {
   type ResultAction,
 } from "@/components/keymap";
 import type { SelectionHandle } from "@/components/selection";
-import { useToaster } from "@/components/ToastSurface";
+import { DrawTurns, SharpPicture } from "@/components/SharpPicture";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import {
@@ -40,31 +40,35 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useBasket } from "@/components/useBasket";
+import { useCollapsingHeader } from "@/components/useCollapsingHeader";
+import {
+  useWallhavenSearch,
+  type Asked,
+} from "@/components/useWallhavenSearch";
 import { useApp } from "@/context/AppContext";
-import { useDownload } from "@/context/DownloadRunContext";
 import {
   useHandOffOnPointerPress,
   useKeyboardHandoff,
   useKeyboardSurface,
 } from "@/context/KeyboardHandoffContext";
 import {
-  client,
-  DEFAULT_DISCOVER_FILTERS,
-  isAppError,
+  EMPTY_BASKET,
+  offer,
+  type Offer,
+  type ResultDownload,
+} from "@/lib/basket";
+import {
   type Categories,
-  type DiscoverFilters,
   type Mark,
   type MarkedResult,
   type Purity,
   type Resolution,
-  type SearchPage,
-  type SearchParams,
   type Sorting,
   type TopRange,
   WALLHAVEN_COLOURS,
 } from "@/lib/client";
 import { bytes } from "@/lib/copy";
-import { useBackendEvents } from "@/lib/useBackendEvents";
 import { cn } from "@/lib/utils";
 import {
   ArrowDownWideNarrow,
@@ -87,7 +91,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -201,19 +204,6 @@ function colourName(colour: string): string {
 /** The Colour pill's value for Any colour, which no colour is spelled as. */
 const ANY_COLOUR = "any";
 
-/**
- * The sticky strip's height: a PageBar's `h-11`, so a collapsed header is the
- * same fixed bar every other page has under the chrome (ADR 0015).
- */
-const STRIP_HEIGHT = 44;
-
-/**
- * How long the header's new shape takes to fade in once a scroll swaps it:
- * long enough to soften the swap, short enough that a flick past the line
- * never waits on it.
- */
-const FADE_MS = 180;
-
 function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
@@ -288,129 +278,22 @@ function resultPicture(result: MarkedResult): Picture {
 }
 
 /**
- * What a failed search says, where the Results would be (ADR 0054).
- *
- * The backend's own sentence for the three kinds that carry one written for
- * the curator: an unreachable or odd Wallhaven, the rate limit's wait, and a
- * value it refused, and a saved key Wallhaven rejected, which the page follows
- * with a way to Settings. Anything else is a fault in the app rather than
- * something the curator can act on, and gets the plain line.
- */
-function searchFailure(error: unknown): string {
-  if (isAppError(error)) {
-    if (
-      error.kind === "network" ||
-      error.kind === "rate_limited" ||
-      error.kind === "key_rejected"
-    ) {
-      return error.message;
-    }
-    if (error.kind === "bad_request") {
-      return `Wallhaven can't search for that: ${error.message}.`;
-    }
-  }
-  return "Couldn't search Wallhaven.";
-}
-
-/**
- * What the curator last asked for: the search box and every pill.
- *
- * The five remembered filters, which a successful search records, and three
- * the backend never remembers: the words, the ratio and the colour describe
- * what the curator is looking for right now (ADR 0054).
- */
-interface Asked extends DiscoverFilters {
-  q: string;
-  /** `null` is Any ratio. */
-  ratio: string | null;
-  /** One of `WALLHAVEN_COLOURS`, or `null` for Any colour. */
-  colour: string | null;
-}
-
-/** The request for one page of `asked`. */
-function paramsFor(
-  asked: Asked,
-  page?: number,
-  seed?: string | null,
-): SearchParams {
-  return {
-    q: asked.q,
-    categories: asked.categories,
-    purity: asked.purity,
-    sorting: asked.sorting,
-    order: asked.order,
-    // Only a toplist reads a range, and the backend refuses one sent with any
-    // other sort rather than let it be ignored (ADR 0054). The pill keeps it
-    // for when the curator comes back to Toplist.
-    top_range: asked.sorting === "toplist" ? asked.top_range : undefined,
-    ratios: asked.ratio ? [asked.ratio] : undefined,
-    colors: asked.colour ?? undefined,
-    page,
-    seed: seed ?? undefined,
-  };
-}
-
-/** The pages shown so far, flattened, and where the last of them sits. */
-interface Shown {
-  results: MarkedResult[];
-  meta: SearchPage["meta"];
-}
-
-/**
- * A call that did not answer, and whether it was the first page's — which
- * replaces the Results — or a Load more's, which leaves them standing.
- */
-interface Failure {
-  at: "first" | "more";
-  message: string;
-  /**
-   * The saved key got a 401. Nothing falls back to anonymous: the page says so
-   * and offers the way to Settings, where the key is replaced or removed
-   * (ADR 0054).
-   */
-  keyRejected: boolean;
-}
-
-/** The failure a call that did not answer leaves, at `at`. */
-function failed(at: Failure["at"], error: unknown): Failure {
-  return {
-    at,
-    message: searchFailure(error),
-    keyRejected: isAppError(error) && error.kind === "key_rejected",
-  };
-}
-
-/**
- * Where one Result's download has got to, as its caption says it (ADR 0051).
- *
- * Queued and Downloading are the page's reading of its own queue: the backend
- * downloads one file at a time in the order it was asked, so the first of the
- * page's queued ids is the one on the wire. Landed and Failed are what
- * `download-progress` said about it.
- */
-type CardDownload =
-  | { kind: "queued" }
-  | { kind: "downloading" }
-  | { kind: "landed" }
-  | { kind: "failed"; message: string };
-
-/** How a file ended, which is the part of a card's state the events set. */
-type Ended = Extract<CardDownload, { kind: "landed" | "failed" }>;
-
-/**
- * What every card needs from the page to draw its caption: each Result's
- * download, which Results are Picks, whether there is a Library root to
- * download into, and the ways to ask for each — the lightbox's open among
- * them, since a click on a card is one.
+ * What every card needs from the page to draw its caption: what each Result
+ * offers, whether there is a Library root to download into, and the ways to
+ * ask for each — the lightbox's open among them, since a click on a card is
+ * one.
  *
  * A context rather than props through the grid's renderer, which stays a
  * value per cell so the grid can hold its memo (#230). A few pages of cards
  * re-render when a download moves, which is Review's scale.
  */
 interface ResultControls {
-  states: Readonly<Record<string, CardDownload>>;
-  /** The ids of the Picks. */
-  picked: ReadonlySet<string>;
+  /**
+   * What a Result offers where Pick and Download go, which the card's caption
+   * and the lightbox's row both read, so the two can never offer different
+   * things for one Result (`offer` in `basket.ts`).
+   */
+  offer: (result: MarkedResult) => Offer;
   /** No Library root, so nothing can land and Download says so (ADR 0051). */
   noRoot: boolean;
   download: (result: MarkedResult) => void;
@@ -421,38 +304,12 @@ interface ResultControls {
 }
 
 const ResultControlsContext = createContext<ResultControls>({
-  states: {},
-  picked: new Set(),
+  offer: (result) => offer(EMPTY_BASKET, result),
   noRoot: false,
   download: () => {},
   pick: () => {},
   open: () => {},
 });
-
-/**
- * What a Result offers where Pick and Download go, which the card's caption
- * and the lightbox's row both read, so the two can never offer different
- * things for one Result.
- *
- * `mark` is what a marked Result says in their place. A card whose file just
- * landed is an In library card, and says how it got there rather than
- * repeating the mark. `state` is where its download has got to, and a Result
- * offers Download while it has none, or after one failed.
- */
-function offerOf(
-  result: MarkedResult,
-  { states, picked }: Pick<ResultControls, "states" | "picked">,
-) {
-  const state = states[result.id];
-  const mark =
-    result.mark === "unmarked" || state?.kind === "landed"
-      ? null
-      : MARK_TEXT[result.mark];
-  const offersDownload =
-    result.mark === "unmarked" && (!state || state.kind === "failed");
-  const isPick = offersDownload && picked.has(result.id);
-  return { state, mark, offersDownload, isPick };
-}
 
 /** What a card with no Library root offers in place of Download. */
 const NO_ROOT = "Choose a library root to download";
@@ -464,11 +321,11 @@ const NO_ROOT = "Choose a library root to download";
  * verbatim and the filter pills (#340): Ratio, defaulting to the Screen's, Sort
  * with its Order beside it, Categories, Purity and Colour. Each change is a new
  * search. Once the page scrolls, the header collapses into a sticky strip that
- * holds both halves, so the filters stay within reach. The Results are
- * Library's grid model over cards with their facts under the picture. One page
- * at a time, by **Load more**: every API call is one the curator asked for, and
- * the page keeps each page it has loaded, since the backend caches nothing
- * (ADR 0054).
+ * holds both halves, so the filters stay within reach (`useCollapsingHeader`).
+ * The Results are Library's grid model over cards with their facts under the
+ * picture. One page at a time, by **Load more**: every API call is one the
+ * curator asked for, and the page keeps each page it has loaded, since the
+ * backend caches nothing (ADR 0054; `useWallhavenSearch`).
  *
  * It searches on its first visit, with the filters the last successful search
  * left remembered, so it never opens blank. The shell keeps it mounted from
@@ -478,10 +335,10 @@ const NO_ROOT = "Choose a library root to download";
  * colour.
  *
  * Several Results can be gathered as Picks and downloaded together from a
- * floating tray (#344). The Picks are the page's and not the search's: they
- * are held as the Results themselves, so a new search or a changed filter
- * keeps them, and the tray can still draw one no page shown now holds. A
- * download clears them.
+ * floating tray (#344). The Picks are the page's and not the search's, so a new
+ * search or a changed filter keeps them, and a download clears them. What a
+ * Result can do now is the basket's one rule (`basket.ts`), held by
+ * `useBasket`.
  *
  * `Enter` on a card, or a click on one, opens the Result full size in
  * Library's lightbox (#345): the `lg` thumbnail under the full file from
@@ -496,193 +353,41 @@ export function DiscoverView() {
   const { view, settings, setView } = useApp();
   const showing = view === "discover";
   const keyed = settings.wallhaven_key_set;
-  const requestDownload = useDownload();
-  const { show } = useToaster();
 
   // Read once, so a Screen changed in Settings reaches Discover's ratio on the
   // next launch rather than re-searching the page under the curator.
   const [screen] = useState(() => screenRatio(settings.screen));
 
   const [draft, setDraft] = useState("");
-  // The pills start from the remembered filters, read once: from then on the
-  // pills are what says them, and the backend records each successful search's.
-  const [asked, setAsked] = useState<Asked>(() => ({
-    ...settings.discover_filters,
-    q: "",
-    ratio: screen,
-    colour: null,
-  }));
-  // A key removed in Settings drops NSFW from the remembered filters, and the
-  // pills follow, so the next search is not one the backend refuses. Nothing
-  // searches again for it: every call is one the curator asked for. Adjusted
-  // during render, so the Purity pill never paints NSFW without a key.
-  if (!keyed && asked.purity.nsfw) {
-    const purity = { ...asked.purity, nsfw: false };
-    setAsked({
-      ...asked,
-      purity:
-        purity.sfw || purity.sketchy ? purity : DEFAULT_DISCOVER_FILTERS.purity,
-    });
-  }
-  const [shown, setShown] = useState<Shown | null>(null);
-  const [pending, setPending] = useState<"first" | "more" | null>(null);
-  const [failure, setFailure] = useState<Failure | null>(null);
-  // Which call is the latest, so an answer to one the curator has since
-  // replaced lands nowhere.
-  const latest = useRef(0);
+  const page = useCollapsingHeader(showing);
+  const session = useWallhavenSearch(
+    // The pills start from the remembered filters, read once: from then on
+    // the pills are what says them, and the backend records each successful
+    // search's.
+    () => ({
+      ...settings.discover_filters,
+      q: "",
+      ratio: screen,
+      colour: null,
+    }),
+    keyed,
+    // Each page that lands tells the basket the marks it carries.
+    (results, at) => basket.searched(results, at),
+  );
+  const { asked, shown, pending, failure, loadMore } = session;
+  // A file that lands is a wallpaper carrying its id, so its card becomes an
+  // In library card, which is what the next search would mark it anyway.
+  const basket = useBasket(session.markInLibrary);
 
-  const scroller = useRef<HTMLDivElement | null>(null);
-  // Recorded as the curator scrolls and put back when the view shows again,
-  // because `display: none` reports an offset of zero (ADR 0015).
-  const scrollTop = useRef(0);
-
-  // The sticky strip. The header collapses once the page has scrolled as far as
-  // the strip would leave of it, and expands again short of that, so the two
-  // shapes swap where they would show the same thing. While collapsed it keeps
-  // its expanded height in the flow as a margin: the Results never move as it
-  // swaps, and a scroll offset cannot land either side of the line because of
-  // the swap itself.
-  const header = useRef<HTMLElement | null>(null);
-  // Measured while expanded, since collapsed it is the strip's.
-  const expandedHeight = useRef(0);
-  // What the collapsed header keeps in the flow below itself, or `null` while
-  // it is expanded.
-  const [reserved, setReserved] = useState<number | null>(null);
-  const collapsed = reserved !== null;
-  // How far the expanded header scrolls before it sticks with a strip's height
-  // of itself still showing. The sticking is the browser's and not the swap's:
-  // WebKitGTK scrolls off the main thread and tells the page late, and a strip
-  // that waited for the scroll event arrived after the header had gone, over
-  // a page with no bar at all. Stuck this way, the bar is there from the frame
-  // the header reaches the top, and the swap only changes what it holds.
-  const [stickAt, setStickAt] = useState(0);
-  // A scroll that crosses the line fades the new shape in rather than cutting
-  // to it. Only a scroll: a remeasure, a new search or the view showing again
-  // swaps where nobody is watching the line.
-  const controls = useRef<HTMLDivElement | null>(null);
-  const fadeNext = useRef(false);
-  const fading = useRef<Animation | null>(null);
-  const followScroll = useCallback((fade = false) => {
-    const at = scroller.current?.scrollTop ?? 0;
-    scrollTop.current = at;
-    const wasCollapsed = header.current?.dataset.collapsed === "true";
-    if (header.current && !wasCollapsed) {
-      expandedHeight.current = header.current.offsetHeight;
-    }
-    const reserve = Math.max(0, expandedHeight.current - STRIP_HEIGHT);
-    const collapse = at > reserve;
-    if (fade && collapse !== wasCollapsed) fadeNext.current = true;
-    setStickAt(reserve);
-    setReserved(collapse ? reserve : null);
-  }, []);
-  useLayoutEffect(() => {
-    const fade = fadeNext.current;
-    fadeNext.current = false;
-    fading.current?.cancel();
-    fading.current = null;
-    if (!fade || typeof controls.current?.animate !== "function") return;
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-      return;
-    }
-    fading.current = controls.current.animate(
-      [{ opacity: 0 }, { opacity: 1 }],
-      { duration: FADE_MS, easing: "ease-out" },
-    );
-  }, [collapsed]);
-
-  // A resize while collapsed can rewrap the expanded pills, and the height kept
-  // from before would move the Results when the header next expands. So the
-  // header expands for one layout, which is measured before it paints, and
-  // collapses again from the new height. A width of zero is the shell hiding
-  // the view, which says nothing about the layout it will show with.
-  const remeasure = useRef(false);
-  useEffect(() => {
-    const node = scroller.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry.contentRect.width === 0) return;
-      // Expanded, the header can be measured as it is, and a rewrap moves
-      // where it sticks.
-      if (header.current?.dataset.collapsed !== "true") {
-        followScroll();
-        return;
-      }
-      remeasure.current = true;
-      setReserved(null);
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [followScroll]);
-  useLayoutEffect(() => {
-    if (reserved !== null || !remeasure.current) return;
-    remeasure.current = false;
-    followScroll();
-  }, [reserved, followScroll]);
-
-  // The page's downloads. `queue` is the ids this page has asked for and
-  // heard nothing back about, in the order asked; `ended` is how each file
-  // came out, for as long as the Results it was shown on are. A new search
-  // marks a landed Result In library itself, and a failed one is back to a
-  // plain card that offers Download.
-  const [queue, setQueue] = useState<string[]>([]);
-  const [ended, setEnded] = useState<Record<string, Ended>>({});
-  // The Picks, in the order picked, which is the order they download in.
-  const [picks, setPicks] = useState<MarkedResult[]>([]);
-  // The Picks a download took that the backend has not answered for yet. A
-  // refusal puts back only the ones still here, so a Clear pressed while the
-  // request was out stays a Clear.
-  const inFlight = useRef(new Set<string>());
-
-  const search = useCallback(async (next: Asked) => {
-    const call = ++latest.current;
-    setAsked(next);
-    setShown(null);
-    setFailure(null);
-    setPending("first");
-    scrollTop.current = 0;
-    if (scroller.current) scroller.current.scrollTop = 0;
-    setReserved(null);
-    try {
-      const page = await client.searchWallhaven(paramsFor(next));
-      if (call !== latest.current) return;
-      setShown({ results: page.results, meta: page.meta });
-      setEnded({});
-    } catch (error) {
-      if (call !== latest.current) return;
-      setFailure(failed("first", error));
-    } finally {
-      if (call === latest.current) setPending(null);
-    }
-  }, []);
-
-  const loadMore = useCallback(async () => {
-    if (!shown) return;
-    const call = ++latest.current;
-    setFailure(null);
-    setPending("more");
-    try {
-      const page = await client.searchWallhaven(
-        paramsFor(asked, shown.meta.current_page + 1, shown.meta.seed),
-      );
-      if (call !== latest.current) return;
-      // Wallhaven can hand a Result across two pages when one is added between
-      // the calls, and a key the grid has already drawn is a key it cannot
-      // draw twice.
-      const have = new Set(shown.results.map((r) => r.id));
-      setShown({
-        results: [
-          ...shown.results,
-          ...page.results.filter((r) => !have.has(r.id)),
-        ],
-        meta: page.meta,
-      });
-    } catch (error) {
-      if (call !== latest.current) return;
-      setFailure(failed("more", error));
-    } finally {
-      if (call === latest.current) setPending(null);
-    }
-  }, [asked, shown]);
+  const { toTop } = page;
+  const { search: searchFor } = session;
+  const search = useCallback(
+    (next: Asked) => {
+      toTop();
+      return searchFor(next);
+    },
+    [toTop, searchFor],
+  );
 
   // The first visit's search. Once, however often the effect runs: StrictMode
   // runs it twice, and a second call would spend a second request.
@@ -692,12 +397,6 @@ export function DiscoverView() {
     started.current = true;
     void search(asked);
   }, [search, asked]);
-
-  useLayoutEffect(() => {
-    if (!showing || !scroller.current) return;
-    scroller.current.scrollTop = scrollTop.current;
-    followScroll();
-  }, [showing, followScroll]);
 
   const noRoot = settings.library_root === "";
 
@@ -709,124 +408,20 @@ export function DiscoverView() {
     [setView],
   );
 
-  // A Result as the page now knows it: the Picks and a click hold the Result
-  // as it was when it was taken, and a Result still on the page may since have
-  // landed or been queued. One no page shown now holds keeps its snapshot.
-  const onPage = useMemo(
-    () => new Map((shown?.results ?? []).map((r) => [r.id, r])),
-    [shown],
-  );
-  const downloadable = useCallback(
-    (result: MarkedResult) =>
-      (onPage.get(result.id) ?? result).mark === "unmarked" &&
-      !queue.includes(result.id),
-    [onPage, queue],
-  );
-  // The Picks that could still be downloaded, which is every one the tray
-  // counts and `D` sends.
-  const livePicks = useMemo(
-    () => picks.filter(downloadable),
-    [picks, downloadable],
-  );
-
-  // Every download starts here: the caption's, `D`'s and the tray's. The ids
-  // go to the backend as one request, in the order given, and leave the Picks
-  // as they go, which only ever hold what is still to come.
-  const take = useCallback(
-    (taken: MarkedResult[]) => {
-      const ids = taken.filter(downloadable).map((r) => r.id);
-      if (ids.length === 0) return;
-      const leaving = picks.filter((r) => ids.includes(r.id));
-      for (const r of leaving) inFlight.current.add(r.id);
-      const settle = () => {
-        for (const r of leaving) inFlight.current.delete(r.id);
-      };
-      setQueue((q) => [...q, ...ids]);
-      setEnded((prev) => {
-        const next = { ...prev };
-        for (const id of ids) delete next[id];
-        return next;
-      });
-      setPicks((p) => p.filter((r) => !ids.includes(r.id)));
-      requestDownload(ids).then(settle, (error: unknown) => {
-        // A refusal at the click queued nothing, so the cards go back to
-        // offering Download, the Picks it took and nobody has cleared since go
-        // back ahead of any picked since, and the reason is said where the
-        // click was.
-        const back = leaving.filter((r) => inFlight.current.has(r.id));
-        settle();
-        setQueue((q) => q.filter((queued) => !ids.includes(queued)));
-        setPicks((p) => [
-          ...back,
-          ...p.filter((r) => !back.some((b) => b.id === r.id)),
-        ]);
-        show({ kind: "download-refused", error });
-      });
-    },
-    [downloadable, picks, requestDownload, show],
-  );
-
-  // One Clear, for the tray's button and `Escape` from the grid or the tray.
-  const clearPicks = useCallback(() => {
-    setPicks([]);
-    inFlight.current.clear();
-  }, []);
-
+  const { picks, offer: offerNow, clear: clearPicks } = basket;
+  const { download: take, downloadPicks: takePicks, pick: toggle } = basket;
   const download = useCallback(
     (result: MarkedResult) => (noRoot ? chooseRoot() : take([result])),
     [noRoot, chooseRoot, take],
   );
-
   const downloadPicks = useCallback(
-    () => (noRoot ? chooseRoot() : take(livePicks)),
-    [noRoot, chooseRoot, take, livePicks],
+    () => (noRoot ? chooseRoot() : takePicks()),
+    [noRoot, chooseRoot, takePicks],
   );
-
-  // A Pick is a Result that could be downloaded now: an unmarked one that is
-  // not already on its way.
   const pick = useCallback(
-    (result: MarkedResult) => {
-      if (noRoot) {
-        chooseRoot();
-        return;
-      }
-      if (result.mark !== "unmarked" || queue.includes(result.id)) return;
-      setPicks((p) =>
-        p.some((r) => r.id === result.id)
-          ? p.filter((r) => r.id !== result.id)
-          : [...p, result],
-      );
-    },
-    [noRoot, chooseRoot, queue],
+    (result: MarkedResult) => (noRoot ? chooseRoot() : toggle(result)),
+    [noRoot, chooseRoot, toggle],
   );
-
-  useBackendEvents({
-    downloadProgress: ({ item: { wallhaven_id: id, outcome } }) => {
-      setQueue((q) => q.filter((queued) => queued !== id));
-      setEnded((prev) => ({
-        ...prev,
-        [id]:
-          outcome.kind === "landed"
-            ? { kind: "landed" }
-            : { kind: "failed", message: outcome.message },
-      }));
-      if (outcome.kind !== "landed") return;
-      // A landed file is a wallpaper carrying this id, so the card becomes an
-      // In library card, which is what the next search would mark it anyway.
-      setShown(
-        (prev) =>
-          prev && {
-            ...prev,
-            results: prev.results.map((r) =>
-              r.id === id ? { ...r, mark: "in_library" } : r,
-            ),
-          },
-      );
-    },
-    // Nothing on `download-complete`: every id this page queued gets its own
-    // `download-progress`, and an id clicked after the backend closed a batch
-    // is already the next batch's, on the wire while that ending arrives.
-  });
 
   const [grid, setGrid] = useState<SelectionHandle<MarkedResult> | null>(
     null,
@@ -837,14 +432,10 @@ export function DiscoverView() {
   const lightbox = useLightbox(grid);
   const { openOn } = lightbox;
 
-  const resultControls = useMemo<ResultControls>(() => {
-    const states: Record<string, CardDownload> = { ...ended };
-    queue.forEach((id, at) => {
-      states[id] = { kind: at === 0 ? "downloading" : "queued" };
-    });
-    const picked = new Set(livePicks.map((r) => r.id));
-    return { states, picked, noRoot, download, pick, open: openOn };
-  }, [ended, queue, livePicks, noRoot, download, pick, openOn]);
+  const resultControls = useMemo<ResultControls>(
+    () => ({ offer: offerNow, noRoot, download, pick, open: openOn }),
+    [offerNow, noRoot, download, pick, openOn],
+  );
 
   // The keys on the cursor: `P` and `D` are the card's own Pick and Download
   // pressed by key, and with Picks `D` is the tray's Download and `Escape` its
@@ -880,6 +471,7 @@ export function DiscoverView() {
 
   const results = shown?.results ?? [];
   const meta = shown?.meta;
+  const collapsed = page.collapsed;
 
   const pillLabel = (ratio: string | null) =>
     ratio === null
@@ -890,9 +482,9 @@ export function DiscoverView() {
 
   return (
     <div
-      ref={scroller}
+      ref={page.scroller}
       data-slot="discover-page"
-      onScroll={() => followScroll(true)}
+      onScroll={page.onScroll}
       className="min-h-0 flex-1 overflow-y-auto"
     >
       <h1 className="sr-only">Discover</h1>
@@ -901,12 +493,10 @@ export function DiscoverView() {
           box and the pills are the same elements either way and the focus, the
           caret and an open menu survive the swap. */}
       <header
-        ref={header}
+        ref={page.header}
         data-slot="discover-header"
         data-collapsed={collapsed}
-        style={
-          collapsed ? { marginBottom: reserved } : { top: -stickAt }
-        }
+        style={page.style}
         className={cn(
           // The strip's ground and rule fade in with its controls.
           "sticky z-20 border-b transition-[background-color,border-color] duration-200 motion-reduce:transition-none",
@@ -916,7 +506,7 @@ export function DiscoverView() {
         )}
       >
         <div
-          ref={controls}
+          ref={page.controls}
           className={cn(
             "mx-auto flex gap-3 px-4",
             collapsed
@@ -1087,20 +677,23 @@ export function DiscoverView() {
               curator ever pages far enough for mount cost to matter, windowing
               against this page's scroller is the follow-up (ADR 0016). */}
           <ResultControlsContext.Provider value={resultControls}>
-            <ItemGrid
-              ref={setGrid}
-              items={results}
-              label="Results from Wallhaven"
-              actions={resultKeys(livePicks.length)}
-              onAct={act}
-              onOpen={openOn}
-              // The keys act on the card under the mouse.
-              followPointer
-              card={RESULT_CARD}
-              density="discover"
-              className="gap-y-8 px-6 pb-8"
-              renderCard={renderResult}
-            />
+            {/* The cards' full files decode one at a time (`SharpPicture`). */}
+            <DrawTurns>
+              <ItemGrid
+                ref={setGrid}
+                items={results}
+                label="Results from Wallhaven"
+                actions={resultKeys(picks.length)}
+                onAct={act}
+                onOpen={openOn}
+                // The keys act on the card under the mouse.
+                followPointer
+                card={RESULT_CARD}
+                density="discover"
+                className="gap-y-8 px-6 pb-8"
+                renderCard={renderResult}
+              />
+            </DrawTurns>
           </ResultControlsContext.Provider>
 
           <div className="flex flex-col items-center gap-2 px-4 pb-24">
@@ -1152,9 +745,9 @@ export function DiscoverView() {
         </>
       ) : null}
 
-      {livePicks.length > 0 && (
+      {picks.length > 0 && (
         <PicksTray
-          picks={livePicks}
+          picks={picks}
           noRoot={noRoot}
           onDownload={downloadPicks}
           onClear={clearPicks}
@@ -1645,7 +1238,7 @@ function renderResult(
 const FULL_FILE_COLUMNS = 3;
 
 /** What a caption says for each state of a download, where Download would sit. */
-const DOWNLOAD_TEXT: Record<CardDownload["kind"], string> = {
+const DOWNLOAD_TEXT: Record<ResultDownload["kind"], string> = {
   queued: "Queued",
   downloading: "Downloading",
   landed: "Added to library",
@@ -1702,9 +1295,14 @@ const ResultCard = memo(function ResultCard({
   const [sharp, setSharp] = useState(false);
   const controls = useContext(ResultControlsContext);
   const handOffOnPointerPress = useHandOffOnPointerPress();
-  const { state, mark, isPick } = offerOf(result, controls);
-  const said =
-    mark ?? (state ? DOWNLOAD_TEXT[state.kind] : isPick ? "Picked" : null);
+  const { download, mark, picked } = controls.offer(result);
+  const said = mark
+    ? MARK_TEXT[mark]
+    : download
+      ? DOWNLOAD_TEXT[download.kind]
+      : picked
+        ? "Picked"
+        : null;
   const facts = `${result.resolution}, ${bytes(result.file_size)}, ${result.category}`;
   const pictureClassName = cn(
     "h-full w-full object-cover",
@@ -1811,174 +1409,6 @@ const ResultCard = memo(function ResultCard({
 });
 
 /**
- * A card's full file, drawn once onto a canvas the card's size in device pixels
- * (ADR 0055).
- *
- * The `<img>` is only the fetch, lazy like the `lg`'s and never painted. Once it
- * has loaded, the file is decoded and drawn onto the canvas, cropped to the
- * card's shape, and the `<img>` unmounts, so no card holds its file decoded at
- * full size. It unmounts too when the fetch or the draw fails, and the `lg`
- * stays the picture.
- *
- * Draws take turns (`drawTurn`), so a page whose files land together decodes
- * one at a time. A shown card that settles wider than it was drawn at, from
- * three columns to two, fetches and draws again. A hidden one at four and five
- * does not, because only the `lg` shows there.
- */
-function SharpPicture({
-  src,
-  className,
-  shown,
-  onDrawn,
-}: {
-  src: string;
-  className: string;
-  /**
-   * Whether the canvas is the card's picture: at three columns and fewer, once
-   * it has been drawn. It never is before then.
-   */
-  shown: boolean;
-  onDrawn: () => void;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  // Whether the `<img>` is mounted: until the first draw, and again while a
-  // wider card fetches the file to draw it at its new size.
-  const [fetching, setFetching] = useState(true);
-  // How many device pixels wide the canvas was last drawn at, 0 before then.
-  const drawnWidth = useRef(0);
-  // A loaded file waiting for the canvas to be laid out, as it is not while
-  // the shell hides the page, and drawn once it is.
-  const waiting = useRef<HTMLImageElement | null>(null);
-  // Read by the resize observer below, which outlives any one render.
-  const shownRef = useRef(shown);
-  useLayoutEffect(() => {
-    shownRef.current = shown;
-  });
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || typeof ResizeObserver === "undefined") return;
-    // Judged once the size is quiet, so dragging the window wider draws once at
-    // the end rather than at every step.
-    let settle: ReturnType<typeof setTimeout> | undefined;
-    const observer = new ResizeObserver(() => {
-      clearTimeout(settle);
-      settle = setTimeout(() => {
-        if (waiting.current) {
-          queueDraw(waiting.current);
-          return;
-        }
-        const grown =
-          drawnWidth.current > 0 &&
-          devicePixelsOf(canvas).width > drawnWidth.current * REDRAW_GROWTH;
-        if (grown && shownRef.current) setFetching(true);
-      }, RESIZE_SETTLE_MS);
-    });
-    observer.observe(canvas);
-    return () => {
-      observer.disconnect();
-      clearTimeout(settle);
-    };
-  }, []);
-
-  // Whether the `<img>` is done with: drawn, or failed to be. Not while the
-  // canvas has no size to draw at.
-  const draw = async (image: HTMLImageElement): Promise<boolean> => {
-    const canvas = canvasRef.current;
-    if (!canvas) return true;
-    const { width, height } = devicePixelsOf(canvas);
-    if (width === 0) {
-      waiting.current = image;
-      return false;
-    }
-    waiting.current = null;
-    await image.decode();
-    const context = image.naturalWidth > 0 ? canvas.getContext("2d") : null;
-    if (!context) return true;
-    canvas.width = width;
-    canvas.height = height;
-    context.imageSmoothingQuality = "high";
-    // `object-cover`'s crop, done here so the canvas holds only what shows.
-    const scale = Math.max(
-      width / image.naturalWidth,
-      height / image.naturalHeight,
-    );
-    const sourceWidth = width / scale;
-    const sourceHeight = height / scale;
-    context.drawImage(
-      image,
-      (image.naturalWidth - sourceWidth) / 2,
-      (image.naturalHeight - sourceHeight) / 2,
-      sourceWidth,
-      sourceHeight,
-      0,
-      0,
-      width,
-      height,
-    );
-    drawnWidth.current = width;
-    onDrawn();
-    return true;
-  };
-
-  // Drawn or not, the `<img>` goes once its turn is done with it, and a draw
-  // that throws still lets the next card's turn come.
-  function queueDraw(image: HTMLImageElement) {
-    drawTurn = drawTurn
-      .then(() => draw(image))
-      .catch(() => true)
-      .then((done) => {
-        if (done) setFetching(false);
-      });
-  }
-
-  return (
-    <>
-      <canvas
-        ref={canvasRef}
-        aria-hidden
-        className={cn(
-          className,
-          "pointer-events-none absolute inset-0",
-          !shown && "invisible",
-        )}
-      />
-      {fetching && (
-        <img
-          src={src}
-          alt=""
-          aria-hidden
-          loading="lazy"
-          decoding="async"
-          onLoad={(event) => queueDraw(event.currentTarget)}
-          onError={() => setFetching(false)}
-          className="pointer-events-none invisible absolute inset-0 h-full w-full"
-        />
-      )}
-    </>
-  );
-}
-
-/** How much wider than it was drawn a shown card grows before it draws again. */
-const REDRAW_GROWTH = 1.1;
-
-/** How long a card's size has to be quiet before a wider one draws again. */
-const RESIZE_SETTLE_MS = 150;
-
-/** The queue `SharpPicture` draws in, one full file at a time. */
-let drawTurn: Promise<void> = Promise.resolve();
-
-/** How many device pixels a canvas is laid out across. */
-function devicePixelsOf(canvas: HTMLCanvasElement) {
-  const box = canvas.getBoundingClientRect();
-  const ratio = window.devicePixelRatio || 1;
-  return {
-    width: Math.round(box.width * ratio),
-    height: Math.round(box.height * ratio),
-  };
-}
-
-/**
  * How the offer looks on each surface that draws it: the card's caption, on
  * the page's theme, and the lightbox's row, dark in both themes.
  *
@@ -2008,7 +1438,7 @@ const OFFER_LOOK = {
 
 /**
  * What a Result offers where Pick and Download go, drawn once for the card's
- * caption and the lightbox's row (#345), off `offerOf`'s one reading.
+ * caption and the lightbox's row (#345), off the basket's one `offer`.
  *
  * A marked Result says its mark. One on its way to the library says where it
  * has got to: Queued, Downloading, and "Added to library". Otherwise it offers
@@ -2036,7 +1466,12 @@ function ResultOffer({
   onClick?: MouseEventHandler<HTMLDivElement>;
 }) {
   const look = OFFER_LOOK[surface];
-  const { state, mark, offersDownload, isPick } = offerOf(result, controls);
+  const {
+    download: state,
+    mark,
+    offered,
+    picked: isPick,
+  } = controls.offer(result);
   const named = (verb: string) => (subject ? `${verb} ${subject}` : undefined);
   if (mark) {
     return (
@@ -2044,7 +1479,7 @@ function ResultOffer({
         data-slot="result-mark"
         className={cn("shrink-0", look.text, look.muted)}
       >
-        {mark}
+        {MARK_TEXT[mark]}
       </span>
     );
   }
@@ -2066,7 +1501,7 @@ function ResultOffer({
       </span>
     );
   }
-  if (!offersDownload) return null;
+  if (!offered) return null;
   return (
     <div className="flex shrink-0 items-center gap-2" onClick={onClick}>
       {state?.kind === "failed" && (
