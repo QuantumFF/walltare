@@ -172,7 +172,7 @@ fn vote_four(
 /// every call and never stored (ADR 0056).
 #[tauri::command]
 fn get_bar(state: tauri::State<'_, Db>) -> Result<Option<f64>, error::AppError> {
-    state.read(voting::bar)
+    state.read(|conn| Ok(bar::Bar::read(conn)?.score()))
 }
 
 #[tauri::command]

@@ -3,13 +3,14 @@
 //! are testable against an initialized in-memory SQLite database.
 //!
 //! Eligibility: Status ∈ {Active, Kept}; Rejected sits out. Rating updates
-//! and selection delegate to the pure `ranking` module. A vote applies the
-//! TrueSkill update, adds one to every member's `comparisons_count`, and
-//! inserts the permanent Comparison row in one transaction.
+//! and selection delegate to the pure `ranking` module, and where a wallpaper
+//! stands against the Bar to `bar`. A vote applies the TrueSkill update, adds
+//! one to every member's `comparisons_count`, and inserts the permanent
+//! Comparison row in one transaction.
 
 use rusqlite::Connection;
 
-use crate::bar::Side;
+use crate::bar::{Bar, Side, Standing};
 use crate::db;
 use crate::error::AppError;
 use crate::near_duplicates;
@@ -48,9 +49,10 @@ pub struct Stats {
     pub total_comparisons: u32,
 }
 
+/// What a vote on a pair answers with.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct VoteOutcome {
-    /// `None` when the vote was recorded but the follow-up fetch failed; the
+    /// `None` when the vote was recorded but the follow-up draw failed; the
     /// client re-fetches rather than treating a committed vote as an error.
     pub next_pair: Option<[Wallpaper; 2]>,
     pub stats: Stats,
@@ -61,7 +63,7 @@ pub struct VoteOutcome {
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct FourOutcome {
     /// Four wallpapers, or two once fewer than four are Eligible. `None` when
-    /// the vote was recorded but the follow-up fetch failed.
+    /// the vote was recorded but the follow-up draw failed.
     pub next_showing: Option<Vec<Wallpaper>>,
     pub stats: Stats,
 }
@@ -83,34 +85,12 @@ pub struct FourOutcome {
 ///
 /// An unanswered Near-duplicate pair is never drawn together, since a vote
 /// between two Near-duplicates says nothing about where either stands.
-///
-/// The Bar, the latest Comparisons and the unanswered Near-duplicate pairs are
-/// read here on every draw, never held as state (ADR 0060).
 pub fn get_pair<R: Rng>(
     conn: &Connection,
     exclude: &[i64],
     rng: &mut R,
 ) -> Result<[Wallpaper; 2], AppError> {
-    let draw = Draw::read(conn)?;
-    let apart = |a, b| draw.unanswered.contains(a, b);
-    let (first, second) =
-        ranking::select_pair(&draw.pool, draw.bar, draw.recent(), exclude, &apart, rng)
-            .ok_or_else(|| {
-                AppError::NotEnoughWallpapers(format!(
-                    "pair selection needs two eligible wallpapers that are not an unanswered \
-                     Near-duplicate pair, found {} eligible",
-                    draw.pool.len()
-                ))
-            })?;
-    let (first, second) = if rng.next_f64() < 0.5 {
-        (first, second)
-    } else {
-        (second, first)
-    };
-    Ok([
-        db::get_wallpaper(conn, first.id)?,
-        db::get_wallpaper(conn, second.id)?,
-    ])
+    Draw::read(conn)?.pair(conn, exclude, rng)
 }
 
 /// Picks a showing of four Eligible wallpapers, or a pair once fewer than four
@@ -124,27 +104,31 @@ pub fn get_four<R: Rng>(
     exclude: &[i64],
     rng: &mut R,
 ) -> Result<Vec<Wallpaper>, AppError> {
-    let draw = Draw::read(conn)?;
-    let apart = |a, b| draw.unanswered.contains(a, b);
-    let Some(four) =
-        ranking::select_four(&draw.pool, draw.bar, draw.recent(), exclude, &apart, rng)
-    else {
-        return Ok(get_pair(conn, exclude, rng)?.into());
-    };
-    let mut ids = four.map(|w| w.id);
-    // Fisher–Yates, every order equally likely.
-    for i in (1..ids.len()).rev() {
-        let j = ((rng.next_f64() * (i + 1) as f64) as usize).min(i);
-        ids.swap(i, j);
+    Draw::read(conn)?.four(conn, exclude, rng)
+}
+
+/// The Eligible pool and the Bar, read together: what the headline counts and
+/// what every draw starts from.
+struct Pool {
+    wallpapers: Vec<ranking::WallpaperSummary>,
+    bar: Bar,
+}
+
+impl Pool {
+    fn read(conn: &Connection) -> Result<Self, AppError> {
+        Ok(Self {
+            wallpapers: eligible_summaries(conn)?,
+            bar: Bar::read(conn)?,
+        })
     }
-    ids.iter().map(|&id| db::get_wallpaper(conn, id)).collect()
 }
 
 /// What a draw reads, all of it on every draw and none of it held as state
-/// (ADR 0060).
+/// (ADR 0060): the pool and the Bar, the latest Comparisons, and the
+/// unanswered Near-duplicate pairs. Read once, it answers a showing of four
+/// and the pair that stands in for one.
 struct Draw {
-    pool: Vec<ranking::WallpaperSummary>,
-    bar: Option<f64>,
+    pool: Pool,
     showings: Vec<Vec<i64>>,
     last_was_a_first: bool,
     unanswered: near_duplicates::UnansweredPairs,
@@ -154,8 +138,7 @@ impl Draw {
     fn read(conn: &Connection) -> Result<Self, AppError> {
         let (showings, last_was_a_first) = recent_comparisons(conn)?;
         Ok(Self {
-            pool: eligible_summaries(conn)?,
-            bar: bar(conn)?,
+            pool: Pool::read(conn)?,
             showings,
             last_was_a_first,
             unanswered: near_duplicates::unanswered_pairs(conn)?,
@@ -167,6 +150,70 @@ impl Draw {
             showings: &self.showings,
             last_was_a_first: self.last_was_a_first,
         }
+    }
+
+    /// [`get_pair`] from this snapshot.
+    fn pair<R: Rng>(
+        &self,
+        conn: &Connection,
+        exclude: &[i64],
+        rng: &mut R,
+    ) -> Result<[Wallpaper; 2], AppError> {
+        let apart = |a, b| self.unanswered.contains(a, b);
+        let pool = &self.pool;
+        let (first, second) = ranking::select_pair(
+            &pool.wallpapers,
+            pool.bar,
+            self.recent(),
+            exclude,
+            &apart,
+            rng,
+        )
+        .ok_or_else(|| {
+            AppError::NotEnoughWallpapers(format!(
+                "pair selection needs two eligible wallpapers that are not an unanswered \
+                 Near-duplicate pair, found {} eligible",
+                pool.wallpapers.len()
+            ))
+        })?;
+        let (first, second) = if rng.next_f64() < 0.5 {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        Ok([
+            db::get_wallpaper(conn, first.id)?,
+            db::get_wallpaper(conn, second.id)?,
+        ])
+    }
+
+    /// [`get_four`] from this snapshot, and a pair from the same snapshot when
+    /// four cannot be drawn.
+    fn four<R: Rng>(
+        &self,
+        conn: &Connection,
+        exclude: &[i64],
+        rng: &mut R,
+    ) -> Result<Vec<Wallpaper>, AppError> {
+        let apart = |a, b| self.unanswered.contains(a, b);
+        let pool = &self.pool;
+        let Some(four) = ranking::select_four(
+            &pool.wallpapers,
+            pool.bar,
+            self.recent(),
+            exclude,
+            &apart,
+            rng,
+        ) else {
+            return Ok(self.pair(conn, exclude, rng)?.into());
+        };
+        let mut ids = four.map(|w| w.id);
+        // Fisher–Yates, every order equally likely.
+        for i in (1..ids.len()).rev() {
+            let j = ((rng.next_f64() * (i + 1) as f64) as usize).min(i);
+            ids.swap(i, j);
+        }
+        ids.iter().map(|&id| db::get_wallpaper(conn, id)).collect()
     }
 }
 
@@ -221,11 +268,8 @@ fn recent_comparisons(conn: &Connection) -> Result<(Vec<Vec<i64>>, bool), AppErr
     Ok((showings, last_was_a_first))
 }
 
-/// Applies a vote atomically, then returns the next pair with fresh stats.
-///
-/// In one transaction: validates both ids are eligible, updates μ/σ via
-/// `ranking::rate_1vs1`, increments both `comparisons_count`, and inserts
-/// the permanent Comparison row. Any failure rolls everything back.
+/// Applies a vote on a pair atomically, then returns the next pair with fresh
+/// stats. [`vote_on`] says how; the next showing is always a pair.
 pub fn vote<R: Rng>(
     conn: &Connection,
     winner_id: i64,
@@ -233,48 +277,18 @@ pub fn vote<R: Rng>(
     exclude: &[i64],
     rng: &mut R,
 ) -> Result<VoteOutcome, AppError> {
-    let tx = conn.unchecked_transaction()?;
-    let winner = fetch_summary(&tx, winner_id)?;
-    let loser = fetch_summary(&tx, loser_id)?;
-    if winner.id == loser.id {
-        // A caller's mistake rather than a fact about the wallpaper: nothing
-        // about it is unknown, and it is not a Status transition either
-        // (ADR 0025).
-        return Err(AppError::BadRequest(format!(
-            "winner and loser must be distinct, got {winner_id} twice"
-        )));
-    }
-
-    let (new_winner, new_loser) = ranking::rate_1vs1(winner.rating(), loser.rating());
-    record(&tx, &[(new_winner, winner_id), (new_loser, loser_id)], &[])?;
-    tx.commit()?;
-
-    // The Comparison is durable from here on, so the follow-up pair fetch must
-    // not surface as a failed vote — it has a genuine logical failure mode
-    // (`NotEnoughWallpapers`) that says nothing about whether the vote counted.
-    // `get_stats` stays fatal: a handful of `SELECT`s only fail if the
-    // database itself is gone, at which point an error is the honest answer.
-    //
-    // The two just voted on are always excluded: showing either of them again
-    // straight away is the case the user reads as "nothing happened".
-    let mut skip = vec![winner_id, loser_id];
-    skip.extend_from_slice(exclude);
-    let next_pair = get_pair(conn, &skip, rng).ok();
-    let stats = get_stats(conn)?;
-    Ok(VoteOutcome { next_pair, stats })
+    let voted = vote_on(conn, winner_id, loser_id, None, exclude)?;
+    Ok(VoteOutcome {
+        next_pair: voted.draw.pair(conn, &voted.skip, rng).ok(),
+        stats: voted.stats,
+    })
 }
 
 /// Applies a vote on a showing of four atomically, then returns the next
-/// showing with fresh stats (ADR 0061).
+/// showing with fresh stats (ADR 0061). [`vote_on`] says how; the next showing
+/// is four, or a pair once four cannot be drawn.
 ///
 /// `others` are the two the curator named neither best nor worst, in no order.
-/// In one transaction: validates that the four are distinct and Eligible,
-/// applies one joint update via `ranking::rate_four`, adds one to each of the
-/// four counts, and inserts the one permanent Comparison with its members. Any
-/// failure rolls everything back, and a refusal writes nothing.
-///
-/// The follow-up fetch keeps [`vote`]'s contract: the four just voted on are
-/// always excluded, and a fetch that fails is `None` rather than an error.
 pub fn vote_four<R: Rng>(
     conn: &Connection,
     best_id: i64,
@@ -283,58 +297,100 @@ pub fn vote_four<R: Rng>(
     exclude: &[i64],
     rng: &mut R,
 ) -> Result<FourOutcome, AppError> {
-    let ids = [best_id, others[0], others[1], worst_id];
+    let voted = vote_on(conn, best_id, worst_id, Some(others), exclude)?;
+    Ok(FourOutcome {
+        next_showing: voted.draw.four(conn, &voted.skip, rng).ok(),
+        stats: voted.stats,
+    })
+}
+
+/// What a committed vote answers from: one read of the pool, the Bar and the
+/// record, taken after the commit, which both the next showing and the stats
+/// come from.
+struct Voted {
+    draw: Draw,
+    /// What the next showing leaves out: the showing just voted on, always,
+    /// and whatever else the caller asked.
+    skip: Vec<i64>,
+    stats: Stats,
+}
+
+/// One vote on one showing, the one implementation behind [`vote`] and
+/// [`vote_four`]: the best, the worst, and for a showing of four the two named
+/// neither.
+///
+/// In one transaction: validates that the showing is distinct and Eligible,
+/// applies one rating update (`ranking::rate_1vs1` for a pair, one joint
+/// `ranking::rate_four` for four, never the pairwise updates it implies),
+/// adds one to each member's count, and inserts the one permanent Comparison
+/// with its members. Any failure rolls everything back, and a refusal writes
+/// nothing.
+///
+/// The Comparison is durable from the commit on, so the follow-up draw must
+/// not surface as a failed vote: it has a genuine logical failure mode
+/// (`NotEnoughWallpapers`) that says nothing about whether the vote counted,
+/// and the callers turn it into `None`. The read after the commit stays fatal:
+/// a handful of `SELECT`s only fail if the database itself is gone, at which
+/// point an error is the honest answer. The wallpapers just voted on are
+/// always skipped: showing one again straight away is the case the curator
+/// reads as "nothing happened".
+fn vote_on(
+    conn: &Connection,
+    best_id: i64,
+    worst_id: i64,
+    others: Option<[i64; 2]>,
+    exclude: &[i64],
+) -> Result<Voted, AppError> {
+    let showing: Vec<i64> = [best_id, worst_id]
+        .into_iter()
+        .chain(others.into_iter().flatten())
+        .collect();
     let tx = conn.unchecked_transaction()?;
-    let [best, a, b, worst] = [
-        fetch_summary(&tx, ids[0])?,
-        fetch_summary(&tx, ids[1])?,
-        fetch_summary(&tx, ids[2])?,
-        fetch_summary(&tx, ids[3])?,
-    ];
-    if (1..4).any(|i| ids[..i].contains(&ids[i])) {
-        // A caller's mistake, as one id twice is for a pair (ADR 0025).
+    let ratings = showing
+        .iter()
+        .map(|&id| Ok(fetch_summary(&tx, id)?.rating()))
+        .collect::<Result<Vec<_>, AppError>>()?;
+    if (1..showing.len()).any(|i| showing[..i].contains(&showing[i])) {
+        // A caller's mistake rather than a fact about a wallpaper: nothing
+        // about it is unknown, and it is not a Status transition either
+        // (ADR 0025).
         return Err(AppError::BadRequest(format!(
-            "a showing of four needs four distinct wallpapers, got {ids:?}"
+            "a showing needs distinct wallpapers, got {showing:?}"
         )));
     }
 
-    let (new_best, [new_a, new_b], new_worst) =
-        ranking::rate_four(best.rating(), [a.rating(), b.rating()], worst.rating());
-    record(
-        &tx,
-        &[
-            (new_best, best_id),
-            (new_worst, worst_id),
-            (new_a, others[0]),
-            (new_b, others[1]),
-        ],
-        &others,
-    )?;
+    // In `showing`'s order: the best, the worst, then the two named neither.
+    let rated = match ratings[..] {
+        [best, worst, a, b] => {
+            let (best, [a, b], worst) = ranking::rate_four(best, [a, b], worst);
+            vec![best, worst, a, b]
+        }
+        [winner, loser] => {
+            let (winner, loser) = ranking::rate_1vs1(winner, loser);
+            vec![winner, loser]
+        }
+        _ => unreachable!("a showing is two wallpapers or four"),
+    };
+    record(&tx, &showing, &rated)?;
     tx.commit()?;
 
-    let mut skip = ids.to_vec();
+    let draw = Draw::read(conn)?;
+    let stats = stats(conn, &draw.pool)?;
+    let mut skip = showing;
     skip.extend_from_slice(exclude);
-    let next_showing = get_four(conn, &skip, rng).ok();
-    let stats = get_stats(conn)?;
-    Ok(FourOutcome {
-        next_showing,
-        stats,
-    })
+    Ok(Voted { draw, skip, stats })
 }
 
 /// Writes one Comparison inside the caller's transaction: every member's new
 /// rating and one more Comparison each, then the permanent row.
 ///
-/// `rated` holds the best first and the worst second, which become the row's
-/// winner and loser; `members` are the two of a showing of four named neither.
-/// A showing counts once for each wallpaper in it, however many relations the
+/// `showing` holds the best first and the worst second, which become the row's
+/// winner and loser, then the two of a showing of four named neither, which
+/// become its members; `rated` is their new ratings in the same order. A
+/// showing counts once for each wallpaper in it, however many relations the
 /// vote implies (ADR 0061).
-fn record(
-    tx: &Connection,
-    rated: &[(ranking::Rating, i64)],
-    members: &[i64],
-) -> Result<(), AppError> {
-    for (rating, id) in rated {
+fn record(tx: &Connection, showing: &[i64], rated: &[ranking::Rating]) -> Result<(), AppError> {
+    for (id, rating) in showing.iter().zip(rated) {
         tx.execute(
             "UPDATE wallpapers
              SET rating_mu = ?1, rating_sigma = ?2, comparisons_count = comparisons_count + 1
@@ -344,10 +400,10 @@ fn record(
     }
     tx.execute(
         "INSERT INTO comparisons (winner_id, loser_id, voted_at) VALUES (?1, ?2, unixepoch())",
-        rusqlite::params![rated[0].1, rated[1].1],
+        rusqlite::params![showing[0], showing[1]],
     )?;
     let comparison = tx.last_insert_rowid();
-    for member in members {
+    for member in &showing[2..] {
         tx.execute(
             "INSERT INTO comparison_members (comparison_id, wallpaper_id) VALUES (?1, ?2)",
             rusqlite::params![comparison, member],
@@ -357,27 +413,32 @@ fn record(
 }
 
 pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
+    stats(conn, &Pool::read(conn)?)
+}
+
+/// The headline over `pool`, with the two totals read beside it.
+///
+/// Decided reads the Bar, which SQL cannot work out, so the split counts in
+/// Rust over the pool pair selection reads. The Eligible count is that pool's
+/// size, so the three sides add up to it by construction.
+fn stats(conn: &Connection, pool: &Pool) -> Result<Stats, AppError> {
     let total_wallpapers: u32 =
         conn.query_row("SELECT COUNT(*) FROM wallpapers", [], |r| r.get(0))?;
     let total_comparisons: u32 =
         conn.query_row("SELECT COUNT(*) FROM comparisons", [], |r| r.get(0))?;
 
-    // Decided reads the Bar, which SQL cannot work out, so these count in
-    // Rust over the pool pair selection reads. The Eligible count is that pool's
-    // size, so the three sides add up to it by construction.
-    let bar = bar(conn)?;
-    let pool = eligible_summaries(conn)?;
-    let eligible_count = u32::try_from(pool.len()).unwrap_or(u32::MAX);
+    let eligible_count = u32::try_from(pool.wallpapers.len()).unwrap_or(u32::MAX);
     let (mut undecided_count, mut decided_below_count, mut decided_above_count) = (0u32, 0, 0);
     let mut close_call_count = 0u32;
-    for w in &pool {
-        match w.decided(bar) {
-            None => undecided_count += 1,
-            Some(Side::Below) => decided_below_count += 1,
-            Some(Side::Above) => decided_above_count += 1,
-        }
-        if w.is_close_call(bar) {
-            close_call_count += 1;
+    for w in &pool.wallpapers {
+        match w.standing(pool.bar) {
+            Standing::Unrated | Standing::Undecided => undecided_count += 1,
+            Standing::CloseCall => {
+                undecided_count += 1;
+                close_call_count += 1;
+            }
+            Standing::Decided(Side::Below) => decided_below_count += 1,
+            Standing::Decided(Side::Above) => decided_above_count += 1,
         }
     }
     Ok(Stats {
@@ -389,23 +450,6 @@ pub fn get_stats(conn: &Connection) -> Result<Stats, AppError> {
         decided_above_count,
         total_comparisons,
     })
-}
-
-/// The Bar as it stands: the Score at the curator's share among every wallpaper
-/// with a Score, whatever its Status, or nothing when no wallpaper has one.
-///
-/// Worked out on every call and never stored (ADR 0056). Rejected rows count on
-/// purpose: their frozen Scores are what keep a soft reject below the Bar from
-/// lifting it. The share is read here rather than passed in, so every reader
-/// of the Bar reads it against the same row.
-pub fn bar(conn: &Connection) -> Result<Option<f64>, AppError> {
-    let share = crate::settings::bar_share(conn)?;
-    let mut stmt =
-        conn.prepare_cached("SELECT rating_mu FROM wallpapers WHERE comparisons_count > 0")?;
-    let scores = stmt
-        .query_map([], |row| row.get::<_, f64>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(crate::bar::bar(&scores, share))
 }
 
 fn eligible_summaries(conn: &Connection) -> Result<Vec<ranking::WallpaperSummary>, AppError> {
@@ -866,67 +910,6 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_counts_every_status_and_leaves_the_unrated_out() {
-        let conn = test_conn();
-        // Ten Scores, 1 through 10, spread across all three Statuses.
-        for mu in 1..=10 {
-            let status = match mu % 3 {
-                0 => "rejected",
-                1 => "active",
-                _ => "kept",
-            };
-            seed_on(&conn, status, f64::from(mu), 3.0, 4);
-        }
-        // Unrated rows with starting Scores that would drag the Bar down if they
-        // counted.
-        for _ in 0..10 {
-            seed_on(&conn, "active", 0.5, SIGMA, 0);
-        }
-
-        assert_eq!(bar(&conn).unwrap(), Some(2.5));
-    }
-
-    #[test]
-    fn the_bar_follows_the_share_the_curator_set() {
-        let conn = test_conn();
-        for mu in 1..=10 {
-            seed_on(&conn, "active", f64::from(mu), 3.0, 4);
-        }
-        let detected = crate::settings::Detected::default();
-        for (share, expected) in [("0.1", 1.5), ("0.3", 3.5), ("0.5", 5.5), ("0.2", 2.5)] {
-            crate::settings::set(&conn, "bar_share", share, detected).unwrap();
-            assert_eq!(bar(&conn).unwrap(), Some(expected), "share {share}");
-        }
-    }
-
-    #[test]
-    fn an_empty_or_unrated_library_has_no_bar_and_one_score_is_its_own() {
-        let conn = test_conn();
-        assert_eq!(bar(&conn).unwrap(), None);
-        seed_on(&conn, "active", MU, SIGMA, 0);
-        assert_eq!(bar(&conn).unwrap(), None);
-        seed_on(&conn, "active", 27.0, 6.0, 1);
-        assert_eq!(bar(&conn).unwrap(), Some(27.0));
-    }
-
-    #[test]
-    fn rejecting_a_wallpaper_below_the_bar_leaves_the_bar_where_it_was() {
-        let conn = test_conn();
-        let ids: Vec<i64> = (1..=10)
-            .map(|mu| seed_on(&conn, "active", f64::from(mu), 3.0, 4))
-            .collect();
-        let before = bar(&conn).unwrap();
-        assert_eq!(before, Some(2.5));
-
-        // The worst two are the worst fifth; clearing both out is where
-        // clearing out ends, and the Bar has not moved to make a new worst fifth.
-        set_status(&conn, ids[0], "rejected");
-        assert_eq!(bar(&conn).unwrap(), before);
-        set_status(&conn, ids[1], "rejected");
-        assert_eq!(bar(&conn).unwrap(), before);
-    }
-
-    #[test]
     fn an_empty_library_reports_zero_counts() {
         let s = get_stats(&test_conn()).unwrap();
         assert_eq!(s.total_wallpapers, 0);
@@ -1052,7 +1035,7 @@ mod tests {
         seed_on(&conn, "active", MU, SIGMA, 0);
         seed_on(&conn, "rejected", 12.4, 1.0, 12);
         let s = get_stats(&conn).unwrap();
-        assert!((bar(&conn).unwrap().unwrap() - 12.45).abs() < 1e-9);
+        assert!((Bar::read(&conn).unwrap().score().unwrap() - 12.45).abs() < 1e-9);
         assert_eq!(s.undecided_count, 3);
         assert_eq!(s.close_call_count, 1);
     }
@@ -1487,7 +1470,7 @@ mod tests {
         seed_on(&conn, "active", 30.0, 10.0, 2);
         seed_on(&conn, "kept", 31.0, 10.0, 2);
         let s = get_stats(&conn).unwrap();
-        assert!((bar(&conn).unwrap().unwrap() - 12.5).abs() < 1e-9);
+        assert!((Bar::read(&conn).unwrap().score().unwrap() - 12.5).abs() < 1e-9);
         assert_eq!(split(&s), (2, 2, 8));
         assert_eq!(
             s.decided_below_count + s.undecided_count + s.decided_above_count,
@@ -1511,7 +1494,7 @@ mod tests {
         seed_on(&conn, "active", 40.0, 0.1, 0);
         seed_on(&conn, "active", MU, SIGMA, 0);
         let s = get_stats(&conn).unwrap();
-        assert!((bar(&conn).unwrap().unwrap() - 11.5).abs() < 1e-9);
+        assert!((Bar::read(&conn).unwrap().score().unwrap() - 11.5).abs() < 1e-9);
         assert_eq!(s.eligible_count, 12);
         assert_eq!(split(&s), (1, 2, 9));
     }
