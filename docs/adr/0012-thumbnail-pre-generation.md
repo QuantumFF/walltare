@@ -409,6 +409,12 @@ freshness logic exactly, with no second implementation of "is this stale". It
 also reads the entire cache off disk on every launch to discover that nothing
 needs doing.
 
+> **Amended by [#422](https://github.com/QuantumFF/walltare/issues/422),
+> 2026-10-05.** The second implementation is gone, and the cost stays avoided.
+> The work list's freshness check and `fulfill`'s are one function in the
+> thumbnail cache module, and `ThumbnailCache::owed` applies it to a row and a
+> listing of the cache directory instead of to the cache file's bytes.
+
 **Two passes, all mediums then all smalls.** A cancelled run would leave every
 wallpaper with a medium, which makes every later `small` cheap through the
 donor rule. But it doubles the decodes for anything the pass does complete, and
