@@ -1,4 +1,4 @@
-import { barFallsAt, shapeOf } from "@/lib/wallpaper";
+import { barFallsAt, isUnrated, shapeOf } from "@/lib/wallpaper";
 import { expect, test } from "bun:test";
 import { wallpaper } from "./fixtures";
 
@@ -55,4 +55,13 @@ test("no Bar, or none of the worklist's Scores at it, draws no rule", () => {
   // worklist reaches, so no line claims to know where.
   expect(barFallsAt(worklist, 30)).toBeNull();
   expect(barFallsAt([], 30)).toBeNull();
+});
+
+test("a wallpaper is Unrated until its first Comparison, whatever Score it starts from", () => {
+  expect(isUnrated(wallpaper(1, { comparisons_count: 0 }))).toBe(true);
+  // A starting Score from a prediction is still no Score (ADR 0057).
+  expect(
+    isUnrated(wallpaper(2, { comparisons_count: 0, rating_mu: 31.2 })),
+  ).toBe(true);
+  expect(isUnrated(wallpaper(3, { comparisons_count: 1 }))).toBe(false);
 });

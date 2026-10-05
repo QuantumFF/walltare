@@ -19,6 +19,7 @@
  */
 import type { Resolution, Status, Wallpaper } from "@/lib/client";
 import { croppedAxis, type CropPlan } from "@/lib/layout-plan";
+import { isUnrated } from "@/lib/wallpaper";
 
 /**
  * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
@@ -141,7 +142,7 @@ export const FILE_IS_GONE_DETAIL =
  * lightbox caption and the library's sort control.
  */
 export function score(wallpaper: Wallpaper): string {
-  if (wallpaper.comparisons_count === 0) return "Unrated";
+  if (isUnrated(wallpaper)) return "Unrated";
   return wallpaper.rating_mu.toFixed(1);
 }
 

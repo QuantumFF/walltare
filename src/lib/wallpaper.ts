@@ -13,6 +13,19 @@
 import type { Resolution, Wallpaper } from "@/lib/client";
 
 /**
+ * CONTEXT.md's Unrated: in no Comparison, so no Score, whatever starting Score
+ * a prediction gave it (ADR 0057).
+ *
+ * The frontend's one spelling of it, as `bar::is_unrated` is the backend's
+ * (#424). `score` in `copy.ts` asks it to print `Unrated` rather than a number,
+ * and `barFallsAt` below to keep the tail of Unrated wallpapers from placing
+ * the Bar.
+ */
+export function isUnrated(wallpaper: Wallpaper): boolean {
+  return wallpaper.comparisons_count === 0;
+}
+
+/**
  * CONTEXT.md's Evaluated, per wallpaper: σ below the threshold the curator set.
  *
  * The threshold is a setting and not a constant, because how many Comparisons
@@ -117,8 +130,6 @@ export function barFallsAt(
   bar: number | null,
 ): number | null {
   if (bar === null) return null;
-  const at = wallpapers.findIndex(
-    (w) => w.comparisons_count > 0 && w.rating_mu >= bar,
-  );
+  const at = wallpapers.findIndex((w) => !isUnrated(w) && w.rating_mu >= bar);
   return at === -1 ? null : at;
 }
