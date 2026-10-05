@@ -360,16 +360,16 @@ fn vote_on(
     }
 
     // In `showing`'s order: the best, the worst, then the two named neither.
-    let rated = match ratings[..] {
-        [best, worst, a, b] => {
-            let (best, [a, b], worst) = ranking::rate_four(best, [a, b], worst);
+    let rated = match others {
+        Some(_) => {
+            let (best, [a, b], worst) =
+                ranking::rate_four(ratings[0], [ratings[2], ratings[3]], ratings[1]);
             vec![best, worst, a, b]
         }
-        [winner, loser] => {
-            let (winner, loser) = ranking::rate_1vs1(winner, loser);
+        None => {
+            let (winner, loser) = ranking::rate_1vs1(ratings[0], ratings[1]);
             vec![winner, loser]
         }
-        _ => unreachable!("a showing is two wallpapers or four"),
     };
     record(&tx, &showing, &rated)?;
     tx.commit()?;
@@ -430,6 +430,8 @@ fn stats(conn: &Connection, pool: &Pool) -> Result<Stats, AppError> {
     let eligible_count = u32::try_from(pool.wallpapers.len()).unwrap_or(u32::MAX);
     let (mut undecided_count, mut decided_below_count, mut decided_above_count) = (0u32, 0, 0);
     let mut close_call_count = 0u32;
+    // Kept wallpapers count like any other here (ADR 0059), though selection
+    // never aims at one (ADR 0060).
     for w in &pool.wallpapers {
         match w.standing(pool.bar) {
             Standing::Unrated | Standing::Undecided => undecided_count += 1,
