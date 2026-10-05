@@ -60,6 +60,12 @@ export const EMPTY_BASKET: Basket = {
   ended: {},
 };
 
+/**
+ * Which page of a search answered: the first of a new one, which replaces the
+ * Results, or a Load more's, which adds to them.
+ */
+export type SearchAt = "first" | "more";
+
 export type BasketEvent =
   /** Make the Result a Pick, or stop it being one. */
   | { type: "picked"; result: MarkedResult }
@@ -74,11 +80,8 @@ export type BasketEvent =
   | { type: "refused"; ids: readonly string[] }
   /** One file is done, as `download-progress` says it. */
   | { type: "progress"; id: string; outcome: DownloadOutcome }
-  /**
-   * A search answered: the first page of a new one, which replaces the
-   * Results, or a Load more's, which adds to them.
-   */
-  | { type: "searched"; results: readonly MarkedResult[]; at: "first" | "more" }
+  /** A page of a search answered, carrying the marks it read. */
+  | { type: "searched"; results: readonly MarkedResult[]; at: SearchAt }
   /** The tray's Clear. */
   | { type: "cleared" };
 
@@ -108,12 +111,22 @@ function downloadOf(basket: Basket, id: string): ResultDownload | undefined {
   return basket.ended[id];
 }
 
-function offeredIn(basket: Basket, result: MarkedResult): boolean {
-  const download = downloadOf(basket, result.id);
+/** The rule itself: unmarked, and with no download or one that failed. */
+function offers(
+  result: MarkedResult,
+  download: ResultDownload | undefined,
+): boolean {
   return (
     result.mark === "unmarked" && (!download || download.kind === "failed")
   );
 }
+
+function offeredIn(basket: Basket, result: MarkedResult): boolean {
+  return offers(result, downloadOf(basket, result.id));
+}
+
+const holds = (list: readonly MarkedResult[], id: string) =>
+  list.some((r) => r.id === id);
 
 /**
  * What `result` offers now: the one statement of what a Result can do, which
@@ -121,7 +134,7 @@ function offeredIn(basket: Basket, result: MarkedResult): boolean {
  */
 export function offer(basket: Basket, result: MarkedResult): Offer {
   const download = downloadOf(basket, result.id);
-  const offered = offeredIn(basket, result);
+  const offered = offers(result, download);
   return {
     download,
     mark:
@@ -129,7 +142,7 @@ export function offer(basket: Basket, result: MarkedResult): Offer {
         ? null
         : result.mark,
     offered,
-    picked: offered && basket.picks.some((r) => r.id === result.id),
+    picked: offered && holds(basket.picks, result.id),
   };
 }
 
@@ -162,12 +175,12 @@ function refreshed(
 }
 
 /** The basket after `event`. */
-export function basket(state: Basket, event: BasketEvent): Basket {
+export function reduceBasket(state: Basket, event: BasketEvent): Basket {
   switch (event.type) {
     case "picked": {
       const { result } = event;
       if (!offeredIn(state, result)) return state;
-      const picks = state.picks.some((r) => r.id === result.id)
+      const picks = holds(state.picks, result.id)
         ? state.picks.filter((r) => r.id !== result.id)
         : [...state.picks, result];
       return { ...state, picks };

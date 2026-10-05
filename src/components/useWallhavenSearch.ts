@@ -1,3 +1,4 @@
+import type { SearchAt } from "@/lib/basket";
 import {
   client,
   DEFAULT_DISCOVER_FILTERS,
@@ -73,7 +74,7 @@ export function appendPage(shown: Shown, page: SearchPage): Shown {
  * replaces the Results — or a Load more's, which leaves them standing.
  */
 export interface Failure {
-  at: "first" | "more";
+  at: SearchAt;
   message: string;
   /**
    * The saved key got a 401. Nothing falls back to anonymous: the page says so
@@ -109,7 +110,7 @@ function searchFailure(error: unknown): string {
 }
 
 /** The failure a call that did not answer leaves, at `at`. */
-function failed(at: Failure["at"], error: unknown): Failure {
+function failed(at: SearchAt, error: unknown): Failure {
   return {
     at,
     message: searchFailure(error),
@@ -122,7 +123,7 @@ export interface WallhavenSearch {
   /** `null` before the first page of the latest search has answered. */
   shown: Shown | null;
   /** Which call is out, if one is. */
-  pending: Failure["at"] | null;
+  pending: SearchAt | null;
   failure: Failure | null;
   /** A new search for `next`, which replaces the Results. */
   search: (next: Asked) => Promise<void>;
@@ -153,7 +154,7 @@ export interface WallhavenSearch {
 export function useWallhavenSearch(
   initial: () => Asked,
   keyed: boolean,
-  onAnswer: (results: MarkedResult[], at: Failure["at"]) => void,
+  onAnswer: (results: MarkedResult[], at: SearchAt) => void,
 ): WallhavenSearch {
   const [asked, setAsked] = useState(initial);
   if (!keyed && asked.purity.nsfw) {
@@ -165,7 +166,7 @@ export function useWallhavenSearch(
     });
   }
   const [shown, setShown] = useState<Shown | null>(null);
-  const [pending, setPending] = useState<Failure["at"] | null>(null);
+  const [pending, setPending] = useState<SearchAt | null>(null);
   const [failure, setFailure] = useState<Failure | null>(null);
 
   const answered = useRef(onAnswer);
@@ -178,7 +179,7 @@ export function useWallhavenSearch(
   const latest = useRef(0);
   const call = useCallback(
     async (
-      at: Failure["at"],
+      at: SearchAt,
       params: SearchParams,
       land: (page: SearchPage) => void,
     ) => {

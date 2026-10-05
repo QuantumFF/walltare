@@ -1,14 +1,15 @@
 import { useToaster } from "@/components/ToastSurface";
 import { useDownload } from "@/context/DownloadRunContext";
 import {
-  basket,
   downloadable,
   EMPTY_BASKET,
   livePicks,
   offer,
+  reduceBasket,
   type Basket,
   type BasketEvent,
   type Offer,
+  type SearchAt,
 } from "@/lib/basket";
 import type { MarkedResult } from "@/lib/client";
 import { useBackendEvents } from "@/lib/useBackendEvents";
@@ -28,7 +29,7 @@ export interface BasketControls {
   /** The tray's Clear. */
   clear: () => void;
   /** Tell the basket what a search answered (the `searched` event). */
-  searched: (results: readonly MarkedResult[], at: "first" | "more") => void;
+  searched: (results: readonly MarkedResult[], at: SearchAt) => void;
 }
 
 /**
@@ -55,7 +56,7 @@ export function useBasket(onLanded: (id: string) => void): BasketControls {
   const [state, setState] = useState<Basket>(EMPTY_BASKET);
   const latest = useRef(state);
   const dispatch = useCallback((event: BasketEvent) => {
-    latest.current = basket(latest.current, event);
+    latest.current = reduceBasket(latest.current, event);
     setState(latest.current);
   }, []);
 
@@ -90,7 +91,7 @@ export function useBasket(onLanded: (id: string) => void): BasketControls {
   );
   const clear = useCallback(() => dispatch({ type: "cleared" }), [dispatch]);
   const searched = useCallback(
-    (results: readonly MarkedResult[], at: "first" | "more") =>
+    (results: readonly MarkedResult[], at: SearchAt) =>
       dispatch({ type: "searched", results, at }),
     [dispatch],
   );

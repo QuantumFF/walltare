@@ -371,7 +371,9 @@ export function DiscoverView() {
       colour: null,
     }),
     keyed,
-    // Each page that lands tells the basket the marks it carries.
+    // Each page that lands tells the basket the marks it carries. The two
+    // hooks hear each other, so one has to be named before it is declared:
+    // this only runs once a search answers, long after `basket` below is.
     (results, at) => basket.searched(results, at),
   );
   const { asked, shown, pending, failure, loadMore } = session;

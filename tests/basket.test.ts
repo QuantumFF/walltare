@@ -1,8 +1,8 @@
 import {
-  basket,
   EMPTY_BASKET,
   livePicks,
   offer,
+  reduceBasket,
   type Basket,
   type BasketEvent,
 } from "@/lib/basket";
@@ -23,7 +23,7 @@ const c = result("cccccc");
 
 /** The basket after `events`, from empty. */
 function after(...events: BasketEvent[]): Basket {
-  return events.reduce(basket, EMPTY_BASKET);
+  return events.reduce(reduceBasket, EMPTY_BASKET);
 }
 
 const picked = (r: MarkedResult): BasketEvent => ({
@@ -207,7 +207,11 @@ test("a Pick a later search marks leaves, and doesn't come back with the next", 
   });
   expect(ids(livePicks(marked))).toEqual(["bbbbbb"]);
 
-  const moved = basket(marked, { type: "searched", results: [c], at: "first" });
+  const moved = reduceBasket(marked, {
+    type: "searched",
+    results: [c],
+    at: "first",
+  });
   expect(ids(livePicks(moved))).toEqual(["bbbbbb"]);
 });
 
