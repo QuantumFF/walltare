@@ -363,10 +363,10 @@ fn backfill_wallhaven_ids(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
-/// A wallpaper row a scan has just created, and where its file sits.
+/// A wallpaper row that has just arrived, and where its file sits.
 ///
-/// What [`insert_new_wallpapers`] answers with instead of a bare count, so the
-/// scan can read each new file's pixel dimensions and write them back without
+/// What [`insert_new_wallpapers`] answers with instead of a bare count, so
+/// [`crate::arrival`] can read each new file's pixel dimensions and write them back without
 /// asking the database which of the paths it just handed over were new. `INSERT
 /// OR IGNORE` makes that question real: a rescan hands over the whole library
 /// and only some of it is inserted, and reading the dimensions of every file on
@@ -422,8 +422,8 @@ pub fn insert_new_wallpapers(
 /// Writes one wallpaper's pixel dimensions, in one statement per row.
 ///
 /// The read that produces them is a file open, so it never happens under the
-/// connection (ADR 0039): both callers measure with the lock released and come
-/// back here with numbers. A row that could not be read is not passed here at
+/// connection (ADR 0039): [`crate::arrival::record_dimensions`] measures with
+/// the lock released and comes back here with numbers. A row that could not be read is not passed here at
 /// all — NULL is what says the dimensions are unknown, and overwriting a known
 /// pair with NULL would turn a file that went missing for a moment into a
 /// wallpaper the app has forgotten the size of (ADR 0044).

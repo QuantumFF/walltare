@@ -1,3 +1,4 @@
+mod arrival;
 pub mod bar; // Decided and Close call are read by #384 and #387; kept Tauri-free
 mod db;
 mod download;
@@ -495,8 +496,11 @@ async fn wallhaven_download(ids: Vec<String>, app: AppHandle) -> Result<(), erro
         if start {
             let app = app.clone();
             std::thread::spawn(move || {
-                app.state::<download::Downloads>()
-                    .run(&app.state::<Db>(), &DownloadEvents(&app));
+                app.state::<download::Downloads>().run(
+                    &app.state::<Db>(),
+                    &app.state::<ThumbnailCache>(),
+                    &DownloadEvents(&app),
+                );
             });
         }
         Ok(())

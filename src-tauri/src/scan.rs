@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::{db, error, paths, scanner, Db};
+use crate::{arrival, error, paths, scanner, Db};
 
 /// How many files go into the database under one taking of the connection.
 ///
@@ -197,10 +197,12 @@ pub fn run(db: &Db, root: LibraryRoot, report: &impl Report) {
     let mut added: u64 = 0;
 
     for chunk in files.chunks(CHUNK_SIZE) {
-        match db.write(|conn| db::insert_new_wallpapers(conn, chunk)) {
+        // Each chunk's new files are measured before the next is inserted, and
+        // their thumbnails and hashes are left to the pass the frontend starts
+        // on this scan's ending.
+        match arrival::arrive(db, chunk, arrival::Warm::ByThePass) {
             Ok(new_rows) => {
                 added += new_rows.len() as u64;
-                record_dimensions(db, &new_rows);
             }
             Err(e) => {
                 // Surfaced instead of only printed: a silent failure looks to
@@ -219,39 +221,6 @@ pub fn run(db: &Db, root: LibraryRoot, report: &impl Report) {
         added_count: added,
         scanned_count: scanned,
     });
-}
-
-/// Reads each newly scanned file's pixel dimensions and writes them to its row.
-///
-/// Between the chunk's insert and the next one, and in three steps rather than
-/// one: the insert under the connection, the header reads with it released, then
-/// the writes (ADR 0039). A chunk is [`CHUNK_SIZE`] files, so holding the lock
-/// across the reads would queue every command and every `wallpaper://` request
-/// behind that many file opens on whatever drive the Library root sits on.
-///
-/// Only the rows this chunk actually inserted, which is what makes a rescan of a
-/// warm library cost nothing: `INSERT OR IGNORE` hands back the new rows alone,
-/// and a wallpaper already in the library already has its dimensions or is the
-/// pre-generation pass's to backfill (ADR 0044).
-///
-/// A file whose dimensions cannot be read is left with NULL in both columns and
-/// nothing else happens: the scan does not fail over it, and the pass that
-/// decodes it later is where a broken source is counted and reported (ADR 0034).
-/// A write that fails is logged rather than surfaced — the dimensions are
-/// backfillable and the wallpapers are in the library either way.
-fn record_dimensions(db: &Db, new_rows: &[db::Added]) {
-    let measured: Vec<(i64, u32, u32)> = new_rows
-        .iter()
-        .filter_map(|row| {
-            scanner::dimensions(&row.path).map(|(width, height)| (row.id, width, height))
-        })
-        .collect();
-    if measured.is_empty() {
-        return;
-    }
-    if let Err(e) = db.write(|conn| db::record_dimensions_batch(conn, &measured)) {
-        eprintln!("scan could not record pixel dimensions: {e}");
-    }
 }
 
 /// What the curator reads when a scan's Library root is not a folder it can
@@ -286,7 +255,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
-    use crate::testing;
+    use crate::{db, testing};
 
     /// Records what a scan reported, standing in for the three events and the
     /// pre-generation cancel.
