@@ -57,7 +57,7 @@ test("an empty queue owes a draw, then a prefetch, then nothing", () => {
   expect(owed(READY)).toBeNull();
 });
 
-test("a draw that failed on an empty screen is not owed again", () => {
+test("a draw that failed on an empty screen is owed again only on returning to Rank", () => {
   const failed = run(
     EMPTY_SLOTS,
     { type: "draw-sent" },
@@ -65,6 +65,7 @@ test("a draw that failed on an empty screen is not owed again", () => {
   );
   expect(failed.failure).toBe("not-enough");
   expect(owed(failed)).toBeNull();
+  expect(owed(failed, true)).toBe("draw");
 });
 
 test("a prefetch lands only under the ticket it was sent with", () => {
@@ -99,7 +100,7 @@ test("a vote swaps in the prefetched showing after the beat, and its answer fill
   expect(cast.pending).toEqual({ kind: "vote", best: 1, worst: 2, votedOn: A });
   expect(cast.current).toBe(A); // through the beat, the pick shows on A
 
-  const swapped = run(cast, { type: "beat-ended" });
+  const swapped = run(cast, { type: "feedback-ended" });
   expect(swapped.current).toBe(B);
   expect(swapped.next).toBeNull();
   expect(owed(swapped)).toBeNull(); // the answer will fill it
@@ -111,7 +112,7 @@ test("a vote swaps in the prefetched showing after the beat, and its answer fill
 });
 
 test("a vote with nothing prefetched is replaced by its answer, and the prefetch out is voided", () => {
-  const cast = run(PREFETCHING, castOn, { type: "beat-ended" });
+  const cast = run(PREFETCHING, castOn, { type: "feedback-ended" });
   expect(cast.current).toBe(A);
   expect(cast.prefetch).toBeNull();
 
@@ -124,7 +125,7 @@ test("an answer with no showing leaves the slot it would have filled empty", () 
   const swapped = run(
     READY,
     castOn,
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-answered",
       next: null,
@@ -138,14 +139,14 @@ test("an answer with no showing leaves the slot it would have filled empty", () 
   const unswapped = run(
     PREFETCHING,
     castOn,
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-answered",
       next: null,
     },
   );
   expect(unswapped.current).toBeNull();
-  expect(unswapped.left).toEqual([1, 2]);
+  expect(unswapped.avoid).toEqual([1, 2]);
   expect(unswapped.failure).toBeNull();
   expect(owed(unswapped)).toBe("draw");
 });
@@ -154,7 +155,7 @@ test("a failed vote puts both slots back as they were, and says so", () => {
   const failed = run(
     READY,
     castOn,
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-failed",
       refused: false,
@@ -174,7 +175,7 @@ test("a vote refused for a Rejected wallpaper moves on without a failure", () =>
   const swapped = run(
     READY,
     castOn,
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-failed",
       refused: true,
@@ -187,7 +188,7 @@ test("a vote refused for a Rejected wallpaper moves on without a failure", () =>
   const unswapped = run(
     PREFETCHING,
     castOn,
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-failed",
       refused: true,
@@ -213,7 +214,7 @@ test("a wallpaper leaving the pool from the screen moves the showing behind up",
   const failed = run(
     READY,
     castOn,
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-failed",
       refused: false,
@@ -230,7 +231,7 @@ test("a wallpaper leaving the pool from the screen moves the showing behind up",
   // of what was left of the showing.
   const empty = run(left, { type: "left-pool", id: 3 });
   expect(empty.current).toBeNull();
-  expect(empty.left).toEqual([4]);
+  expect(empty.avoid).toEqual([4]);
   expect(owed(empty)).toBe("draw");
 });
 
@@ -255,7 +256,7 @@ test("a wallpaper leaving the pool during a pick's beat leaves nothing to vote o
   // Nothing behind B to swap in, and nothing to restore once it settles.
   const settled = run(
     left,
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-failed",
       refused: true,
@@ -269,19 +270,19 @@ test("a wallpaper leaving the pool during a pick's beat leaves nothing to vote o
   const emptied = run(
     left,
     { type: "left-pool", id: 3 },
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     {
       type: "vote-failed",
       refused: true,
     },
   );
   expect(emptied.current).toBeNull();
-  expect(emptied.left).toEqual([4]);
+  expect(emptied.avoid).toEqual([4]);
   expect(owed(emptied)).toBe("draw");
 });
 
 test("a wallpaper leaving the pool from the showing swapped in leaves the answer to fill the screen", () => {
-  const swapped = run(READY, castOn, { type: "beat-ended" });
+  const swapped = run(READY, castOn, { type: "feedback-ended" });
   const left = run(swapped, { type: "left-pool", id: 3 });
   expect(left.current).toBeNull();
 
@@ -306,7 +307,7 @@ test("showings of four move through the same slots", () => {
     { type: "prefetch-sent" },
     { type: "prefetched", ticket: 1, showing: behind },
     { type: "vote-cast", best: 2, worst: 4 },
-    { type: "beat-ended" },
+    { type: "feedback-ended" },
     { type: "vote-answered", next: showing(9, 10, 11, 12) },
   );
   expect(ids(slots.current)).toEqual([5, 6, 7, 8]);

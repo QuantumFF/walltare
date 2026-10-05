@@ -63,10 +63,10 @@ export interface Slots {
   pending: Pending | null;
   failure: Failure | null;
   /**
-   * What was left of the last showing when it went with nothing to take its
-   * place, which the draw that fills the empty screen stays clear of.
+   * The ids the draw that fills an empty screen stays clear of: what was left
+   * of the last showing when it went with nothing to take its place.
    */
-  left: number[] | undefined;
+  avoid: number[] | undefined;
 }
 
 export const EMPTY_SLOTS: Slots = {
@@ -76,7 +76,7 @@ export const EMPTY_SLOTS: Slots = {
   tickets: 0,
   pending: null,
   failure: null,
-  left: undefined,
+  avoid: undefined,
 };
 
 export type SlotAction =
@@ -88,7 +88,7 @@ export type SlotAction =
   | { type: "prefetch-failed"; ticket: number }
   | { type: "vote-cast"; best: number; worst: number }
   /** The pick's feedback has run out, and the vote is about to go. */
-  | { type: "beat-ended" }
+  | { type: "feedback-ended" }
   | { type: "vote-answered"; next: Showing | null }
   /**
    * `refused` is the backend saying a wallpaper in the showing sits out of
@@ -107,17 +107,22 @@ function holds(showing: Showing | null, id: number): boolean {
   return !!showing && showing.some((w) => w.id === id);
 }
 
+/** The vote in flight, if what is pending is one. */
+function pendingVote(slots: Slots): Extract<Pending, { kind: "vote" }> | null {
+  return slots.pending?.kind === "vote" ? slots.pending : null;
+}
+
 /** `current` replaced, which voids whatever was being prefetched behind it. */
 function onScreen(
   slots: Slots,
   showing: Showing | null,
-  went: number[] | undefined,
+  avoid: number[] | undefined,
 ): Slots {
   return {
     ...slots,
     current: showing,
     prefetch: null,
-    left: showing ? undefined : went,
+    avoid: showing ? undefined : avoid,
   };
 }
 
@@ -173,14 +178,14 @@ export function reduceSlots(slots: Slots, action: SlotAction): Slots {
     // has answered. With nothing prefetched the showing voted on stays until
     // the answer replaces it, and a prefetch still out was drawn to sit behind
     // that showing, so it is no longer wanted.
-    case "beat-ended":
-      if (slots.pending?.kind !== "vote") return slots;
+    case "feedback-ended":
+      if (!pendingVote(slots)) return slots;
       if (!slots.next) return { ...slots, prefetch: null };
       return { ...onScreen(slots, slots.next, undefined), next: null };
 
     case "vote-answered": {
-      const vote = slots.pending;
-      if (vote?.kind !== "vote") return slots;
+      const vote = pendingVote(slots);
+      if (!vote) return slots;
       const settled = { ...slots, pending: null };
       // Nothing was swapped in, so what is on screen is what was voted on, and
       // it goes whether or not the answer brought something to replace it.
@@ -195,8 +200,8 @@ export function reduceSlots(slots: Slots, action: SlotAction): Slots {
     }
 
     case "vote-failed": {
-      const vote = slots.pending;
-      if (vote?.kind !== "vote") return slots;
+      const vote = pendingVote(slots);
+      if (!vote) return slots;
       const settled = { ...slots, pending: null };
       // A showing a wallpaper has left cannot be voted on again, so there is
       // nothing to roll back to and nothing to ask the curator to redo. Once
@@ -220,8 +225,8 @@ export function reduceSlots(slots: Slots, action: SlotAction): Slots {
 
     case "left-pool": {
       const { id } = action;
-      const votedOn =
-        slots.pending?.kind === "vote" ? slots.pending.votedOn : null;
+      const vote = pendingVote(slots);
+      const votedOn = vote?.votedOn ?? null;
       if (
         !holds(slots.current, id) &&
         !holds(slots.next, id) &&
@@ -233,15 +238,13 @@ export function reduceSlots(slots: Slots, action: SlotAction): Slots {
       }
       const next = holds(slots.next, id) ? null : slots.next;
       const pending =
-        slots.pending?.kind === "vote" && holds(votedOn, id)
-          ? { ...slots.pending, votedOn: null }
-          : slots.pending;
+        vote && holds(votedOn, id) ? { ...vote, votedOn: null } : slots.pending;
       if (!holds(slots.current, id)) return { ...slots, next, pending };
       // The showing behind moves up. Whatever was said about the one that went
       // was said about it, so it goes too.
-      const went = slots.current!.filter((w) => w.id !== id).map((w) => w.id);
+      const avoid = slots.current!.filter((w) => w.id !== id).map((w) => w.id);
       return {
-        ...onScreen(slots, next, went),
+        ...onScreen(slots, next, avoid),
         next: null,
         pending,
         failure: null,
@@ -253,12 +256,17 @@ export function reduceSlots(slots: Slots, action: SlotAction): Slots {
 /**
  * What the slots are missing that a fetch would fill, if nothing is in flight.
  *
- * An empty screen after a failure stays empty: the failure is on it, and a
- * draw that failed once is not retried on a loop.
+ * An empty screen after a failure stays empty while the failure is on it, so
+ * a draw that failed is not retried on a loop. It is retried on `returning`,
+ * when the curator comes back to Rank: a reject elsewhere can empty the
+ * screen, and the library can have changed while they were away.
  */
-export function owed(slots: Slots): "draw" | "prefetch" | null {
+export function owed(
+  slots: Slots,
+  returning = false,
+): "draw" | "prefetch" | null {
   if (slots.pending) return null;
-  if (!slots.current) return slots.failure ? null : "draw";
+  if (!slots.current) return slots.failure && !returning ? null : "draw";
   if (!slots.next && slots.prefetch === null) return "prefetch";
   return null;
 }
@@ -332,9 +340,9 @@ export function useShowingQueue(mode: RankMode, shown: boolean): ShowingQueue {
     }
 
     /** Fetch whatever the slots are missing, if Rank is on screen to want it. */
-    function refill(): void {
+    function refill(returning = false): void {
       if (!held.current.live || !held.current.shown) return;
-      const want = owed(held.current.slots);
+      const want = owed(held.current.slots, returning);
       if (want === "draw") void draw();
       else if (want === "prefetch") void prefetch();
     }
@@ -353,13 +361,13 @@ export function useShowingQueue(mode: RankMode, shown: boolean): ShowingQueue {
 
     async function draw(): Promise<void> {
       if (!held.current.live) return;
-      const { current, left } = held.current.slots;
+      const { current, avoid } = held.current.slots;
       const drawnFor = held.current.mode;
       dispatch({ type: "draw-sent" });
       try {
         const showing = await fetchShowing(
           drawnFor,
-          current ? idsOf(current) : left,
+          current ? idsOf(current) : avoid,
         );
         dispatch({ type: "drawn", showing });
       } catch (err) {
@@ -411,7 +419,7 @@ export function useShowingQueue(mode: RankMode, shown: boolean): ShowingQueue {
 
       // Visual pick feedback before the swap.
       await new Promise((resolve) => setTimeout(resolve, PICK_FEEDBACK_MS));
-      dispatch({ type: "beat-ended" });
+      dispatch({ type: "feedback-ended" });
 
       const cast = held.current.slots.pending;
       if (cast?.kind === "vote" && cast.votedOn === null) {
@@ -500,7 +508,7 @@ export function useShowingQueue(mode: RankMode, shown: boolean): ShowingQueue {
 
   // The first draw, on mount, and whatever was owed while Rank was hidden.
   useEffect(() => {
-    if (shown) queue.refill();
+    if (shown) queue.refill(true);
   }, [shown, queue]);
 
   // A change of mode draws a showing of the new size in place of the one on

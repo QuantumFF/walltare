@@ -293,11 +293,15 @@ export function RankView() {
   const [namedBest, setNamedBest] = useState<{
     on: Showing;
     id: number;
+    mode: RankMode;
   } | null>(null);
-  // A best named and then left for another view is a showing half answered
-  // too. The view stays mounted, so without this the best would still be
-  // named on return. Adjusted during render, as the suggestion below is.
-  if (view !== "rank" && namedBest) setNamedBest(null);
+  // A best named and then left for another view or another mode is a showing
+  // half answered too. The view stays mounted, so without this the best would
+  // still be named on return, and on the showing a failed redraw left behind.
+  // Adjusted during render, as the suggestion below is.
+  if (namedBest && (view !== "rank" || namedBest.mode !== mode)) {
+    setNamedBest(null);
+  }
   const best = namedBest?.on === current ? namedBest.id : null;
   // Keep ranking puts the suggestion away until it is next true, so it resets
   // the moment a vote or a scan leaves something to decide again. Adjusted
@@ -335,7 +339,7 @@ export function RankView() {
     (picked: Wallpaper) => {
       if (pending || !showingFetched || current?.length !== 4) return;
       if (best === null) {
-        setNamedBest({ on: current, id: picked.id });
+        setNamedBest({ on: current, id: picked.id, mode });
       } else if (best === picked.id) {
         setNamedBest(null);
       } else {
@@ -351,7 +355,7 @@ export function RankView() {
         });
       }
     },
-    [best, current, pending, showingFetched, vote],
+    [best, current, mode, pending, showingFetched, vote],
   );
 
   // Keyboard shortcuts mirror the click targets, and which ones are bound

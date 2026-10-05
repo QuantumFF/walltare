@@ -1251,6 +1251,63 @@ test("a reject that empties both slots while hidden draws afresh on return", asy
   expect(excludes).toEqual([undefined, [1, 2], [4], [5, 6]]);
 });
 
+test("a draw that failed on a screen a reject emptied is tried again on return", async () => {
+  expectConsoleError(/Failed to load a showing/);
+  let tooFew = false;
+  mockCommand("get_pair", () => {
+    if (tooFew) {
+      return Promise.reject({
+        kind: "not_enough_wallpapers",
+        message: "need at least two",
+      });
+    }
+    const next = [pair(1, 2), pair(3, 4), pair(5, 6), pair(7, 8)][
+      getPairCalls++
+    ];
+    if (!next) throw new Error(`get_pair called ${getPairCalls} times`);
+    return next;
+  });
+
+  await renderRankWithBus();
+  await switchTo("To Library");
+  await rejectedElsewhere(1, 3);
+  tooFew = true;
+  await switchTo("To Rank");
+  expect(alertText()).toBe(
+    "Ranking needs at least two wallpapers that aren't rejected.",
+  );
+
+  // A Restore in Library, say, and back.
+  tooFew = false;
+  await switchTo("To Library");
+  await switchTo("To Rank");
+  await panesArrive();
+  expect(alertText()).toBeNull();
+  expect(shownIds()).toEqual([5, 6]);
+});
+
+test("a best named before a switch of mode is gone even when the redraw fails", async () => {
+  expectConsoleError(/Failed to fetch a fresh showing/);
+  rankIn("fours");
+  serveFours(four(1, 2, 3, 4), four(5, 6, 7, 8));
+  mockCommand("get_pair", () =>
+    Promise.reject({ kind: "db", message: "locked database" }),
+  );
+
+  await renderRankView();
+  await clickTile(2);
+  expect(pressed()).toEqual([2]);
+
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Pairs" }));
+  });
+  await flush();
+
+  expect(alertText()).toBe("Failed to load wallpapers.");
+  expect(tileIds()).toEqual([1, 2, 3, 4]);
+  expect(pressed()).toEqual([]);
+});
+
 test("a reject of a wallpaper Rank is not showing changes nothing", async () => {
   servePairs(pair(1, 2), pair(3, 4));
 
