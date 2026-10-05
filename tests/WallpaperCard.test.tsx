@@ -115,33 +115,8 @@ async function failedToLoad() {
   await flush();
 }
 
-test("the badge is the Score to one decimal, and Unrated for a wallpaper in no Comparison", async () => {
-  await mount(card({ rating_mu: 22.45 }));
-  expect(badge().textContent).toBe("22.4");
-
-  cleanup();
-  // Every wallpaper at zero comparisons holds the same starting 25.0, which is
-  // the app's ignorance rather than a judgement, so it says so (ADR 0013).
-  await mount(card({ comparisons_count: 0, rating_mu: 25 }));
-  expect(badge().textContent).toBe("Unrated");
-});
-
-test("the badge is dimmed until the wallpaper is Evaluated", async () => {
-  // The whole live library, and the fixtures' default: σ 8.333 is twice the
-  // threshold, so the number on the badge is provisional and reads that way.
-  await mount(card());
-  expect(badge().className).toContain("bg-black/50");
-  expect(badge().className).not.toContain("bg-white");
-  expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
-
-  cleanup();
-  // Under the threshold the app trusts the number, and one visual state says
-  // so. No second number and no bands: there is one definition of confidence.
-  await mount(card({ rating_sigma: 3.9 }));
-  expect(badge().className).toContain("bg-white");
-  expect(badge().getAttribute("title")).toBe("Evaluated");
-});
-
+// What the badge draws from a row and a threshold is `ScoreBadge.test.tsx`'s.
+// The card's part is the threshold it hands over.
 test("the badge reads against the threshold the curator set, not a constant", async () => {
   // One wallpaper, three curators. σ 4.5 is not confident enough for the app as
   // it shipped and is for a curator who asked to be told sooner, which is the
@@ -165,22 +140,6 @@ test("the badge reads against the threshold the curator set, not a constant", as
   // setting, which is the answer for every curator who has not moved it.
   await mount(rated);
   expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
-});
-
-test("a wallpaper in no Comparison is Evaluated at no threshold the page offers", async () => {
-  // The starting σ is 8.333, above the loosest choice, so the dimmed badge and
-  // `Unrated` agree without either checking the other.
-  for (const threshold of [5, 4, 3]) {
-    await mount(
-      card({ comparisons_count: 0, rating_mu: 25 }),
-      false,
-      false,
-      threshold,
-    );
-    expect(badge().textContent).toBe("Unrated");
-    expect(badge().getAttribute("title")).toBe("Not yet Evaluated");
-    cleanup();
-  }
 });
 
 test("a card names itself with its filename and its Status", async () => {

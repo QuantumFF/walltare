@@ -19,7 +19,7 @@
  */
 import type { Resolution, Status, Wallpaper } from "@/lib/client";
 import { croppedAxis, type CropPlan } from "@/lib/layout-plan";
-import { isUnrated } from "@/lib/wallpaper";
+import { isEvaluated, isUnrated } from "@/lib/wallpaper";
 
 /**
  * A count as the copy writes it, grouped in threes: `1,536` and not `1536`.
@@ -144,6 +144,18 @@ export const FILE_IS_GONE_DETAIL =
 export function score(wallpaper: Wallpaper): string {
   if (isUnrated(wallpaper)) return "Unrated";
   return wallpaper.rating_mu.toFixed(1);
+}
+
+/**
+ * What a Score says about its own confidence, as its tooltip: which side of the
+ * curator's Evaluated threshold the wallpaper is on (ADR 0046).
+ *
+ * The tooltip is what says it in words because the badge itself may not say
+ * `Score`: solid or dimmed is the whole of what it draws. Every surface showing
+ * a Score titles it with this, `ScoreBadge` and the Review hero's line alike.
+ */
+export function confidence(wallpaper: Wallpaper, threshold: number): string {
+  return isEvaluated(wallpaper, threshold) ? "Evaluated" : "Not yet Evaluated";
 }
 
 /**

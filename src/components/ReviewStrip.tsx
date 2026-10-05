@@ -31,8 +31,14 @@ import {
   type Resolution,
   type Wallpaper,
 } from "@/lib/client";
-import { FILE_IS_GONE, score, readableSize, UNDERSIZED } from "@/lib/copy";
-import { dimensionsOf, isEvaluated, isUndersized } from "@/lib/wallpaper";
+import {
+  confidence,
+  FILE_IS_GONE,
+  score,
+  readableSize,
+  UNDERSIZED,
+} from "@/lib/copy";
+import { dimensionsOf, isUndersized } from "@/lib/wallpaper";
 import type { Box } from "@/lib/layout-plan";
 import { cn } from "@/lib/utils";
 import { ImageOff } from "lucide-react";
@@ -156,8 +162,8 @@ export interface ReviewStripProps {
    */
   minimumResolution?: Resolution;
   /**
-   * The curator's Evaluated threshold, which is the σ the hero's Score badge
-   * reads as solid below (#260).
+   * The curator's Evaluated threshold, which the hero's Score is titled
+   * against (#260).
    *
    * The number rather than the verdict, unlike `minimumResolution` above: a
    * threshold is one value, so there is nothing to resolve before handing it to
@@ -434,15 +440,12 @@ export function ReviewStrip({
             title={selected.path}
           >
             {selected.filename} ·{" "}
-            {/* The Score, in the same muted line as the prototype had it. Its
-                title still reads against the curator's Evaluated threshold, so
-                the hero says which side of it this wallpaper is on (#260). */}
+            {/* The Score, in the same muted line as the prototype had it, so
+                not a `ScoreBadge`. Its title is the badge's, `confidence`, so
+                the hero says which side of the curator's Evaluated threshold
+                this wallpaper is on (#260). */}
             <span
-              title={
-                isEvaluated(selected, evaluatedThreshold)
-                  ? "Evaluated"
-                  : "Not yet Evaluated"
-              }
+              title={confidence(selected, evaluatedThreshold)}
               className="tabular-nums"
             >
               {score(selected)}

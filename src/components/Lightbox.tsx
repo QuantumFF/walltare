@@ -2,6 +2,7 @@ import { ActionButton } from "@/components/ActionButton";
 import { wallpaperPicture } from "@/components/HeroPicture";
 import { ItemLightbox, LightboxTitle } from "@/components/ItemLightbox";
 import { STATUS_KEYS } from "@/components/keymap";
+import { ScoreBadge } from "@/components/ScoreBadge";
 import type { SelectionHandle } from "@/components/selection";
 import {
   STATUS_ACTIONS,
@@ -15,10 +16,8 @@ import {
   counted,
   FILE_IS_GONE,
   FILE_IS_GONE_DETAIL,
-  score,
   STATUS_LABEL,
 } from "@/lib/copy";
-import { isEvaluated } from "@/lib/wallpaper";
 import { ImageOff } from "lucide-react";
 
 /**
@@ -138,28 +137,13 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
       row={(wallpaper) => ({
         identity: (
           <div className="flex items-center gap-2">
-            {/*
-              The Score, written as every surface showing one writes it, with
-              the same solid-means-Evaluated dimming the card carries. Both read
-              `score` out of `copy.ts` and `isEvaluated` out of `wallpaper.ts`,
-              so there is one definition of confidence in the app rather than
-              one per surface (ADR 0013) — and both read it against the
-              curator's threshold (ADR 0046).
-            */}
-            <Badge
-              title={
-                isEvaluated(wallpaper, settings.evaluated_threshold)
-                  ? "Evaluated"
-                  : "Not yet Evaluated"
-              }
-              className={
-                isEvaluated(wallpaper, settings.evaluated_threshold)
-                  ? "bg-white text-neutral-900"
-                  : "border-white/30 bg-black/50 text-white/70"
-              }
-            >
-              {score(wallpaper)}
-            </Badge>
+            {/* The Score, as the card draws it (`ScoreBadge`). The
+                threshold is read here off the settings, since the lightbox is
+                no child of either grid to be handed it (ADR 0046). */}
+            <ScoreBadge
+              wallpaper={wallpaper}
+              evaluatedThreshold={settings.evaluated_threshold}
+            />
 
             {/* The filename is the dialog's name: the one thing already on
                 this row that says which wallpaper is up. */}
