@@ -23,8 +23,10 @@ export interface BasketControls {
   /**
    * Whether a Result can be picked and downloaded now, `offer`'s `offered`,
    * read off the basket as it stands at the call rather than as last
-   * rendered. One identity for the life of the page, which is what lets the
-   * key tables built from it keep theirs (`resultKeys` in `keymap.ts`).
+   * rendered: the same basket `pick` and `download` act on, so a key is
+   * answered exactly when its action would do something. One identity for the
+   * life of the page, which is what lets the key tables built from it keep
+   * theirs (`resultKeys` in `keymap.ts`).
    */
   offered: (result: MarkedResult) => boolean;
   /** Make the Result a Pick, or stop it being one, if it can be one. */

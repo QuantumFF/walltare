@@ -78,6 +78,7 @@ export function useCollapsingHeader(showing: boolean): CollapsingHeader {
   const fading = useRef<Animation | null>(null);
   const followScroll = useCallback(
     (fade = false) => {
+      record();
       const at = scroller.current?.scrollTop ?? 0;
       const wasCollapsed = header.current?.dataset.collapsed === "true";
       if (header.current && !wasCollapsed) {
@@ -89,7 +90,7 @@ export function useCollapsingHeader(showing: boolean): CollapsingHeader {
       setStickAt(reserve);
       setReserved(collapse ? reserve : null);
     },
-    [scroller],
+    [scroller, record],
   );
   useLayoutEffect(() => {
     const fade = fadeNext.current;
@@ -141,10 +142,7 @@ export function useCollapsingHeader(showing: boolean): CollapsingHeader {
     followScroll();
   }, [showing, scroller, followScroll]);
 
-  const onScroll = useCallback(() => {
-    record();
-    followScroll(true);
-  }, [record, followScroll]);
+  const onScroll = useCallback(() => followScroll(true), [followScroll]);
   const toTop = useCallback(() => {
     backToTop();
     setReserved(null);

@@ -763,7 +763,7 @@ export function DiscoverView() {
 
       {/* Handed the table with no Picks whatever the tray holds, so `D` in
           here is the Result on screen, as its button says (see
-          `RESULT_KEYS`). */}
+          `ResultKeys.lightbox`). */}
       <ItemLightbox
         grid={grid}
         open={lightbox.open}
