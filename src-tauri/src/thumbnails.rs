@@ -2462,6 +2462,54 @@ mod tests {
     }
 
     #[test]
+    fn a_library_in_every_state_at_once_is_owed_each_its_own_answer() {
+        // The tests above take one state each. This pins the whole answer for a
+        // library holding all of them together, so no row's answer can lean on
+        // another's: cold, warm, half warm, stale, gone, noted, and warm with
+        // no dimensions.
+        let library = Library::new();
+        let img = solid(20, 10, [1, 2, 3, 255]);
+        let cold = library.seed("cold.png", &img);
+        let warm = library.seed("warm.png", &img);
+        let half = library.seed("half.png", &img);
+        let stale = library.seed("stale.png", &img);
+        let gone = library.seed("gone.png", &img);
+        let noted = library.seed("noted.png", &img);
+        let unmeasured = library.seed("unmeasured.png", &img);
+        for (id, name) in [
+            (warm, "warm.png"),
+            (half, "half.png"),
+            (stale, "stale.png"),
+            (gone, "gone.png"),
+            (unmeasured, "unmeasured.png"),
+        ] {
+            library.warm(id, name);
+        }
+        std::fs::remove_file(library.cache_file(half, Size::Small)).unwrap();
+        touch_later(&library.source("stale.png"));
+        std::fs::remove_file(library.source("gone.png")).unwrap();
+        library.note(noted, "noted.png", "image: nope");
+        library.db.write(|conn| {
+            conn.execute(
+                "UPDATE wallpapers SET width = NULL, height = NULL WHERE id = ?1",
+                [unmeasured],
+            )
+            .unwrap()
+        });
+
+        assert_eq!(
+            library.owed(),
+            vec![
+                (cold, Some(Missing::Both)),
+                (half, Some(Missing::Only(Size::Small))),
+                (stale, Some(Missing::Both)),
+                (gone, Some(Missing::Both)),
+                (unmeasured, None),
+            ]
+        );
+    }
+
+    #[test]
     fn a_cache_size_crosses_the_ipc_with_the_fields_client_ts_expects() {
         let json = serde_json::to_value(CacheSize {
             bytes: 48_000_000,
