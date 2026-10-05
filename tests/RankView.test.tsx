@@ -1,5 +1,6 @@
 import { RankView } from "@/components/RankView";
 import { useApp } from "@/context/AppContext";
+import { useAppEvents } from "@/context/AppEventsContext";
 import type {
   FourOutcome,
   RankMode,
@@ -87,7 +88,9 @@ async function renderRankView() {
 
 function idOf(alt: string): number {
   const { src } = screen.getByAltText(alt) as HTMLImageElement;
-  const match = /^wallpaper:\/\/localhost\/image\/(\d+)\?size=medium$/.exec(src);
+  const match = /^wallpaper:\/\/localhost\/image\/(\d+)\?size=medium$/.exec(
+    src,
+  );
   if (!match) throw new Error(`unexpected image src: ${src}`);
   return Number(match[1]);
 }
@@ -538,7 +541,7 @@ test("a prefetch that lands after a vote cannot overwrite the slot", async () =>
 
 test("a vote that fails rolls back to the pair the user picked from", async () => {
   expectConsoleError(/Failed to submit vote/);
-  servePairs(pair(1, 2), pair(3, 4), pair(9, 10));
+  servePairs(pair(1, 2), pair(3, 4));
   const inFlight = deferred<VoteOutcome>();
   let response: VoteOutcome | Promise<VoteOutcome> = inFlight.promise;
   serveVote(() => response);
@@ -557,7 +560,8 @@ test("a vote that fails rolls back to the pair the user picked from", async () =
   expect(shownIds()).toEqual([1, 2]);
   expect(alertText()).toBe("That vote didn't save. Pick again.");
 
-  // And the user really can pick again.
+  // And the user really can pick again, onto the pair that was swapped in:
+  // it went back behind the one restored, so nothing was fetched for it.
   response = { next_pair: pair(7, 8), stats: stats() };
   await clickPane("Left");
   await runPickFeedback();
@@ -566,7 +570,8 @@ test("a vote that fails rolls back to the pair the user picked from", async () =
     [1, 2],
   ]);
   expect(alertText()).toBeNull();
-  expect(shownIds()).toEqual([7, 8]);
+  expect(shownIds()).toEqual([3, 4]);
+  expect(getPairCalls).toBe(2);
 });
 
 test("a vote whose follow-up pair is missing re-fetches instead of erroring", async () => {
@@ -1120,4 +1125,197 @@ test("a pick on four is refused until every tile has its wallpaper", async () =>
   expect(pressed()).toEqual([]);
   await press("1", { target: window });
   expect(pressed()).toEqual([]);
+});
+
+// --- a wallpaper that leaves the Eligible pool (#420) ------------------------
+
+let bus: ReturnType<typeof useAppEvents>;
+
+/** Hands the test the bus, as another view's reject would reach it. */
+function BusProbe() {
+  bus = useAppEvents();
+  return null;
+}
+
+async function renderRankWithBus() {
+  await renderInApp(
+    <>
+      <BusProbe />
+      <ViewSwitch />
+      <RankView />
+    </>,
+  );
+  await flush();
+  await panesArrive();
+}
+
+/** A soft reject made somewhere else, as the module that made it reports it. */
+async function rejectedElsewhere(...ids: number[]) {
+  await act(async () => {
+    for (const id of ids) {
+      bus.publish({
+        type: "status-changed",
+        wallpaper: wallpaper(id, { status: "rejected" }),
+      });
+    }
+  });
+  await flush();
+}
+
+/** The backend's answer to a vote naming a Rejected wallpaper. */
+function refusingRejected(...rejected: number[]) {
+  serveVote(() => {
+    const [winner, loser] = votes[votes.length - 1];
+    if (rejected.includes(winner) || rejected.includes(loser)) {
+      return Promise.reject({
+        kind: "unknown_wallpaper",
+        message: "wallpaper is rejected and sits out of voting",
+      });
+    }
+    return { next_pair: pair(7, 8), stats: stats() };
+  });
+}
+
+async function switchTo(name: "To Library" | "To Rank") {
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name }));
+  });
+  await flush();
+}
+
+test("a wallpaper rejected elsewhere never strands Rank on a refused vote", async () => {
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6));
+  refusingRejected(1);
+
+  await renderRankWithBus();
+  await rejectedElsewhere(1);
+  await panesArrive();
+
+  await clickPane("Left");
+  await runPickFeedback();
+
+  expect(alertText()).toBeNull();
+  expect(votes).toEqual([[3, 4]]);
+  expect(shownIds()).toEqual([5, 6]);
+});
+
+test("a showing that loses a wallpaper while Rank is shown moves on at once", async () => {
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6));
+
+  await renderRankWithBus();
+  await rejectedElsewhere(2);
+
+  // The prefetched pair takes its place, and the slot behind it refills.
+  expect(shownIds()).toEqual([3, 4]);
+  expect(getPairCalls).toBe(3);
+});
+
+test("a showing that loses a wallpaper while Rank is hidden moves on, and fetches nothing until Rank is back", async () => {
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6));
+
+  await renderRankWithBus();
+  await switchTo("To Library");
+  await rejectedElsewhere(1);
+
+  // Moving the slots up is a patch; the draw behind them is owed (ADR 0043).
+  expect(shownIds()).toEqual([3, 4]);
+  expect(getPairCalls).toBe(2);
+
+  await switchTo("To Rank");
+  expect(getPairCalls).toBe(3);
+  expect(shownIds()).toEqual([3, 4]);
+});
+
+test("a reject that empties both slots while hidden draws afresh on return", async () => {
+  const excludes: unknown[] = [];
+  mockCommand("get_pair", (args) => {
+    excludes.push(args.exclude);
+    const next = [pair(1, 2), pair(3, 4), pair(5, 6), pair(7, 8)][
+      getPairCalls++
+    ];
+    if (!next) throw new Error(`get_pair called ${getPairCalls} times`);
+    return next;
+  });
+
+  await renderRankWithBus();
+  await switchTo("To Library");
+  await rejectedElsewhere(1, 3);
+  expect(getPairCalls).toBe(2);
+  expect(screen.queryByAltText("Left Wallpaper")).toBeNull();
+  expect(alertText()).toBeNull();
+
+  await switchTo("To Rank");
+  await panesArrive();
+  expect(shownIds()).toEqual([5, 6]);
+  // The fresh draw stays clear of what was left of the pair on screen.
+  expect(excludes).toEqual([undefined, [1, 2], [4], [5, 6]]);
+});
+
+test("a reject of a wallpaper Rank is not showing changes nothing", async () => {
+  servePairs(pair(1, 2), pair(3, 4));
+
+  await renderRankWithBus();
+  await rejectedElsewhere(9);
+  // A keep does not take a wallpaper out of the pool.
+  await act(async () => {
+    bus.publish({
+      type: "status-changed",
+      wallpaper: wallpaper(1, { status: "kept" }),
+    });
+  });
+  await flush();
+
+  expect(shownIds()).toEqual([1, 2]);
+  expect(getPairCalls).toBe(2);
+});
+
+test("a vote the backend refuses for a Rejected wallpaper moves on without an error", async () => {
+  // The event and the vote can cross: the reject lands between the draw and
+  // the pick, and the refusal is all Rank hears.
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6));
+  refusingRejected(1);
+
+  await renderRankWithBus();
+  await clickPane("Left");
+  await runPickFeedback();
+
+  expect(alertText()).toBeNull();
+  expect(shownIds()).toEqual([3, 4]);
+  // The prefetched pair is on screen, and a fresh one is behind it.
+  expect(getPairCalls).toBe(3);
+});
+
+test("a reject of a wallpaper picked during the pick's beat sends nothing", async () => {
+  servePairs(pair(1, 2), pair(3, 4), pair(5, 6));
+  refusingRejected(1);
+
+  await renderRankWithBus();
+  await clickPane("Left");
+  await rejectedElsewhere(1);
+  await runPickFeedback();
+
+  expect(votes).toEqual([]);
+  expect(alertText()).toBeNull();
+  expect(shownIds()).toEqual([3, 4]);
+});
+
+test("a showing of four that loses a wallpaper drops the best named on it", async () => {
+  rankIn("fours");
+  serveFours(four(1, 2, 3, 4), four(5, 6, 7, 8), four(9, 10, 11, 12));
+  serveFourVote(() => ({ next_showing: four(13, 14, 15, 16), stats: stats() }));
+
+  await renderRankWithBus();
+  await clickTile(2);
+  expect(pressed()).toEqual([2]);
+
+  await rejectedElsewhere(3);
+  await panesArrive();
+  expect(tileIds()).toEqual([5, 6, 7, 8]);
+  expect(pressed()).toEqual([]);
+  expect(prompt()).toBe("Pick the best");
+
+  await clickTile(1);
+  await clickTile(4);
+  await runPickFeedback();
+  expect(fourVotes).toEqual([{ best: 5, worst: 8, others: [6, 7] }]);
 });
