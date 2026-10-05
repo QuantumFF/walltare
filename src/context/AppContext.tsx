@@ -262,13 +262,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Counts what has set the Stats, so a read that was overtaken — by a later
   // read, or by a vote's answer — lands without undoing it.
   const statsVersion = useRef(0);
+  // Reads sent and not yet answered.
+  const readsInFlight = useRef(0);
 
   const readStats = useCallback((): Promise<Stats> => {
     if (queuedRead.current) return queuedRead.current;
     const read = Promise.resolve().then(async () => {
       queuedRead.current = null;
       const version = ++statsVersion.current;
-      const answer = await client.getStats();
+      readsInFlight.current += 1;
+      let answer: Stats;
+      try {
+        answer = await client.getStats();
+      } finally {
+        readsInFlight.current -= 1;
+      }
       // An unchanged answer keeps the object it would replace, so a fact that
       // moved no count — a keep, say — re-renders nobody.
       if (version === statsVersion.current) {
@@ -307,10 +315,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useAppEvent((event) => {
     switch (event.type) {
-      // A vote answers with the whole `Stats`, so there is nothing to read.
+      // A vote answers with the whole `Stats`, so there is nothing to read —
+      // unless a read is already out. Nothing says which of the two the backend
+      // answered last, and dropping either can leave a count stale: the read
+      // may carry a new Bar the vote's answer predates. So the vote's answer
+      // stands for now, and one more read, sent after it landed, settles both.
       case "stats-changed":
         statsVersion.current += 1;
         setStats((held) => (sameStats(held, event.stats) ? held : event.stats));
+        if (readsInFlight.current > 0) rereadStats();
         return;
       // A reject or a Restore changes the Eligible pool. A keep does not, and
       // the payload cannot tell the two apart, so every transition re-reads.

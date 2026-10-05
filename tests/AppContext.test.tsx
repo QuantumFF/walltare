@@ -594,25 +594,39 @@ test("a vote's Stats are taken as published, with no read", async () => {
   );
 });
 
-test("a read overtaken by a vote does not undo the vote's Stats", async () => {
+test("a vote that lands while a read is out stands, and one more read settles both", async () => {
+  // Nothing says which of the two the backend answered last: the read may
+  // carry a new Bar the vote's answer predates, or predate the vote.
   await mountStats();
   const held = deferred<Stats>();
-  mockCommand("get_stats", () => held.promise);
-
+  // The read out when the vote lands is held; the one after it answers with
+  // both the reject and the vote.
+  mockCommand("get_stats", () => {
+    statsReads++;
+    return statsReads === 2
+      ? held.promise
+      : stats({ eligible_count: 9, total_comparisons: 19 });
+  });
   await publish({
     type: "status-changed",
-    wallpaper: wallpaper(1, { status: "kept" }),
+    wallpaper: wallpaper(1, { status: "rejected" }),
   });
+
   await publish({
     type: "stats-changed",
     stats: stats({ total_comparisons: 19 }),
   });
+
+  // The read that was out lands after the vote and is not what stands.
   await act(async () => {
-    held.resolve(stats());
+    held.resolve(stats({ eligible_count: 9 }));
   });
   await flush();
 
-  expect(probedStats()).toEqual(stats({ total_comparisons: 19 }));
+  expect(statsReads).toBe(3);
+  expect(probedStats()).toEqual(
+    stats({ eligible_count: 9, total_comparisons: 19 }),
+  );
 });
 
 test("saving the Bar share re-reads the Stats once, and other settings re-read nothing", async () => {

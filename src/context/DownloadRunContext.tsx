@@ -65,8 +65,9 @@ const DownloadRunControlsContext = createContext<
  * while the curator browses, and its ending is news about the library wherever
  * they have got to by then (ADR 0021). What a landed file does to the rest of
  * the app is here too: each one publishes `library-scanned`, so the views and
- * the Stats refresh as they do after a scan, with no rescan (ADR 0051). What a batch *says* is the toast's, and what each card
- * says is Discover's, which reads the per-file events itself.
+ * the Stats refresh as they do after a scan, with no rescan (ADR 0051). What a
+ * batch *says* is the toast's, and what each card says is Discover's, which
+ * reads the per-file events itself.
  *
  * State and controls are two contexts, so a progress event re-renders the
  * report and not Discover's grid.
