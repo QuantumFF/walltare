@@ -1,3 +1,4 @@
+import { useKeptScroll } from "@/components/useKeptScroll";
 import {
   useCallback,
   useEffect,
@@ -45,13 +46,16 @@ export interface CollapsingHeader {
  * in the flow as a margin: the Results never move as it swaps, and a scroll
  * offset cannot land either side of the line because of the swap itself.
  *
- * The scroll position is recorded as the curator scrolls and put back when the
- * view shows again, because `display: none` reports an offset of zero
- * (ADR 0015).
+ * The scroll position is kept the way Library's is (`useKeptScroll`), and the
+ * header follows it once it is put back.
  */
 export function useCollapsingHeader(showing: boolean): CollapsingHeader {
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const scrollTop = useRef(0);
+  // First, so the restore runs before the layout effect below that follows it.
+  const {
+    scroller,
+    onScroll: record,
+    toTop: backToTop,
+  } = useKeptScroll(showing);
   const header = useRef<HTMLElement | null>(null);
   // Measured while expanded, since collapsed it is the strip's.
   const expandedHeight = useRef(0);
@@ -72,19 +76,21 @@ export function useCollapsingHeader(showing: boolean): CollapsingHeader {
   const controls = useRef<HTMLDivElement | null>(null);
   const fadeNext = useRef(false);
   const fading = useRef<Animation | null>(null);
-  const followScroll = useCallback((fade = false) => {
-    const at = scroller.current?.scrollTop ?? 0;
-    scrollTop.current = at;
-    const wasCollapsed = header.current?.dataset.collapsed === "true";
-    if (header.current && !wasCollapsed) {
-      expandedHeight.current = header.current.offsetHeight;
-    }
-    const reserve = Math.max(0, expandedHeight.current - STRIP_HEIGHT);
-    const collapse = at > reserve;
-    if (fade && collapse !== wasCollapsed) fadeNext.current = true;
-    setStickAt(reserve);
-    setReserved(collapse ? reserve : null);
-  }, []);
+  const followScroll = useCallback(
+    (fade = false) => {
+      const at = scroller.current?.scrollTop ?? 0;
+      const wasCollapsed = header.current?.dataset.collapsed === "true";
+      if (header.current && !wasCollapsed) {
+        expandedHeight.current = header.current.offsetHeight;
+      }
+      const reserve = Math.max(0, expandedHeight.current - STRIP_HEIGHT);
+      const collapse = at > reserve;
+      if (fade && collapse !== wasCollapsed) fadeNext.current = true;
+      setStickAt(reserve);
+      setReserved(collapse ? reserve : null);
+    },
+    [scroller],
+  );
   useLayoutEffect(() => {
     const fade = fadeNext.current;
     fadeNext.current = false;
@@ -122,25 +128,27 @@ export function useCollapsingHeader(showing: boolean): CollapsingHeader {
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [followScroll]);
+  }, [scroller, followScroll]);
   useLayoutEffect(() => {
     if (reserved !== null || !remeasure.current) return;
     remeasure.current = false;
     followScroll();
   }, [reserved, followScroll]);
 
+  // The view showing again, with the offset `useKeptScroll` just put back.
   useLayoutEffect(() => {
     if (!showing || !scroller.current) return;
-    scroller.current.scrollTop = scrollTop.current;
     followScroll();
-  }, [showing, followScroll]);
+  }, [showing, scroller, followScroll]);
 
-  const onScroll = useCallback(() => followScroll(true), [followScroll]);
+  const onScroll = useCallback(() => {
+    record();
+    followScroll(true);
+  }, [record, followScroll]);
   const toTop = useCallback(() => {
-    scrollTop.current = 0;
-    if (scroller.current) scroller.current.scrollTop = 0;
+    backToTop();
     setReserved(null);
-  }, []);
+  }, [backToTop]);
 
   return {
     scroller,

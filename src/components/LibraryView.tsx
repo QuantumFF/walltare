@@ -8,6 +8,7 @@ import {
 } from "@/components/RejectDestination";
 import { WallpaperGrid } from "@/components/WallpaperGrid";
 import type { SelectionHandle } from "@/components/selection";
+import { useKeptScroll } from "@/components/useKeptScroll";
 import { useWallpaperRows, type SetRows } from "@/components/useWallpaperRows";
 import { Button } from "@/components/ui/button";
 import { SegmentedGroup } from "@/components/ui/segmented";
@@ -45,14 +46,7 @@ import {
   Rows3,
   type LucideIcon,
 } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const LOAD_FAILED_ERROR = "Failed to load the library.";
 
@@ -209,22 +203,11 @@ export function LibraryView() {
     () => new Set(),
   );
 
-  const scroller = useRef<HTMLDivElement | null>(null);
-  // Where the curator was, for the lifetime of the run and no longer.
-  //
-  // Kept here rather than read off the element on the way out, because
-  // `display: none` destroys the box: a hidden container reports a scroll
-  // offset of zero, and by the time this view knows it is hidden the offset it
-  // wanted to save is already gone. So it is recorded as the curator scrolls
-  // and put back when the view is shown again (ADR 0015).
-  const scrollTop = useRef(0);
+  // Where the curator was, for the lifetime of the run and no longer
+  // (ADR 0015).
+  const { scroller, onScroll, toTop } = useKeptScroll(showing);
   // The row set as last fetched, so a refetch can tell whether the rows moved.
   const fetchedIds = useRef("");
-
-  const toTop = useCallback(() => {
-    scrollTop.current = 0;
-    if (scroller.current) scroller.current.scrollTop = 0;
-  }, []);
 
   /**
    * One call, every matching row, no paging: the row count is the size of the
@@ -295,16 +278,6 @@ export function LibraryView() {
       return next;
     });
   });
-
-  // Put the curator back where they were, before the frame paints, so the
-  // restore is never a visible jump from the top of the list. The offset is
-  // still what is restored under a virtualised grid: the window is a function of
-  // the offset, so putting the scroller back where it was is what mounts the
-  // rows the curator was looking at.
-  useLayoutEffect(() => {
-    if (!showing || !scroller.current) return;
-    scroller.current.scrollTop = scrollTop.current;
-  }, [showing]);
 
   /**
    * The rows the grid draws: everything the fetch returned, or only the
@@ -565,9 +538,9 @@ export function LibraryView() {
           left it at is this page's to remember. It scrolls rather than the
           whole page so that the bar above stays put while the grid moves, and
           it is the element the grid measures its window against — the ref goes
-          down as a prop and the offset stays up here, because the restore below
-          turns on `showing` and on ADR 0015's rule that this view stays mounted
-          (ADR 0027, #231).
+          down as a prop and the offset stays up here (`useKeptScroll`), because
+          the restore turns on `showing` and on ADR 0015's rule that this view
+          stays mounted (ADR 0027, #231).
 
           `onScroll` writes a ref and renders nothing, which is what keeps a
           wheel gesture off this component: the window that moves with it is the
@@ -575,9 +548,7 @@ export function LibraryView() {
       <div
         ref={scroller}
         data-slot="library-rows"
-        onScroll={() => {
-          scrollTop.current = scroller.current?.scrollTop ?? 0;
-        }}
+        onScroll={onScroll}
         className="min-h-0 flex-1 overflow-y-auto"
       >
         {/* The two empty states, and they are two screens rather than one
