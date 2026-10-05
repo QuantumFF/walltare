@@ -10,7 +10,7 @@ import {
   useMenuHandOff,
 } from "@/context/KeyboardHandoffContext";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { useMemo, useRef } from "react";
 import { flush, mockBootedApp, press, renderInApp } from "./fixtures";
 
@@ -19,8 +19,14 @@ import { flush, mockBootedApp, press, renderInApp } from "./fixtures";
 // tested here once, on a menu of its own over a page whose surface is a
 // button standing in for the grid.
 
-afterEach(cleanup);
+// The clock is faked here rather than trusted: Radix gives the focus back from
+// a timeout, and a file before this one may have left the clock faked anyway.
+afterEach(() => {
+  cleanup();
+  jest.useRealTimers();
+});
 beforeEach(() => {
+  jest.useFakeTimers();
   mockBootedApp();
 });
 
@@ -52,7 +58,9 @@ const menuOpen = () => screen.queryByRole("menu") !== null;
 async function closeMenu() {
   await press("Escape", { target: screen.getByRole("menu") });
   // Radix gives the focus back from a timeout once the menu has unmounted.
-  await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await act(async () => {
+    jest.runOnlyPendingTimers();
+  });
   await flush();
 }
 
