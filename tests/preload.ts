@@ -1,5 +1,5 @@
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { afterEach, beforeEach } from "bun:test";
+import { afterEach, beforeEach, jest } from "bun:test";
 import {
   assertConsoleErrorsAsDeclared,
   installConsoleGuard,
@@ -19,8 +19,13 @@ registerIpcMocks();
 installConsoleGuard();
 
 // Global, so isolation never depends on a test file remembering to reset:
-// a leftover command or listener from one file cannot reach the next.
+// a leftover command or listener from one file cannot reach the next. Nor can
+// a faked clock: a file that fakes time and never gets to put it back (its
+// `afterEach` threw before `useRealTimers`) would otherwise hang every later
+// file waiting on a timeout. A file's own `beforeEach` runs after this one, so
+// faking the clock there still holds.
 beforeEach(() => {
+  jest.useRealTimers();
   resetIpcMocks();
   resetConsoleGuard();
 });
