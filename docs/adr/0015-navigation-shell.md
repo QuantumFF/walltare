@@ -180,6 +180,21 @@ next pair, and a hidden Library pulling its first page mid-vote walks straight
 back into that. A deferred refetch that changes the row set resets scroll to the
 top, the same rule a reorder gets.
 
+> **Amended by [#418](https://github.com/QuantumFF/walltare/issues/418),
+> 2026-10-05.** `Stats` have one holder, `AppProvider`, read through
+> `useStats()`, and it is the only caller of `get_stats` in the frontend. The
+> four events stay; who publishes `stats-changed` narrows. Every module that
+> changed something used to decide for itself whether to re-read the `Stats`
+> and publish them, and the gaps showed: a new Bar share, a reject from Review
+> or Library, and a download each left a count stale, and a finished scan read
+> twice. Now a writer publishes only the fact it already publishes, and the
+> holder re-reads once on each one that can move a count: `status-changed`,
+> `library-scanned`, and a saved Bar share. Facts published together share the
+> read. `stats-changed` is the one exception, because a vote's answer already
+> carries the whole `Stats`; Rank still publishes it and the holder takes it as
+> it is. The `Stats` live in a context of their own, so a new count re-renders
+> the pages that print one and no other view (ADR 0043).
+
 None of this reaches `CONTEXT.md`. It is UI plumbing, and the glossary stays
 free of implementation.
 
