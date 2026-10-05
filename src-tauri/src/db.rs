@@ -1500,7 +1500,7 @@ mod tests {
         // whole new table is reached by the DDL, which runs before `init_schema`
         // branches, so it needs no migration step and no version bump. Without
         // that, every launch pass on an existing library would fail on the
-        // `thumbnail_failures` join in `work_list`.
+        // `thumbnail_failures` join in `ThumbnailCache::owed`.
         let tmp = tempfile::tempdir().unwrap();
         let conn = open(&tmp.path().join("walltare.db")).unwrap();
         init_schema(&conn).unwrap();
