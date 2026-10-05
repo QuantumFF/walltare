@@ -51,6 +51,7 @@ import {
   useHandOffOnPointerPress,
   useKeyboardHandoff,
   useKeyboardSurface,
+  useMenuHandOff,
 } from "@/context/KeyboardHandoffContext";
 import {
   EMPTY_BASKET,
@@ -466,7 +467,7 @@ export function DiscoverView() {
     [clearPicks],
   );
 
-  const ratioHandOff = usePillHandOff();
+  const ratioHandOff = useMenuHandOff();
   const handOffOnPointerPress = useHandOffOnPointerPress();
   const refine = (change: Partial<Asked>) =>
     void search({ ...asked, ...change });
@@ -953,33 +954,6 @@ const PILL =
   "flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-input bg-transparent pr-2 pl-2.5 text-xs whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-muted dark:bg-input/30 dark:hover:bg-input/50";
 
 /**
- * Where a pill's menu leaves the keyboard as it closes.
- *
- * Opened by the pointer, it goes back to the grid, the way a pressed PageBar
- * button hands it back; opened by the keyboard, it goes back to the pill, so
- * `Tab` carries on along the row from where the curator was (ADR 0047).
- */
-function usePillHandOff() {
-  const handOff = useKeyboardHandoff();
-  const byPointer = useRef(false);
-  return {
-    trigger: {
-      onPointerDown: () => {
-        byPointer.current = true;
-      },
-      onKeyDown: () => {
-        byPointer.current = false;
-      },
-    },
-    onCloseAutoFocus: (event: Event) => {
-      if (!byPointer.current) return;
-      event.preventDefault();
-      handOff();
-    },
-  };
-}
-
-/**
  * A pill that opens a menu: what it filters by as its name, what it is set to
  * as its text, then the chevron every pill wears.
  *
@@ -1001,7 +975,7 @@ function Pill({
   className?: string;
   children: ReactNode;
 }) {
-  const handOff = usePillHandOff();
+  const handOff = useMenuHandOff();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger

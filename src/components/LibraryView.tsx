@@ -21,8 +21,8 @@ import {
 import { useApp } from "@/context/AppContext";
 import { useAppEvent } from "@/context/AppEventsContext";
 import {
-  useKeyboardHandoff,
   useKeyboardSurface,
+  useMenuHandOff,
 } from "@/context/KeyboardHandoffContext";
 import {
   client,
@@ -358,14 +358,9 @@ export function LibraryView() {
   // And where a hand-off to this page lands (ADR 0047).
   useKeyboardSurface("library", grid);
 
-  // Whether the ordering's list was opened with the pointer, which decides where
-  // the focus goes when it closes. Radix puts it back on the trigger, which is
-  // right for a curator who opened it from the keyboard and strands the arrows
-  // for one who clicked: a trigger answers them by opening the list again. The
-  // same bargain as a button in the bar, made at close because the list is the
-  // popup `PageBar` leaves alone.
-  const handOff = useKeyboardHandoff();
-  const orderingByPointer = useRef(false);
+  // Where the ordering's list leaves the keyboard as it closes: back to the
+  // grid if the pointer opened it, on the trigger if the keyboard did.
+  const orderingHandOff = useMenuHandOff();
 
   return (
     <>
@@ -477,25 +472,14 @@ export function LibraryView() {
           onValueChange={(value) => setOrdering(value as ListOrdering)}
         >
           <SelectTrigger
-            onPointerDown={() => {
-              orderingByPointer.current = true;
-            }}
-            onKeyDown={() => {
-              orderingByPointer.current = false;
-            }}
+            {...orderingHandOff.trigger}
             aria-label="Order by"
             size="sm"
             className="shrink-0 text-[0.8rem]"
           >
             <SelectValue />
           </SelectTrigger>
-          <SelectContent
-            onCloseAutoFocus={(event) => {
-              if (!orderingByPointer.current) return;
-              event.preventDefault();
-              handOff();
-            }}
-          >
+          <SelectContent onCloseAutoFocus={orderingHandOff.onCloseAutoFocus}>
             {ORDERINGS.map(({ value, label }) => (
               <SelectItem key={value} value={value} className="text-[0.8rem]">
                 {label}

@@ -80,6 +80,11 @@ no surface, and letting go is the whole of it.
 > lands, the keyboard's as well as the pointer's, for the Picks tray's reason:
 > the pair leaves with the button that answered it.
 
+> **Amended by [#421](https://github.com/QuantumFF/walltare/issues/421),
+> 2026-10-05.** Library's ordering and Discover's Ratio and filter pills make
+> the same bargain at close, and it is written once, as `useMenuHandOff` in
+> `KeyboardHandoffContext`, beside the policy it asks.
+
 **The pointer, not the keyboard.** A control the keyboard pressed keeps the
 focus: a tablist's arrows are the ARIA pattern, and a curator who tabbed to a
 button expects to stay on it. `detail` tells the two apart, since the click Enter
