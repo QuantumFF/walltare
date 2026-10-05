@@ -15,7 +15,13 @@ function held() {
   return { done, finish: () => settle(false), fail: () => settle(true) };
 }
 
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+/**
+ * Let every promise already settled run on. Microtasks rather than a timer,
+ * because a file before this one may have left the clock faked.
+ */
+async function settled() {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+}
 
 test("each draw starts once the one before it has settled", async () => {
   const turns = takeTurns();
@@ -30,7 +36,7 @@ test("each draw starts once the one before it has settled", async () => {
     started.push("second");
     return "second";
   });
-  await tick();
+  await settled();
   expect(started).toEqual(["first"]);
 
   first.finish();
