@@ -1,34 +1,31 @@
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { useApp } from "@/context/AppContext";
 import {
   useKeyboardSurface,
   useMenuHandOff,
+  type MenuHandOff,
 } from "@/context/KeyboardHandoffContext";
 import { act, cleanup, fireEvent, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { useMemo, useRef } from "react";
-import { flush, mockBootedApp, press, renderInApp } from "./fixtures";
+import { flush, mockBootedApp, renderInApp } from "./fixtures";
 
 // Where a menu leaves the keyboard as it closes (ADR 0047, #421): Library's
 // ordering and Discover's pills all take `useMenuHandOff`, so the rule is
-// tested here once, on a menu of its own over a page whose surface is a
-// button standing in for the grid.
+// tested here once, through the two halves it hands a menu, over a page whose
+// surface is a button standing in for the grid.
+//
+// The close is called the way Radix calls it, with a cancelable event, rather
+// than by driving a Radix menu: Radix gives the focus back from a timeout, and
+// a file before this one may have left the clock faked. What Radix does when
+// the event is not prevented, putting the focus back on the trigger, is
+// Radix's.
 
-// The clock is faked here rather than trusted: Radix gives the focus back from
-// a timeout, and a file before this one may have left the clock faked anyway.
-afterEach(() => {
-  cleanup();
-  jest.useRealTimers();
-});
+afterEach(cleanup);
 beforeEach(() => {
-  jest.useFakeTimers();
   mockBootedApp();
 });
+
+let menu: MenuHandOff;
 
 function Page() {
   const { view } = useApp();
@@ -38,56 +35,58 @@ function Page() {
     [],
   );
   useKeyboardSurface(view, surface);
-  const handOff = useMenuHandOff();
+  menu = useMenuHandOff();
   return (
     <>
       <button ref={grid}>the grid</button>
-      <DropdownMenu>
-        <DropdownMenuTrigger {...handOff.trigger}>Sort</DropdownMenuTrigger>
-        <DropdownMenuContent onCloseAutoFocus={handOff.onCloseAutoFocus}>
-          <DropdownMenuCheckboxItem>Newest</DropdownMenuCheckboxItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <button {...menu.trigger}>Sort</button>
     </>
   );
 }
 
-const trigger = () => screen.getByRole("button", { name: "Sort" });
-const menuOpen = () => screen.queryByRole("menu") !== null;
+const trigger = () => screen.getByText("Sort");
+const grid = () => screen.getByText("the grid");
 
-async function closeMenu() {
-  await press("Escape", { target: screen.getByRole("menu") });
-  // Radix gives the focus back from a timeout once the menu has unmounted.
+/** The menu closing, and whether its own focus return was stopped. */
+async function closeMenu(): Promise<boolean> {
+  const event = new Event("focusScope.autoFocusOnUnmount", {
+    cancelable: true,
+  });
   await act(async () => {
-    jest.runOnlyPendingTimers();
+    menu.onCloseAutoFocus(event);
   });
   await flush();
+  return event.defaultPrevented;
 }
 
 test("a menu the pointer opened hands the keyboard to the page as it closes", async () => {
   await renderInApp(<Page />);
-  await act(async () => {
-    fireEvent.pointerDown(trigger(), { button: 0, ctrlKey: false });
-  });
-  await flush();
-  expect(menuOpen()).toBe(true);
+  fireEvent.pointerDown(trigger());
 
-  await closeMenu();
-
-  expect(menuOpen()).toBe(false);
-  expect(document.activeElement).toBe(screen.getByText("the grid"));
+  expect(await closeMenu()).toBe(true);
+  expect(document.activeElement).toBe(grid());
 });
 
-test("a menu the keyboard opened gives the focus back to its trigger", async () => {
+test("a menu the keyboard opened leaves the focus to the menu's own return", async () => {
   await renderInApp(<Page />);
   await act(async () => {
     trigger().focus();
   });
-  await press("Enter");
-  expect(menuOpen()).toBe(true);
+  fireEvent.keyDown(trigger(), { key: "Enter" });
 
+  expect(await closeMenu()).toBe(false);
+  expect(document.activeElement).toBe(trigger());
+});
+
+test("the press that opened the menu decides, not the one before it", async () => {
+  await renderInApp(<Page />);
+  fireEvent.pointerDown(trigger());
   await closeMenu();
+  await act(async () => {
+    trigger().focus();
+  });
 
-  expect(menuOpen()).toBe(false);
+  fireEvent.keyDown(trigger(), { key: "Enter" });
+  expect(await closeMenu()).toBe(false);
   expect(document.activeElement).toBe(trigger());
 });
