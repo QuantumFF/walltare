@@ -20,6 +20,15 @@ export interface BasketControls {
   picks: MarkedResult[];
   /** What a Result offers now (`offer` in `basket.ts`). */
   offer: (result: MarkedResult) => Offer;
+  /**
+   * Whether a Result can be picked and downloaded now, `offer`'s `offered`,
+   * read off the basket as it stands at the call rather than as last
+   * rendered: the same basket `pick` and `download` act on, so a key is
+   * answered exactly when its action would do something. One identity for the
+   * life of the page, which is what lets the key tables built from it keep
+   * theirs (`resultKeys` in `keymap.ts`).
+   */
+  offered: (result: MarkedResult) => boolean;
   /** Make the Result a Pick, or stop it being one, if it can be one. */
   pick: (result: MarkedResult) => void;
   /** Download these, as far as they can be, in the order given. */
@@ -106,6 +115,11 @@ export function useBasket(onLanded: (id: string) => void): BasketControls {
     // is already the next batch's, on the wire while that ending arrives.
   });
 
+  const offered = useCallback(
+    (result: MarkedResult) => offer(latest.current, result).offered,
+    [],
+  );
+
   const picks = useMemo(() => livePicks(state), [state]);
   const offerNow = useCallback(
     (result: MarkedResult) => offer(state, result),
@@ -115,6 +129,7 @@ export function useBasket(onLanded: (id: string) => void): BasketControls {
   return {
     picks,
     offer: offerNow,
+    offered,
     pick,
     download,
     downloadPicks,

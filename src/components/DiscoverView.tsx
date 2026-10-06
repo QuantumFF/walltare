@@ -51,6 +51,7 @@ import {
   useHandOffOnPointerPress,
   useKeyboardHandoff,
   useKeyboardSurface,
+  useMenuHandOff,
 } from "@/context/KeyboardHandoffContext";
 import {
   EMPTY_BASKET,
@@ -410,7 +411,7 @@ export function DiscoverView() {
     [setView],
   );
 
-  const { picks, offer: offerNow, clear: clearPicks } = basket;
+  const { picks, offer: offerNow, offered, clear: clearPicks } = basket;
   const { download: take, downloadPicks: takePicks, pick: toggle } = basket;
   const download = useCallback(
     (result: MarkedResult) => (noRoot ? chooseRoot() : take([result])),
@@ -439,6 +440,10 @@ export function DiscoverView() {
     [offerNow, noRoot, download, pick, openOn],
   );
 
+  // What the keys act on, asking the basket at each press what a Result
+  // offers, so a key does what the card's buttons do.
+  const keys = useMemo(() => resultKeys(offered), [offered]);
+
   // The keys on the cursor: `P` and `D` are the card's own Pick and Download
   // pressed by key, and with Picks `D` is the tray's Download and `Escape` its
   // Clear.
@@ -466,7 +471,7 @@ export function DiscoverView() {
     [clearPicks],
   );
 
-  const ratioHandOff = usePillHandOff();
+  const ratioHandOff = useMenuHandOff();
   const handOffOnPointerPress = useHandOffOnPointerPress();
   const refine = (change: Partial<Asked>) =>
     void search({ ...asked, ...change });
@@ -685,7 +690,7 @@ export function DiscoverView() {
                 ref={setGrid}
                 items={results}
                 label="Results from Wallhaven"
-                actions={resultKeys(picks.length)}
+                actions={keys.grid(picks.length)}
                 onAct={act}
                 onOpen={openOn}
                 // The keys act on the card under the mouse.
@@ -756,13 +761,14 @@ export function DiscoverView() {
         />
       )}
 
-      {/* Handed `RESULT_KEYS` whatever the tray holds, so `D` in here is the
-          Result on screen, as its button says (see `RESULT_KEYS`). */}
+      {/* Handed the table with no Picks whatever the tray holds, so `D` in
+          here is the Result on screen, as its button says (see
+          `ResultKeys.lightbox`). */}
       <ItemLightbox
         grid={grid}
         open={lightbox.open}
         onClose={lightbox.close}
-        actions={RESULT_KEYS}
+        actions={keys.lightbox}
         onAct={act}
         picture={resultPicture}
         row={(result) => resultRow(result, resultControls)}
@@ -953,33 +959,6 @@ const PILL =
   "flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-input bg-transparent pr-2 pl-2.5 text-xs whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-muted dark:bg-input/30 dark:hover:bg-input/50";
 
 /**
- * Where a pill's menu leaves the keyboard as it closes.
- *
- * Opened by the pointer, it goes back to the grid, the way a pressed PageBar
- * button hands it back; opened by the keyboard, it goes back to the pill, so
- * `Tab` carries on along the row from where the curator was (ADR 0047).
- */
-function usePillHandOff() {
-  const handOff = useKeyboardHandoff();
-  const byPointer = useRef(false);
-  return {
-    trigger: {
-      onPointerDown: () => {
-        byPointer.current = true;
-      },
-      onKeyDown: () => {
-        byPointer.current = false;
-      },
-    },
-    onCloseAutoFocus: (event: Event) => {
-      if (!byPointer.current) return;
-      event.preventDefault();
-      handOff();
-    },
-  };
-}
-
-/**
  * A pill that opens a menu: what it filters by as its name, what it is set to
  * as its text, then the chevron every pill wears.
  *
@@ -1001,7 +980,7 @@ function Pill({
   className?: string;
   children: ReactNode;
 }) {
-  const handOff = usePillHandOff();
+  const handOff = useMenuHandOff();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger

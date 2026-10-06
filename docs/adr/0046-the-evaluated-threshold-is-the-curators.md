@@ -128,6 +128,12 @@ selection rather than a child of either grid
 ([ADR 0022](0022-lightbox-shares-the-selection.md)), so a prop would have to be
 threaded through both pages to reach it.
 
+> **Amended by [#421](https://github.com/QuantumFF/walltare/issues/421),
+> 2026-10-05.** The card and the Lightbox draw one `ScoreBadge`, which takes the
+> number as a prop: the card hands on the one it was handed, and the Lightbox
+> the one it reads from the store, for the reasons above. The tooltip's words
+> are `confidence` in `copy.ts`, which the Review hero's plain Score reads too.
+
 ## Alternatives rejected
 
 **A free number field.** Honest about what is stored and useless to read. It

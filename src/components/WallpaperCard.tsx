@@ -1,5 +1,5 @@
 import { ActionButton } from "@/components/ActionButton";
-import { Badge } from "@/components/ui/badge";
+import { ScoreBadge } from "@/components/ScoreBadge";
 import {
   DEFAULT_EVALUATED_THRESHOLD,
   wallpaperImageUrl,
@@ -10,11 +10,10 @@ import {
   counted,
   FILE_IS_GONE,
   readableSize,
-  score,
   STATUS_LABEL,
   UNDERSIZED,
 } from "@/lib/copy";
-import { dimensionsOf, isEvaluated } from "@/lib/wallpaper";
+import { dimensionsOf } from "@/lib/wallpaper";
 import {
   STATUS_ACTIONS,
   type TransitionAction,
@@ -171,9 +170,8 @@ export interface WallpaperCardProps {
    * The number rather than the verdict, which is the opposite of `undersized`
    * above and for the reason given there: a prop has to be a value or a stable
    * identity for the memo to mean anything, and a threshold *is* a value, so
-   * there is nothing to resolve for the card. The comparison it feeds is
-   * `isEvaluated`, the one the lightbox and the Review hero use too, so every
-   * badge moves together (ADR 0046).
+   * there is nothing to resolve for the card. It goes on to `ScoreBadge`, the
+   * badge the lightbox draws too, so every badge moves together (ADR 0046).
    *
    * Defaults to what Evaluated meant before it was a setting, which is what a
    * card mounted outside the app's settings gets — the right answer for every
@@ -239,7 +237,6 @@ export const WallpaperCard = memo(function WallpaperCard({
   // absent object used to say and the index says now.
   const inGrid = cellIndex !== undefined;
   const rejected = wallpaper.status === "rejected";
-  const evaluated = isEvaluated(wallpaper, evaluatedThreshold);
   // Known before the press, because ADR 0009 put `origin_path` on the DTO for
   // exactly this: the frontend can refuse without asking the backend.
   const restorable = wallpaper.origin_path !== null;
@@ -476,34 +473,14 @@ export const WallpaperCard = memo(function WallpaperCard({
         </div>
       )}
 
-      {/*
-        μ to one decimal, or `Unrated`, and nothing else: no unit, no second
-        number and not the word Score, which ADR 0013 keeps to the surfaces with
-        room for it. Solid says Evaluated and dimmed says not yet, off the one σ
-        threshold the curator set, so confidence is one fact with one definition
-        rather than a band scale invented here (ADR 0046). Most badges on a young
-        library are dimmed and that is correct: σ is a late signal at every
-        threshold offered. The tooltip is what says which state the dimming is,
-        since the badge itself may not say `Score`.
-
-        `Score moved` is the one other thing the badge can read, and it is not a
-        way of writing a Score down at all — it is the app saying it no longer
-        knows one, which is why it stays here rather than joining `score()` in
-        `copy.ts`. Only a page subscribed to `score-changed` can hand it over,
-        and only the two wallpapers a Comparison named get it (#129).
-      */}
+      {/* The Score, top right (`ScoreBadge`). */}
       <div className="pointer-events-none absolute top-1.5 right-1.5">
-        <Badge
-          title={evaluated ? "Evaluated" : "Not yet Evaluated"}
-          className={cn(
-            "rounded-md px-1.5 py-0.5 text-[11px] tabular-nums backdrop-blur-md",
-            evaluated
-              ? "bg-white text-neutral-900"
-              : "border-white/30 bg-black/50 text-white/70",
-          )}
-        >
-          {scoreMoved ? "Score moved" : score(wallpaper)}
-        </Badge>
+        <ScoreBadge
+          wallpaper={wallpaper}
+          evaluatedThreshold={evaluatedThreshold}
+          moved={scoreMoved}
+          className="rounded-md px-1.5 py-0.5 text-[11px] tabular-nums backdrop-blur-md"
+        />
       </div>
 
       {/*

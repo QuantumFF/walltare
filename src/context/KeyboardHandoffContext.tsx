@@ -188,6 +188,56 @@ export function pressedByPointer(event: MouseEvent): boolean {
   return event.detail > 0;
 }
 
+/** What `useMenuHandOff` hands a menu: half for its trigger, half its content. */
+export interface MenuHandOff {
+  /** Spread on the menu's trigger, to hear which of the two opened it. */
+  trigger: {
+    onPointerDown: () => void;
+    onKeyDown: () => void;
+  };
+  /** The menu content's `onCloseAutoFocus`. */
+  onCloseAutoFocus: (event: Event) => void;
+}
+
+/**
+ * Where a menu leaves the keyboard as it closes: Library's ordering, and
+ * Discover's Ratio and filter pills.
+ *
+ * Opened by the pointer, it goes back to the page's surface, the way a pressed
+ * `PageBar` button hands it back. Radix would put it on the trigger, which
+ * strands the arrows for a curator who clicked: a trigger answers them by
+ * opening the menu again. Opened by the keyboard, it stays with Radix and goes
+ * back to the trigger, so `Tab` carries on along the row from where the curator
+ * was (ADR 0047). The same bargain as a button in the bar, made at close rather
+ * than at the press, because a menu is the popup `useHandOffOnPointerPress`
+ * leaves alone.
+ *
+ * Read off the press that opened it, since by the close the pointer and the
+ * keyboard may both have been used inside the menu.
+ */
+export function useMenuHandOff(): MenuHandOff {
+  const handOff = useKeyboardHandoff();
+  const byPointer = useRef(false);
+  return useMemo(
+    () => ({
+      trigger: {
+        onPointerDown: () => {
+          byPointer.current = true;
+        },
+        onKeyDown: () => {
+          byPointer.current = false;
+        },
+      },
+      onCloseAutoFocus: (event: Event) => {
+        if (!byPointer.current) return;
+        event.preventDefault();
+        handOff();
+      },
+    }),
+    [handOff],
+  );
+}
+
 /**
  * A click handler for a strip of buttons: one the pointer pressed hands the
  * keyboard back once it has done its job.

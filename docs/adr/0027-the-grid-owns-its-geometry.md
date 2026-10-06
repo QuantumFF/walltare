@@ -218,6 +218,12 @@ hidden-view rule, so pulling it in would make the geometry hook know about the
 shell, and `toTop` is called from `fetchRows`'s reorder rule, which is about
 rows rather than geometry.
 
+> **Amended by [#421](https://github.com/QuantumFF/walltare/issues/421),
+> 2026-10-05.** The four now live in `useKeptScroll`, because Discover had
+> written the same record-and-restore by hand. That hook is not the geometry
+> hook: the page still calls it, hands it `showing`, and calls `toTop` from its
+> own reorder rule, so the grid still imports nothing about the shell.
+
 ### The box gets no injectable seam
 
 `browserLaysOutTheScroller` (`tests/LibraryView.test.tsx:207-217`) stays as it
