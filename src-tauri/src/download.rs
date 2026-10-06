@@ -19,12 +19,16 @@
 //!    arrives at any size but the `file_size` Wallhaven announced deletes it,
 //!    and nothing reaches the library.
 //! 4. The staging file is linked into place without overwriting anything.
-//! 5. The row is inserted the way a scan inserts it, `INSERT OR IGNORE` on the
-//!    canonical path, so a scan that got there first simply wins. It carries
-//!    the Wallhaven id, and its Dimensions come from the file's header.
+//! 5. The file arrives the way a scan's files do, through [`arrival::arrive`]:
+//!    `INSERT OR IGNORE` on the canonical path, so a scan that got there first
+//!    simply wins, with the Wallhaven id and Dimensions off the file's header.
+//!    Once the row is in, the file has landed, whatever is refused after it.
+//! 6. It is warmed there and then: both thumbnails, and the perceptual hash off
+//!    the Small, so it can be offered as a Near-duplicate straight away.
 //!
-//! No pre-generation pass is started or cancelled: the `wallpaper://` protocol
-//! makes a new wallpaper's thumbnails on demand.
+//! No pre-generation pass is started or cancelled: the one wallpaper is warmed
+//! on this queue's thread through the same `ThumbnailCache::warm` the pass
+//! uses, and nothing else changes (ADR 0051's amendment).
 
 use std::collections::VecDeque;
 use std::io::Read;
@@ -38,7 +42,9 @@ use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
 };
 
+use crate::arrival;
 use crate::error::AppError;
+use crate::thumbnails::ThumbnailCache;
 use crate::wallhaven::{Served, Wallhaven};
 use crate::Db;
 
@@ -173,7 +179,7 @@ impl Downloads {
     /// its own rather than joining one that has already said it is over.
     ///
     /// [`enqueue`]: Downloads::enqueue
-    pub fn run(&self, db: &Db, report: &impl Report) {
+    pub fn run(&self, db: &Db, cache: &ThumbnailCache, report: &impl Report) {
         // Whatever stops this thread, the queue is left able to start another.
         let _draining = Draining(self);
         loop {
@@ -197,7 +203,7 @@ impl Downloads {
             // A panic in one file is that file failing, for the reason
             // `ThumbnailCache::warm` gives: it is a fact about those bytes or
             // that folder, and the rest of the batch is still the curator's.
-            let landed = std::panic::catch_unwind(AssertUnwindSafe(|| self.land(db, &job)))
+            let landed = std::panic::catch_unwind(AssertUnwindSafe(|| self.land(db, cache, &job)))
                 .unwrap_or_else(|_| Err(panicked()));
             let outcome = match landed {
                 Ok(()) => Outcome::Landed,
@@ -253,7 +259,7 @@ impl Downloads {
     }
 
     /// One file, from the folder check to the row.
-    fn land(&self, db: &Db, job: &Job) -> Result<(), AppError> {
+    fn land(&self, db: &Db, cache: &ThumbnailCache, job: &Job) -> Result<(), AppError> {
         let name = file_name(&job.id, &job.served)?;
         let (written, root) = db.read(crate::settings::download_paths)?;
         let folder = crate::download_folder::prepare(&written, &root)?;
@@ -268,16 +274,11 @@ impl Downloads {
             place(&staged, &destination)?;
         }
 
-        // Read with the connection released (ADR 0039). A header that will
-        // not read leaves the Dimensions unknown, which is what a scan does.
-        let dimensions = crate::scanner::dimensions(&destination);
-        db.write(|conn| {
-            let added = crate::db::insert_new_wallpapers(conn, &[destination])?;
-            if let (Some(row), Some((width, height))) = (added.first(), dimensions) {
-                crate::db::record_dimensions(conn, row.id, width, height)?;
-            }
-            Ok(())
-        })
+        // A scan of one file, and warmed as it lands because no pass follows a
+        // download. Only the insert can fail it: once the row is in, the file
+        // has landed whatever happens after.
+        arrival::arrive(db, &[destination], arrival::Warm::Now(cache))?;
+        Ok(())
     }
 
     /// The file's bytes, in a staging file in `folder` that holds exactly the
@@ -592,6 +593,8 @@ mod tests {
         _dir: tempfile::TempDir,
         root: PathBuf,
         db: Db,
+        _cache_dir: tempfile::TempDir,
+        cache: ThumbnailCache,
     }
 
     impl Library {
@@ -607,10 +610,13 @@ mod tests {
                 crate::settings::Detected::from_monitor(None),
             )
             .unwrap();
+            let cache_dir = tempfile::tempdir().unwrap();
             Self {
                 _dir: dir,
                 root,
                 db: Db::new(conn),
+                cache: ThumbnailCache::new(cache_dir.path().to_path_buf()),
+                _cache_dir: cache_dir,
             }
         }
 
@@ -705,7 +711,7 @@ mod tests {
         let report = Recorder::default();
 
         assert!(request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap());
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         let landed = library.folder().join("wallhaven-qrow67.png");
         assert_eq!(std::fs::read(&landed).unwrap(), image);
@@ -732,6 +738,58 @@ mod tests {
     }
 
     #[test]
+    fn a_download_whose_row_landed_is_never_reported_failed() {
+        // The row is the landing. A write after it that the database refuses —
+        // here the Dimensions — leaves a wallpaper in the library, and a card
+        // that said Failed about it would be offering a retry the next click
+        // refuses as In library (#417).
+        let library = Library::new();
+        library.db.write(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER refuse BEFORE UPDATE OF width ON wallpapers
+                 BEGIN SELECT RAISE(ABORT, 'the disk is full'); END;",
+            )
+            .unwrap()
+        });
+        let image = png(12, 5);
+        let files = testing::stub(vec![Canned::file(&image)]);
+        let client = served(&files, &[("qrow67", image.len())]);
+        let downloads = downloads();
+        let report = Recorder::default();
+
+        request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
+        downloads.run(&library.db, &library.cache, &report);
+
+        assert_eq!(report.progress.borrow()[0].item.outcome, Outcome::Landed);
+        let rows = library.rows();
+        assert_eq!(rows.len(), 1);
+        library.db.read(|conn| {
+            assert_eq!(dimensions_of(conn, rows[0].0), (None, None));
+        });
+    }
+
+    #[test]
+    fn a_downloaded_wallpaper_is_hashed_when_it_lands() {
+        // What makes it a Near-duplicate the moment it lands rather than at the
+        // next launch: no pre-generation pass starts after a download, and the
+        // pass is otherwise the only thing that hashes (#417).
+        let library = Library::new();
+        let image = png(64, 36);
+        let files = testing::stub(vec![Canned::file(&image)]);
+        let client = served(&files, &[("qrow67", image.len())]);
+        let downloads = downloads();
+
+        request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
+        downloads.run(&library.db, &library.cache, &Recorder::default());
+
+        let rows = library.rows();
+        assert!(library
+            .db
+            .read(|conn| testing::perceptual_hash_of(conn, rows[0].0))
+            .is_some());
+    }
+
+    #[test]
     fn the_file_is_fetched_from_the_path_served_and_without_the_key() {
         let library = Library::new();
         let image = png(2, 2);
@@ -740,7 +798,7 @@ mod tests {
         let downloads = downloads();
 
         request(&library.db, &client, &downloads, &ids(&["jedzym"])).unwrap();
-        downloads.run(&library.db, &Recorder::default());
+        downloads.run(&library.db, &library.cache, &Recorder::default());
 
         let asked = files.requests();
         assert_eq!(asked.len(), 1);
@@ -777,7 +835,7 @@ mod tests {
         let report = Recorder::default();
 
         request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert!(elsewhere.requests().is_empty(), "the redirect went nowhere");
         assert_eq!(
@@ -806,15 +864,16 @@ mod tests {
         let downloads = downloads();
         request(&library.db, &client, &downloads, &ids(&["aaaaaa"])).unwrap();
 
-        let died =
-            std::panic::catch_unwind(AssertUnwindSafe(|| downloads.run(&library.db, &Panics)));
+        let died = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            downloads.run(&library.db, &library.cache, &Panics)
+        }));
 
         assert!(died.is_err());
         // Not joined to a batch nobody is draining: the next click starts a
         // thread, and it runs.
         assert!(request(&library.db, &client, &downloads, &ids(&["bbbbbb"])).unwrap());
         let report = Recorder::default();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
         assert_eq!(*report.events.borrow(), ["progress bbbbbb", "complete"]);
         assert_eq!(report.complete.borrow()[0].total, 1);
     }
@@ -831,7 +890,7 @@ mod tests {
         let report = Recorder::default();
 
         request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert_eq!(library.entries(), Vec::<String>::new());
         assert!(library.rows().is_empty());
@@ -850,7 +909,7 @@ mod tests {
         let report = Recorder::default();
 
         request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert_eq!(library.entries(), Vec::<String>::new());
         assert!(library.rows().is_empty());
@@ -889,7 +948,7 @@ mod tests {
             &ids(&["aaaaaa", "bbbbbb", "cccccc"]),
         )
         .unwrap();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert_eq!(library.entries(), Vec::<String>::new());
         assert!(library.rows().is_empty());
@@ -930,7 +989,7 @@ mod tests {
         let report = Recorder::default();
 
         request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert!(files.requests().is_empty(), "nothing was fetched");
         // The curator's bytes, untouched, and one row for them.
@@ -1002,7 +1061,7 @@ mod tests {
         );
         // All or nothing: the served id did not queue either.
         let report = Recorder::default();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
         assert!(report.progress.borrow().is_empty());
     }
 
@@ -1043,7 +1102,7 @@ mod tests {
         std::fs::write(library.folder(), b"x").unwrap();
         let report = Recorder::default();
 
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert!(files.requests().is_empty());
         let progress = report.progress.borrow();
@@ -1109,7 +1168,7 @@ mod tests {
             })),
             ..Recorder::default()
         };
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert_eq!(
             *report.events.borrow(),
@@ -1159,7 +1218,7 @@ mod tests {
             &ids(&["aaaaaa", "bbbbbb"]),
         )
         .unwrap();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert_eq!(library.entries(), ["wallhaven-bbbbbb.png"]);
         assert_eq!(
@@ -1191,7 +1250,7 @@ mod tests {
         let report = Recorder::default();
 
         request(&library.db, &client, &downloads, &ids(&["qrow67"])).unwrap();
-        downloads.run(&library.db, &report);
+        downloads.run(&library.db, &library.cache, &report);
 
         assert_eq!(library.rows().len(), 1);
         assert_eq!(report.progress.borrow()[0].item.outcome, Outcome::Landed);

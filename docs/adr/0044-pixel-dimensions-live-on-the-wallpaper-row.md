@@ -109,6 +109,14 @@ opens on whatever drive the Library root sits on.
 > `start_scan` is the wiring around it. The three steps and the rule about
 > which rows are measured are unchanged.
 
+> **Amended by [#417](https://github.com/QuantumFF/walltare/issues/417),
+> 2026-10-05.** The three steps are `arrival::arrive`, which a scan calls per
+> chunk and a download calls with its one file, and the read-then-write is
+> `arrival::record_dimensions`, which the pass's per-wallpaper measurement goes
+> through too. The steps, the rule about which rows are measured and the
+> logged-not-surfaced write are unchanged; a download now follows that last
+> rule as well, rather than failing the file.
+
 A scan measures new files and never re-measures old ones, so a wallpaper the
 curator has since re-exported at a different size keeps the numbers it was
 scanned with. That staleness is corrected by the pass rather than by the scan,

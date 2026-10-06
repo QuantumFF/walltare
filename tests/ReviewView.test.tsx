@@ -1442,6 +1442,28 @@ test("pairs that pre-generation has just hashed show up without a Refresh", asyn
   expect(nearDuplicates()).not.toBeNull();
 });
 
+test("a pair a download has just made shows up without a Refresh", async () => {
+  // A download hashes its wallpaper as it lands and starts no pre-generation
+  // pass (ADR 0051), so the landed file is the only news there is (#417).
+  let waiting: NearDuplicatePair[] = [];
+  mockCommand("list_near_duplicates", () => waiting);
+  await openReview([wallpaper(1)]);
+  expect(nearDuplicates()).toBeNull();
+
+  waiting = [keepOnePair()];
+  await act(async () => {
+    emitEvent("download-progress", {
+      total: 1,
+      landed: 1,
+      failed: 0,
+      item: { wallhaven_id: "qrow67", outcome: { kind: "landed" } },
+    });
+  });
+  await flush();
+
+  expect(nearDuplicates()).not.toBeNull();
+});
+
 test("keep both makes the pair Distinct, rejects nothing, and the pair leaves", async () => {
   let waiting = [keepOnePair()];
   const asked: unknown[] = [];
