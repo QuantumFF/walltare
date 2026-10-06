@@ -462,8 +462,8 @@ const LIGHTBOX_HOST = { container: null, setOpen: () => {} };
 
 export async function renderInApp(ui: ReactNode) {
   const rendered = render(
-    <AppProvider>
-      <AppEventsProvider>
+    <AppEventsProvider>
+      <AppProvider>
         <ScanRunProvider>
           <DownloadRunProvider>
             <KeyboardHandoffProvider>
@@ -476,8 +476,8 @@ export async function renderInApp(ui: ReactNode) {
             </KeyboardHandoffProvider>
           </DownloadRunProvider>
         </ScanRunProvider>
-      </AppEventsProvider>
-    </AppProvider>,
+      </AppProvider>
+    </AppEventsProvider>,
   );
   await flush();
   return rendered;

@@ -3,8 +3,8 @@ import { PageBar } from "@/components/PageBar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { SegmentedGroup } from "@/components/ui/segmented";
-import { useApp } from "@/context/AppContext";
-import { useAppEvent, useAppEvents } from "@/context/AppEventsContext";
+import { useApp, useStats } from "@/context/AppContext";
+import { useAppEvents } from "@/context/AppEventsContext";
 import {
   client,
   isAppError,
@@ -313,7 +313,7 @@ export function RankView() {
   const ratio = settings.screen.width / settings.screen.height;
   const [current, setCurrent] = useState<Showing | null>(null);
   const [next, setNext] = useState<Showing | null>(null);
-  const [stats, setStats] = useState<Stats | null>(null);
+  const stats = useStats();
   const [loading, setLoading] = useState(true);
   // The best of a showing of four, once named and until the worst is. Never
   // sent anywhere on its own: a showing half answered records nothing.
@@ -396,13 +396,9 @@ export function RankView() {
 
     void (async () => {
       try {
-        const [showing, initialStats] = await Promise.all([
-          fetchShowing(modeRef.current),
-          client.getStats(),
-        ]);
+        const showing = await fetchShowing(modeRef.current);
         if (cancelled) return;
         show(showing);
-        setStats(initialStats);
         setLoading(false);
         void prefetchNext();
       } catch (err) {
@@ -519,9 +515,8 @@ export function RankView() {
         // query on the path between one showing and the next.
         publish({ type: "score-changed", ids: votedIds });
         // The headline updates through the bus rather than beside it, so there
-        // is one path into it: Rank is the only publisher of this today, and
-        // #113's refetch after a scan is the next one, raising the same
-        // Undecided count without Rank needing to know a scan happened.
+        // is one path into it: the Stats `useStats` holds, which every other
+        // fact that moves a count reaches by a re-read (#418).
         publish({ type: "stats-changed", stats: outcome.stats });
 
         if (!mountedRef.current) return;
@@ -615,13 +610,6 @@ export function RankView() {
     nameBest(null);
     void redraw();
   }, [mode, nameBest, redraw]);
-
-  // The headline is a patch, and this is the whole of Rank's interest in what
-  // happens elsewhere: the showing on screen is Rank's own business, and no
-  // other view can change which wallpapers it is showing.
-  useAppEvent((event) => {
-    if (event.type === "stats-changed") setStats(event.stats);
-  });
 
   // Keyboard shortcuts mirror the click targets, and which ones are bound
   // follows the showing on screen: ← and → for a pair, 1 to 4 for four, and S

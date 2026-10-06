@@ -1,5 +1,6 @@
 import App from "@/App";
-import { AppProvider, useApp } from "@/context/AppContext";
+import { AppProvider, useApp, useStats } from "@/context/AppContext";
+import { AppEventsProvider, useAppEvents } from "@/context/AppEventsContext";
 import { DEFAULT_SETTINGS, type Settings, type Stats } from "@/lib/client";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
@@ -328,9 +329,11 @@ test("the stored settings are readable from useApp", async () => {
   );
 
   render(
-    <AppProvider>
-      <SettingsProbe />
-    </AppProvider>,
+    <AppEventsProvider>
+      <AppProvider>
+        <SettingsProbe />
+      </AppProvider>
+    </AppEventsProvider>,
   );
   await flush();
 
@@ -351,9 +354,11 @@ test("a navigation carries where it came from and the field to focus", async () 
   mockCommand("get_stats", () => emptyStats());
 
   render(
-    <AppProvider>
-      <NavigationProbe />
-    </AppProvider>,
+    <AppEventsProvider>
+      <AppProvider>
+        <NavigationProbe />
+      </AppProvider>
+    </AppEventsProvider>,
   );
   await flush();
 
@@ -380,9 +385,11 @@ test("a settings read that fails still starts the app, on the defaults", async (
   expectConsoleError(/Failed to load settings/);
 
   render(
-    <AppProvider>
-      <SettingsProbe />
-    </AppProvider>,
+    <AppEventsProvider>
+      <AppProvider>
+        <SettingsProbe />
+      </AppProvider>
+    </AppEventsProvider>,
   );
   await flush();
 
@@ -478,4 +485,183 @@ test("both reads failing still starts the app", async () => {
   expect(showingView()).toBe("settings");
   expect(settingsView()?.textContent).toContain("Couldn't read the library");
   expect(scanInput()).not.toBeNull();
+});
+
+// The Stats, at the bus. One module holds them and re-reads them on the facts
+// that can move a count, so each test publishes a fact the way the module that
+// made the change does, and asserts the reads it cost and the Stats it left
+// (#418).
+
+/** `get_stats` calls since the probe mounted, boot's included. */
+let statsReads: number;
+/** What the next `get_stats` answers with. */
+let library: Stats;
+let bus: ReturnType<typeof useAppEvents>;
+let app: ReturnType<typeof useApp>;
+
+/** Reports the Stats `useStats` hands out, and hands the test the bus. */
+function StatsProbe() {
+  bus = useAppEvents();
+  app = useApp();
+  const stats = useStats();
+  return <span data-testid="stats">{JSON.stringify(stats)}</span>;
+}
+
+const probedStats = (): Stats | null =>
+  JSON.parse(screen.getByTestId("stats").textContent ?? "null") as Stats | null;
+
+async function mountStats() {
+  statsReads = 0;
+  library = stats();
+  mockCommand("get_stats", () => {
+    statsReads++;
+    return library;
+  });
+  render(
+    <AppEventsProvider>
+      <AppProvider>
+        <StatsProbe />
+      </AppProvider>
+    </AppEventsProvider>,
+  );
+  await flush();
+}
+
+async function publish(...events: Parameters<typeof bus.publish>[0][]) {
+  await act(async () => {
+    for (const event of events) bus.publish(event);
+  });
+  await flush();
+}
+
+test("boot's read is the Stats, with no second read for the page that prints them", async () => {
+  await mountStats();
+
+  expect(statsReads).toBe(1);
+  expect(probedStats()).toEqual(stats());
+});
+
+test("a Status change re-reads the Stats once", async () => {
+  await mountStats();
+
+  library = stats({ eligible_count: 9, undecided_count: 5 });
+  await publish({
+    type: "status-changed",
+    wallpaper: wallpaper(1, { status: "rejected" }),
+  });
+
+  expect(statsReads).toBe(2);
+  expect(probedStats()).toEqual(stats({ eligible_count: 9, undecided_count: 5 }));
+});
+
+test("Status changes published together are one read between them", async () => {
+  // A reject of every missing file is one `status-changed` a row.
+  await mountStats();
+
+  library = stats({ eligible_count: 7 });
+  await publish(
+    { type: "status-changed", wallpaper: wallpaper(1, { status: "rejected" }) },
+    { type: "status-changed", wallpaper: wallpaper(2, { status: "rejected" }) },
+    { type: "status-changed", wallpaper: wallpaper(3, { status: "rejected" }) },
+  );
+
+  expect(statsReads).toBe(2);
+  expect(probedStats()).toEqual(stats({ eligible_count: 7 }));
+});
+
+test("wallpapers a scan or a download added re-read the Stats once", async () => {
+  await mountStats();
+
+  library = stats({ total_wallpapers: 13, eligible_count: 11 });
+  await publish({ type: "library-scanned", added: 1 });
+
+  expect(statsReads).toBe(2);
+  expect(probedStats()?.total_wallpapers).toBe(13);
+});
+
+test("a vote's Stats are taken as published, with no read", async () => {
+  await mountStats();
+
+  await publish({
+    type: "stats-changed",
+    stats: stats({ undecided_count: 5, total_comparisons: 19 }),
+  });
+  await publish({ type: "score-changed", ids: [1, 2] });
+
+  expect(statsReads).toBe(1);
+  expect(probedStats()).toEqual(
+    stats({ undecided_count: 5, total_comparisons: 19 }),
+  );
+});
+
+test("a vote that lands while a read is out stands, and one more read settles both", async () => {
+  // Nothing says which of the two the backend answered last: the read may
+  // carry a new Bar the vote's answer predates, or predate the vote.
+  await mountStats();
+  const held = deferred<Stats>();
+  // The read out when the vote lands is held; the one after it answers with
+  // both the reject and the vote.
+  mockCommand("get_stats", () => {
+    statsReads++;
+    return statsReads === 2
+      ? held.promise
+      : stats({ eligible_count: 9, total_comparisons: 19 });
+  });
+  await publish({
+    type: "status-changed",
+    wallpaper: wallpaper(1, { status: "rejected" }),
+  });
+
+  await publish({
+    type: "stats-changed",
+    stats: stats({ total_comparisons: 19 }),
+  });
+
+  // The read that was out lands after the vote and is not what stands.
+  await act(async () => {
+    held.resolve(stats({ eligible_count: 9 }));
+  });
+  await flush();
+
+  expect(statsReads).toBe(3);
+  expect(probedStats()).toEqual(
+    stats({ eligible_count: 9, total_comparisons: 19 }),
+  );
+});
+
+test("saving the Bar share re-reads the Stats once, and other settings re-read nothing", async () => {
+  await mountStats();
+  mockCommand("set_setting", (args) =>
+    settings(args.key === "bar_share" ? { bar_share: 0.3 } : {}),
+  );
+
+  library = stats({ undecided_count: 2, decided_below_count: 5 });
+  await act(async () => {
+    await app.saveSetting("bar_share", 0.3);
+  });
+  await flush();
+
+  expect(statsReads).toBe(2);
+  expect(probedStats()).toEqual(
+    stats({ undecided_count: 2, decided_below_count: 5 }),
+  );
+
+  await act(async () => {
+    await app.saveSetting("review_ordering", "score_desc");
+  });
+  await flush();
+  expect(statsReads).toBe(2);
+});
+
+test("a re-read that fails leaves the Stats standing", async () => {
+  expectConsoleError(/Failed to re-read the stats/);
+  await mountStats();
+  mockCommand("get_stats", () =>
+    Promise.reject({ kind: "db", message: "database is locked" }),
+  );
+
+  await publish({ type: "library-scanned", added: 3 });
+
+  // The fact landed; the counts are one read behind, not blank.
+  expect(probedStats()).toEqual(stats());
 });

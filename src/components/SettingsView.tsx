@@ -29,7 +29,7 @@ import {
 import { ThumbnailsSection } from "@/components/ThumbnailsSection";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
-import { useApp, type View } from "@/context/AppContext";
+import { useApp, useStats, type View } from "@/context/AppContext";
 import { useKeyboardHandoff } from "@/context/KeyboardHandoffContext";
 import { useScanRun } from "@/context/ScanRunContext";
 import { isAppError } from "@/lib/client";
@@ -224,7 +224,7 @@ function LibraryRootSection({
    */
   onValue?: (next: string) => void;
 }) {
-  const { libraryTotal } = useApp();
+  const libraryTotal = useStats()?.total_wallpapers ?? null;
   // The run is read from above the view swap rather than held here. This is
   // the one page the shell unmounts and a walk takes minutes, so a button that
   // kept its own `scanning` came back from a tab switch offering to start a
@@ -320,8 +320,8 @@ function LibraryRootSection({
         onEnter={scan}
       />
 
-      {/* A fact rather than another control, from the `Stats` boot already
-          read. No last-scanned time beside it: nothing records one, and every
+      {/* A fact rather than another control, from the `Stats` the app keeps
+          current. No last-scanned time beside it: nothing records one, and every
           row a scan adds shares a single `created_at`, so the nearest available
           number would mark the last scan that added a file rather than the last
           scan (ADR 0020). */}
@@ -575,7 +575,7 @@ export function SettingsView() {
    * thumbnail cache and a count of missing files are all questions about
    * wallpapers the app either has not found yet or cannot see (ADR 0033).
    *
-   * It is the notice and not `libraryTotal === 0`, so the page stops being a
+   * It is the notice and not a total of zero, so the page stops being a
    * landing on exactly the two occasions the landing is over: the boot rule's
    * rerun moves the curator off it once a scan fills the library, and a Retry
    * that reads retires the fault. A curator who came back through the gear is
