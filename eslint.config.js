@@ -3,9 +3,10 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    // The last two are makepkg's, from packaging/PKGBUILD: its build
-    // directory and the package tree it assembles under fakeroot.
-    ignores: ["dist/", "src-tauri/target/", "packaging/src/", "packaging/pkg/"],
+    // `.claude/` holds agent worktrees, each a whole checkout with its own
+    // build output. The last two are makepkg's, from packaging/PKGBUILD: its
+    // build directory and the package tree it assembles under fakeroot.
+    ignores: ["dist/", "src-tauri/target/", ".claude/", "packaging/src/", "packaging/pkg/"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
