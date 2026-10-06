@@ -7,6 +7,8 @@
 
 use std::f64::consts::{PI, SQRT_2};
 
+use crate::bar::{Bar, Standing};
+
 pub const MU: f64 = 25.0;
 pub const SIGMA: f64 = 8.333;
 pub const BETA: f64 = 4.167;
@@ -32,21 +34,14 @@ impl WallpaperSummary {
         Rating::new(self.rating_mu, self.rating_sigma)
     }
 
-    /// At least one Comparison, which is what having a Score means.
+    /// Not Unrated: at least one Comparison, which is what having a Score means.
     fn is_scored(&self) -> bool {
-        self.comparisons_count > 0
+        !crate::bar::is_unrated(self.comparisons_count)
     }
 
-    pub(crate) fn decided(&self, bar: Option<f64>) -> Option<crate::bar::Side> {
-        crate::bar::decided(self.rating(), self.comparisons_count, bar)
-    }
-
-    pub(crate) fn is_decided(&self, bar: Option<f64>) -> bool {
-        self.decided(bar).is_some()
-    }
-
-    pub(crate) fn is_close_call(&self, bar: Option<f64>) -> bool {
-        crate::bar::close_call(self.rating(), self.comparisons_count, bar)
+    /// Where this wallpaper stands against `bar`.
+    pub(crate) fn standing(&self, bar: Bar) -> Standing {
+        bar.standing(self.rating(), self.comparisons_count)
     }
 }
 
@@ -117,7 +112,7 @@ pub struct Recent<'a> {
 /// two wallpapers that may meet.
 pub fn select_pair<'a, R: Rng>(
     pool: &'a [WallpaperSummary],
-    bar: Option<f64>,
+    bar: Bar,
     recent: Recent<'_>,
     exclude: &[i64],
     apart: &dyn Fn(i64, i64) -> bool,
@@ -177,7 +172,7 @@ pub fn select_pair<'a, R: Rng>(
 /// pairs two arrivals rather than repeat one.
 pub fn select_four<'a, R: Rng>(
     pool: &'a [WallpaperSummary],
-    bar: Option<f64>,
+    bar: Bar,
     recent: Recent<'_>,
     exclude: &[i64],
     apart: &dyn Fn(i64, i64) -> bool,
@@ -240,7 +235,7 @@ fn arrivals_capped(pool: &[WallpaperSummary], recent: Recent<'_>) -> bool {
 /// `base` that is not empty.
 fn first_pick<'a, R: Rng>(
     base: &[&'a WallpaperSummary],
-    bar: Option<f64>,
+    bar: Bar,
     recent: Recent<'_>,
     capped: bool,
     rng: &mut R,
@@ -253,7 +248,10 @@ fn first_pick<'a, R: Rng>(
     let undecided: Vec<&WallpaperSummary> = scored
         .iter()
         .copied()
-        .filter(|w| !w.kept && !w.is_decided(bar) && !w.is_close_call(bar))
+        .filter(|w| w.standing(bar) == Standing::Undecided)
+        // Where Kept parts from the headline: a Kept wallpaper counts as
+        // Undecided there (ADR 0059), but is never aimed at here (ADR 0060).
+        .filter(|w| !w.kept)
         .collect();
     match least_compared_outside(&undecided, recent.showings, rng)
         .or_else(|| least_compared_outside(&scored, recent.showings, rng))
@@ -1036,14 +1034,21 @@ mod tests {
     fn empty_and_single_candidate_pools_return_none() {
         let mut rng = SeqRng::new(&[0.5]);
         assert_eq!(
-            select_pair(&[], None, Recent::default(), &[], &nothing_apart, &mut rng),
+            select_pair(
+                &[],
+                Bar::NONE,
+                Recent::default(),
+                &[],
+                &nothing_apart,
+                &mut rng
+            ),
             None
         );
         let pool = [summary(1, MU, SIGMA, 0)];
         assert_eq!(
             select_pair(
                 &pool,
-                None,
+                Bar::NONE,
                 Recent::default(),
                 &[],
                 &nothing_apart,
@@ -1063,7 +1068,7 @@ mod tests {
         // 0.0 * 2 -> first tie member; 0.999 * 2 -> second tie member.
         let (first, _) = select_pair(
             &pool,
-            None,
+            Bar::NONE,
             Recent::default(),
             &[],
             &nothing_apart,
@@ -1073,7 +1078,7 @@ mod tests {
         assert_eq!(first.id, 2);
         let (first, _) = select_pair(
             &pool,
-            None,
+            Bar::NONE,
             Recent::default(),
             &[],
             &nothing_apart,
@@ -1094,7 +1099,7 @@ mod tests {
         let mut rng = SeqRng::new(&[0.0, 0.0]);
         let (first, second) = select_pair(
             &pool,
-            None,
+            Bar::NONE,
             Recent::default(),
             &[],
             &nothing_apart,
@@ -1108,7 +1113,7 @@ mod tests {
         let mut rng = SeqRng::new(&[0.0, 0.0]);
         let again = select_pair(
             &pool,
-            None,
+            Bar::NONE,
             Recent::default(),
             &[],
             &nothing_apart,
@@ -1130,7 +1135,7 @@ mod tests {
         // zero-weight candidate rather than land on index 0.
         let (first, second) = select_pair(
             &pool,
-            None,
+            Bar::NONE,
             Recent::default(),
             &[],
             &nothing_apart,
@@ -1153,7 +1158,7 @@ mod tests {
         let mut rng = SeqRng::new(&[0.0, 0.9]);
         let (first, second) = select_pair(
             &pool,
-            None,
+            Bar::NONE,
             Recent::default(),
             &[],
             &nothing_apart,
@@ -1167,7 +1172,7 @@ mod tests {
         let mut rng = SeqRng::new(&[0.0, 0.1]);
         let (_, second) = select_pair(
             &pool,
-            None,
+            Bar::NONE,
             Recent::default(),
             &[],
             &nothing_apart,
@@ -1190,7 +1195,7 @@ mod tests {
     /// The pair for each draw in [`DRAWS`], as `(first, second)` ids.
     fn pairs_over_draws(
         pool: &[WallpaperSummary],
-        bar: Option<f64>,
+        bar: Bar,
         recent: Recent<'_>,
         exclude: &[i64],
     ) -> Vec<(i64, i64)> {
@@ -1212,7 +1217,7 @@ mod tests {
         out
     }
 
-    const BAR: Option<f64> = Some(20.0);
+    const BAR: Bar = Bar::at(20.0);
 
     // Relative to a Bar of 20: far off it with σ 2 is Decided, near it with σ 1
     // is a Close call, near it with σ 5 is Undecided.
@@ -1438,7 +1443,7 @@ mod tests {
         for _ in 0..runs {
             std::hint::black_box(select_pair(
                 &pool,
-                Some(20.0),
+                Bar::at(20.0),
                 recent,
                 &[1, 2],
                 &nothing_apart,
@@ -1476,7 +1481,7 @@ mod tests {
                 for c in DRAWS {
                     let (first, second) = select_pair(
                         pool,
-                        None,
+                        Bar::NONE,
                         Recent::default(),
                         &[],
                         &kept_apart(apart),
@@ -1547,7 +1552,7 @@ mod tests {
             for b in DRAWS {
                 let (first, second) = select_pair(
                     &pool,
-                    None,
+                    Bar::NONE,
                     Recent::default(),
                     &[3],
                     &kept_apart(&[[1, 2]]),
@@ -1565,7 +1570,7 @@ mod tests {
         assert_eq!(
             select_pair(
                 &pool,
-                None,
+                Bar::NONE,
                 Recent::default(),
                 &[],
                 &kept_apart(&[[1, 2]]),

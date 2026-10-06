@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::bar::UNRATED_SQL;
 use crate::error::AppError;
 use crate::scanner;
 
@@ -753,7 +754,7 @@ impl ListOrdering {
     ///
     /// Three terms here are load-bearing:
     ///
-    /// - `comparisons_count = 0` leads both Score clauses. It is 0 for a rated
+    /// - [`UNRATED_SQL`] leads both Score clauses. It is 0 for a rated
     ///   wallpaper and 1 for an Unrated one and does not flip with the
     ///   direction, so Unrated is a constant tail in both directions rather
     ///   than a block of cards placed in the middle by the starting Score,
@@ -771,12 +772,12 @@ impl ListOrdering {
     /// ahead of every lowercase letter, so `Zebra.jpg` would precede
     /// `abstract.jpg`. The key is the filename rather than the path, since that
     /// is what the card shows.
-    fn order_by(self) -> &'static str {
+    fn order_by(self) -> String {
         match self {
-            Self::ScoreDesc => "comparisons_count = 0, rating_mu DESC, id ASC",
-            Self::ScoreAsc => "comparisons_count = 0, rating_mu ASC, id ASC",
-            Self::FilenameAsc => "filename COLLATE NOCASE ASC, id ASC",
-            Self::RecentlyAdded => "id DESC",
+            Self::ScoreDesc => format!("{UNRATED_SQL}, rating_mu DESC, id ASC"),
+            Self::ScoreAsc => format!("{UNRATED_SQL}, rating_mu ASC, id ASC"),
+            Self::FilenameAsc => "filename COLLATE NOCASE ASC, id ASC".into(),
+            Self::RecentlyAdded => "id DESC".into(),
         }
     }
 }
@@ -790,8 +791,8 @@ impl ListOrdering {
 /// list is about 1MB of JSON and one scan, which is what makes fetching
 /// everything cheaper than a pagination design.
 ///
-/// Both Score orderings sort in memory, because a leading `comparisons_count =
-/// 0` cannot be served by the index on `(status, rating_mu)`; ADR 0028 names the
+/// Both Score orderings sort in memory, because a leading [`UNRATED_SQL`]
+/// cannot be served by the index on `(status, rating_mu)`; ADR 0028 names the
 /// expression index that would cover it, and why it is not added.
 pub fn list_wallpapers(
     conn: &Connection,
