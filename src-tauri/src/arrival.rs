@@ -132,6 +132,7 @@ fn warm_now(db: &Db, cache: &ThumbnailCache, arrived: &Added) {
         wallpaper_id: arrived.id,
         source: arrived.path.clone(),
         status: Status::Active,
+        comparisons_count: 0,
         missing: Some(Missing::Both),
     };
     if let Err(e) = cache.warm(db, &pending) {

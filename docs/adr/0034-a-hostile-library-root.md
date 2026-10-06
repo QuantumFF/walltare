@@ -67,6 +67,13 @@ mtime the source currently has. So a broken file costs one decode attempt in
 total rather than one per launch, and the second launch's work list is the same
 length whether the library holds three broken files or three hundred.
 
+> **Amended by [#422](https://github.com/QuantumFF/walltare/issues/422),
+> 2026-10-05.** The join and the skip are `ThumbnailCache::owed`'s, in the
+> thumbnail cache module that writes the notes, so one module writes them and
+> reads them. The note is matched against the source's mtime by the same
+> function that matches a `thumbnails` row. Nothing about which wallpapers are
+> left out changes.
+
 **Keyed on the mtime, which is what makes it a note about bytes rather than
 about a wallpaper.** That is the freshness rule the `thumbnails` rows already
 keep, reused rather than reinvented: a curator who re-exports the file gives it

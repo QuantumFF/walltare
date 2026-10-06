@@ -4,16 +4,17 @@
 //! `start_pregen` and `cancel_pregen` stay in the command surface; everything
 //! they set in motion lives here.
 //!
-//! The work list is in [`work_list`](mod@work_list): which wallpapers the pass
-//! owes something, what each is owed, and the order it reaches them in. It
-//! asks [`ThumbnailCache`] for the rows and for which cache files are on disk.
+//! The work list is in [`work_list`](mod@work_list), and all it decides is the
+//! order. Which wallpapers the pass owes something, and what each is owed, is
+//! [`ThumbnailCache::owed`]'s answer, because the freshness rule and the failure
+//! notes are the cache's (#422).
 //!
-//! The warming does not live here. How a wallpaper is generated, which failures
-//! are written down and what that does to the bytes in memory are all
+//! The warming does not live here either. How a wallpaper is generated, which
+//! failures are written down and what that does to the bytes in memory are all
 //! [`ThumbnailCache`]'s (#280), and this module hands it one wallpaper at a
 //! time. Every wallpaper goes through [`crate::serving`]'s worker pool, behind
-//! every `wallpaper://` request the curator is waiting for (#232, ADR 0012's amendment). The thread this module
-//! owns reads the list, waits, and counts.
+//! every `wallpaper://` request the curator is waiting for (#232, ADR 0012's
+//! amendment). The thread this module owns reads the list, waits, and counts.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -472,6 +473,7 @@ mod tests {
                 wallpaper_id,
                 source: path,
                 status: Status::Active,
+                comparisons_count: 0,
                 missing: Some(missing),
             }
         }
@@ -494,6 +496,7 @@ mod tests {
                 wallpaper_id,
                 source: path,
                 status: Status::Active,
+                comparisons_count: 0,
                 missing: Some(Missing::Both),
             }
         }

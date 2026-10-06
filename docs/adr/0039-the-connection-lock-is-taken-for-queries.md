@@ -114,6 +114,17 @@ connection before the second one starts.
 > with a Rust sort rather than an `ORDER BY`, and runs the filesystem half with
 > the connection released, asking `ThumbnailCache::cached` which files are on
 > disk. The split, the release and the connection-free test are unchanged.
+>
+> **Amended by [#422](https://github.com/QuantumFF/walltare/issues/422),
+> 2026-10-05.** Which wallpapers are owed something is the thumbnail cache's
+> answer again, as `ThumbnailCache::owed(db)`. The two halves are both behind
+> it: `Db::read` runs the query, and then the `read_dir` and one `stat` per row
+> run with the connection released. `pregen::work_list` sorts what comes back,
+> and that sort is all it does. The second half is a private function that
+> takes one row and the directory listing and has no `Connection` in its
+> signature. So the types now hold what the connection-free test held, and that
+> test went with the interface it reached past. What is owed is pinned by tests
+> through `owed`, one per state. The order is pinned by a test on the sort.
 
 **Nothing about the list's contents or its order changes.** Every ADR 0012
 amendment still holds exactly as written: the Rejected tail group from ADR 0016,

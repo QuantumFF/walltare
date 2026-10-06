@@ -39,8 +39,8 @@
 //! ADR 0039 generalises this pair into the rule for the whole crate — the
 //! connection is reachable only through a closure that returns owned data, so
 //! the ordering above is what the types allow rather than what this comment
-//! asks for. `thumbnails::candidates` and `thumbnails::work_list` are the same
-//! two halves for the pre-generation pass.
+//! asks for. `ThumbnailCache::owed` is the same two halves for the
+//! pre-generation pass.
 
 use std::path::Path;
 
