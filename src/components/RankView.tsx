@@ -3,11 +3,13 @@ import { PageBar } from "@/components/PageBar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { SegmentedGroup } from "@/components/ui/segmented";
-import { useApp, useStats } from "@/context/AppContext";
-import { useAppEvents } from "@/context/AppEventsContext";
 import {
-  client,
-  isAppError,
+  IMAGE_SIZE,
+  useShowingQueue,
+  type Failure,
+} from "@/components/useShowingQueue";
+import { useApp, useStats } from "@/context/AppContext";
+import {
   wallpaperImageUrl,
   type RankMode,
   type Showing,
@@ -24,14 +26,13 @@ import {
   SkipForward,
   type LucideIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-const PICK_FEEDBACK_MS = 300;
-const IMAGE_SIZE = "medium";
-const VOTE_FAILED_ERROR = "That vote didn't save. Pick again.";
-const NOT_ENOUGH_ERROR =
-  "Ranking needs at least two wallpapers that aren't rejected.";
-const LOAD_FAILED_ERROR = "Failed to load wallpapers.";
+const FAILURE_COPY: Record<Failure, string> = {
+  vote: "That vote didn't save. Pick again.",
+  "not-enough": "Ranking needs at least two wallpapers that aren't rejected.",
+  load: "Failed to load wallpapers.",
+};
 const UNDECIDED_EXPLANATION_ID = "rank-undecided-explanation";
 
 type Side = "left" | "right";
@@ -41,16 +42,6 @@ const MODES: readonly { value: RankMode; label: string }[] = [
   { value: "pairs", label: "Pairs" },
   { value: "fours", label: "Fours" },
 ];
-
-/**
- * The vote a showing is waiting on: the best, the worst, and for four the two
- * named neither. A pair's best is its winner and its worst its loser.
- */
-interface Vote {
-  best: Wallpaper;
-  worst: Wallpaper;
-  others: Wallpaper[];
-}
 
 /**
  * The Undecided count split by the Bar, in real counts. Decided is worked out on
@@ -76,28 +67,6 @@ function nothingLeftToDecide(stats: Stats | null): boolean {
     stats.eligible_count > 0 &&
     stats.undecided_count === stats.close_call_count
   );
-}
-
-/** The ids in a showing, for the exclusion every fetch and vote accepts. */
-function idsOf(showing: Showing | null): number[] {
-  return showing ? showing.map((w) => w.id) : [];
-}
-
-/** Warm the browser cache so the swapped-in showing renders without a gap. */
-function preload(showing: Showing): void {
-  for (const wallpaper of showing) {
-    const img = new Image();
-    img.src = wallpaperImageUrl(wallpaper.id, IMAGE_SIZE);
-  }
-}
-
-/**
- * A fresh showing for `mode`. Fours asks for four and is answered with a pair
- * while fewer than four wallpapers are Eligible, so the showing on screen and
- * not the mode is what decides how Rank draws and which keys it answers.
- */
-function fetchShowing(mode: RankMode, exclude?: number[]): Promise<Showing> {
-  return mode === "fours" ? client.getFour(exclude) : client.getPair(exclude);
 }
 
 /**
@@ -308,21 +277,32 @@ function Tile({
 
 export function RankView() {
   const { view, setView, settings, saveSetting } = useApp();
-  const { publish } = useAppEvents();
   const mode = settings.rank_mode;
   const ratio = settings.screen.width / settings.screen.height;
-  const [current, setCurrent] = useState<Showing | null>(null);
-  const [next, setNext] = useState<Showing | null>(null);
   const stats = useStats();
-  const [loading, setLoading] = useState(true);
-  // The best of a showing of four, once named and until the worst is. Never
-  // sent anywhere on its own: a showing half answered records nothing.
-  const [best, setBest] = useState<number | null>(null);
-  const [voting, setVoting] = useState<{ best: number; worst: number } | null>(
-    null,
+  const { current, pending, failure, vote, skip } = useShowingQueue(
+    mode,
+    view === "rank",
   );
-  const [skipping, setSkipping] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const voting = pending?.kind === "vote" ? pending : null;
+  // The best of a showing of four, once named and until the worst is. Never
+  // sent anywhere on its own: a showing half answered records nothing. Held
+  // with the showing it was named on, so a showing that leaves the screen —
+  // voted on, skipped, or gone with a wallpaper rejected elsewhere — takes
+  // its best with it.
+  const [namedBest, setNamedBest] = useState<{
+    on: Showing;
+    id: number;
+    mode: RankMode;
+  } | null>(null);
+  // A best named and then left for another view or another mode is a showing
+  // half answered too. The view stays mounted, so without this the best would
+  // still be named on return, and on the showing a failed redraw left behind.
+  // Adjusted during render, as the suggestion below is.
+  if (namedBest && (view !== "rank" || namedBest.mode !== mode)) {
+    setNamedBest(null);
+  }
+  const best = namedBest?.on === current ? namedBest.id : null;
   // Keep ranking puts the suggestion away until it is next true, so it resets
   // the moment a vote or a scan leaves something to decide again. Adjusted
   // during render rather than in an effect, so the suggestion never flashes
@@ -343,228 +323,12 @@ export function RankView() {
   const srcs = current?.map((w) => wallpaperImageUrl(w.id, IMAGE_SIZE));
   const showingFetched = srcs?.every((src) => fetched.has(src)) ?? false;
 
-  // Synchronous re-entry guard so rapid double inputs register one Comparison.
-  const busyRef = useRef(false);
-  const currentRef = useRef(current);
-  const nextRef = useRef(next);
-  const bestRef = useRef(best);
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
-  const prefetchTokenRef = useRef(0);
-  // Prefetches outlive the component; without this they set state after unmount.
-  const mountedRef = useRef(true);
-
-  /** Put `showing` on screen, with nothing named on it yet. */
-  const show = useCallback((showing: Showing) => {
-    setCurrent(showing);
-    currentRef.current = showing;
-    setBest(null);
-    bestRef.current = null;
-  }, []);
-
-  const nameBest = useCallback((id: number | null) => {
-    setBest(id);
-    bestRef.current = id;
-  }, []);
-
-  const prefetchNext = useCallback(async () => {
-    const token = ++prefetchTokenRef.current;
-    try {
-      const showing = await fetchShowing(
-        modeRef.current,
-        idsOf(currentRef.current),
-      );
-      if (!mountedRef.current) return;
-      if (token !== prefetchTokenRef.current) return; // stale prefetch
-      setNext(showing);
-      nextRef.current = showing;
-      preload(showing);
-    } catch (error) {
-      console.error("Failed to prefetch the next showing:", error);
-    }
-  }, []);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const showing = await fetchShowing(modeRef.current);
-        if (cancelled) return;
-        show(showing);
-        setLoading(false);
-        void prefetchNext();
-      } catch (err) {
-        console.error("Failed to load a showing:", err);
-        if (cancelled) return;
-        setError(
-          isAppError(err) && err.kind === "not_enough_wallpapers"
-            ? NOT_ENOUGH_ERROR
-            : LOAD_FAILED_ERROR,
-        );
-        setLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [prefetchNext, show]);
-
-  /**
-   * A fresh showing in place of the one on screen, which stays out of the draw,
-   * and a fresh prefetch behind it. What Skip does, and what a change of mode
-   * does, since a showing of the other size is also "not these".
-   */
-  const redraw = useCallback(async () => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setSkipping(true);
-    setError(null);
-    const drawnFor = modeRef.current;
-
-    try {
-      prefetchTokenRef.current += 1;
-      const showing = await fetchShowing(drawnFor, idsOf(currentRef.current));
-      if (!mountedRef.current) return;
-      show(showing);
-      setNext(null);
-      nextRef.current = null;
-      void prefetchNext();
-    } catch (err) {
-      console.error("Failed to fetch a fresh showing:", err);
-      if (!mountedRef.current) return;
-      setError(
-        isAppError(err) && err.kind === "not_enough_wallpapers"
-          ? NOT_ENOUGH_ERROR
-          : LOAD_FAILED_ERROR,
-      );
-    } finally {
-      setSkipping(false);
-      busyRef.current = false;
-    }
-    // The mode moved while this was in flight, so what it drew is the old
-    // mode's.
-    if (mountedRef.current && modeRef.current !== drawnFor) void redraw();
-  }, [prefetchNext, show]);
-
-  const submit = useCallback(
-    async ({ best, worst, others }: Vote) => {
-      if (busyRef.current || !showingFetched) return;
-      busyRef.current = true;
-      setVoting({ best: best.id, worst: worst.id });
-      setError(null);
-
-      // Kept so a failed vote can put the showing the user was looking at
-      // back; the optimistic swap below has already moved on by then.
-      const votedOn = currentRef.current;
-      const votedIds = [best.id, ...others.map((w) => w.id), worst.id];
-      const drawnFor = modeRef.current;
-
-      try {
-        // Visual pick feedback before the swap.
-        await new Promise((resolve) => setTimeout(resolve, PICK_FEEDBACK_MS));
-
-        // Optimistic swap into the prefetched showing, no loading gap.
-        const prefetched = nextRef.current;
-        if (prefetched) {
-          prefetchTokenRef.current += 1; // invalidate in-flight prefetches
-          show(prefetched);
-          setNext(null);
-          nextRef.current = null;
-        }
-
-        // The next showing refills the slot behind whatever is on screen now,
-        // so exclude that too — the backend already excludes the ones voted on.
-        const exclude = idsOf(currentRef.current);
-        let outcome: { next: Showing | null; stats: Stats };
-        if (others.length === 2) {
-          const answer = await client.voteFour(
-            best.id,
-            worst.id,
-            [others[0].id, others[1].id],
-            exclude,
-          );
-          outcome = { next: answer.next_showing, stats: answer.stats };
-        } else {
-          const answer = await client.vote(best.id, worst.id, exclude);
-          // In fours a pair shows only while the library is too small for four,
-          // and what follows it is drawn for fours, which a pair vote's answer
-          // is not: the slot refills below as it does for a missing one.
-          outcome = {
-            next: drawnFor === "pairs" ? answer.next_pair : null,
-            stats: answer.stats,
-          };
-        }
-
-        // Published before the mounted check, and before anything else is done
-        // with the response: the Comparison is recorded and permanent, so both
-        // of these are true whether or not this component is still around to
-        // draw the consequences.
-        //
-        // The ids and nothing else, because that is all Library can be told
-        // for free — a Comparison answers with the whole `Stats` rather than
-        // with the ratings, and asking the backend for the rows would put a
-        // query on the path between one showing and the next.
-        publish({ type: "score-changed", ids: votedIds });
-        // The headline updates through the bus rather than beside it, so there
-        // is one path into it: the Stats `useStats` holds, which every other
-        // fact that moves a count reaches by a re-read (#418).
-        publish({ type: "stats-changed", stats: outcome.stats });
-
-        if (!mountedRef.current) return;
-
-        // With an empty prefetch slot, the next showing goes on screen and the
-        // slot is refilled with a fresh one so the two never hold the same
-        // Comparison twice.
-        if (!outcome.next) {
-          // The vote counted; only the follow-up fetch didn't. Refill whichever
-          // slot is empty rather than leave the user on a showing they just
-          // voted on — and never report this as a failed vote.
-          if (prefetched) {
-            void prefetchNext();
-          } else {
-            const fresh = await fetchShowing(drawnFor, votedIds).catch(
-              () => null,
-            );
-            if (fresh && mountedRef.current) {
-              show(fresh);
-              preload(fresh);
-              void prefetchNext();
-            }
-          }
-          return;
-        }
-        if (prefetched) {
-          setNext(outcome.next);
-          nextRef.current = outcome.next;
-        } else {
-          show(outcome.next);
-          void prefetchNext();
-        }
-        preload(outcome.next);
-      } catch (err) {
-        console.error("Failed to submit vote:", err);
-        if (!mountedRef.current) return;
-        // Undo the optimistic swap: the Comparison was never recorded, so
-        // silently advancing would drop the user's choice without telling
-        // them. The best goes too, so the showing is answered again whole.
-        if (votedOn) show(votedOn);
-        setError(VOTE_FAILED_ERROR);
-      } finally {
-        setVoting(null);
-        busyRef.current = false;
-      }
-      if (mountedRef.current && modeRef.current !== drawnFor) void redraw();
+  const pickOfTwo = useCallback(
+    (slot: number) => {
+      if (!showingFetched || current?.length !== 2) return;
+      vote({ best: current[slot], worst: current[1 - slot], others: [] });
     },
-    [showingFetched, prefetchNext, publish, redraw, show],
+    [current, showingFetched, vote],
   );
 
   /**
@@ -573,43 +337,26 @@ export function RankView() {
    */
   const pickOfFour = useCallback(
     (picked: Wallpaper) => {
-      const showing = currentRef.current;
-      if (busyRef.current || !showingFetched || showing?.length !== 4) return;
-      const named = bestRef.current;
-      if (named === null) {
-        nameBest(picked.id);
-      } else if (named === picked.id) {
-        nameBest(null);
+      if (pending || !showingFetched || current?.length !== 4) return;
+      if (best === null) {
+        setNamedBest({ on: current, id: picked.id, mode });
+      } else if (best === picked.id) {
+        setNamedBest(null);
       } else {
-        const bestOne = showing.find((w) => w.id === named);
+        const bestOne = current.find((w) => w.id === best);
         if (!bestOne) return;
-        void submit({
+        // What is named shows through the vote's own pending from here, and a
+        // vote that fails puts the showing back answered by nobody.
+        setNamedBest(null);
+        vote({
           best: bestOne,
           worst: picked,
-          others: showing.filter((w) => w.id !== named && w.id !== picked.id),
+          others: current.filter((w) => w.id !== best && w.id !== picked.id),
         });
       }
     },
-    [nameBest, showingFetched, submit],
+    [best, current, mode, pending, showingFetched, vote],
   );
-
-  // A best named and then left, by a switch of mode or of view, is a showing
-  // half answered, and it records nothing. The view stays mounted, so without
-  // this the best would still be named on return.
-  useEffect(() => {
-    if (view !== "rank") nameBest(null);
-  }, [view, nameBest]);
-
-  // A change of mode draws a showing of the new size in place of the one on
-  // screen. Not on the first render, which the load above draws for.
-  const drawnModeRef = useRef(mode);
-  useEffect(() => {
-    if (drawnModeRef.current === mode) return;
-    drawnModeRef.current = mode;
-    if (!currentRef.current) return;
-    nameBest(null);
-    void redraw();
-  }, [mode, nameBest, redraw]);
 
   // Keyboard shortcuts mirror the click targets, and which ones are bound
   // follows the showing on screen: ← and → for a pair, 1 to 4 for four, and S
@@ -628,30 +375,27 @@ export function RankView() {
   // element that has already answered the key marks it, and this fallback
   // stands down.
   useEffect(() => {
-    if (view !== "rank") return;
+    if (view !== "rank" || !current) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      const showing = currentRef.current;
-      if (!showing || busyRef.current || event.defaultPrevented) return;
+      if (pending || event.defaultPrevented) return;
 
-      const intent = rankKey(event, showing.length === 4 ? "four" : "pair");
+      const intent = rankKey(event, current.length === 4 ? "four" : "pair");
       if (!intent) return;
       if (intent.kind === "skip") {
-        void redraw();
+        skip();
       } else if (intent.kind === "take-back") {
-        nameBest(null);
-      } else if (showing.length === 4) {
-        pickOfFour(showing[intent.slot]);
+        setNamedBest(null);
+      } else if (current.length === 4) {
+        pickOfFour(current[intent.slot]);
       } else {
-        const winner = showing[intent.slot];
-        const loser = showing[1 - intent.slot];
-        void submit({ best: winner, worst: loser, others: [] });
+        pickOfTwo(intent.slot);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [nameBest, pickOfFour, redraw, submit, view]);
+  }, [current, pending, pickOfFour, pickOfTwo, skip, view]);
 
   const explanation = undecidedExplanation(stats);
 
@@ -737,7 +481,9 @@ export function RankView() {
     </>
   );
 
-  if (loading) {
+  // No showing yet, or none since the one on screen went with nothing behind
+  // it, and the draw for it is out or owed until Rank is shown.
+  if ((!current || !srcs) && !failure) {
     return (
       <>
         {header}
@@ -753,7 +499,7 @@ export function RankView() {
       <>
         {header}
         <div className="flex flex-1 flex-col items-center justify-center gap-4 text-muted-foreground">
-          <p role="alert">{error ?? LOAD_FAILED_ERROR}</p>
+          <p role="alert">{FAILURE_COPY[failure ?? "load"]}</p>
           {/* The chrome's tabs are the way out of this now, so this button is a
               second one rather than the only one. It stays because the sentence
               above it names Review as the fix. */}
@@ -775,13 +521,13 @@ export function RankView() {
           the whole window rather than stopping at a 1920px column with the
           rest of a wide monitor left as margin. */}
       <div className="flex w-full min-h-0 flex-1 flex-col justify-center gap-4 p-4">
-        {error && (
+        {failure && (
           <p
             className="mx-auto text-sm text-destructive"
             role="alert"
             aria-live="polite"
           >
-            {error}
+            {FAILURE_COPY[failure]}
           </p>
         )}
 
@@ -848,7 +594,6 @@ export function RankView() {
           <div className="mx-auto grid w-full max-w-[calc((100dvh_-_14rem)_*_32_/_9_+_2rem)] grid-cols-2 items-start gap-4 md:gap-8">
             {(["left", "right"] as const).map((side, slot) => {
               const winner = current[slot];
-              const loser = current[1 - slot];
               return (
                 <Pane
                   key={side}
@@ -857,9 +602,7 @@ export function RankView() {
                   loaded={fetched.has(srcs[slot])}
                   picked={voting?.best === winner.id}
                   passedOver={voting !== null && voting.best !== winner.id}
-                  onPick={() =>
-                    void submit({ best: winner, worst: loser, others: [] })
-                  }
+                  onPick={() => pickOfTwo(slot)}
                   onSettled={() => markFetched(srcs[slot])}
                 />
               );
@@ -880,8 +623,8 @@ export function RankView() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => void redraw()}
-            disabled={voting !== null || skipping}
+            onClick={skip}
+            disabled={pending !== null}
           >
             <SkipForward />
             {four ? "Skip these four" : "Skip pair"}

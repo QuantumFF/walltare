@@ -133,3 +133,12 @@ export function barFallsAt(
   const at = wallpapers.findIndex((w) => !isUnrated(w) && w.rating_mu >= bar);
   return at === -1 ? null : at;
 }
+
+/**
+ * CONTEXT.md's Eligible: in the pool voting draws from, which is Active or
+ * Kept. A Rejected wallpaper sits out, and the backend refuses a vote naming
+ * one.
+ */
+export function isEligible(wallpaper: Wallpaper): boolean {
+  return wallpaper.status !== "rejected";
+}
