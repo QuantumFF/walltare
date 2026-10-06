@@ -322,7 +322,9 @@ impl ThumbnailCache {
                 (source, Warmed::Generated)
             }
         };
-        measure_and_record(db, id, &source);
+        // The same read and write an arrival makes, and the same rule that a
+        // source that will not give up its dimensions leaves the row as it was.
+        crate::arrival::record_dimensions(db, [(id, source.as_path())]);
         hash_and_record(db, id, &self.dir);
         Ok(warmed)
     }
@@ -703,7 +705,7 @@ fn is_large(width: u32, height: u32) -> bool {
 /// The dimensions come from the header rather than the recorded ones
 /// (ADR 0044) because they are what the decoder is about to believe, and a
 /// stale or missing row must not let a large decode past the gate. It is the
-/// same header read [`measure_and_record`] does.
+/// same header read [`crate::arrival::record_dimensions`] does.
 fn decode_source_at(path: &Path, size: Size) -> Result<DynamicImage, AppError> {
     let image_err = |e: image::ImageError| AppError::Image(e.to_string());
     let (width, height) = ImageReader::open(path)?
@@ -829,32 +831,6 @@ fn write_size(
     })
 }
 
-/// Reads one source's pixel dimensions and writes them to its row (ADR 0044).
-///
-/// The read is a file open outside the connection and the write is one
-/// statement inside it, which is ADR 0039's split — the same shape [`remember`]
-/// keeps for its `stat`.
-///
-/// A source that will not give up its dimensions is left as it was: the row
-/// keeps whatever it held, which is NULL for a wallpaper nothing has measured
-/// and the last known pair for one that has been. Overwriting a known pair with
-/// NULL would turn a file that went missing for a moment into a wallpaper the
-/// app has forgotten the size of, and a badge drawn off no dimensions is a badge
-/// nothing draws.
-///
-/// A write that fails is logged for the reason [`remember`]'s is: the pass has
-/// already done the work the curator is waiting on.
-fn measure_and_record(db: &Db, wallpaper_id: i64, source: &Path) {
-    let Some((width, height)) = crate::scanner::dimensions(source) else {
-        return;
-    };
-    db.write(|conn| {
-        if let Err(e) = db::record_dimensions(conn, wallpaper_id, width, height) {
-            eprintln!("could not record pixel dimensions: {e}");
-        }
-    });
-}
-
 /// Hashes one wallpaper's Small and writes the hash to its row.
 ///
 /// Off the Small rather than the source, because every branch of
@@ -869,8 +845,8 @@ fn measure_and_record(db: &Db, wallpaper_id: i64, source: &Path) {
 /// a wallpaper only reaches the generating branches because its source changed,
 /// and a hash of the old file would describe a picture that is gone. A Small
 /// that cannot be read leaves the row as it was, for
-/// [`measure_and_record`]'s reason, and the read happens with the connection
-/// released (ADR 0039).
+/// [`crate::arrival::record_dimensions`]'s reason, and the read happens with the
+/// connection released (ADR 0039).
 fn hash_and_record(db: &Db, wallpaper_id: i64, cache_dir: &Path) {
     let Some(hash) = perceptual_hash(&cache_path(cache_dir, wallpaper_id, Size::Small)) else {
         return;

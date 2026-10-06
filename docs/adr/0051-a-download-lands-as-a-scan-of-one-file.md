@@ -66,6 +66,29 @@ its card would read "File is gone" (ADR 0032).
 - **Dimensions come from the file's header, not the API** (ADR 0044).
 - **Thumbnails are made on demand** by the `wallpaper://` protocol. No
   pre-generation pass is started or cancelled.
+
+  > **Amended by [#417](https://github.com/QuantumFF/walltare/issues/417),
+  > 2026-10-05.** The landed wallpaper is warmed as it lands: both thumbnails,
+  > and the perceptual hash off its Small, through the same
+  > `ThumbnailCache::warm` the pass uses, on the download queue's own thread
+  > before the file reports Landed. Still no pass is started or cancelled, and
+  > nothing is emitted for it. The reason is the hash, which came after this
+  > ADR: it is taken off the Small (ADR 0044's amendment), only the pass made
+  > one, and the frontend starts the pass on launch and on a scan's ending. So
+  > a downloaded wallpaper went unhashed until the next of those, and could not
+  > be offered as a Near-duplicate of a wallpaper the curator had rejected,
+  > such as the same image uploaded to Wallhaven under another id. It costs
+  > one source decode per download, capped and gated by ADR 0049 like every
+  > other, and the decode is not wasted: a wallpaper with no Comparisons is
+  > what Rank draws next (ADR 0012). Starting a pass after each batch was the
+  > alternative, and it would have put a progress bar for a handful of files
+  > under every download's ending.
+  >
+  > Both a scan and a download now arrive their files through `arrival::arrive`,
+  > so "a scan of one file" is one function rather than two copies, and it has
+  > one error policy: only the insert fails an arrival. A Dimensions write that
+  > the database refuses after the row is in used to report the file Failed; it
+  > is now logged, and the pass measures the row when it next reaches it.
 - **Each landed file publishes `library-scanned` and `stats-changed`**, so the
   views refresh as they do after a scan.
 
