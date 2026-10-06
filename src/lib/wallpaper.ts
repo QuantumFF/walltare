@@ -122,3 +122,12 @@ export function barFallsAt(
   );
   return at === -1 ? null : at;
 }
+
+/**
+ * CONTEXT.md's Eligible: in the pool voting draws from, which is Active or
+ * Kept. A Rejected wallpaper sits out, and the backend refuses a vote naming
+ * one.
+ */
+export function isEligible(wallpaper: Wallpaper): boolean {
+  return wallpaper.status !== "rejected";
+}

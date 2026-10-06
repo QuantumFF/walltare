@@ -195,6 +195,22 @@ top, the same rule a reorder gets.
 > it is. The `Stats` live in a context of their own, so a new count re-renders
 > the pages that print one and no other view (ADR 0043).
 
+> **Amended by [#420](https://github.com/QuantumFF/walltare/issues/420),
+> 2026-10-05.** Rank cares about `status-changed` too. Its showing on screen and
+> the one queued behind it can hold a wallpaper that a reject in Review or
+> Library takes out of the Eligible pool, and the backend refuses a vote naming
+> a Rejected wallpaper, so Rank used to roll back to the same showing and say
+> the vote didn't save until the curator pressed Skip. Now a reject drops the
+> slot holding it and the showing behind moves up, and both halves of this
+> section's rule apply as they do to a page's rows. Moving the slots is the
+> patch and lands at once, shown or hidden; a reject of a wallpaper in neither
+> slot hands back the same state and renders nothing. The draw that refills an
+> emptied slot is the refetch and waits until Rank is next shown, because a
+> draw brings image work with it. A Restore and a keep leave Rank alone: neither
+> takes a wallpaper out of the pool, and Rank does not place one it was not
+> shown. The backend's refusal is still handled, for a reject that crosses a
+> vote already out, and it moves on in the same way without an error.
+
 None of this reaches `CONTEXT.md`. It is UI plumbing, and the glossary stays
 free of implementation.
 

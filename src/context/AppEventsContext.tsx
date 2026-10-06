@@ -48,7 +48,9 @@ import {
 export type AppEvent =
   /**
    * Review and Library both hold rows keyed on Status, so both listen — through
-   * the one module that owns a page's rows and every transition on them.
+   * the one module that owns a page's rows and every transition on them. Rank
+   * listens for a wallpaper leaving the Eligible pool, which drops a showing
+   * holding it (`useShowingQueue`).
    *
    * The whole row, as the command that wrote it answered. A `Pick` of the
    * columns a file move touched came before it, and the complete-or-absent
