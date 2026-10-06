@@ -428,6 +428,59 @@ test("a scan-complete arriving while Library is showing fetches straight away", 
   expect(card(4)).not.toBeNull();
 });
 
+test("a reject in Review moves Rank's headline, and a Restore in Library moves it back", async () => {
+  // The Eligible pool is what the headline counts over, and a reject or a
+  // Restore is the one transition that changes it. Each is one read of the
+  // Stats, wherever it was pressed.
+  let statsReads = 0;
+  let current = stats();
+  mockCommand("get_stats", () => {
+    statsReads++;
+    return current;
+  });
+  mockCommand("restore_wallpaper", (args) =>
+    wrote(args, { status: "active", origin_path: null }),
+  );
+  await openApp();
+  await panesArrive();
+  expect(pageBar("rank").textContent).toContain("6 / 10 Undecided");
+  await click(tab("Library"));
+  await click(tab("Review"));
+  const readsBefore = statsReads;
+
+  current = stats({ eligible_count: 9, undecided_count: 5 });
+  await click(screen.getByRole("button", { name: /reject one\.jpg/i }));
+
+  expect(statsReads).toBe(readsBefore + 1);
+  expect(pageBar("rank").textContent).toContain("5 / 9 Undecided");
+
+  current = stats();
+  await click(tab("Library"));
+  await click(within(card(1)!).getByRole("button", { name: /restore/i }));
+
+  expect(statsReads).toBe(readsBefore + 2);
+  expect(pageBar("rank").textContent).toContain("6 / 10 Undecided");
+});
+
+test("a finished scan reads the Stats once", async () => {
+  let statsReads = 0;
+  mockCommand("get_stats", () => {
+    statsReads++;
+    return stats({ total_wallpapers: 15, eligible_count: 13 });
+  });
+  await openApp();
+  await panesArrive();
+  const readsBefore = statsReads;
+
+  await act(async () => {
+    emitEvent("scan-complete", { added_count: 3, scanned_count: 40 });
+  });
+  await flush();
+
+  expect(statsReads).toBe(readsBefore + 1);
+  expect(pageBar("rank").textContent).toContain("6 / 13 Undecided");
+});
+
 test("a vote patches Rank's headline from stats-changed", async () => {
   jest.useFakeTimers();
   await openApp();

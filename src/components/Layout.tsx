@@ -391,15 +391,14 @@ function Shell({
   //
   // Two things are left here, and they are what the shell owns rather than
   // what a scan says: the pre-generation restart, which is what gets freshly
-  // scanned files warmed first, and the re-read of what the library now holds,
-  // which carries the boot rule's one rerun with it. A scan that failed
-  // finished nothing, so it restarts nothing either.
+  // scanned files warmed first, and the boot rule's one rerun. A scan that
+  // failed finished nothing, so it restarts nothing either.
   useScanOutcome((outcome) => {
     if (outcome.kind === "failed") return;
     startPregen();
-    // The count the Library root section prints, and the boot rule's one
-    // exception — the only navigation left on a finished scan. It decides for
-    // itself whether this scan is the one that filled an empty library.
+    // The boot rule's one exception — the only navigation left on a finished
+    // scan. It decides for itself whether this scan is the one that filled an
+    // empty library, off the Stats the scan's `library-scanned` re-read.
     readLibraryAfterScan();
   });
 

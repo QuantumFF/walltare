@@ -117,9 +117,9 @@ export function MissingFilesSection() {
    *
    * Every row goes out as its own `status-changed`, which is the patch Review
    * and Library already apply to a reject made anywhere else: Review drops the
-   * rows and Library repaints their pills. The Eligible pool shrank, so Rank's
-   * headline is re-read and published as `stats-changed`, and a failed re-read
-   * leaves the old one standing until the next vote.
+   * rows and Library repaints their pills. The Eligible pool shrank, and the
+   * same patches are what Rank's headline is re-read on, once for the batch
+   * (#418).
    *
    * It rejects the rows the check counted, by id, and not whatever is missing
    * by the time of the press: a file that went missing since is not in the
@@ -140,14 +140,6 @@ export function MissingFilesSection() {
         }
         setFound(null);
         setRejected(rows.length);
-        // Its own catch, so a re-read that fails does not report a reject
-        // that landed as one that did not.
-        void client
-          .getStats()
-          .then((stats) => publish({ type: "stats-changed", stats }))
-          .catch((error: unknown) => {
-            console.error("Failed to re-read the stats after a reject:", error);
-          });
       })
       .catch((error: unknown) => {
         console.error("Failed to reject the missing files:", error);

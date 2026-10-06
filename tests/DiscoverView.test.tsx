@@ -1200,15 +1200,10 @@ test("each file that lands refreshes the library and the headline, as a scan wou
   expect(reads).toBe(0);
 
   await fileDone("qrow67", { kind: "landed" });
-  expect(reads).toBe(1);
 
-  expect(heard).toEqual([
-    { type: "library-scanned", added: 1 },
-    {
-      type: "stats-changed",
-      stats: stats({ total_wallpapers: 13, undecided_count: 7 }),
-    },
-  ]);
+  // One fact, and the one read the Stats owe it (#418).
+  expect(heard).toEqual([{ type: "library-scanned", added: 1 }]);
+  expect(reads).toBe(1);
 
   // A file that failed changed nothing, and says nothing to the library.
   heard.length = 0;
