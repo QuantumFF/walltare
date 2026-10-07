@@ -752,8 +752,17 @@ fn refusal_message(database: i64, app: i64) -> String {
 /// curator downgrades the database or reinstalls the newer walltare, and neither
 /// happens in here (issue #199). A log line would be invisible to somebody
 /// launching from a desktop menu.
+///
+/// On Linux the dialog is `zenity`, run as a child process: the dialog plugin is
+/// built for the desktop portal (ADR 0020), and rfd's portal backend draws
+/// message boxes with zenity because the portal has none. Without zenity the
+/// dialog fails, rfd reports it as a dismissal, and the process exits with only
+/// the line written to stderr below, so the Arch package depends on it.
 fn refuse_the_database(app: &AppHandle, database: i64, supported: i64) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+    let message = refusal_message(database, supported);
+    eprintln!("{message}");
 
     // The window is built from the config before `setup` runs, so it already
     // exists. Hiding it leaves the dialog as the whole of the app rather than a
@@ -767,7 +776,7 @@ fn refuse_the_database(app: &AppHandle, database: i64, supported: i64) {
     // on a loop that is waiting on us. The callback runs off the main thread
     // when the curator dismisses it, and the process ends there.
     app.dialog()
-        .message(refusal_message(database, supported))
+        .message(message)
         .kind(MessageDialogKind::Error)
         .title("walltare cannot open this library")
         .show(|_| std::process::exit(1));
