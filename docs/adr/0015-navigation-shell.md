@@ -54,6 +54,12 @@ page over sheet, and a page has no back. So the gear records the current view as
 a `returnTo` and Settings closes to it. While Settings is up no tab is
 underlined and the gear takes the active treatment.
 
+> **Amended by [ADR 0063](0063-the-chrome-is-type-and-the-page-bar-has-no-edge.md),
+> 2026-10-08.** The tabs are bare words now, the current one at full strength,
+> so with Settings up no tab is at full strength rather than none underlined;
+> the gear's active treatment is unchanged. The chrome row and the page bar are
+> both 48px, and the page bar draws no rule under itself.
+
 > **Amended by [ADR 0020](0020-settings-page.md), 2026-08-26.** The navigation
 > call carries an optional field key beside `returnTo`, typed as
 > `keyof Settings`, which focuses that input on arrival. ADR 0018's

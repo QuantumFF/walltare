@@ -174,7 +174,7 @@ function ViewTabs() {
       // (`Chrome`). Tauri reads the attribute off the element the pointer went
       // down on and not off its ancestors, so the tabs themselves stay buttons.
       data-tauri-drag-region
-      className="flex items-baseline gap-5"
+      className="flex items-center gap-5"
     >
       {TABS.map((tab, index) => (
         <button
@@ -189,7 +189,12 @@ function ViewTabs() {
           onClick={(event) => click(event, index)}
           onKeyDown={(event) => handleKeyDown(event, index)}
           className={cn(
-            "rounded-sm text-[17px] font-semibold tracking-tight transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+            // A word's own box is only as tall as its text, which is a 20px
+            // target for the control a curator reaches for most. The padding
+            // gives it a button's 32px, and the matching negative margin keeps
+            // the words the tablist's gap apart, as if the padding were not
+            // there.
+            "-mx-1.5 h-8 rounded-md px-1.5 text-[17px] font-semibold tracking-tight transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
             view === tab.view
               ? // The view names are the type, and the current one is the word
                 // at full strength (ADR 0063). A 2px underline held this spot
