@@ -36,6 +36,7 @@ import { isAppError } from "@/lib/client";
 // The counts in the Library root's line are the counts the shell's report
 // prints, written once so that one fact keeps one phrasing (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
+import { cn } from "@/lib/utils";
 import { ArrowLeft } from "lucide-react";
 import {
   useCallback,
@@ -655,7 +656,17 @@ export function SettingsView() {
         )}
       </PageBar>
 
-      <div className="mx-auto w-full max-w-2xl space-y-8 px-4 py-8">
+      <div
+        // Off a landing the section nav is the first thing under the bar, and
+        // it is a bar of its own: the 32px that spaces the column's first
+        // section away from the page bar left a hole once the page bar stopped
+        // drawing a rule to frame it (ADR 0063). A landing has no nav, so its
+        // first block keeps the full gap.
+        className={cn(
+          "mx-auto w-full max-w-2xl space-y-8 px-4 pb-8",
+          landing ? "pt-8" : "pt-1",
+        )}
+      >
         {/* The slot, above the sections and in one place. The two rows of
             ADR 0015's boot table that land here are a first run and a library
             that would not read; they are different problems, and telling the
