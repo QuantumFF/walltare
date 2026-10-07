@@ -1,0 +1,7 @@
+# Orca reads this when it makes a worktree of this repo.
+worktree:
+  # Every Orca worktree links the main checkout's .dev-data instead of seeding
+  # its own, so a new worktree opens with the thumbnails already made.
+  # See the amendment to docs/adr/0048-a-dev-run-owns-its-checkout.md.
+  sharedDirectories:
+    - .dev-data
