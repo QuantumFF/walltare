@@ -63,7 +63,10 @@ import { mockCommand } from "./ipc-mocks";
  * would be asserting against a wallpaper nothing produces. Pass `path` to
  * override it, which is what a Rejected row does.
  */
-export function wallpaper(id: number, over: Partial<Wallpaper> = {}): Wallpaper {
+export function wallpaper(
+  id: number,
+  over: Partial<Wallpaper> = {},
+): Wallpaper {
   const filename = over.filename ?? `wall-${id}.jpg`;
   return {
     id,
@@ -549,7 +552,9 @@ export async function press(
 }
 
 /**
- * Ctrl and the wheel over a grid, which is the density gesture (#264).
+ * The wheel over `target`, answering with whether the event survived: a surface
+ * that takes the wheel for itself refuses it, so the webview's own scroll or
+ * zoom never sees it.
  *
  * `ctrlKey` is arranged on the event rather than passed to `fireEvent`, because
  * happy-dom's `WheelEvent` takes the init and leaves the modifier flags
@@ -557,24 +562,31 @@ export async function press(
  * it is stated here rather than three times — the same rule `browserLaysOutTheScroller`
  * follows for a box happy-dom does not lay out, and the same condition that
  * earned it a place: the three copies were mechanically identical.
- *
- * It answers with whether the event survived, which is the half of the gesture
- * that is not the density: ctrl and the wheel is the webview's own zoom, and a
- * grid that did not take the event would scale the whole app on top of the
- * change it made.
  */
-export async function ctrlWheel(
+export async function wheel(
   target: Element,
   deltaY: number,
+  { ctrlKey = false }: { ctrlKey?: boolean } = {},
 ): Promise<boolean> {
   const event = createEvent.wheel(target, { deltaY });
-  Object.defineProperty(event, "ctrlKey", { value: true });
+  Object.defineProperty(event, "ctrlKey", { value: ctrlKey });
   let survived = true;
   await act(async () => {
     survived = fireEvent(target, event);
   });
   await flush();
   return survived;
+}
+
+/**
+ * Ctrl and the wheel over a grid, which is the density gesture (#264).
+ *
+ * The survival `wheel` answers with is the half of the gesture that is not the
+ * density: ctrl and the wheel is the webview's own zoom, and a grid that did not
+ * take the event would scale the whole app on top of the change it made.
+ */
+export function ctrlWheel(target: Element, deltaY: number): Promise<boolean> {
+  return wheel(target, deltaY, { ctrlKey: true });
 }
 
 /**
