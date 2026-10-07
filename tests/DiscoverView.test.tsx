@@ -1598,18 +1598,9 @@ test("a Pick a search marked stays gone after a search that doesn't show it", as
 const lightbox = () => screen.queryByRole("dialog");
 const lightboxRow = () =>
   document.querySelector('[data-slot="lightbox-row"]') as HTMLElement;
-/** The identity line's name and facts, less the link to Wallhaven after them. */
-const identity = () => {
-  const line = document.querySelector('[data-slot="lightbox-identity"]');
-  if (!line) return null;
-  return [...line.childNodes]
-    .filter(
-      (node) =>
-        !(node instanceof Element && node.matches('[data-slot="wallhaven-link"]')),
-    )
-    .map((node) => node.textContent)
-    .join("");
-};
+const identity = () =>
+  document.querySelector('[data-slot="lightbox-identity"]')?.textContent ??
+  null;
 const readOut = () =>
   document.querySelector('[data-slot="lightbox-readout"]')?.textContent ?? null;
 const heroPicture = () =>

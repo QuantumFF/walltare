@@ -789,12 +789,12 @@ export function DiscoverView() {
  *
  * The widest thing the floor has to hold, which is an unmarked Result whose
  * last download failed: a `wallhaven-<id>` still worth printing (120), its
- * facts beside it (130), the position (40) and the two gaps of 16 around it,
- * then **Failed**, `Pick P` and `Download D` (230 with the gaps between them).
- * That is 552, so 560. A portrait phone wallpaper at the default window is
+ * facts beside it (130), the Wallhaven link after them (24 with its gap), the
+ * position (40) and the two gaps of 16 around it, then **Failed**, `Pick P`
+ * and `Download D` (230 with the gaps between them). That is 576, so 580. A portrait phone wallpaper at the default window is
  * narrower than that, and is the one that drops its read-out.
  */
-const RESULT_ROW_FLOOR = 560;
+const RESULT_ROW_FLOOR = 580;
 
 /**
  * What the lightbox's picture says when the full file never arrives: a network
@@ -869,6 +869,9 @@ function resultRow(
  * uploader and the similar wallpapers this app does not show. On the
  * lightbox's identity line, after the facts, as a link the curator follows
  * rather than an action on the row's buttons.
+ *
+ * An icon and not the words, because the identity line never drops and the
+ * row's floor has to hold it (`RESULT_ROW_FLOOR`); the name is the label.
  */
 function WallhavenLink({ id }: { id: string }) {
   const { show } = useToaster();
@@ -876,15 +879,15 @@ function WallhavenLink({ id }: { id: string }) {
     <button
       type="button"
       data-slot="wallhaven-link"
-      title={`wallhaven.cc/w/${id}`}
+      aria-label="Open on Wallhaven"
+      title={`Open wallhaven.cc/w/${id}`}
       onClick={() => {
         void client.openOnWallhaven(id).catch((error: unknown) => {
           show({ kind: "wallhaven-unopened", error });
         });
       }}
-      className="flex shrink-0 cursor-pointer items-center gap-1 text-sm text-white/70 outline-none hover:text-white hover:underline focus-visible:text-white focus-visible:underline"
+      className="shrink-0 cursor-pointer rounded-sm p-0.5 text-white/70 outline-none hover:text-white focus-visible:text-white focus-visible:ring-2 focus-visible:ring-white/50"
     >
-      Open on Wallhaven
       <ExternalLink className="size-3.5" aria-hidden />
     </button>
   );
