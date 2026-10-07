@@ -430,6 +430,10 @@ export function DiscoverView() {
     null,
   );
   useKeyboardSurface("discover", grid);
+  // The grid's density, held here because every new search swaps the grid for
+  // the spinner and back, which would otherwise put the zoom back at its start
+  // on each filter change.
+  const zoom = useState(0);
   // Enter on a card, or a click on one, opens it full size (#345). The
   // lightbox walks this grid's own cursor (ADR 0022).
   const lightbox = useLightbox(grid);
@@ -697,6 +701,7 @@ export function DiscoverView() {
                 followPointer
                 card={RESULT_CARD}
                 density="discover"
+                zoom={zoom}
                 className="gap-y-8 px-6 pb-8"
                 renderCard={renderResult}
               />
