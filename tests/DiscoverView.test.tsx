@@ -1662,6 +1662,22 @@ const cardFullFiles = () =>
       .filter((src) => src.startsWith("https://w.wallhaven.cc/")),
   );
 
+test("the zoom survives a filter change, which swaps the grid for the spinner and back", async () => {
+  answer = () => page(["qrow67", "jedzym"]);
+  await renderInApp(<DiscoverView />);
+  await focusCard(cards()[0]);
+  const columns = () =>
+    Number(screen.getByRole("grid").className.match(/grid-cols-(\d+)/)?.[1]);
+  const before = columns();
+  await press("-");
+  const zoomed = columns();
+  expect(zoomed).not.toBe(before);
+
+  await click(orderPill());
+  expect(searches[1].order).toBe("asc");
+  expect(columns()).toBe(zoomed);
+});
+
 test("a card draws the full file over its lg at three columns and fewer, and only the lg at four and more", async () => {
   answer = () => page(["qrow67", "jedzym"]);
   await renderInApp(<DiscoverView />);
