@@ -56,7 +56,10 @@ export function PageBarTitle({ className, ...props }: ComponentProps<"span">) {
     <span
       data-slot="page-bar-title"
       className={cn(
-        "rounded-full bg-muted px-3.5 py-1 font-semibold",
+        // The segmented track's size, since that is what it sits beside on
+        // both pages that have one: a `size="sm"` segment's `h-7` and
+        // `0.8rem` inside the track's `p-0.5`.
+        "inline-flex h-8 items-center rounded-full bg-muted px-3 text-[0.8rem] font-semibold",
         className,
       )}
       {...props}
