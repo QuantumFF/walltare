@@ -801,8 +801,12 @@ export function ToastSurface({
               )}
             </ToastTitle>
 
+            {/* Selectable against the body's `select-none`: the detail is
+                the backend's sentence, often a path worth copying out. */}
             {transient.description && (
-              <ToastDescription>{transient.description}</ToastDescription>
+              <ToastDescription className="select-text">
+                {transient.description}
+              </ToastDescription>
             )}
 
             {transient.undo && (
