@@ -166,7 +166,9 @@ had no such note to write.
 
 > **Amended 2026-10-07.** The opener plugin is back, with a caller: the
 > lightbox's path read-out shows the file in the file manager through
-> `reveal_wallpaper`. Only its Rust side is used, so `capabilities/default.json`
+> `reveal_wallpaper`, and Discover's lightbox opens a Result's page on Wallhaven
+> through `open_on_wallhaven`. Both take an id, not a path or a URL. Only its
+> Rust side is used, so `capabilities/default.json`
 > still grants the frontend nothing of it, and `@tauri-apps/plugin-opener` stays
 > out of `package.json`. The note beside it in `lib.rs` says what calls it.
 

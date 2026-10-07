@@ -757,7 +757,7 @@ export interface BackendEvents {
  *
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
  * `BackendEvents` does above for the seven event names: the one place in the
- * frontend where these 30 strings are written down. `client`'s methods below
+ * frontend where these 31 strings are written down. `client`'s methods below
  * reach them through `call`, the only caller in the app; the test suite's
  * `mockCommand` is the other reader, which is why the names are exported rather
  * than inlined (ADR 0031).
@@ -796,7 +796,8 @@ export type Command =
   | "set_setting"
   | "wallhaven_search"
   | "set_wallhaven_key"
-  | "wallhaven_download";
+  | "wallhaven_download"
+  | "open_on_wallhaven";
 
 /**
  * What each command takes and what it answers with.
@@ -877,6 +878,7 @@ export interface BackendCommands {
   wallhaven_search: { args: { params: SearchParams }; answer: SearchPage };
   set_wallhaven_key: { args: { key: string }; answer: KeySaved };
   wallhaven_download: { args: { ids: string[] }; answer: null };
+  open_on_wallhaven: { args: { id: string }; answer: null };
 }
 
 /**
@@ -1431,6 +1433,13 @@ export const client = {
    */
   downloadWallhaven: (ids: string[]) =>
     callSilent("wallhaven_download", { ids }),
+
+  /**
+   * Opens a Result's page on Wallhaven in the default browser. Like a
+   * download, by id: the backend builds the URL for an id it served, and
+   * rejects any other with `bad_request`.
+   */
+  openOnWallhaven: (id: string) => callSilent("open_on_wallhaven", { id }),
 
   /**
    * Hands `handler` every emission of one backend event, resolving with the

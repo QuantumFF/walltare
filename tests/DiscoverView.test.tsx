@@ -2040,6 +2040,37 @@ test("the pages behind the lightbox are inert, and a toast shows over it", async
   expect(container.hasAttribute("inert")).toBe(false);
 });
 
+test("the lightbox's link opens the Result's page on Wallhaven, by id", async () => {
+  const opened: unknown[] = [];
+  mockCommand("open_on_wallhaven", (args) => {
+    opened.push(args);
+    return null;
+  });
+  await renderInApp(<DiscoverView />);
+  await openOn(cards()[0]);
+
+  await click(
+    within(lightboxRow()).getByRole("button", { name: "Open on Wallhaven" }),
+  );
+
+  expect(opened).toEqual([{ id: "qrow67" }]);
+  expect(toast()).toBeNull();
+});
+
+test("a Wallhaven page that will not open says so on a toast", async () => {
+  mockCommand("open_on_wallhaven", () =>
+    failure("io", "no browser answered"),
+  );
+  await renderInApp(<DiscoverView />);
+  await openOn(cards()[0]);
+
+  await click(
+    within(lightboxRow()).getByRole("button", { name: "Open on Wallhaven" }),
+  );
+
+  expect(toast()?.title).toBe("Couldn't open Wallhaven");
+});
+
 test("a JPEG Result's full file is the .jpg on w.wallhaven.cc", async () => {
   answer = () => ({
     ...page([]),

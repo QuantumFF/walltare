@@ -40,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useToaster } from "@/components/ToastSurface";
 import { useBasket } from "@/components/useBasket";
 import { useCollapsingHeader } from "@/components/useCollapsingHeader";
 import {
@@ -60,6 +61,7 @@ import {
   type ResultDownload,
 } from "@/lib/basket";
 import {
+  client,
   type Categories,
   type Mark,
   type MarkedResult,
@@ -77,6 +79,7 @@ import {
   Check,
   ChevronDown,
   Download,
+  ExternalLink,
   Heart,
   ImageOff,
   Loader2,
@@ -791,12 +794,12 @@ export function DiscoverView() {
  *
  * The widest thing the floor has to hold, which is an unmarked Result whose
  * last download failed: a `wallhaven-<id>` still worth printing (120), its
- * facts beside it (130), the position (40) and the two gaps of 16 around it,
- * then **Failed**, `Pick P` and `Download D` (230 with the gaps between them).
- * That is 552, so 560. A portrait phone wallpaper at the default window is
+ * facts beside it (130), the Wallhaven link after them (24 with its gap), the
+ * position (40) and the two gaps of 16 around it, then **Failed**, `Pick P`
+ * and `Download D` (230 with the gaps between them). That is 576, so 580. A portrait phone wallpaper at the default window is
  * narrower than that, and is the one that drops its read-out.
  */
-const RESULT_ROW_FLOOR = 560;
+const RESULT_ROW_FLOOR = 580;
 
 /**
  * What the lightbox's picture says when the full file never arrives: a network
@@ -821,7 +824,8 @@ const PREVIEW_FAILED = (
  *
  * The identity line is `wallhaven-<id> · 3840×2160 · 10 MB`, the name the
  * file lands under and the two facts that decide whether it is worth taking,
- * the size in the same decimal units the card's caption and the tray use.
+ * the size in the same decimal units the card's caption and the tray use,
+ * then the link to the Result's page on Wallhaven.
  * The read-out is `anime · 231 favourites · 19.4k views`, which is what drops
  * on a picture narrower than the row's floor, since nothing in it is needed in
  * order to act (ADR 0022).
@@ -846,6 +850,7 @@ function resultRow(
         <span className="shrink-0 text-sm text-white/70 tabular-nums">
           {`· ${result.dimension_x}×${result.dimension_y} · ${bytes(result.file_size)}`}
         </span>
+        <WallhavenLink id={result.id} />
       </div>
     ),
     readout: (
@@ -862,6 +867,35 @@ function resultRow(
       <ResultOffer result={result} controls={controls} surface="lightbox" />
     ),
   };
+}
+
+/**
+ * The Result's page on Wallhaven, opened in the browser: the tags, the
+ * uploader and the similar wallpapers this app does not show. On the
+ * lightbox's identity line, after the facts, as a link the curator follows
+ * rather than an action on the row's buttons.
+ *
+ * An icon and not the words, because the identity line never drops and the
+ * row's floor has to hold it (`RESULT_ROW_FLOOR`); the name is the label.
+ */
+function WallhavenLink({ id }: { id: string }) {
+  const { show } = useToaster();
+  return (
+    <button
+      type="button"
+      data-slot="wallhaven-link"
+      aria-label="Open on Wallhaven"
+      title={`Open wallhaven.cc/w/${id}`}
+      onClick={() => {
+        void client.openOnWallhaven(id).catch((error: unknown) => {
+          show({ kind: "wallhaven-unopened", error });
+        });
+      }}
+      className="shrink-0 cursor-pointer rounded-sm p-0.5 text-white/70 outline-none hover:text-white focus-visible:text-white focus-visible:ring-2 focus-visible:ring-white/50"
+    >
+      <ExternalLink className="size-3.5" aria-hidden />
+    </button>
+  );
 }
 
 /**
