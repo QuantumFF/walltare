@@ -162,7 +162,9 @@ export type ToastRequest =
    * sentence the Settings field prints for it (ADR 0051). Discover raises it,
    * and a failure after the click is the batch's ending rather than this.
    */
-  | { kind: "download-refused"; error: unknown };
+  | { kind: "download-refused"; error: unknown }
+  /** A Result's page that would not open in the browser. */
+  | { kind: "wallhaven-unopened"; error: unknown };
 
 /** ADR 0019's sentence for the cohort that has no Origin to go back to. */
 export const NO_ORIGIN_REASON =
@@ -629,6 +631,10 @@ export function ToastSurface({
           // Names no file, so it is a whole-string title like a scan's
           // ending rather than the filename shape above.
           raise("Couldn't download", backendMessage(request.error), true);
+          return;
+
+        case "wallhaven-unopened":
+          raise("Couldn't open Wallhaven", backendMessage(request.error), true);
           return;
       }
     },

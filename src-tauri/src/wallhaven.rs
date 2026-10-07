@@ -469,6 +469,17 @@ impl Wallhaven {
             .get(id)
             .cloned()
     }
+
+    /// The Result's page on Wallhaven, for an id this process served, and
+    /// `BadRequest` for any other: Discover's link opens only what a search put
+    /// on screen, the rule a download keeps.
+    pub fn page_url(&self, id: &str) -> Result<String, AppError> {
+        self.served(id)
+            .map(|_| format!("https://wallhaven.cc/w/{id}"))
+            .ok_or_else(|| {
+                AppError::BadRequest(format!("{id} is not a Result a search has served"))
+            })
+    }
 }
 
 /// The search Discover asks for: one page, each Result marked, and the filters
@@ -770,6 +781,22 @@ mod tests {
         );
         assert!(wallhaven.served("jedzym").is_some());
         assert_eq!(wallhaven.served("never1"), None);
+    }
+
+    #[test]
+    fn a_page_url_is_only_for_a_result_a_search_served() {
+        let stub = testing::stub(vec![page_of(&["qrow67"], 1, 1)]);
+        let wallhaven = client(&stub);
+        wallhaven.search(&plain(), None).unwrap();
+
+        assert_eq!(
+            wallhaven.page_url("qrow67").unwrap(),
+            "https://wallhaven.cc/w/qrow67"
+        );
+        assert!(matches!(
+            wallhaven.page_url("never1"),
+            Err(AppError::BadRequest(_))
+        ));
     }
 
     #[test]

@@ -40,6 +40,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useToaster } from "@/components/ToastSurface";
 import { useBasket } from "@/components/useBasket";
 import { useCollapsingHeader } from "@/components/useCollapsingHeader";
 import {
@@ -60,6 +61,7 @@ import {
   type ResultDownload,
 } from "@/lib/basket";
 import {
+  client,
   type Categories,
   type Mark,
   type MarkedResult,
@@ -77,6 +79,7 @@ import {
   Check,
   ChevronDown,
   Download,
+  ExternalLink,
   Heart,
   ImageOff,
   Loader2,
@@ -816,7 +819,8 @@ const PREVIEW_FAILED = (
  *
  * The identity line is `wallhaven-<id> · 3840×2160 · 10 MB`, the name the
  * file lands under and the two facts that decide whether it is worth taking,
- * the size in the same decimal units the card's caption and the tray use.
+ * the size in the same decimal units the card's caption and the tray use,
+ * then the link to the Result's page on Wallhaven.
  * The read-out is `anime · 231 favourites · 19.4k views`, which is what drops
  * on a picture narrower than the row's floor, since nothing in it is needed in
  * order to act (ADR 0022).
@@ -841,6 +845,7 @@ function resultRow(
         <span className="shrink-0 text-sm text-white/70 tabular-nums">
           {`· ${result.dimension_x}×${result.dimension_y} · ${bytes(result.file_size)}`}
         </span>
+        <WallhavenLink id={result.id} />
       </div>
     ),
     readout: (
@@ -857,6 +862,32 @@ function resultRow(
       <ResultOffer result={result} controls={controls} surface="lightbox" />
     ),
   };
+}
+
+/**
+ * The Result's page on Wallhaven, opened in the browser: the tags, the
+ * uploader and the similar wallpapers this app does not show. On the
+ * lightbox's identity line, after the facts, as a link the curator follows
+ * rather than an action on the row's buttons.
+ */
+function WallhavenLink({ id }: { id: string }) {
+  const { show } = useToaster();
+  return (
+    <button
+      type="button"
+      data-slot="wallhaven-link"
+      title={`wallhaven.cc/w/${id}`}
+      onClick={() => {
+        void client.openOnWallhaven(id).catch((error: unknown) => {
+          show({ kind: "wallhaven-unopened", error });
+        });
+      }}
+      className="flex shrink-0 cursor-pointer items-center gap-1 text-sm text-white/70 outline-none hover:text-white hover:underline focus-visible:text-white focus-visible:underline"
+    >
+      Open on Wallhaven
+      <ExternalLink className="size-3.5" aria-hidden />
+    </button>
+  );
 }
 
 /**

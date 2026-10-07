@@ -454,6 +454,23 @@ async fn wallhaven_search(
     .await
 }
 
+/// Opens a Result's page on Wallhaven in the default browser: the Discover
+/// lightbox's link.
+///
+/// By id, and only an id a search served ([`wallhaven::Wallhaven::page_url`]),
+/// so the page never hands the opener a URL of its own. Off the main thread,
+/// since starting the browser is the desktop's to take its time over.
+#[tauri::command]
+async fn open_on_wallhaven(id: String, app: AppHandle) -> Result<(), error::AppError> {
+    off_main_thread(app, move |app| {
+        let url = app.state::<wallhaven::Wallhaven>().page_url(&id)?;
+        app.opener()
+            .open_url(url, None::<&str>)
+            .map_err(|e| error::AppError::Io(e.to_string()))
+    })
+    .await
+}
+
 /// Saves the Wallhaven API key after one keyed search, or removes it when `key`
 /// is empty, and answers every setting and whether the check reached Wallhaven.
 ///
@@ -826,11 +843,12 @@ pub fn run() {
         // command is called from the frontend, so `capabilities/default.json`
         // grants exactly that one.
         .plugin(tauri_plugin_dialog::init())
-        // The lightbox's path read-out, through `reveal_wallpaper`. Only its
-        // Rust side is called, so `capabilities/default.json` grants the
-        // frontend nothing of it: the page names a wallpaper by id and never
-        // hands the plugin a path of its own (ADR 0036 removed the scaffold's
-        // copy for having no caller).
+        // The lightbox's path read-out, through `reveal_wallpaper`, and
+        // Discover's link to a Result's page, through `open_on_wallhaven`.
+        // Only its Rust side is called, so `capabilities/default.json` grants
+        // the frontend nothing of it: the page names a wallpaper or a Result
+        // by id and never hands the plugin a path or a URL of its own (ADR
+        // 0036 removed the scaffold's copy for having no caller).
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let dir = data_dir(app.handle())?;
@@ -911,7 +929,8 @@ pub fn run() {
             set_setting,
             wallhaven_search,
             set_wallhaven_key,
-            wallhaven_download
+            wallhaven_download,
+            open_on_wallhaven
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

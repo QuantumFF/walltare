@@ -1598,9 +1598,18 @@ test("a Pick a search marked stays gone after a search that doesn't show it", as
 const lightbox = () => screen.queryByRole("dialog");
 const lightboxRow = () =>
   document.querySelector('[data-slot="lightbox-row"]') as HTMLElement;
-const identity = () =>
-  document.querySelector('[data-slot="lightbox-identity"]')?.textContent ??
-  null;
+/** The identity line's name and facts, less the link to Wallhaven after them. */
+const identity = () => {
+  const line = document.querySelector('[data-slot="lightbox-identity"]');
+  if (!line) return null;
+  return [...line.childNodes]
+    .filter(
+      (node) =>
+        !(node instanceof Element && node.matches('[data-slot="wallhaven-link"]')),
+    )
+    .map((node) => node.textContent)
+    .join("");
+};
 const readOut = () =>
   document.querySelector('[data-slot="lightbox-readout"]')?.textContent ?? null;
 const heroPicture = () =>
@@ -2022,6 +2031,37 @@ test("the pages behind the lightbox are inert, and a toast shows over it", async
   await click(within(lightbox()!).getByRole("button", { name: "Close" }));
   expect(lightbox()).toBeNull();
   expect(container.hasAttribute("inert")).toBe(false);
+});
+
+test("the lightbox's link opens the Result's page on Wallhaven, by id", async () => {
+  const opened: unknown[] = [];
+  mockCommand("open_on_wallhaven", (args) => {
+    opened.push(args);
+    return null;
+  });
+  await renderInApp(<DiscoverView />);
+  await openOn(cards()[0]);
+
+  await click(
+    within(lightboxRow()).getByRole("button", { name: "Open on Wallhaven" }),
+  );
+
+  expect(opened).toEqual([{ id: "qrow67" }]);
+  expect(toast()).toBeNull();
+});
+
+test("a Wallhaven page that will not open says so on a toast", async () => {
+  mockCommand("open_on_wallhaven", () =>
+    failure("io", "no browser answered"),
+  );
+  await renderInApp(<DiscoverView />);
+  await openOn(cards()[0]);
+
+  await click(
+    within(lightboxRow()).getByRole("button", { name: "Open on Wallhaven" }),
+  );
+
+  expect(toast()?.title).toBe("Couldn't open Wallhaven");
 });
 
 test("a JPEG Result's full file is the .jpg on w.wallhaven.cc", async () => {
