@@ -126,3 +126,9 @@ scrolling under it.
 **Rank's "nothing left to decide" row keeps its rule.** It is a row in the
 page under the bar, and the edge there separates content from content rather
 than header from page.
+
+> **Amended 2026-10-08.** Settings' section nav moved out of the header into
+> a column down the left of the page (ADR 0020), where the line beside its
+> list is a rail in the page rather than an edge under the header. Only when
+> the window is too narrow for the column does it sit under the page bar as
+> before, edgeless on its translucent ground.

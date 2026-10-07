@@ -93,7 +93,7 @@ export function Section({
 /**
  * The groups the sections are gathered under, in page order. Fourteen sections
  * in one flat column read as a wall; five named groups give the page something
- * to scan and the jump row something to point at. The section order is
+ * to scan and the group nav something to point at. The section order is
  * ADR 0020's first-run-first, maintenance-last order, unchanged (ADR 0020, as
  * amended for #303). Wallhaven sits before Maintenance, which stays last.
  */
@@ -110,10 +110,22 @@ type GroupId = (typeof GROUPS)[number]["id"];
 type GroupRefs = Partial<Record<GroupId, HTMLElement | null>>;
 
 /**
- * One group: a heading, and its sections in a bordered card divided by rules.
+ * One group: a heading, and its sections spaced out under it.
  *
- * `scroll-mt-14` clears the sticky jump row, which is what the group lands
- * under when the row scrolls to it.
+ * No card. A bordered box per group read as a column of panels, and beside the
+ * side nav the boxes sat visibly off centre in the window; open sections under
+ * a heading align to the nav's list instead. A hairline between groups is
+ * the one line, a divider over the next group rather than an underline on
+ * its heading, which read as one more field's edge.
+ *
+ * The divider is on a group that follows a group, not on every group but the
+ * first: on a landing the notice comes before Folders, and a line between a
+ * notice and its one group divides nothing.
+ *
+ * `scroll-mt-14` clears the group nav where it is a row stuck over the column,
+ * which is what the group lands under when the nav scrolls to it. Beside the
+ * column nothing is over it, so `md:scroll-mt-8` keeps the column's top gap,
+ * and the heading lands level with the top of the nav.
  */
 function SettingsGroup({
   id,
@@ -133,50 +145,124 @@ function SettingsGroup({
       }}
       aria-labelledby={headingId}
       data-slot="settings-group"
-      className="scroll-mt-14 space-y-3"
+      className="scroll-mt-14 space-y-6 md:scroll-mt-8 [[data-slot=settings-group]+&]:border-t [[data-slot=settings-group]+&]:pt-10"
     >
       <h2
         id={headingId}
-        className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+        className="text-lg font-semibold tracking-tight text-foreground"
       >
         {title}
       </h2>
-      <div className="divide-y rounded-lg border bg-card [&>*]:p-4">
-        {children}
-      </div>
+      <div className="space-y-8">{children}</div>
     </section>
   );
 }
 
 /**
- * A row of buttons to each group, stuck to the top of the view's scroll
- * container so it is still there after the first jump.
+ * The groups as a list down the left of the page, with the one the curator is
+ * reading marked, so the page has a table of contents rather than a row of
+ * buttons over it. It sticks, so it is still there after the first jump.
  *
- * No rule under it, for the reason the page bar has none (ADR 0063): it was the
- * last drawn edge in the header. Its translucent ground is what parts it from
- * the sections scrolling under it.
+ * The mark is the chrome's tabs' (ADR 0063): the current group in the
+ * foreground colour and the rest faded, no fill. The rail beside the list is
+ * the one line, and it belongs to the list rather than the header.
+ *
+ * Too narrow for a column, it falls back to a row stuck under the page bar,
+ * where its translucent ground parts it from the sections scrolling under it.
  */
 function GroupNav({ groups }: { groups: RefObject<GroupRefs> }) {
+  const nav = useRef<HTMLElement>(null);
+  const [current, setCurrent] = useState<GroupId>(GROUPS[0].id);
+  // Set while a click's smooth scroll is under way, so the groups it passes
+  // do not take the mark off the one the curator asked for. It clears once
+  // the scroll has been still for a moment, and the next scroll is theirs.
+  const jumping = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The current group is the last one whose top has passed a line a third of
+  // the way down the scroll container: the one whose heading the curator has
+  // read past. Scrolled to the bottom, it is the last group, which is too
+  // short to reach the line from there. Not read on mount: the page opens at
+  // its top, on Folders, and a jump to a field scrolls.
+  useEffect(() => {
+    // The shell's view container, which is what scrolls this page: Settings
+    // does not own its scroller the way the tab views do (`useKeptScroll`).
+    const scroller = nav.current?.closest<HTMLElement>('[data-slot="view"]');
+    if (!scroller) return;
+
+    const follow = () => {
+      if (jumping.current !== null) {
+        clearTimeout(jumping.current);
+        jumping.current = setTimeout(() => (jumping.current = null), 150);
+        return;
+      }
+      const { scrollTop, clientHeight, scrollHeight } = scroller;
+      if (scrollTop > 0 && scrollTop + clientHeight >= scrollHeight - 1) {
+        setCurrent(GROUPS[GROUPS.length - 1].id);
+        return;
+      }
+      const box = scroller.getBoundingClientRect();
+      const line = box.top + box.height / 3;
+      let passed: GroupId = GROUPS[0].id;
+      for (const group of GROUPS) {
+        const top = groups.current[group.id]?.getBoundingClientRect().top;
+        if (top !== undefined && top <= line) passed = group.id;
+      }
+      setCurrent(passed);
+    };
+
+    scroller.addEventListener("scroll", follow, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", follow);
+      if (jumping.current !== null) clearTimeout(jumping.current);
+    };
+  }, [groups]);
+
   return (
     <nav
+      ref={nav}
       aria-label="Settings groups"
-      className="sticky top-0 z-10 -mx-4 flex flex-wrap gap-1 bg-background/95 px-4 py-2 backdrop-blur"
+      className={cn(
+        "sticky top-0 z-10 -mx-4 mb-6 bg-background/95 px-4 py-2 backdrop-blur",
+        "md:top-8 md:mx-0 md:mb-0 md:self-start md:bg-transparent md:p-0 md:backdrop-blur-none",
+      )}
     >
-      {GROUPS.map((group) => (
-        <Button
-          key={group.id}
-          variant="ghost"
-          size="sm"
-          onClick={() =>
-            groups.current[group.id]?.scrollIntoView({
-              block: "start",
-              behavior: "smooth",
-            })
-          }
-        >
-          {group.title}
-        </Button>
-      ))}
+      {/* One line however narrow, scrolling sideways rather than wrapping, so
+          the row stays the height `scroll-mt-14` clears. */}
+      <ul className="flex gap-1 overflow-x-auto md:flex-col md:gap-0 md:overflow-visible md:border-l">
+        {GROUPS.map((group) => {
+          const active = group.id === current;
+          return (
+            <li key={group.id}>
+              <button
+                type="button"
+                aria-current={active ? "location" : undefined}
+                className={cn(
+                  "w-full rounded-md px-3 py-1.5 text-left text-sm whitespace-nowrap transition-colors",
+                  "md:-ml-px md:rounded-none md:border-l md:border-transparent md:py-1",
+                  "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none",
+                  active
+                    ? "font-medium text-foreground md:border-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+                onClick={() => {
+                  setCurrent(group.id);
+                  if (jumping.current !== null) clearTimeout(jumping.current);
+                  jumping.current = setTimeout(
+                    () => (jumping.current = null),
+                    150,
+                  );
+                  groups.current[group.id]?.scrollIntoView({
+                    block: "start",
+                    behavior: "smooth",
+                  });
+                }}
+              >
+                {group.title}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </nav>
   );
 }
@@ -662,78 +748,82 @@ export function SettingsView() {
       </PageBar>
 
       <div
-        // Off a landing the section nav is the first thing under the bar, and
-        // it is a bar of its own: the 32px that spaces the column's first
-        // section away from the page bar left a hole once the page bar stopped
-        // drawing a rule to frame it (ADR 0063). A landing has no nav, so its
-        // first block keeps the full gap.
+        // Off a landing the group nav runs down the left of the column, and
+        // both start 32px under the page bar. Too narrow for that, the nav is
+        // a row stuck under the page bar and a bar of its own, so the column
+        // starts right under it: a 32px gap there would leave a hole over the
+        // row (ADR 0063). A landing has no nav: one centred column, full gap.
         className={cn(
-          "mx-auto w-full max-w-2xl space-y-8 px-4 pb-8",
-          landing ? "pt-8" : "pt-1",
+          "mx-auto w-full px-4 pb-8",
+          landing
+            ? "max-w-2xl pt-8"
+            : "max-w-4xl pt-1 md:grid md:grid-cols-[9rem_minmax(0,1fr)] md:gap-10 md:pt-8",
         )}
       >
-        {/* The slot, above the sections and in one place. The two rows of
-            ADR 0015's boot table that land here are a first run and a library
-            that would not read; they are different problems, and telling the
-            second one it has never scanned is the bug this shape exists to
-            prevent. Otherwise the slot is absent (ADR 0020). */}
-        {bootNotice?.kind === "first_run" && <FirstRunBlock />}
-        {bootNotice?.kind === "unreadable_library" && (
-          <UnreadableLibraryBlock message={bootNotice.message} />
-        )}
+        {!landing && <GroupNav groups={groups} />}
+        <div className="w-full max-w-2xl min-w-0 space-y-10">
+          {/* The slot, above the sections and in one place. The two rows of
+              ADR 0015's boot table that land here are a first run and a library
+              that would not read; they are different problems, and telling the
+              second one it has never scanned is the bug this shape exists to
+              prevent. Otherwise the slot is absent (ADR 0020). */}
+          {bootNotice?.kind === "first_run" && <FirstRunBlock />}
+          {bootNotice?.kind === "unreadable_library" && (
+            <UnreadableLibraryBlock message={bootNotice.message} />
+          )}
 
-        {/* First-run need first, maintenance last, and the order never changes:
-            the Library root is first on both the landing and the ordinary page,
-            so nothing the curator learned where the field was moves once they
-            have a library (ADR 0020, ADR 0032). */}
-        {/* On a landing the Library root is the only section, but it still
-            sits in its group so the heading levels do not skip from the page
-            title to the section's (ADR 0033). */}
-        {landing ? (
-          <SettingsGroup id="folders" groups={groups}>
-            <LibraryRootSection onValue={setTypedRoot} />
-          </SettingsGroup>
-        ) : (
-          <>
-            <GroupNav groups={groups} />
+          {/* First-run need first, maintenance last, and the order never
+              changes: the Library root is first on both the landing and the
+              ordinary page, so nothing the curator learned where the field was
+              moves once they have a library (ADR 0020, ADR 0032). */}
+          {/* On a landing the Library root is the only section, but it still
+              sits in its group so the heading levels do not skip from the page
+              title to the section's (ADR 0033). */}
+          {landing ? (
             <SettingsGroup id="folders" groups={groups}>
               <LibraryRootSection onValue={setTypedRoot} />
-              <RejectDestinationSection />
             </SettingsGroup>
-            {/* The two sizes sit with Appearance because they are the same
-                kind of thing: what the app looks like and what it is being
-                curated for. Screen first, because Minimum resolution's default
-                is it (ADR 0020, ADR 0032). */}
-            <SettingsGroup id="display" groups={groups}>
-              <AppearanceSection />
-              <ScreenSection />
-              <MinimumResolutionSection />
-            </SettingsGroup>
-            {/* How the app runs a curation: how sure a ranking has to be before
-                it says Evaluated (ADR 0046), which page opens, and what Review
-                hands the curator (#259). */}
-            <SettingsGroup id="curation" groups={groups}>
-              <EvaluatedSection />
-              <StartupViewSection />
-              <ReviewWorklistSection />
-              <ReviewOrderingSection />
-              <BarSection />
-            </SettingsGroup>
-            {/* Everything Discover needs from the curator: the optional key
-                that unlocks NSFW and the account's blacklists, then where the
-                downloads land (#342, ADR 0052). */}
-            <SettingsGroup id="wallhaven" groups={groups}>
-              <ApiKeySection />
-              <DownloadFolderSection libraryRoot={typedRoot} />
-            </SettingsGroup>
-            {/* Maintenance last: questions nobody asks until something looks
-                wrong (ADR 0020, ADR 0032). */}
-            <SettingsGroup id="maintenance" groups={groups}>
-              <ThumbnailsSection />
-              <MissingFilesSection />
-            </SettingsGroup>
-          </>
-        )}
+          ) : (
+            <>
+              <SettingsGroup id="folders" groups={groups}>
+                <LibraryRootSection onValue={setTypedRoot} />
+                <RejectDestinationSection />
+              </SettingsGroup>
+              {/* The two sizes sit with Appearance because they are the same
+                  kind of thing: what the app looks like and what it is being
+                  curated for. Screen first, because Minimum resolution's
+                  default is it (ADR 0020, ADR 0032). */}
+              <SettingsGroup id="display" groups={groups}>
+                <AppearanceSection />
+                <ScreenSection />
+                <MinimumResolutionSection />
+              </SettingsGroup>
+              {/* How the app runs a curation: how sure a ranking has to be
+                  before it says Evaluated (ADR 0046), which page opens, and
+                  what Review hands the curator (#259). */}
+              <SettingsGroup id="curation" groups={groups}>
+                <EvaluatedSection />
+                <StartupViewSection />
+                <ReviewWorklistSection />
+                <ReviewOrderingSection />
+                <BarSection />
+              </SettingsGroup>
+              {/* Everything Discover needs from the curator: the optional key
+                  that unlocks NSFW and the account's blacklists, then where the
+                  downloads land (#342, ADR 0052). */}
+              <SettingsGroup id="wallhaven" groups={groups}>
+                <ApiKeySection />
+                <DownloadFolderSection libraryRoot={typedRoot} />
+              </SettingsGroup>
+              {/* Maintenance last: questions nobody asks until something looks
+                  wrong (ADR 0020, ADR 0032). */}
+              <SettingsGroup id="maintenance" groups={groups}>
+                <ThumbnailsSection />
+                <MissingFilesSection />
+              </SettingsGroup>
+            </>
+          )}
+        </div>
       </div>
     </>
   );

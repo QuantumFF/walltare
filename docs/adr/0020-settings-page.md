@@ -514,3 +514,13 @@ in the shell, and the file's hero layout was for a screen that no longer exists.
 > gains those two rows, and the field asks
 > `check_reject_destination` rather than `expand_path`, because only a write
 > can answer the second question.
+
+> **Amended 2026-10-08.** The jump row became a group nav down the left of
+> the column, stuck as the page scrolls, and the bordered cards went: each
+> group is its heading and its sections in the open, with a hairline between
+> one group and the next. The nav marks the group whose heading the curator
+> has scrolled past, or the last group at the bottom of the page, the way the
+> chrome marks its current tab: foreground colour, the rest faded, no fill. A
+> jump marks the group asked for, whatever the scroll passes on the way. Too
+> narrow for a side column, the nav falls back to a one-line row stuck under
+> the page bar. A landing still has no nav.

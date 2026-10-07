@@ -391,7 +391,7 @@ test("the page is one column of fourteen sections, in first-run order", async ()
   expect(column).not.toBeNull();
 });
 
-test("the sections sit in five groups, and the jump row scrolls to each", async () => {
+test("the sections sit in five groups, and the group nav scrolls to each", async () => {
   await openSettingsFromLibrary();
 
   const groups = Array.from(
@@ -430,6 +430,89 @@ test("the sections sit in five groups, and the jump row scrolls to each", async 
   };
   fireEvent.click(within(nav).getByRole("button", { name: "Maintenance" }));
   expect(scrolled).toBe(1);
+});
+
+/** The group nav's marked entries, by name. */
+function markedGroups(): (string | null)[] {
+  const nav = screen.getByRole("navigation", { name: "Settings groups" });
+  return within(nav)
+    .getAllByRole("button")
+    .filter((button) => button.getAttribute("aria-current") === "location")
+    .map((button) => button.textContent);
+}
+
+/**
+ * Lays the Settings view out the way a scroll would leave it, since happy-dom
+ * lays nothing out: a 900px container at the top of the window, scrolled to
+ * `scrollTop` of `scrollHeight`, with each group's top where `tops` puts it.
+ */
+function layOutSettings(
+  scrollTop: number,
+  scrollHeight: number,
+  tops: Record<string, number>,
+): HTMLElement {
+  const scroller = document.querySelector(
+    '[data-view="settings"]',
+  ) as HTMLElement;
+  scroller.getBoundingClientRect = () => ({ top: 0, height: 900 }) as DOMRect;
+  for (const [property, value] of Object.entries({
+    scrollTop,
+    scrollHeight,
+    clientHeight: 900,
+  })) {
+    Object.defineProperty(scroller, property, { value, configurable: true });
+  }
+  for (const [title, top] of Object.entries(tops)) {
+    screen.getByRole("region", { name: title }).getBoundingClientRect = () =>
+      ({ top }) as DOMRect;
+  }
+  return scroller;
+}
+
+const MID_PAGE = {
+  Folders: -1200,
+  Display: -600,
+  Curation: 200,
+  Wallhaven: 700,
+  Maintenance: 1400,
+};
+
+test("the group nav marks the group whose heading the curator has read past", async () => {
+  await openSettingsFromLibrary();
+
+  // The page opens at its top.
+  expect(markedGroups()).toEqual(["Folders"]);
+
+  // Curation's heading is above the line a third of the way down, and
+  // Wallhaven's is below it, though Wallhaven is on screen.
+  let scroller = layOutSettings(1000, 4000, MID_PAGE);
+  fireEvent.scroll(scroller);
+  expect(markedGroups()).toEqual(["Curation"]);
+
+  // At the bottom the last group is too short to reach the line, and is the
+  // one being read all the same.
+  scroller = layOutSettings(3100, 4000, {
+    ...MID_PAGE,
+    Wallhaven: 100,
+    Maintenance: 500,
+  });
+  fireEvent.scroll(scroller);
+  expect(markedGroups()).toEqual(["Maintenance"]);
+});
+
+test("a jump marks the group it was asked for, whatever it scrolls past", async () => {
+  await openSettingsFromLibrary();
+  const nav = screen.getByRole("navigation", { name: "Settings groups" });
+  screen.getByRole("region", { name: "Wallhaven" }).scrollIntoView = () => {};
+
+  fireEvent.click(within(nav).getByRole("button", { name: "Wallhaven" }));
+  expect(markedGroups()).toEqual(["Wallhaven"]);
+
+  // Mid-jump the smooth scroll passes Curation, and then can only get as far
+  // as the bottom, where the scroll rule alone would mark Maintenance.
+  fireEvent.scroll(layOutSettings(1000, 4000, MID_PAGE));
+  fireEvent.scroll(layOutSettings(3100, 4000, MID_PAGE));
+  expect(markedGroups()).toEqual(["Wallhaven"]);
 });
 
 test("the bar names the page and the way out of it", async () => {
