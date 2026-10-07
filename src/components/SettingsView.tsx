@@ -1,4 +1,4 @@
-import { PageBar, PageBarTitle } from "@/components/PageBar";
+import { PageBar } from "@/components/PageBar";
 // Both fields below are the one Written path field module, which resolves the
 // typed string through the same hook the rejecting bars read the stored
 // destination with — so "is this path relative" has one answer and one
@@ -632,9 +632,10 @@ export function SettingsView() {
             the other three destinations with a tab and names this one with a
             gear, so Settings is the one view whose title has to be written out
             (ADR 0015). */}
-        <PageBarTitle asChild>
-          <h1>Settings</h1>
-        </PageBarTitle>
+        {/* Not a `PageBarTitle`: the chip came off Settings once the curator
+            saw it there (ADR 0063). The other titles are a count or a
+            sentence about the page's contents, and this one is only its name. */}
+        <h1 className="font-semibold">Settings</h1>
 
         {returnTo && (
           <Button

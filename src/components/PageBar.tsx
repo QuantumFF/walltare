@@ -1,6 +1,5 @@
 import { useHandOffOnPointerPress } from "@/context/KeyboardHandoffContext";
 import { cn } from "@/lib/utils";
-import { Slot } from "radix-ui";
 import type { ComponentProps, ReactNode } from "react";
 
 /**
@@ -16,7 +15,7 @@ import type { ComponentProps, ReactNode } from "react";
  * It has no surface and no rule (ADR 0063). The chrome above it is bare words,
  * so a band or a line here would be the only drawn edge in the header, and it
  * used to split one header into strips. What tells the bar from the page is
- * what sits on it: the title in a chip, `PageBarTitle`, and every control a
+ * what sits on it: a title in a chip, `PageBarTitle`, and every control a
  * pill. The pills are the controls' own — `SegmentedGroup` is one everywhere,
  * and a lone button or drop-down here takes `rounded-full` where it is
  * written, the way Discover's pills already did — rather than a rule in this
@@ -43,23 +42,18 @@ export function PageBar({ children }: { children?: ReactNode }) {
 }
 
 /**
- * What the page is called or is counting, set in a chip at the head of its bar:
- * Rank's Undecided headline, Review's ordering sentence, and Settings' heading.
- * Library and Discover have none, because their bars open on a control.
+ * What the page is counting or saying about itself, set in a chip at the head
+ * of its bar: Rank's Undecided headline and Review's ordering sentence.
+ * Settings writes its heading plain (ADR 0063), and Library and Discover have
+ * none, because their bars open on a control.
  *
  * A component rather than a style on whatever comes first in the bar, so the
  * page says which element is its title instead of the bar guessing from the
- * order. `asChild` puts the chip on the page's own element, which is how
- * Settings keeps it an `h1`.
+ * order.
  */
-export function PageBarTitle({
-  asChild = false,
-  className,
-  ...props
-}: ComponentProps<"span"> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot.Root : "span";
+export function PageBarTitle({ className, ...props }: ComponentProps<"span">) {
   return (
-    <Comp
+    <span
       data-slot="page-bar-title"
       className={cn(
         "rounded-full bg-muted px-3.5 py-1 font-semibold",

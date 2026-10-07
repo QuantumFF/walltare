@@ -59,10 +59,13 @@ The bar is `h-12`, the chrome's height, with no fill and no bottom border. What
 sets it off from the page is what sits on it:
 
 - **The title is a chip.** It is a `bg-muted` pill around Rank's Undecided
-  headline, Review's ordering sentence and Settings' heading. It is a
-  component, `PageBarTitle`, rather than a style on whatever the bar's first
-  child is, so a page says which element is its title. Library and Discover
-  have none, since their bars open on a control.
+  headline and Review's ordering sentence. It is a component, `PageBarTitle`,
+  rather than a style on whatever the bar's first child is, so a page says
+  which element is its title. Library and Discover have none, since their bars
+  open on a control. Settings' heading is plain semibold text: the prototype
+  chipped it too, and the curator had the chip taken off once it was on screen.
+  Those two titles are a count and a sentence about what the page holds;
+  Settings' is only the page's name.
 - **Every control is a pill.** The segmented track and its segments are pills
   everywhere they are drawn. Settings' radio groups, Appearance and the rest,
   are included, though they sit outside any bar, because the older rule is that a
