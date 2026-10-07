@@ -8,6 +8,7 @@ mod missing;
 mod near_duplicates;
 mod paths;
 mod pregen;
+mod previews;
 pub mod ranking; // consumed by later voting slices; kept Tauri-free
 mod reject_destination;
 mod scan;
@@ -894,6 +895,10 @@ pub fn run() {
                 wallhaven::API_TIMEOUTS,
             ));
             app.manage(download::Downloads::new(download::DOWNLOAD_TIMEOUTS));
+            // Beside the thumbnails and apart from them: Settings' Clear cache
+            // empties that directory, and this one keeps itself under its cap
+            // (ADR 0062).
+            app.manage(previews::Previews::new(dir.join("previews")));
             serving::start(app.handle());
             Ok(())
         })
@@ -907,6 +912,10 @@ pub fn run() {
         // them landed as a change to this closure.
         .register_asynchronous_uri_scheme_protocol("wallpaper", |ctx, request, responder| {
             serving::serve(ctx.app_handle(), request.uri(), responder);
+        })
+        // Discover's card previews, on a pool of their own (ADR 0062).
+        .register_asynchronous_uri_scheme_protocol("preview", |ctx, request, responder| {
+            previews::serve(ctx.app_handle(), request.uri(), responder);
         })
         .invoke_handler(tauri::generate_handler![
             start_scan,
@@ -1007,9 +1016,25 @@ mod tests {
     }
 
     #[test]
+    fn the_policy_lets_the_preview_protocol_through() {
+        // The same pairing for Discover's card previews (ADR 0062): without
+        // `preview:` every card at three columns and fewer stays on its `lg`,
+        // and nothing but a look at the page would say why.
+        let policy = content_security_policy();
+        let (_, sources) = policy
+            .iter()
+            .find(|(name, _)| name == "img-src")
+            .expect("the policy names img-src");
+        assert!(
+            sources.iter().any(|source| source == "preview:"),
+            "img-src {sources:?} does not allow the preview protocol"
+        );
+    }
+
+    #[test]
     fn the_policy_names_no_remote_origin_but_discovers_images() {
         // An allowlist rather than a pattern, so that widening the policy has
-        // to be argued for here as well as in the config. Five local sources,
+        // to be argued for here as well as in the config. Six local sources,
         // and two remote origins in one directive: Discover's thumbnails
         // (ADR 0053) and the full file its lightbox previews (ADR 0055), both
         // loaded by `<img>` and by nothing else. `connect-src` stays local, so
@@ -1022,7 +1047,7 @@ mod tests {
             for source in sources {
                 let local = matches!(
                     source.as_str(),
-                    "'self'" | "'none'" | "'unsafe-inline'" | "ipc:" | "wallpaper:"
+                    "'self'" | "'none'" | "'unsafe-inline'" | "ipc:" | "wallpaper:" | "preview:"
                 );
                 if !local {
                     remote.push(format!("{directive} {source}"));

@@ -78,3 +78,8 @@ and only to one host.
 > **Amended by [ADR 0055](0055-discover-previews-the-full-file.md),
 > 2026-09-24.** The full-size preview came back: `img-src` also gains
 > `https://w.wallhaven.cc`, for Discover's lightbox only. Cards keep `th.`.
+
+> **Amended by [ADR 0062](0062-discover-cards-preview-through-the-backend.md),
+> 2026-10-08.** A backend proxy came back for card previews, which are full
+> files rather than thumbnails, on a scheme and a pool of their own. `img-src`
+> gains `preview:`. Thumbnails still load straight from `th.`.

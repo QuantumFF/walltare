@@ -718,14 +718,34 @@ fn is_large(width: u32, height: u32) -> bool {
 /// stale or missing row must not let a large decode past the gate. It is the
 /// same header read [`crate::arrival::record_dimensions`] does.
 fn decode_source_at(path: &Path, size: Size) -> Result<DynamicImage, AppError> {
+    decode_capped(|| Ok(ImageReader::open(path)?.with_guessed_format()?), size)
+}
+
+/// A Result's full file, held in memory, as the JPEG of a `medium`: what a
+/// Discover card shows (`previews`, ADR 0062).
+///
+/// The same decode as a library source's, so ADR 0049's cap and gate hold for
+/// a file off Wallhaven as they do for one off the disk, and the same
+/// downscale, flatten and encode as a `medium` thumbnail's.
+pub(crate) fn medium_jpeg(file: &[u8]) -> Result<Vec<u8>, AppError> {
+    let decoded = decode_capped(
+        || Ok(ImageReader::new(Cursor::new(file)).with_guessed_format()?),
+        Size::Medium,
+    )?;
+    encode_jpeg(&flatten_to_rgb(decoded))
+}
+
+/// [`decode_source_at`]'s decode, over any reader: `open` is called twice, once
+/// for the header and once for the decode.
+fn decode_capped<R: std::io::BufRead + std::io::Seek>(
+    open: impl Fn() -> Result<ImageReader<R>, AppError>,
+    size: Size,
+) -> Result<DynamicImage, AppError> {
     let image_err = |e: image::ImageError| AppError::Image(e.to_string());
-    let (width, height) = ImageReader::open(path)?
-        .with_guessed_format()?
-        .into_dimensions()
-        .map_err(image_err)?;
+    let (width, height) = open()?.into_dimensions().map_err(image_err)?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
-    let mut reader = ImageReader::open(path)?.with_guessed_format()?;
+    let mut reader = open()?;
     reader.limits(limits);
     let _permit = is_large(width, height).then(|| LARGE_DECODES.acquire());
     Ok(downscale_if_wider(

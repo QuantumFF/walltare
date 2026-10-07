@@ -48,14 +48,15 @@ export function DrawTurns({ children }: { children: ReactNode }) {
 }
 
 /**
- * A card's full file, drawn once onto a canvas the card's size in device pixels
- * (ADR 0055).
+ * A card's preview, drawn once onto a canvas the card's size in device pixels
+ * (ADR 0055, ADR 0062).
  *
  * The `<img>` is only the fetch, lazy like the `lg`'s and never painted. Once it
- * has loaded, the file is decoded and drawn onto the canvas, cropped to the
- * card's shape, and the `<img>` unmounts, so no card holds its file decoded at
- * full size. It unmounts too when the fetch or the draw fails, and the `lg`
- * stays the picture.
+ * has loaded, the picture is decoded and drawn onto the canvas, cropped to the
+ * card's shape, and the `<img>` unmounts, so no card holds it decoded at its
+ * own size. That matters at a preview's 1920 pixels as well as at a full
+ * file's: 24 cards holding 8 MB each still flickered. It unmounts too when the
+ * fetch or the draw fails, and the `lg` stays the picture.
  *
  * Draws take turns with every other picture under the same `DrawTurns`, so a
  * page whose files land together decodes one at a time; one drawn outside any

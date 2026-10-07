@@ -1654,6 +1654,14 @@ test("a click on a card's picture opens it too, and a click on its buttons does 
   expect(identity()).toContain("wallhaven-jedzym");
 });
 
+/** Every image on the cards that is a Result's preview (ADR 0062). */
+const cardPreviews = () =>
+  cards().flatMap((card) =>
+    [...card.querySelectorAll("img")]
+      .map((img) => img.getAttribute("src") ?? "")
+      .filter((src) => src.startsWith("preview://")),
+  );
+
 /** Every image on the cards loaded from Wallhaven's full-file host. */
 const cardFullFiles = () =>
   cards().flatMap((card) =>
@@ -1678,7 +1686,7 @@ test("the zoom survives a filter change, which swaps the grid for the spinner an
   expect(columns()).toBe(zoomed);
 });
 
-test("a card draws the full file over its lg at three columns and fewer, and only the lg at four and more", async () => {
+test("a card draws its preview over its lg at three columns and fewer, and only the lg at four and more", async () => {
   answer = () => page(["qrow67", "jedzym"]);
   await renderInApp(<DiscoverView />);
   await focusCard(cards()[0]);
@@ -1690,14 +1698,16 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
   for (let at = 0; at < 6; at++) await press("-");
   while (columns() > 4) await press("+");
   expect(columns()).toBe(4);
-  expect(cardFullFiles()).toEqual([]);
+  expect(cardPreviews()).toEqual([]);
 
   await press("+");
   expect(columns()).toBe(3);
-  expect(cardFullFiles()).toEqual([
-    "https://w.wallhaven.cc/full/qr/wallhaven-qrow67.png",
-    "https://w.wallhaven.cc/full/je/wallhaven-jedzym.png",
+  expect(cardPreviews()).toEqual([
+    "preview://localhost/result/qrow67",
+    "preview://localhost/result/jedzym",
   ]);
+  // The full file is the backend's to fetch: no card asks Wallhaven for it.
+  expect(cardFullFiles()).toEqual([]);
 
   // Hidden until it has been drawn, so the card never blanks, and then the
   // `lg` under it is hidden instead.
@@ -1710,7 +1720,7 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
     );
     expect(canvas.className).toContain("invisible");
     expect(lg.className).not.toContain("invisible");
-    await loadFullFile(full);
+    await loadPreview(full);
     expect(canvas.className).not.toContain("invisible");
     expect(lg.className).toContain("invisible");
 
@@ -1718,11 +1728,9 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
     // `<img>` gone, so the file is not held decoded at full size.
     expect([canvas.width, canvas.height]).toEqual([640, 360]);
     expect(canvases.drawn).toEqual([
-      [full, 0, 120, 3840, 2160, 0, 0, 640, 360],
+      [full, 0, 60, 1920, 1080, 0, 0, 640, 360],
     ]);
-    expect(cardFullFiles()).toEqual([
-      "https://w.wallhaven.cc/full/je/wallhaven-jedzym.png",
-    ]);
+    expect(cardPreviews()).toEqual(["preview://localhost/result/jedzym"]);
 
     // Out and back in: the `lg` shows again at four, and the canvas is shown
     // at once at three rather than waiting on a load it already had.
@@ -1737,46 +1745,44 @@ test("a card draws the full file over its lg at three columns and fewer, and onl
   }
 });
 
-test("a shown card that settles wider fetches its full file again, and a hidden one does not", async () => {
+test("a shown card that settles wider fetches its preview again, and a hidden one does not", async () => {
   const canvases = stubCanvases();
   try {
     answer = () => page(["qrow67"]);
     await renderInApp(<DiscoverView />);
     await focusCard(cards()[0]);
-    await loadFullFile(cards()[0].querySelectorAll("img")[1]);
-    expect(cardFullFiles()).toEqual([]);
+    await loadPreview(cards()[0].querySelectorAll("img")[1]);
+    expect(cardPreviews()).toEqual([]);
 
     // At four the canvas is hidden, so a wider window fetches nothing.
     await press("-");
     await canvases.resize(1280);
-    expect(cardFullFiles()).toEqual([]);
+    expect(cardPreviews()).toEqual([]);
 
     // Back at three it shows, and a card wider than it was drawn draws again.
     await press("+");
     await canvases.resize(1280);
-    expect(cardFullFiles()).toEqual([
-      "https://w.wallhaven.cc/full/qr/wallhaven-qrow67.png",
-    ]);
-    await loadFullFile(cards()[0].querySelectorAll("img")[1]);
+    expect(cardPreviews()).toEqual(["preview://localhost/result/qrow67"]);
+    await loadPreview(cards()[0].querySelectorAll("img")[1]);
     expect(cards()[0].querySelector("canvas")!.width).toBe(1280);
-    expect(cardFullFiles()).toEqual([]);
+    expect(cardPreviews()).toEqual([]);
   } finally {
     canvases.restore();
   }
 });
 
-test("a full file that loads while the page has no size draws once it has one", async () => {
+test("a preview that loads while the page has no size draws once it has one", async () => {
   const canvases = stubCanvases(0);
   try {
     answer = () => page(["qrow67"]);
     await renderInApp(<DiscoverView />);
-    await loadFullFile(cards()[0].querySelectorAll("img")[1]);
+    await loadPreview(cards()[0].querySelectorAll("img")[1]);
     expect(canvases.drawn).toEqual([]);
-    expect(cardFullFiles()).toHaveLength(1);
+    expect(cardPreviews()).toHaveLength(1);
 
     await canvases.resize(640);
     expect(canvases.drawn).toHaveLength(1);
-    expect(cardFullFiles()).toEqual([]);
+    expect(cardPreviews()).toEqual([]);
   } finally {
     canvases.restore();
   }
@@ -1831,12 +1837,12 @@ function stubCanvases(width = 640) {
   };
 }
 
-/** A 3840 by 2400 full file arriving at its hidden `<img>`. */
-async function loadFullFile(full: HTMLImageElement) {
-  Object.defineProperty(full, "naturalWidth", { value: 3840 });
-  Object.defineProperty(full, "naturalHeight", { value: 2400 });
+/** A 1920 by 1200 preview arriving at its hidden `<img>`. */
+async function loadPreview(preview: HTMLImageElement) {
+  Object.defineProperty(preview, "naturalWidth", { value: 1920 });
+  Object.defineProperty(preview, "naturalHeight", { value: 1200 });
   await act(async () => {
-    fireEvent.load(full);
+    fireEvent.load(preview);
   });
 }
 

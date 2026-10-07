@@ -43,6 +43,7 @@
 //! pass's work.
 
 use std::collections::{HashMap, VecDeque};
+use std::hash::Hash;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -97,7 +98,7 @@ type Key = (i64, Size);
 /// one answer serves every request that asked for it. `Arc<Vec<u8>>` is copied
 /// once per response into the `Response<Vec<u8>>` the webview gets, and never
 /// per waiter.
-type Answer = Result<Arc<Vec<u8>>, AppError>;
+pub(crate) type Answer = Result<Arc<Vec<u8>>, AppError>;
 
 /// Starts the threads that answer `wallpaper://` requests, and the flight table
 /// they answer through.
@@ -111,7 +112,7 @@ type Answer = Result<Arc<Vec<u8>>, AppError>;
 /// any other way.
 pub fn start(app: &AppHandle) {
     app.manage(ImageWorkers::new(worker_count()));
-    app.manage(InFlight::default());
+    app.manage(InFlight::<Key>::default());
 }
 
 /// Parses `wallpaper://localhost/image/{id}?size={size}`.
@@ -208,7 +209,7 @@ fn answer(
     size: Size,
     work: impl FnOnce() -> Answer,
 ) -> Response<Vec<u8>> {
-    let answer = match in_flight.join(wallpaper_id, size) {
+    let answer = match in_flight.join((wallpaper_id, size)) {
         Joined::Leading(leader) => leader.publish(work()),
         Joined::Waiting(answer) => answer,
     };
@@ -219,7 +220,7 @@ fn answer(
     }
 }
 
-fn image_response(body: Vec<u8>) -> Response<Vec<u8>> {
+pub(crate) fn image_response(body: Vec<u8>) -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::OK)
         .header(tauri::http::header::CONTENT_TYPE, "image/jpeg")
@@ -228,7 +229,7 @@ fn image_response(body: Vec<u8>) -> Response<Vec<u8>> {
         .unwrap()
 }
 
-fn error_response(e: &AppError) -> Response<Vec<u8>> {
+pub(crate) fn error_response(e: &AppError) -> Response<Vec<u8>> {
     let status = match e {
         AppError::InvalidPath(_) | AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
         // `FileMissing` is a 404 for the same reason `NotFound` is: the thing
@@ -253,8 +254,16 @@ fn error_response(e: &AppError) -> Response<Vec<u8>> {
 /// Reachable today without contriving anything: the lightbox's filmstrip and the
 /// library grid behind it both ask for the same wallpaper's `small`, and both
 /// requests used to decode, encode and write the same cache file (#224).
-#[derive(Default)]
-struct InFlight(Mutex<HashMap<Key, Arc<Flight>>>);
+///
+/// Keyed on whatever a request names. A `wallpaper://` request names a
+/// wallpaper and a size; a `preview://` one names a Result (`previews`).
+pub(crate) struct InFlight<K = Key>(Mutex<HashMap<K, Arc<Flight>>>);
+
+impl<K> Default for InFlight<K> {
+    fn default() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+}
 
 /// One request being answered, and whatever it ends up answering with.
 #[derive(Default)]
@@ -270,15 +279,21 @@ struct Flight {
 }
 
 /// Which side of a flight a request is on.
-enum Joined<'a> {
+pub(crate) enum Joined<'a, K: Eq + Hash = Key> {
     /// Nobody was asking for this yet, so this request does the work and
     /// publishes it.
-    Leading(Leader<'a>),
+    Leading(Leader<'a, K>),
     /// An identical request got here first, and this is its answer.
     Waiting(Arc<Answer>),
 }
 
-impl InFlight {
+impl<K> InFlight<K> {
+    fn flights(&self) -> MutexGuard<'_, HashMap<K, Arc<Flight>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl<K: Eq + Hash + Clone> InFlight<K> {
     /// Either takes the flight for this wallpaper and size, or waits for the one
     /// already under way.
     ///
@@ -288,8 +303,7 @@ impl InFlight {
     /// behind them are answered from memory the moment it lands — and it is
     /// strictly cheaper than what it replaces, which was every one of those
     /// workers decoding the same 4K source.
-    fn join(&self, wallpaper_id: i64, size: Size) -> Joined<'_> {
-        let key = (wallpaper_id, size);
+    pub(crate) fn join(&self, key: K) -> Joined<'_, K> {
         let mut flights = self.flights();
         if let Some(flight) = flights.get(&key).cloned() {
             // Released before the wait, or the leader could never publish.
@@ -297,7 +311,7 @@ impl InFlight {
             return Joined::Waiting(flight.wait());
         }
         let flight = Arc::new(Flight::default());
-        flights.insert(key, Arc::clone(&flight));
+        flights.insert(key.clone(), Arc::clone(&flight));
         drop(flights);
         Joined::Leading(Leader {
             in_flight: self,
@@ -307,19 +321,15 @@ impl InFlight {
         })
     }
 
-    fn flights(&self) -> MutexGuard<'_, HashMap<Key, Arc<Flight>>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// How many requests are parked on one flight.
     ///
     /// Tests only. Two requests are concurrent when the second is waiting on the
     /// first, and this is what lets a test wait for exactly that rather than
     /// sleeping and hoping.
     #[cfg(test)]
-    fn followers(&self, wallpaper_id: i64, size: Size) -> usize {
+    pub(crate) fn followers(&self, key: &K) -> usize {
         self.flights()
-            .get(&(wallpaper_id, size))
+            .get(key)
             .map(|flight| flight.waiting.load(Ordering::SeqCst))
             .unwrap_or(0)
     }
@@ -347,17 +357,17 @@ impl Flight {
 
 /// The request doing the work for everyone waiting on the same wallpaper and
 /// size.
-struct Leader<'a> {
-    in_flight: &'a InFlight,
-    key: Key,
+pub(crate) struct Leader<'a, K: Eq + Hash = Key> {
+    in_flight: &'a InFlight<K>,
+    key: K,
     flight: Arc<Flight>,
     settled: bool,
 }
 
-impl Leader<'_> {
+impl<K: Eq + Hash> Leader<'_, K> {
     /// Hands the answer to everyone parked on this flight, and back to the
     /// leader's own request.
-    fn publish(mut self, answer: Answer) -> Arc<Answer> {
+    pub(crate) fn publish(mut self, answer: Answer) -> Arc<Answer> {
         let shared = Arc::new(answer);
         self.settle(Some(Arc::clone(&shared)));
         shared
@@ -385,7 +395,7 @@ impl Leader<'_> {
     }
 }
 
-impl Drop for Leader<'_> {
+impl<K: Eq + Hash> Drop for Leader<'_, K> {
     /// A leader that panicked still answers. The `image` crate decoding
     /// somebody's malformed JPEG is the one place in this path that could, and a
     /// follower parked on the condvar would otherwise wait for the life of the
@@ -499,7 +509,7 @@ impl Requests {
 }
 
 impl ImageWorkers {
-    fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         let requests = Arc::new(Requests::default());
         for _ in 0..size {
             let requests = Arc::clone(&requests);
@@ -521,7 +531,7 @@ impl ImageWorkers {
         Self(requests)
     }
 
-    fn submit(&self, job: impl FnOnce() + Send + 'static) {
+    pub(crate) fn submit(&self, job: impl FnOnce() + Send + 'static) {
         self.0.push(Box::new(job));
     }
 
@@ -817,7 +827,7 @@ mod tests {
         wait_until("the follower parked on the leader's flight", || {
             library
                 .in_flight
-                .followers(library.wallpaper_id, Size::Small)
+                .followers(&(library.wallpaper_id, Size::Small))
                 == 1
         });
         release_leader.send(()).unwrap();

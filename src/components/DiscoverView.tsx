@@ -65,6 +65,7 @@ import {
   type Categories,
   type Mark,
   type MarkedResult,
+  previewUrl,
   type Purity,
   type Resolution,
   type Sorting,
@@ -691,7 +692,7 @@ export function DiscoverView() {
               curator ever pages far enough for mount cost to matter, windowing
               against this page's scroller is the follow-up (ADR 0016). */}
           <ResultControlsContext.Provider value={resultControls}>
-            {/* The cards' full files decode one at a time (`SharpPicture`). */}
+            {/* The cards' previews decode one at a time (`SharpPicture`). */}
             <DrawTurns>
               <ItemGrid
                 ref={setGrid}
@@ -1245,17 +1246,19 @@ function renderResult(
       result={result}
       cellIndex={cellIndex}
       selected={selected}
-      full={columns <= FULL_FILE_COLUMNS}
+      showsPreview={columns <= PREVIEW_COLUMNS}
     />
   );
 }
 
 /**
- * The most columns at which a card lays the full file over its `lg`. At three
- * a card is drawn wider than the `lg`'s 432 pixels on most screens, so the
- * thumbnail is upscaled into a blur; at four and five it is not.
+ * The most columns at which a card lays its preview over its `lg`. At three a
+ * card is drawn wider than the `lg`'s 432 pixels on most screens, so the
+ * thumbnail is upscaled into a blur; at four and five it is not. Every preview
+ * is a full file the backend fetched, so the line is about the network as much
+ * as about pixels (ADR 0062).
  */
-const FULL_FILE_COLUMNS = 3;
+const PREVIEW_COLUMNS = 3;
 
 /** What a caption says for each state of a download, where Download would sit. */
 const DOWNLOAD_TEXT: Record<ResultDownload["kind"], string> = {
@@ -1301,16 +1304,16 @@ const ResultCard = memo(function ResultCard({
   result,
   cellIndex,
   selected,
-  full,
+  showsPreview,
 }: {
   result: MarkedResult;
   cellIndex: number;
   selected: boolean;
-  /** Whether the zoom is wide enough for the full file (`FULL_FILE_COLUMNS`). */
-  full: boolean;
+  /** Whether the zoom is wide enough for the preview (`PREVIEW_COLUMNS`). */
+  showsPreview: boolean;
 }) {
   const [failed, setFailed] = useState(false);
-  // Whether the full file over the `lg` has been drawn, and so is shown. Kept
+  // Whether the preview over the `lg` has been drawn, and so is shown. Kept
   // across a zoom out and back, as a Library card keeps its `medium`'s.
   const [sharp, setSharp] = useState(false);
   const controls = useContext(ResultControlsContext);
@@ -1330,9 +1333,9 @@ const ResultCard = memo(function ResultCard({
     // the caption's mark stays readable.
     result.mark !== "unmarked" && DIMMED_PICTURE,
   );
-  // Once the full file is shown, the `lg` under it is hidden rather than left
-  // to show through: two dimmed pictures stacked read as one barely dimmed.
-  const covered = full && sharp;
+  // Once the preview is shown, the `lg` under it is hidden rather than left to
+  // show through: two dimmed pictures stacked read as one barely dimmed.
+  const covered = showsPreview && sharp;
   return (
     <figure
       role="gridcell"
@@ -1365,14 +1368,16 @@ const ResultCard = memo(function ResultCard({
           onError={() => setFailed(true)}
           className={cn(pictureClassName, (failed || covered) && "invisible")}
         />
-        {/* Laid over the `lg` and shown once it has been drawn, so a zoom in
-            sharpens the card rather than blanking it. A full file that fails
-            leaves the `lg` showing, which is still the picture. Kept mounted
-            but hidden at four and five once drawn, so a zoom back in shows it
-            at once. */}
-        {(full || sharp) && !failed && (
+        {/* The Result's preview: its full file at a `medium`'s 1920 pixels,
+            made by the backend (ADR 0062), and drawn at the card's size so no
+            card holds it decoded at its own. Laid over the `lg` and shown once
+            it has been drawn, so a zoom in sharpens the card rather than
+            blanking it. A preview that fails leaves the `lg` showing, which is
+            still the picture. Kept mounted but hidden at four and five once
+            drawn, so a zoom back in shows it at once. */}
+        {(showsPreview || sharp) && !failed && (
           <SharpPicture
-            src={fullFileUrl(result)}
+            src={previewUrl(result.id)}
             className={pictureClassName}
             shown={covered}
             onDrawn={() => setSharp(true)}

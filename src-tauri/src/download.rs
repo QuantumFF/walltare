@@ -145,24 +145,8 @@ pub struct Downloads {
 
 impl Downloads {
     pub fn new(timeouts: Timeouts) -> Self {
-        let config = ureq::Agent::config_builder()
-            .timeout_connect(Some(timeouts.connect))
-            // Every status is read below, so a 404 can say which file.
-            .http_status_as_error(false)
-            // No redirect is followed, so the bytes come from the URL the
-            // search served and from nowhere a 3xx could bounce them to
-            // (ADR 0054). A redirect is then a status that is not 200, and
-            // fails the file saying so.
-            .max_redirects(0)
-            .user_agent(concat!("walltare/", env!("CARGO_PKG_VERSION")))
-            .build();
-        let connector = DefaultConnector::new().chain(BetweenReads(timeouts.between_reads));
         Self {
-            agent: ureq::Agent::with_parts(
-                config,
-                connector,
-                ureq::unversioned::resolver::DefaultResolver::default(),
-            ),
+            agent: image_host_agent(timeouts),
             queue: Mutex::new(Queue::default()),
         }
     }
@@ -285,50 +269,85 @@ impl Downloads {
     /// `file_size` Wallhaven announced, or an error with the staging file
     /// already gone.
     fn fetch(&self, job: &Job, folder: &Path, name: &str) -> Result<Staged, AppError> {
-        // The key goes on API calls and nowhere else (ADR 0052), and this
-        // agent never learns it.
-        let mut response =
-            self.agent
-                .get(&job.served.path)
-                .call()
-                .map_err(|error| match error {
-                    ureq::Error::Timeout(_) => AppError::Network(
-                        "Wallhaven's image host took too long to answer.".to_string(),
-                    ),
-                    other => AppError::Network(format!(
-                        "Couldn't reach Wallhaven's image host ({other})."
-                    )),
-                })?;
-        let status = response.status().as_u16();
-        if status != 200 {
-            return Err(AppError::Network(format!(
-                "Wallhaven's image host refused the file (HTTP {status})."
-            )));
-        }
-
         let staged = Staged::new(folder, name);
         let mut file = std::fs::File::create_new(&staged.0)?;
-        let expected = job.served.file_size;
-        // One byte past the size is enough to know the file is not that size.
-        let received = std::io::copy(
-            &mut response.body_mut().as_reader().take(expected + 1),
-            &mut file,
-        )
-        // `ureq` hands its own errors through `Read` wrapped in an `io::Error`,
-        // and unwrapping it is what tells a stalled host from a broken link.
-        .map_err(|error| match ureq::Error::from(error) {
-            ureq::Error::Timeout(_) => {
-                AppError::Network("Wallhaven's image host stopped sending the file.".to_string())
-            }
-            other => AppError::Network(format!("The download broke off ({other}).")),
-        })?;
-        if received != expected {
-            return Err(AppError::Network(format!(
-                "The file arrived at {received} bytes, not the {expected} Wallhaven announced."
-            )));
-        }
+        fetch_file(&self.agent, &job.served, &mut file)?;
         Ok(staged)
     }
+}
+
+/// The client for Wallhaven's image host: no key, no redirects, and a wait
+/// between reads rather than a cap on the whole (ADR 0054).
+///
+/// Its own and not [`Wallhaven`]'s, which carries the key to the API. A
+/// download's queue holds one and so do Discover's previews (`previews`).
+pub(crate) fn image_host_agent(timeouts: Timeouts) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(timeouts.connect))
+        // Every status is read below, so a 404 can say which file.
+        .http_status_as_error(false)
+        // No redirect is followed, so the bytes come from the URL the
+        // search served and from nowhere a 3xx could bounce them to
+        // (ADR 0054). A redirect is then a status that is not 200, and
+        // fails the file saying so.
+        .max_redirects(0)
+        .user_agent(concat!("walltare/", env!("CARGO_PKG_VERSION")))
+        .build();
+    let connector = DefaultConnector::new().chain(BetweenReads(timeouts.between_reads));
+    ureq::Agent::with_parts(
+        config,
+        connector,
+        ureq::unversioned::resolver::DefaultResolver::default(),
+    )
+}
+
+/// A served file's bytes, written into `sink`, or an error once the transfer
+/// failed or arrived at any size but the `file_size` Wallhaven announced.
+///
+/// What it wrote before failing stays in `sink`, for the caller to throw away.
+pub(crate) fn fetch_file(
+    agent: &ureq::Agent,
+    served: &Served,
+    sink: &mut impl std::io::Write,
+) -> Result<(), AppError> {
+    // The key goes on API calls and nowhere else (ADR 0052), and this
+    // agent never learns it.
+    let mut response = agent
+        .get(&served.path)
+        .call()
+        .map_err(|error| match error {
+            ureq::Error::Timeout(_) => {
+                AppError::Network("Wallhaven's image host took too long to answer.".to_string())
+            }
+            other => AppError::Network(format!("Couldn't reach Wallhaven's image host ({other}).")),
+        })?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(AppError::Network(format!(
+            "Wallhaven's image host refused the file (HTTP {status})."
+        )));
+    }
+
+    let expected = served.file_size;
+    // One byte past the size is enough to know the file is not that size.
+    let received = std::io::copy(
+        &mut response.body_mut().as_reader().take(expected + 1),
+        sink,
+    )
+    // `ureq` hands its own errors through `Read` wrapped in an `io::Error`,
+    // and unwrapping it is what tells a stalled host from a broken link.
+    .map_err(|error| match ureq::Error::from(error) {
+        ureq::Error::Timeout(_) => {
+            AppError::Network("Wallhaven's image host stopped sending the file.".to_string())
+        }
+        other => AppError::Network(format!("The download broke off ({other}).")),
+    })?;
+    if received != expected {
+        return Err(AppError::Network(format!(
+            "The file arrived at {received} bytes, not the {expected} Wallhaven announced."
+        )));
+    }
+    Ok(())
 }
 
 /// Resets the queue's thread state if [`Downloads::run`] unwinds.
