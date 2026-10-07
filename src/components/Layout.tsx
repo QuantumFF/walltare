@@ -10,7 +10,17 @@ import { ReviewView } from "@/components/ReviewView";
 import { SettingsView } from "@/components/SettingsView";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import { ToastSurface, useToaster } from "@/components/ToastSurface";
-import { Button } from "@/components/ui/button";
+// PROTOTYPE — chrome styling variants (?chrome=A..E). Throwaway.
+import {
+  CHROME_VARIANTS,
+  ChromeVariant,
+  ChromeVariantContext,
+  type TabStyle,
+} from "@/components/prototype/ChromeVariants.prototype";
+import {
+  PrototypeSwitcher,
+  usePrototypeVariant,
+} from "@/components/prototype/PrototypeSwitcher";
 import { useApp, type View } from "@/context/AppContext";
 import {
   KeyboardHandoffProvider,
@@ -21,11 +31,9 @@ import { LightboxHostProvider } from "@/context/LightboxHostContext";
 import { DownloadRunProvider } from "@/context/DownloadRunContext";
 import { ScanRunProvider, useScanOutcome } from "@/context/ScanRunContext";
 import { client } from "@/lib/client";
-import { cn } from "@/lib/utils";
-import appIcon from "@/assets/app-icon.png";
-import { Settings as SettingsIcon } from "lucide-react";
 import {
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -120,7 +128,7 @@ function stepTab(from: number, by: 1 | -1): number {
  * half-truth in both directions. Each view names itself with its own heading
  * instead.
  */
-function ViewTabs() {
+function ViewTabs({ styles }: { styles: TabStyle }) {
   const { view, setView } = useApp();
   const handOff = useKeyboardHandoff();
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -170,7 +178,7 @@ function ViewTabs() {
     <div
       role="tablist"
       aria-label="Views"
-      className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1"
+      className={styles.list}
     >
       {TABS.map((tab, index) => (
         <button
@@ -184,28 +192,11 @@ function ViewTabs() {
           tabIndex={index === stop ? 0 : -1}
           onClick={(event) => click(event, index)}
           onKeyDown={(event) => handleKeyDown(event, index)}
-          className={cn(
-            "h-8 rounded-md px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
-            view === tab.view
-              ? // A filled tab, where a 2px underline in the foreground colour
-                // used to be. #44 ruled that navigation should not assert itself
-                // as hard as a primary button, and that still holds: the fill is
-                // `secondary`, one step off the background rather than inverted,
-                // so the tab reads as the surface the page hangs from instead of
-                // as the thing to press. What the underline could not do is say
-                // which view is up from across the room, which is the whole job
-                // of this control. The view's own heading stays `sr-only`: a
-                // visible one would render the tab's own word twice, twelve
-                // pixels apart, which is the duplicate ADR 0015 came back to
-                // delete.
-                //
-                // Not the segmented track the page bars' filters sit in: the
-                // curator kept this look for the one row that navigates.
-                "bg-secondary font-medium text-foreground"
-              : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-          )}
+          className={styles.tab(view === tab.view)}
         >
-          {tab.label}
+          {styles.label
+            ? styles.label(tab, index, view === tab.view)
+            : tab.label}
         </button>
       ))}
     </div>
@@ -234,45 +225,15 @@ function Chrome() {
     handOff();
   };
 
+  const variant = useContext(ChromeVariantContext);
+
   return (
-    // No rule under it. Every view hangs a `PageBar` directly below, and the
-    // bar's own bottom border is the one edge between the chrome and the page;
-    // a second line one bar above it split one header into two strips.
-    <header className="sticky top-0 z-30 shrink-0 bg-background/95 backdrop-blur">
-      <div
-        data-slot="chrome-row"
-        // The window is undecorated, so this row is the title bar: Tauri moves
-        // the window from whatever the pointer went down on that carries the
-        // attribute, which is the row's own empty space and the wordmark, never
-        // the tabs or the gear.
-        data-tauri-drag-region
-        className="relative flex h-12 items-center px-4"
-      >
-        <div
-          data-tauri-drag-region
-          className="flex items-center gap-2 text-sm font-semibold tracking-tight"
-        >
-          <img src={appIcon} alt="" className="h-4 w-4" />
-          walltare
-        </div>
-
-        <ViewTabs />
-
-        <Button
-          variant={onSettings ? "secondary" : "ghost"}
-          size="icon"
-          aria-label="Settings"
-          // Not a tab, so it cannot be `aria-selected`. While Settings is up no
-          // tab is filled and the gear carries the active treatment instead,
-          // and this is that state spelled out for a screen reader.
-          aria-current={onSettings ? "page" : undefined}
-          onClick={toggleSettings}
-          className={cn("ml-auto", !onSettings && "text-muted-foreground")}
-        >
-          <SettingsIcon aria-hidden />
-        </Button>
-      </div>
-    </header>
+    <ChromeVariant
+      variant={variant}
+      renderTabs={(styles) => <ViewTabs styles={styles} />}
+      onSettings={onSettings}
+      toggleSettings={toggleSettings}
+    />
   );
 }
 
@@ -358,6 +319,12 @@ function Shell({
   );
 
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+
+  // PROTOTYPE: which chrome + page bar variant is up.
+  const [chromeVariant, setChromeVariant] = usePrototypeVariant(
+    "chrome",
+    CHROME_VARIANTS.map((v) => v.key),
+  );
 
   // The frontend owns the trigger for pre-generation, the way it already owns
   // the scan: spawning the pass from Tauri's `setup()` would start decoding
@@ -481,6 +448,12 @@ function Shell({
   }, [handOff, setView, view]);
 
   return (
+    <ChromeVariantContext.Provider value={chromeVariant}>
+    <PrototypeSwitcher
+      variants={CHROME_VARIANTS}
+      current={chromeVariant}
+      onChange={setChromeVariant}
+    />
     <div className="flex h-screen flex-col bg-background font-sans text-foreground antialiased selection:bg-primary selection:text-primary-foreground">
       {/* The stacking order, and the document order that goes with it. Reading
           down the file is reading up the z-axis: the views at the bottom, the
@@ -552,6 +525,7 @@ function Shell({
         actions={PAGE_ACTIONS[view]}
       />
     </div>
+    </ChromeVariantContext.Provider>
   );
 }
 

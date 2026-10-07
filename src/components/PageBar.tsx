@@ -1,5 +1,9 @@
 import { useHandOffOnPointerPress } from "@/context/KeyboardHandoffContext";
-import type { ReactNode } from "react";
+import {
+  ChromeVariantContext,
+  pageBarClass,
+} from "@/components/prototype/ChromeVariants.prototype";
+import { useContext, type ReactNode } from "react";
 
 /**
  * The bar a page owns, directly under the chrome.
@@ -17,12 +21,14 @@ import type { ReactNode } from "react";
  */
 export function PageBar({ children }: { children?: ReactNode }) {
   const handOffOnPointerPress = useHandOffOnPointerPress();
+  // PROTOTYPE: styled to match the chrome variant.
+  const variant = useContext(ChromeVariantContext);
 
   return (
     <div
       data-slot="page-bar"
       onClick={handOffOnPointerPress}
-      className="flex h-11 shrink-0 items-center gap-3 border-b border-border/60 px-4 text-sm"
+      className={pageBarClass(variant)}
     >
       {children}
     </div>
