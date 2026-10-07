@@ -151,12 +151,16 @@ function SettingsGroup({
 /**
  * A row of buttons to each group, stuck to the top of the view's scroll
  * container so it is still there after the first jump.
+ *
+ * No rule under it, for the reason the page bar has none (ADR 0063): it was the
+ * last drawn edge in the header. Its translucent ground is what parts it from
+ * the sections scrolling under it.
  */
 function GroupNav({ groups }: { groups: RefObject<GroupRefs> }) {
   return (
     <nav
       aria-label="Settings groups"
-      className="sticky top-0 z-10 -mx-4 flex flex-wrap gap-1 border-b border-border/60 bg-background/95 px-4 py-2 backdrop-blur"
+      className="sticky top-0 z-10 -mx-4 flex flex-wrap gap-1 bg-background/95 px-4 py-2 backdrop-blur"
     >
       {GROUPS.map((group) => (
         <Button

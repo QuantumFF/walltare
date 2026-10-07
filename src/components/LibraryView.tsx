@@ -485,9 +485,9 @@ export function LibraryView() {
             return (
               <Button
                 key={value}
-                // The chips' 28px, as a square: the control carries an icon and
-                // no word, so a button sized for a label would be a chip's worth
-                // of empty space either side of it.
+                // The Status segments' 28px, as a square: the control carries an
+                // icon and no word, so a button sized for a label would be a
+                // segment's worth of empty space either side of it.
                 size="icon-sm"
                 variant="segment"
                 aria-pressed={current}

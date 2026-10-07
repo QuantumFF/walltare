@@ -76,8 +76,10 @@ sets it off from the page is what sits on it:
   read a size smaller than Rank's.
 
 Discover's collapsed header is that page's bar, so it follows: `h-12`, no rule,
-and the pills it already had. `useCollapsingHeader`'s strip height moves from 44
-to 48 with it.
+and its pills grow from 28px to `pageBarPill`'s 32. The bar's height lives in
+`PageBar.tsx` as both the class (`pageBarHeight`) and the number
+(`PAGE_BAR_HEIGHT_PX`), side by side, and `useCollapsingHeader`'s strip height
+reads the number instead of keeping its own 44.
 
 ## Considered options
 
@@ -116,6 +118,11 @@ Library's ordering drop-down would have done the same.
 Now it asserts the foreground colour on the current tab, the faded one on the
 others, and no fill on any of them.
 
-**Rank's "nothing left to decide" row and Settings' section nav keep their
-rules.** Neither is a page bar. They are rows in the page under it, and the
-edge there separates content from content rather than header from page.
+**Settings' section nav loses its rule too.** It is not a page bar, but it
+sits directly under one and sticks there, so its line was the one drawn edge
+left in Settings' header. Its translucent ground parts it from the sections
+scrolling under it.
+
+**Rank's "nothing left to decide" row keeps its rule.** It is a row in the
+page under the bar, and the edge there separates content from content rather
+than header from page.

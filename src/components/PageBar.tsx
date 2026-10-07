@@ -9,24 +9,33 @@ import type { ComponentProps, ReactNode } from "react";
  * page needs to say sits below it rather than in it: Rank's Undecided headline,
  * Review's destination line, Library's filter row. So the height is declared
  * here once instead of in three pages that would each drift, and nothing jumps
- * as the curator navigates (ADR 0015). It is the chrome's own `h-12`, and
- * Discover's collapsed header holds the same number (`useCollapsingHeader`).
+ * as the curator navigates (ADR 0015). It is the chrome's own `h-12`, held in
+ * `pageBarHeight`, which Discover's collapsed header wears as well.
  *
  * It has no surface and no rule (ADR 0063). The chrome above it is bare words,
  * so a band or a line here would be the only drawn edge in the header, and it
  * used to split one header into strips. What tells the bar from the page is
  * what sits on it: a title in a chip, `PageBarTitle`, and every control a
  * pill. The pills are the controls' own — `SegmentedGroup` is one everywhere,
- * and a lone button or drop-down here takes `pageBarPill` where it is
- * written — rather than a rule in this
- * component reaching into the page's children, which would round whatever a
- * page happened to put in the bar, popover triggers it did not mean included.
+ * and a lone button or drop-down here takes `pageBarPill` where it is written —
+ * rather than a rule in this component reaching into the page's children,
+ * which would round whatever a page happened to put in the bar, popover
+ * triggers it did not mean included.
  *
  * A button in it that the pointer pressed hands the keyboard back to the page.
  * Otherwise it keeps the focus, and the arrows the curator reaches for next go
  * to a button that answers none of them instead of to the grid or filmstrip
  * under it.
  */
+/**
+ * The bar's height, as the class that sets it and as the number Discover's
+ * collapsing header does its arithmetic with (`useCollapsingHeader`). Written
+ * side by side so the two cannot be changed apart; Discover's collapsed header
+ * is that page's bar, so it wears the class too (ADR 0063).
+ */
+export const pageBarHeight = "h-12";
+export const PAGE_BAR_HEIGHT_PX = 48;
+
 export function PageBar({ children }: { children?: ReactNode }) {
   const handOffOnPointerPress = useHandOffOnPointerPress();
 
@@ -34,7 +43,10 @@ export function PageBar({ children }: { children?: ReactNode }) {
     <div
       data-slot="page-bar"
       onClick={handOffOnPointerPress}
-      className="flex h-12 shrink-0 items-center gap-3 px-4 text-sm"
+      className={cn(
+        "flex shrink-0 items-center gap-3 px-4 text-sm",
+        pageBarHeight,
+      )}
     >
       {children}
     </div>
