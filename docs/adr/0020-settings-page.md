@@ -174,6 +174,15 @@ after typing `~/Wallpapers` overwrites it with `/home/qdes/Wallpapers` and
 discards the portability the `~` was there for. Nothing warns about that,
 because the user just picked the folder they meant.
 
+> **Amended by [#433](https://github.com/QuantumFF/walltare/pull/433),
+> 2026-10-07.** The plugin is built with `xdg-portal` rather than its default
+> `gtk3`. Under `gtk3`, rfd draws GTK's chooser inside the app and never asks
+> xdg-desktop-portal, so a desktop configured for a different picker (KDE's,
+> here, under Hyprland) still got GTK's. Through the portal, Browse opens
+> whatever `FileChooser` the desktop names. The cost is that Browse now needs
+> a running portal with a FileChooser backend, and ~40 more crates (`ashpd`,
+> `zbus`, Wayland) in the lockfile.
+
 ### Scanning is explicit, and nothing cancels it
 
 A button under the Library root field, reading **Scan** when the library is
