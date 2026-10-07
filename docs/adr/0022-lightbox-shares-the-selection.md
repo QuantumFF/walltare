@@ -276,6 +276,15 @@ made the end of the list mean something.
 > `ActionButton` shared with the strip and the card overlay, so the three
 > surfaces show one control rather than three looks for the same decision.
 
+> **Amended 2026-10-08, at the curator's request.** The read-out is pressable
+> now: on a wallpaper's row, pressing the path shows the file selected in the
+> desktop's file manager, and a Discover Result's identity line ends in an
+> icon that opens its page on Wallhaven. The read-out still drops first. Both
+> are shortcuts out of the app rather than decisions about the item, so a
+> floored row losing the reveal costs the curator a detour, not an action.
+> The filename on the identity line is selectable, against the window's
+> `select-none`.
+
 ### The picture never blanks
 
 On a step, the outgoing image stays painted until the next one fires `load`. The
