@@ -174,12 +174,16 @@ release that looks like it has a broken thumbnail pipeline.
       from `th.wallhaven.cc`. No card shows **Couldn't load preview** while
       the machine is online. See
       [ADR 0053](adr/0053-discover-thumbnails-load-straight-from-wallhaven.md).
-      At the starting three columns each card sharpens as its full file from
-      `w.wallhaven.cc` lands; press `-` to four and the cards stay on the
+      At the starting three columns each card sharpens as its `preview://`
+      picture lands, and the inspector's network tab shows no card request
+      to `w.wallhaven.cc`. Press `-` to four and the cards stay on the
       thumbnail, with no blank card on the way in or out. Press `+` to two:
-      the cards come out sharp at the wider size. Sweep the mouse across the
+      the cards are sharp at the wider size. Sweep the mouse across the
       grid. No card flickers or shows another card's picture, and no picture
-      is drawn between rows.
+      is drawn between rows. Restart the app and search again: the same
+      cards sharpen from `previews/` in the data directory without waiting
+      on the network. See
+      [ADR 0062](adr/0062-discover-cards-preview-through-the-backend.md).
       Then press `Enter` on a card: the lightbox opens on its thumbnail, and
       the full file from `w.wallhaven.cc` replaces it. Step with `→` a few
       times; each Result sharpens the same way. See

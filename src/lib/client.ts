@@ -1063,6 +1063,17 @@ export function wallpaperImageUrl(
   return `wallpaper://localhost/image/${id}?size=${size}`;
 }
 
+/**
+ * Builds a `preview://` URL: a Result's full file as a 1920-pixel JPEG, which
+ * the backend fetches from Wallhaven, downscales and keeps (ADR 0062). The
+ * Result is named by its Wallhaven id alone; the backend finds the file's URL
+ * from the search that served it. `localhost` is load-bearing, as it is in
+ * {@link wallpaperImageUrl}.
+ */
+export function previewUrl(id: string): string {
+  return `preview://localhost/result/${id}`;
+}
+
 /** What `C` takes and what it answers with, read off `BackendCommands`. */
 type ArgsOf<C extends Command> = BackendCommands[C]["args"];
 type AnswerOf<C extends Command> = BackendCommands[C]["answer"];

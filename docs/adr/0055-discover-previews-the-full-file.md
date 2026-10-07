@@ -102,3 +102,9 @@ render in a release build, and the console shows no violations.
 > at, from three columns to two, fetches the file and draws it again. That
 > fetch usually comes from WebKit's cache, but nothing guarantees it. A card
 > hidden at four and five columns never refetches.
+
+> **Superseded in part by [ADR 0062](0062-discover-cards-preview-through-the-backend.md),
+> 2026-10-08.** Cards no longer fetch from `w.`. A card draws a preview the
+> backend made, the full file at 1920 pixels, onto the canvas the second
+> amendment describes. The first amendment's fetches from `w.` are superseded
+> by that, and "Only the lightbox loads it" holds again.
