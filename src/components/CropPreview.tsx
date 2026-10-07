@@ -161,9 +161,14 @@ export function CropPreview({ dimensions: size }: CropPreviewProps) {
         }
         // One pixel at 70%, the prototype's line: enough to mark the boundary
         // without a white frame competing with the picture inside it.
+        //
+        // When nothing is cut the kept region is the whole picture, so it takes
+        // the picture's own corners: a square outline inside a rounded hero is
+        // clipped away at each corner, which reads as a notch in the frame.
         className={cn(
           "absolute",
           plan && "outline-1 -outline-offset-1 outline-white/70",
+          plan && plan.side === 0 && plan.band === 0 && "rounded-[inherit]",
         )}
       />
       <div className="absolute inset-x-0 bottom-0 flex justify-center p-2">

@@ -1,4 +1,10 @@
-import type { AppError, Resolution, SettingKey, Settings, Wallpaper } from "@/lib/client";
+import type {
+  AppError,
+  Resolution,
+  SettingKey,
+  Settings,
+  Wallpaper,
+} from "@/lib/client";
 import { act, cleanup, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
@@ -85,6 +91,12 @@ function caption(root?: HTMLElement): string | null {
 function outlined(root?: HTMLElement): boolean {
   const kept = preview(root)?.querySelector("[data-slot='crop-kept']");
   return kept?.className.includes("outline-1") ?? false;
+}
+
+/** Whether the kept region takes the picture's own rounded corners. */
+function roundedLikeThePicture(root?: HTMLElement): boolean {
+  const kept = preview(root)?.querySelector("[data-slot='crop-kept']");
+  return kept?.className.includes("rounded-[inherit]") ?? false;
 }
 
 afterEach(cleanup);
@@ -200,9 +212,9 @@ test.each(["strip", "lightbox"])(
     expect(toast?.querySelector('[data-slot="toast-title"]')?.textContent).toBe(
       "Couldn't save the crop preview",
     );
-    expect(toast?.querySelector('[data-slot="toast-description"]')?.textContent).toBe(
-      "The settings database is read-only",
-    );
+    expect(
+      toast?.querySelector('[data-slot="toast-description"]')?.textContent,
+    ).toBe("The settings database is read-only");
     expect(stored.crop_preview).toBe(false);
   },
 );
@@ -297,6 +309,9 @@ test("a wallpaper matching the screen's ratio shows no bars", async () => {
   // The claim is still made, because "all of it" is an answer: the outline goes
   // round the whole picture and the caption says nothing goes.
   expect(outlined()).toBe(true);
+  // On the picture's own edges, so on its own corners too: a square outline
+  // inside the rounded hero is clipped away at each corner.
+  expect(roundedLikeThePicture()).toBe(true);
   expect(caption()).toBe("1920 × 1080 · nothing cropped");
 });
 
