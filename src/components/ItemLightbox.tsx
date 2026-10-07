@@ -319,10 +319,13 @@ export interface LightboxRow {
  * row that says which item is up is the one to give it — for a wallpaper its
  * filename. Exported so a page's identity line can place it without reaching
  * for the primitive.
+ *
+ * The one text in the window a drag can select, against the body's
+ * `select-none`: a filename is worth copying out.
  */
 export function LightboxTitle({ children }: { children: ReactNode }) {
   return (
-    <Dialog.Title className="truncate text-sm font-medium text-white">
+    <Dialog.Title className="truncate text-sm font-medium text-white select-text">
       {children}
     </Dialog.Title>
   );

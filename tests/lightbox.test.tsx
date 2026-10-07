@@ -358,6 +358,45 @@ test("a Rejected wallpaper with no Origin falls back to its path", async () => {
   expect(readOut().textContent).toBe("/library/rejected/legacy.jpg");
 });
 
+test("a click on the read-out shows the file in the file manager", async () => {
+  const revealed: unknown[] = [];
+  mockCommand("reveal_wallpaper", (args) => {
+    revealed.push(args);
+    return null;
+  });
+  await enterLibrary([
+    wallpaper(4, {
+      filename: "gone.jpg",
+      status: "rejected",
+      path: "/library/rejected/gone.jpg",
+      origin_path: "/library/gone.jpg",
+    }),
+  ]);
+  await click(cell("gone.jpg, Rejected"));
+
+  // By id, so the backend reveals where the file is now, and not the Origin
+  // the line prints: that folder no longer holds it.
+  await click(readOut());
+
+  expect(revealed).toEqual([{ id: 4 }]);
+  expect(toastTitle()).toBeNull();
+});
+
+test("a reveal the backend refuses says so on a toast", async () => {
+  mockCommand("reveal_wallpaper", () =>
+    Promise.reject({
+      kind: "file_missing",
+      message: "Nothing is at /library/first.jpg any more.",
+    }),
+  );
+  await enterReview();
+  await press("Enter");
+
+  await click(readOut());
+
+  expect(toastTitle()).toBe("Couldn't show first.jpg in its folder");
+});
+
 test("the lightbox is a non-modal dialog, labelled by the filename", async () => {
   await enterReview();
   await press("Enter");

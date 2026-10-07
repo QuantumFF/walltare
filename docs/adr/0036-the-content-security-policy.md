@@ -164,6 +164,12 @@ lines of `Cargo.lock` with them. `tauri-plugin-dialog` keeps the note beside it
 in `lib.rs` explaining what calls it, which is what a kept plugin owes; opener
 had no such note to write.
 
+> **Amended 2026-10-07.** The opener plugin is back, with a caller: the
+> lightbox's path read-out shows the file in the file manager through
+> `reveal_wallpaper`. Only its Rust side is used, so `capabilities/default.json`
+> still grants the frontend nothing of it, and `@tauri-apps/plugin-opener` stays
+> out of `package.json`. The note beside it in `lib.rs` says what calls it.
+
 ## Alternatives rejected
 
 **Leave `csp` as `null` until something actually loads remote content.** It

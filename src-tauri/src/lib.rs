@@ -26,6 +26,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_opener::OpenerExt;
 
 use pregen::Pregen;
 use thumbnails::ThumbnailCache;
@@ -616,6 +617,36 @@ async fn restore_wallpaper(id: i64, app: AppHandle) -> Result<db::Wallpaper, err
     .await
 }
 
+/// Shows a wallpaper's file in the desktop's file manager, selected in its
+/// folder: the lightbox's path read-out is the control that asks.
+///
+/// Takes the id rather than a path, so the page can only ever point the file
+/// manager at a file the library holds. The path is wherever the file is now,
+/// which for a Rejected wallpaper is the reject folder and not the Origin its
+/// read-out prints. A file that is not there answers `FileMissing` rather than
+/// opening a folder that does not hold it.
+///
+/// Off the main thread: on Linux the reveal is a D-Bus call to the file
+/// manager, which can take as long as the file manager takes to start.
+#[tauri::command]
+async fn reveal_wallpaper(id: i64, app: AppHandle) -> Result<(), error::AppError> {
+    off_main_thread(app, move |app| {
+        let path = app
+            .state::<Db>()
+            .read(|conn| db::get_wallpaper(conn, id))?
+            .path;
+        if !std::path::Path::new(&path).exists() {
+            return Err(error::AppError::FileMissing(format!(
+                "Nothing is at {path} any more."
+            )));
+        }
+        app.opener()
+            .reveal_item_in_dir(&path)
+            .map_err(|e| error::AppError::Io(e.to_string()))
+    })
+    .await
+}
+
 /// Every Near-duplicate pair waiting for an answer, each with both wallpapers.
 ///
 /// Worked out from the stored hashes on every call and never stored, since a
@@ -795,6 +826,12 @@ pub fn run() {
         // command is called from the frontend, so `capabilities/default.json`
         // grants exactly that one.
         .plugin(tauri_plugin_dialog::init())
+        // The lightbox's path read-out, through `reveal_wallpaper`. Only its
+        // Rust side is called, so `capabilities/default.json` grants the
+        // frontend nothing of it: the page names a wallpaper by id and never
+        // hands the plugin a path of its own (ADR 0036 removed the scaffold's
+        // copy for having no caller).
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let dir = data_dir(app.handle())?;
             std::fs::create_dir_all(&dir)?;
@@ -866,6 +903,7 @@ pub fn run() {
             unkeep_wallpaper,
             move_wallpaper,
             restore_wallpaper,
+            reveal_wallpaper,
             list_near_duplicates,
             keep_one,
             keep_both,
