@@ -113,8 +113,9 @@ export function CropPreview({ dimensions: size }: CropPreviewProps) {
       data-slot="crop-preview"
       // Over the picture and under every control: the hero is clickable and the
       // lightbox has arrows hanging off the edges of its picture, and neither
-      // may stop taking a press because the bars are up.
-      className="pointer-events-none absolute inset-0"
+      // may stop taking a press because the bars are up. The picture's own
+      // corners, so the kept region below can inherit them.
+      className="pointer-events-none absolute inset-0 rounded-[inherit]"
     >
       {/* The discarded regions. Exactly one pair is ever drawn, because cropping
           to fill overflows on one axis only — and a wallpaper of the Screen's
@@ -138,10 +139,12 @@ export function CropPreview({ dimensions: size }: CropPreviewProps) {
           survives, because a wallpaper cropped almost out of existence leaves
           a kept region too narrow to hold its own percentage.
 
-          An `outline` drawn inwards rather than a border: a border would take
-          its two pixels out of the region it is marking, and on the axis that is
-          not cropped the edge it draws is the edge of the picture, where an
-          outline drawn outwards would fall outside the box entirely.
+          An inset ring rather than a border: a border would take its two pixels
+          out of the region it is marking, and on the axis that is not cropped
+          the edge it draws is the edge of the picture, where a line drawn
+          outwards would fall outside the box entirely. A ring and not an
+          inward `outline`, because WebKitGTK draws an outline's straight edges
+          inside a `border-radius` but not its curves.
 
           It is drawn for a wallpaper that loses nothing too. "This is what your
           screen keeps" is worth saying when the answer is all of it, and an
@@ -161,9 +164,14 @@ export function CropPreview({ dimensions: size }: CropPreviewProps) {
         }
         // One pixel at 70%, the prototype's line: enough to mark the boundary
         // without a white frame competing with the picture inside it.
+        //
+        // When nothing is cut the kept region is the whole picture, so it takes
+        // the picture's own corners: a square line inside a rounded hero is
+        // clipped away at each corner, which reads as a notch in the frame.
         className={cn(
           "absolute",
-          plan && "outline-1 -outline-offset-1 outline-white/70",
+          plan && "inset-ring inset-ring-white/70",
+          plan && plan.side === 0 && plan.band === 0 && "rounded-[inherit]",
         )}
       />
       <div className="absolute inset-x-0 bottom-0 flex justify-center p-2">
