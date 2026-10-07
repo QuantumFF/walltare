@@ -17,8 +17,8 @@ import type { ComponentProps, ReactNode } from "react";
  * used to split one header into strips. What tells the bar from the page is
  * what sits on it: a title in a chip, `PageBarTitle`, and every control a
  * pill. The pills are the controls' own — `SegmentedGroup` is one everywhere,
- * and a lone button or drop-down here takes `rounded-full` where it is
- * written, the way Discover's pills already did — rather than a rule in this
+ * and a lone button or drop-down here takes `pageBarPill` where it is
+ * written — rather than a rule in this
  * component reaching into the page's children, which would round whatever a
  * page happened to put in the bar, popover triggers it did not mean included.
  *
@@ -40,6 +40,19 @@ export function PageBar({ children }: { children?: ReactNode }) {
     </div>
   );
 }
+
+/**
+ * A lone control's shape in a page bar: a pill the segmented track's 32px tall,
+ * so a standalone toggle, drop-down or button stands as high as the tracks and
+ * the title chip beside it. A `size="sm"` button alone is 28px, which made
+ * Library's bar, the one with the most lone controls, read a size smaller than
+ * Rank's.
+ *
+ * A class the page puts on its own control, not a rule here that reaches into
+ * the bar's children (ADR 0063). A `SelectTrigger` takes it at `size="default"`:
+ * its `sm` height is a `data-[size=sm]:` utility that outranks a plain `h-8`.
+ */
+export const pageBarPill = "h-8 rounded-full";
 
 /**
  * What the page is counting or saying about itself, set in a chip at the head

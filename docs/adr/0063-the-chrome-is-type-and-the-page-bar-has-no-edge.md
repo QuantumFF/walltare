@@ -70,8 +70,10 @@ sets it off from the page is what sits on it:
   everywhere they are drawn. Settings' radio groups, Appearance and the rest,
   are included, though they sit outside any bar, because the older rule is that a
   choice between options looks like the same kind of thing on every page. Any
-  other button or drop-down in a bar takes `rounded-full` where the page writes
-  it, the way Discover's pills always did.
+  other button or drop-down in a bar takes `pageBarPill` where the page writes
+  it: `rounded-full` and the track's 32px. At `size="sm"` a lone control was
+  28px against the tracks' 32, and Library's bar, which has the most of them,
+  read a size smaller than Rank's.
 
 Discover's collapsed header is that page's bar, so it follows: `h-12`, no rule,
 and the pills it already had. `useCollapsingHeader`'s strip height moves from 44

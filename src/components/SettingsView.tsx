@@ -1,4 +1,4 @@
-import { PageBar } from "@/components/PageBar";
+import { PageBar, pageBarPill } from "@/components/PageBar";
 // Both fields below are the one Written path field module, which resolves the
 // typed string through the same hook the rejecting bars read the stored
 // destination with — so "is this path relative" has one answer and one
@@ -641,7 +641,7 @@ export function SettingsView() {
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto rounded-full"
+            className={cn("ml-auto", pageBarPill)}
             aria-keyshortcuts="Escape"
             onClick={() => goBack(returnTo)}
           >

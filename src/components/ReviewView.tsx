@@ -5,7 +5,7 @@ import {
   NearDuplicatesSection,
   useNearDuplicates,
 } from "@/components/NearDuplicatesSection";
-import { PageBar, PageBarTitle } from "@/components/PageBar";
+import { PageBar, PageBarTitle, pageBarPill } from "@/components/PageBar";
 import {
   RejectDestinationLine,
   useRejectDestination,
@@ -363,7 +363,7 @@ export function ReviewView() {
             void fetchReviewList(setRows);
             nearDuplicates.refresh();
           }}
-          className="gap-2 rounded-full"
+          className={cn("gap-2", pageBarPill)}
           disabled={loading}
         >
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
