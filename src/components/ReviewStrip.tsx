@@ -9,6 +9,7 @@ import {
 import {
   useDensityWheel,
   useHeldDensity,
+  useSidewaysWheel,
   type HeldDensity,
 } from "@/components/density";
 import {
@@ -305,6 +306,8 @@ export function ReviewStrip({
 
   // Ctrl and the wheel anywhere over the strip, read the way the grid reads it.
   useDensityWheel(stripRef, moveStep);
+  // And the plain wheel over the filmstrip, which only scrolls sideways.
+  useSidewaysWheel(filmstripRef);
 
   // One handler for the whole strip rather than one on the filmstrip, because
   // focus does not stay on the filmstrip: pressing Keep with the pointer lands

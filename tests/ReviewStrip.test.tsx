@@ -3,6 +3,7 @@ import { fittedBox, ratioOf } from "@/lib/layout-plan";
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   screen,
   within,
@@ -316,6 +317,25 @@ test("Ctrl and the wheel size the filmstrip and not the webview (#264)", async (
   expect(await ctrlWheel(strip() as HTMLElement, -100)).toBe(false);
   expect(entryHeight()).toBe(160);
   expect(await ctrlWheel(strip() as HTMLElement, 100)).toBe(false);
+  expect(entryHeight()).toBe(128);
+});
+
+test("a plain wheel over the filmstrip scrolls it sideways", async () => {
+  await openStrip([wallpaper(3, { filename: "first.jpg" })]);
+  const filmstrip = reviewView().querySelector(
+    '[data-slot="review-filmstrip"]',
+  ) as HTMLElement;
+
+  // A mouse wheel only sends a vertical delta, which a box that scrolls on the
+  // horizontal axis alone would ignore. The event is refused so it does not
+  // also scroll whatever is behind, and the density is left where it was.
+  const event = createEvent.wheel(filmstrip, { deltaY: 100 });
+  let survived = true;
+  await act(async () => {
+    survived = fireEvent(filmstrip, event);
+  });
+  expect(survived).toBe(false);
+  expect(filmstrip.scrollLeft).toBe(100);
   expect(entryHeight()).toBe(128);
 });
 
