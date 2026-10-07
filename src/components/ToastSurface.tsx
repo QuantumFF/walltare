@@ -143,6 +143,11 @@ export type ToastRequest =
   | { kind: "load-failed"; noun: string; error: unknown }
   | { kind: "save-failed"; noun: string; error: unknown }
   /**
+   * The file manager would not show a wallpaper's file: it is not on disk any
+   * more, or no file manager answered. The detail is the backend's.
+   */
+  | { kind: "reveal-failed"; filename: string; error: unknown }
+  /**
    * A refusal the frontend made itself, with no call behind it: the cohort
    * rejected before ADR 0009 recorded an Origin. `origin_path` is on the DTO, so
    * the answer is known before the press and the description is the frontend's
@@ -593,6 +598,17 @@ export function ToastSurface({
             prefix: `Couldn't ${request.kind === "load-failed" ? "load" : "save"} ${request.noun}`,
             filename: "",
             suffix: "",
+            description: backendMessage(request.error),
+            pinned: true,
+          });
+          return;
+
+        case "reveal-failed":
+          setTransient({
+            key,
+            prefix: "Couldn't show ",
+            filename: request.filename,
+            suffix: " in its folder",
             description: backendMessage(request.error),
             pinned: true,
           });

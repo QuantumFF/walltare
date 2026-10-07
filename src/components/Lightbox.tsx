@@ -3,6 +3,7 @@ import { wallpaperPicture } from "@/components/HeroPicture";
 import { ItemLightbox, LightboxTitle } from "@/components/ItemLightbox";
 import { STATUS_KEYS } from "@/components/keymap";
 import { ScoreBadge } from "@/components/ScoreBadge";
+import { useToaster } from "@/components/ToastSurface";
 import type { SelectionHandle } from "@/components/selection";
 import {
   STATUS_ACTIONS,
@@ -11,7 +12,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { useApp } from "@/context/AppContext";
-import type { Wallpaper } from "@/lib/client";
+import { client, type Wallpaper } from "@/lib/client";
 import {
   counted,
   FILE_IS_GONE,
@@ -121,6 +122,7 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
   // selection and not a child of the grid, so a prop would have to be threaded
   // through both pages to reach it (ADR 0022, ADR 0046).
   const { settings } = useApp();
+  const { show } = useToaster();
 
   return (
     <ItemLightbox
@@ -177,16 +179,32 @@ export function Lightbox({ grid, open, onClose, onAction }: LightboxProps) {
         // the count below: they are the parts of the row that tell the curator
         // nothing they need in order to act, which is what makes them the parts
         // that can go (ADR 0022).
+        //
+        // Pressing it shows the file in the desktop's file manager: where the
+        // file is now, which is the `title`'s path and not a Rejected row's
+        // Origin, since the Origin is a folder that no longer holds it.
         readout: (
-          <p
+          <button
+            type="button"
             data-slot="lightbox-readout"
-            className="truncate font-mono text-[11px] text-white/50"
+            className="block w-full cursor-pointer truncate text-left font-mono text-[11px] text-white/50 outline-none hover:text-white/80 hover:underline focus-visible:text-white/80 focus-visible:underline"
             title={wallpaper.path}
+            onClick={() => {
+              void client
+                .revealWallpaper(wallpaper.id)
+                .catch((error: unknown) => {
+                  show({
+                    kind: "reveal-failed",
+                    filename: wallpaper.filename,
+                    error,
+                  });
+                });
+            }}
           >
             {wallpaper.status === "rejected" && wallpaper.origin_path
               ? wallpaper.origin_path
               : wallpaper.path}
-          </p>
+          </button>
         ),
         // How much the Score beside the filename is worth, printed above the
         // position. Read-out, so it goes with the line above on a floored row;

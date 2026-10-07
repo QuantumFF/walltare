@@ -757,7 +757,7 @@ export interface BackendEvents {
  *
  * The wire names, `generate_handler!` in `lib.rs`, and the same job
  * `BackendEvents` does above for the seven event names: the one place in the
- * frontend where these 23 strings are written down. `client`'s methods below
+ * frontend where these 30 strings are written down. `client`'s methods below
  * reach them through `call`, the only caller in the app; the test suite's
  * `mockCommand` is the other reader, which is why the names are exported rather
  * than inlined (ADR 0031).
@@ -788,6 +788,7 @@ export type Command =
   | "unkeep_wallpaper"
   | "move_wallpaper"
   | "restore_wallpaper"
+  | "reveal_wallpaper"
   | "list_near_duplicates"
   | "keep_one"
   | "keep_both"
@@ -860,6 +861,7 @@ export interface BackendCommands {
     answer: Wallpaper;
   };
   restore_wallpaper: { args: { id: number }; answer: Wallpaper };
+  reveal_wallpaper: { args: { id: number }; answer: null };
   list_near_duplicates: { args: undefined; answer: NearDuplicatePair[] };
   keep_one: {
     args: { keptId: number; otherId: number; destinationFolder: string };
@@ -1296,6 +1298,12 @@ export const client = {
    * `file_missing` when the file has left the reject folder.
    */
   restoreWallpaper: (id: number) => call("restore_wallpaper", { id }),
+
+  /**
+   * Shows the wallpaper's file selected in the desktop's file manager, wherever
+   * the file is now. Rejects with `file_missing` when nothing is on disk there.
+   */
+  revealWallpaper: (id: number) => callSilent("reveal_wallpaper", { id }),
 
   /**
    * Every Near-duplicate pair waiting for an answer, each with both
