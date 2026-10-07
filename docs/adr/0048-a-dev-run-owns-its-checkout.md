@@ -52,3 +52,19 @@ with the rest of the settings, so a Soft reject in a dev run moves the real file
 and the real database does not hear of it; ADR 0032 reads the moved file as gone
 there. Deleting `.dev-data/` takes a fresh copy. The window state is not
 isolated: it lives in the app config dir, and the last window closed wins.
+
+> **Amended 2026-10-08.** An Orca worktree no longer gets a `.dev-data` of its
+> own. `orca.yaml` lists `.dev-data` under `worktree.sharedDirectories`, so Orca
+> links each new worktree's `.dev-data` to the main checkout's, and
+> `dev-app.ts` finds the database already there and skips the seed. Each fresh
+> copy started with an empty thumbnail cache, and the `thumbnails` table keys
+> the cache by `wallpaper_id`, so the cache cannot be shared without the
+> database. Every new worktree regenerated every thumbnail on its first run.
+>
+> What this gives back: the dev database is shared again, only among dev runs.
+> A worktree carrying a new migration upgrades it, and from then on the main
+> checkout's `dev:app` refuses it as a database from the future until it is on
+> that migration too; deleting the main checkout's `.dev-data/` takes a fresh
+> copy for all of them. Two dev runs at once write each other's Comparisons.
+> The real database is still untouched. A worktree made by hand, or by
+> anything but Orca, still seeds its own.
