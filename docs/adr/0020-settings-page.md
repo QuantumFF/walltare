@@ -188,8 +188,9 @@ because the user just picked the folder they meant.
 > that dialog fails, rfd reports the failure as a dismissal, and the app exits
 > with only a line on stderr. The Arch package depends on zenity for that
 > reason; the AppImage cannot, so on a host without it the refusal is silent.
-> The portal path also adds 39 crates (`ashpd`, `zbus`, Wayland) to the
-> lockfile, against the "six crates" under Consequences.
+> The portal path also adds 18 crates to the lockfile (`ashpd` and Wayland;
+> `zbus` came with the opener plugin), against the "six crates" under
+> Consequences.
 
 ### Scanning is explicit, and nothing cancels it
 
