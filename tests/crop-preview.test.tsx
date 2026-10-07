@@ -90,7 +90,7 @@ function caption(root?: HTMLElement): string | null {
 /** Whether the kept region is outlined, which is the boundary's own marker. */
 function outlined(root?: HTMLElement): boolean {
   const kept = preview(root)?.querySelector("[data-slot='crop-kept']");
-  return kept?.className.includes("outline-1") ?? false;
+  return kept?.className.includes("inset-ring") ?? false;
 }
 
 /** Whether the kept region takes the picture's own rounded corners. */
