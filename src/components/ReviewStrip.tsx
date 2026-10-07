@@ -9,9 +9,9 @@ import {
 import {
   useDensityWheel,
   useHeldDensity,
-  useSidewaysWheel,
   type HeldDensity,
 } from "@/components/density";
+import { useSidewaysWheel } from "@/components/sideways-wheel";
 import {
   STATUS_KEYS,
   answerKey,

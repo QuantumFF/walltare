@@ -3,7 +3,6 @@ import { fittedBox, ratioOf } from "@/lib/layout-plan";
 import {
   act,
   cleanup,
-  createEvent,
   fireEvent,
   screen,
   within,
@@ -24,6 +23,7 @@ import {
   servingRows,
   settings,
   wallpaper,
+  wheel,
 } from "./fixtures";
 import { mockCommand } from "./ipc-mocks";
 
@@ -320,23 +320,47 @@ test("Ctrl and the wheel size the filmstrip and not the webview (#264)", async (
   expect(entryHeight()).toBe(128);
 });
 
+/**
+ * The filmstrip as a browser lays it out: `width` wide around entries that run
+ * to `content`. happy-dom does no layout and reports both as zero, which reads
+ * as a filmstrip with nothing to scroll.
+ */
+function browserLaysOutTheFilmstrip(width: number, content: number) {
+  const box = filmstrip();
+  Object.defineProperty(box, "clientWidth", {
+    value: width,
+    configurable: true,
+  });
+  Object.defineProperty(box, "scrollWidth", {
+    value: content,
+    configurable: true,
+  });
+  return box;
+}
+
+const filmstrip = () =>
+  reviewView().querySelector('[data-slot="review-filmstrip"]') as HTMLElement;
+
 test("a plain wheel over the filmstrip scrolls it sideways", async () => {
   await openStrip([wallpaper(3, { filename: "first.jpg" })]);
-  const filmstrip = reviewView().querySelector(
-    '[data-slot="review-filmstrip"]',
-  ) as HTMLElement;
+  const box = browserLaysOutTheFilmstrip(1000, 4000);
 
   // A mouse wheel only sends a vertical delta, which a box that scrolls on the
   // horizontal axis alone would ignore. The event is refused so it does not
   // also scroll whatever is behind, and the density is left where it was.
-  const event = createEvent.wheel(filmstrip, { deltaY: 100 });
-  let survived = true;
-  await act(async () => {
-    survived = fireEvent(filmstrip, event);
-  });
-  expect(survived).toBe(false);
-  expect(filmstrip.scrollLeft).toBe(100);
+  expect(await wheel(box, 100)).toBe(false);
+  expect(box.scrollLeft).toBe(100);
   expect(entryHeight()).toBe(128);
+});
+
+test("a wheel the filmstrip cannot use is handed on", async () => {
+  await openStrip([wallpaper(3, { filename: "first.jpg" })]);
+  const box = browserLaysOutTheFilmstrip(1000, 1000);
+
+  // Everything fits, so there is nowhere to scroll, and the wheel is left for
+  // whatever is behind rather than swallowed.
+  expect(await wheel(box, 100)).toBe(true);
+  expect(box.scrollLeft).toBe(0);
 });
 
 test("clicking a filmstrip entry moves the hero to it", async () => {

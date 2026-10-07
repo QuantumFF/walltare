@@ -74,39 +74,3 @@ export function useDensityWheel(
     return () => node.removeEventListener("wheel", onWheel);
   }, [target, onStep]);
 }
-
-/**
- * A plain wheel over `target` scrolling it sideways: what a one-line scroller
- * like Review's filmstrip needs, since a mouse wheel only ever sends a vertical
- * delta and a box that scrolls on the horizontal axis alone ignores it. Without
- * this the filmstrip moves only from its scrollbar or a trackpad's sideways
- * swipe.
- *
- * Here beside `useDensityWheel` because the two split one wheel between them:
- * with Ctrl held the event is the density's, so this leaves it alone. A swipe
- * that is already mostly sideways is the browser's own and left alone as well.
- * `passive: false` for the density hook's reason, so the vertical scroll is
- * refused rather than also reaching whatever is behind.
- */
-export function useSidewaysWheel(target: RefObject<HTMLElement | null>): void {
-  useEffect(() => {
-    const node = target.current;
-    if (!node) return;
-    const onWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || event.deltaY === 0) return;
-      if (Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-      event.preventDefault();
-      // A wheel that counts in lines or pages rather than pixels, which some
-      // mice send: a line taken as a line of text, a page as the box's width.
-      const unit =
-        event.deltaMode === WheelEvent.DOM_DELTA_LINE
-          ? 16
-          : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
-            ? node.clientWidth
-            : 1;
-      node.scrollLeft += event.deltaY * unit;
-    };
-    node.addEventListener("wheel", onWheel, { passive: false });
-    return () => node.removeEventListener("wheel", onWheel);
-  }, [target]);
-}
