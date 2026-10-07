@@ -170,7 +170,11 @@ function ViewTabs() {
     <div
       role="tablist"
       aria-label="Views"
-      className="absolute left-1/2 flex -translate-x-1/2 items-center gap-1"
+      // The gaps between the words are title bar like the rest of the row
+      // (`Chrome`). Tauri reads the attribute off the element the pointer went
+      // down on and not off its ancestors, so the tabs themselves stay buttons.
+      data-tauri-drag-region
+      className="flex items-center gap-5"
     >
       {TABS.map((tab, index) => (
         <button
@@ -185,24 +189,27 @@ function ViewTabs() {
           onClick={(event) => click(event, index)}
           onKeyDown={(event) => handleKeyDown(event, index)}
           className={cn(
-            "h-8 rounded-md px-3 text-sm transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+            // A word's own box is only as tall as its text, which is a 20px
+            // target for the control a curator reaches for most. The padding
+            // gives it a button's 32px, and the matching negative margin keeps
+            // the words the tablist's gap apart, as if the padding were not
+            // there.
+            "-mx-1.5 h-8 rounded-md px-1.5 text-[17px] font-semibold tracking-tight transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
             view === tab.view
-              ? // A filled tab, where a 2px underline in the foreground colour
-                // used to be. #44 ruled that navigation should not assert itself
-                // as hard as a primary button, and that still holds: the fill is
-                // `secondary`, one step off the background rather than inverted,
-                // so the tab reads as the surface the page hangs from instead of
-                // as the thing to press. What the underline could not do is say
-                // which view is up from across the room, which is the whole job
-                // of this control. The view's own heading stays `sr-only`: a
-                // visible one would render the tab's own word twice, twelve
-                // pixels apart, which is the duplicate ADR 0015 came back to
-                // delete.
-                //
-                // Not the segmented track the page bars' filters sit in: the
-                // curator kept this look for the one row that navigates.
-                "bg-secondary font-medium text-foreground"
-              : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
+              ? // The view names are the type, and the current one is the word
+                // at full strength (ADR 0063). A 2px underline held this spot
+                // first and could not be read from across the room, which is
+                // the whole job of this control; a `secondary` fill replaced it
+                // and answered that, but boxed one word in a row that is
+                // otherwise bare. At 17px semibold the gap between the
+                // foreground and a 45% muted word carries the answer on its
+                // own, with no shape to draw, and the tabs still do not assert
+                // themselves the way a primary button would, which is what #44
+                // ruled. The view's own heading stays `sr-only`: a visible one
+                // would render the tab's own word twice, a row apart, which is
+                // the duplicate ADR 0015 came back to delete.
+                "text-foreground"
+              : "text-muted-foreground/45 hover:text-muted-foreground",
           )}
         >
           {tab.label}
@@ -212,7 +219,17 @@ function ViewTabs() {
   );
 }
 
-/** Brand left, tabs centred, gear right, and the same height on every view. */
+/**
+ * The icon, the tabs and the gear as one cluster in the middle of the row, and
+ * the same height on every view.
+ *
+ * Nothing boxes the cluster in — no pill, no border, no fill — because the
+ * words are the control and a frame around them would be a second one
+ * (ADR 0063). There is no wordmark either. The icon carries the app's name as
+ * its alternative text, so the banner still says whose window this is to a
+ * screen reader, and the window manager reads the name from the window title,
+ * which is set in `tauri.conf.json` rather than here.
+ */
 function Chrome() {
   const { view, returnTo, setView } = useApp();
   const handOff = useKeyboardHandoff();
@@ -235,42 +252,56 @@ function Chrome() {
   };
 
   return (
-    // No rule under it. Every view hangs a `PageBar` directly below, and the
-    // bar's own bottom border is the one edge between the chrome and the page;
-    // a second line one bar above it split one header into two strips.
+    // No rule under it, and none under the page bar below it either: the
+    // header is bare words over the page's own background, and what sets the
+    // bar off from the page is the title chip and the pills on it (ADR 0063).
     <header className="sticky top-0 z-30 shrink-0 bg-background/95 backdrop-blur">
       <div
         data-slot="chrome-row"
         // The window is undecorated, so this row is the title bar: Tauri moves
         // the window from whatever the pointer went down on that carries the
-        // attribute, which is the row's own empty space and the wordmark, never
-        // the tabs or the gear.
+        // attribute. That is every piece of empty space in the row — around the
+        // cluster, between its pieces, the hairline — and the icon, never the
+        // tabs or the gear.
         data-tauri-drag-region
-        className="relative flex h-12 items-center px-4"
+        className="flex h-12 items-center justify-center px-4"
       >
-        <div
-          data-tauri-drag-region
-          className="flex items-center gap-2 text-sm font-semibold tracking-tight"
-        >
-          <img src={appIcon} alt="" className="h-4 w-4" />
-          walltare
+        <div data-tauri-drag-region className="flex items-center gap-5">
+          <img
+            src={appIcon}
+            alt="walltare"
+            data-tauri-drag-region
+            className="size-5"
+          />
+
+          <ViewTabs />
+
+          {/* What sets the gear apart from the tabs: it opens a page that is not
+              one of them (ADR 0015). */}
+          <div
+            aria-hidden
+            data-tauri-drag-region
+            className="h-4 w-px bg-border"
+          />
+
+          <Button
+            variant={onSettings ? "secondary" : "ghost"}
+            size="icon"
+            aria-label="Settings"
+            // Not a tab, so it cannot be `aria-selected`. While Settings is up
+            // no tab is at full strength and the gear carries the active
+            // treatment instead, and this is that state spelled out for a
+            // screen reader.
+            aria-current={onSettings ? "page" : undefined}
+            onClick={toggleSettings}
+            // Pulled in by its own padding, so the glyph sits the cluster's
+            // gap from the hairline rather than the gap plus the button's
+            // inset.
+            className={cn("-ml-2", !onSettings && "text-muted-foreground")}
+          >
+            <SettingsIcon aria-hidden />
+          </Button>
         </div>
-
-        <ViewTabs />
-
-        <Button
-          variant={onSettings ? "secondary" : "ghost"}
-          size="icon"
-          aria-label="Settings"
-          // Not a tab, so it cannot be `aria-selected`. While Settings is up no
-          // tab is filled and the gear carries the active treatment instead,
-          // and this is that state spelled out for a screen reader.
-          aria-current={onSettings ? "page" : undefined}
-          onClick={toggleSettings}
-          className={cn("ml-auto", !onSettings && "text-muted-foreground")}
-        >
-          <SettingsIcon aria-hidden />
-        </Button>
       </div>
     </header>
   );

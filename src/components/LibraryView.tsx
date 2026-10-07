@@ -1,7 +1,7 @@
 import { EmptyState } from "@/components/EmptyState";
 import { useLightbox } from "@/components/ItemLightbox";
 import { Lightbox } from "@/components/Lightbox";
-import { PageBar } from "@/components/PageBar";
+import { PageBar, pageBarPill } from "@/components/PageBar";
 import {
   RejectDestinationLine,
   useRejectDestination,
@@ -38,6 +38,7 @@ import { readableSize, STATUS_LABEL, UNDERSIZED } from "@/lib/copy";
 // The one comparison behind the badge and the control below, so the two cannot
 // disagree about which wallpapers are undersized.
 import { isUndersized } from "@/lib/wallpaper";
+import { cn } from "@/lib/utils";
 import {
   Filter,
   Images,
@@ -411,7 +412,7 @@ export function LibraryView() {
             setUndersizedOnly((on) => !on);
             toTop();
           }}
-          className="shrink-0"
+          className={cn("shrink-0", pageBarPill)}
         >
           {UNDERSIZED}
         </Button>
@@ -438,8 +439,8 @@ export function LibraryView() {
             arrows the cards spend belong to whichever surface is in front
             (ADR 0019).
 
-            `size="sm"` is the chips' 28px, so the two controls sit on one
-            line. */}
+            The bar's pill height (`pageBarPill`), so it stands as tall as the
+            chips' track beside it. */}
         <Select
           value={ordering}
           onValueChange={(value) => setOrdering(value as ListOrdering)}
@@ -447,8 +448,7 @@ export function LibraryView() {
           <SelectTrigger
             {...orderingHandOff.trigger}
             aria-label="Order by"
-            size="sm"
-            className="shrink-0 text-[0.8rem]"
+            className={cn("shrink-0 text-[0.8rem]", pageBarPill)}
           >
             <SelectValue />
           </SelectTrigger>
@@ -485,9 +485,9 @@ export function LibraryView() {
             return (
               <Button
                 key={value}
-                // The chips' 28px, as a square: the control carries an icon and
-                // no word, so a button sized for a label would be a chip's worth
-                // of empty space either side of it.
+                // The Status segments' 28px, as a square: the control carries an
+                // icon and no word, so a button sized for a label would be a
+                // segment's worth of empty space either side of it.
                 size="icon-sm"
                 variant="segment"
                 aria-pressed={current}

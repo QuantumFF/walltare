@@ -1,4 +1,4 @@
-import { PageBar } from "@/components/PageBar";
+import { PageBar, pageBarPill } from "@/components/PageBar";
 // Both fields below are the one Written path field module, which resolves the
 // typed string through the same hook the rejecting bars read the stored
 // destination with — so "is this path relative" has one answer and one
@@ -36,6 +36,7 @@ import { isAppError } from "@/lib/client";
 // The counts in the Library root's line are the counts the shell's report
 // prints, written once so that one fact keeps one phrasing (ADR 0021).
 import { counted, grouped } from "@/lib/copy";
+import { cn } from "@/lib/utils";
 import { ArrowLeft } from "lucide-react";
 import {
   useCallback,
@@ -150,12 +151,16 @@ function SettingsGroup({
 /**
  * A row of buttons to each group, stuck to the top of the view's scroll
  * container so it is still there after the first jump.
+ *
+ * No rule under it, for the reason the page bar has none (ADR 0063): it was the
+ * last drawn edge in the header. Its translucent ground is what parts it from
+ * the sections scrolling under it.
  */
 function GroupNav({ groups }: { groups: RefObject<GroupRefs> }) {
   return (
     <nav
       aria-label="Settings groups"
-      className="sticky top-0 z-10 -mx-4 flex flex-wrap gap-1 border-b border-border/60 bg-background/95 px-4 py-2 backdrop-blur"
+      className="sticky top-0 z-10 -mx-4 flex flex-wrap gap-1 bg-background/95 px-4 py-2 backdrop-blur"
     >
       {GROUPS.map((group) => (
         <Button
@@ -631,13 +636,16 @@ export function SettingsView() {
             the other three destinations with a tab and names this one with a
             gear, so Settings is the one view whose title has to be written out
             (ADR 0015). */}
-        <h1 className="font-medium">Settings</h1>
+        {/* Not a `PageBarTitle`: the chip came off Settings once the curator
+            saw it there (ADR 0063). The other titles are a count or a
+            sentence about the page's contents, and this one is only its name. */}
+        <h1 className="font-semibold">Settings</h1>
 
         {returnTo && (
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto"
+            className={cn("ml-auto", pageBarPill)}
             aria-keyshortcuts="Escape"
             onClick={() => goBack(returnTo)}
           >
@@ -653,7 +661,17 @@ export function SettingsView() {
         )}
       </PageBar>
 
-      <div className="mx-auto w-full max-w-2xl space-y-8 px-4 py-8">
+      <div
+        // Off a landing the section nav is the first thing under the bar, and
+        // it is a bar of its own: the 32px that spaces the column's first
+        // section away from the page bar left a hole once the page bar stopped
+        // drawing a rule to frame it (ADR 0063). A landing has no nav, so its
+        // first block keeps the full gap.
+        className={cn(
+          "mx-auto w-full max-w-2xl space-y-8 px-4 pb-8",
+          landing ? "pt-8" : "pt-1",
+        )}
+      >
         {/* The slot, above the sections and in one place. The two rows of
             ADR 0015's boot table that land here are a first run and a library
             that would not read; they are different problems, and telling the

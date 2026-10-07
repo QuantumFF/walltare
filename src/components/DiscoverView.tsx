@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/EmptyState";
 import type { Picture } from "@/components/HeroPicture";
 import { ItemGrid, type GridCell } from "@/components/ItemGrid";
+import { pageBarHeight, pageBarPill } from "@/components/PageBar";
 import {
   ItemLightbox,
   LightboxTitle,
@@ -513,11 +514,14 @@ export function DiscoverView() {
         data-collapsed={collapsed}
         style={page.style}
         className={cn(
-          // The strip's ground and rule fade in with its controls.
-          "sticky z-20 border-b transition-[background-color,border-color] duration-200 motion-reduce:transition-none",
+          // The strip's ground fades in with its controls. Collapsed, it is a
+          // page bar like every other page's, so it draws no rule under itself
+          // either (ADR 0063): the Results pass under the ground the way a page
+          // passes under the chrome.
+          "sticky z-20 transition-[background-color] duration-200 motion-reduce:transition-none",
           collapsed
-            ? "top-0 h-11 border-border/60 bg-background/95 backdrop-blur"
-            : "border-transparent bg-background",
+            ? cn("top-0 bg-background/95 backdrop-blur", pageBarHeight)
+            : "bg-background",
         )}
       >
         <div
@@ -586,8 +590,7 @@ export function DiscoverView() {
               <SelectTrigger
                 {...ratioHandOff.trigger}
                 aria-label={`Ratio: ${pillLabel(asked.ratio)}`}
-                size="sm"
-                className="shrink-0 rounded-full text-xs"
+                className={cn("shrink-0 text-xs", pageBarPill)}
               >
                 <SelectValue>{pillLabel(asked.ratio)}</SelectValue>
               </SelectTrigger>
@@ -994,9 +997,16 @@ function PicksTray({
   );
 }
 
-/** A pill's look, which the Ratio pill's `SelectTrigger` has at `size="sm"`. */
-const PILL =
-  "flex h-7 shrink-0 items-center gap-1.5 rounded-full border border-input bg-transparent pr-2 pl-2.5 text-xs whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-muted dark:bg-input/30 dark:hover:bg-input/50";
+/**
+ * A pill's look, the shape of every lone control in a page bar
+ * (`pageBarPill`), which the Ratio pill's `SelectTrigger` has at its default
+ * size. Discover's pills sit in that page's bar once it collapses, so they
+ * stand as tall as Library's and Review's (ADR 0063).
+ */
+const PILL = cn(
+  pageBarPill,
+  "flex shrink-0 items-center gap-1.5 border border-input bg-transparent pr-2 pl-2.5 text-xs whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 data-[state=open]:bg-muted dark:bg-input/30 dark:hover:bg-input/50",
+);
 
 /**
  * A pill that opens a menu: what it filters by as its name, what it is set to

@@ -1,3 +1,4 @@
+import { PAGE_BAR_HEIGHT_PX } from "@/components/PageBar";
 import { useKeptScroll } from "@/components/useKeptScroll";
 import {
   useCallback,
@@ -10,10 +11,12 @@ import {
 } from "react";
 
 /**
- * The sticky strip's height: a PageBar's `h-11`, so a collapsed header is the
- * same fixed bar every other page has under the chrome (ADR 0015).
+ * The sticky strip's height: a PageBar's, so a collapsed header is the same
+ * fixed bar every other page has under the chrome (ADR 0015, ADR 0063). The
+ * header's class (`pageBarHeight`) is what sets it; this is the same number,
+ * declared beside that class, for the arithmetic.
  */
-const STRIP_HEIGHT = 44;
+const STRIP_HEIGHT = PAGE_BAR_HEIGHT_PX;
 
 /**
  * How long the header's new shape takes to fade in once a scroll swaps it:
