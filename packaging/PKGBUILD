@@ -61,6 +61,13 @@ pkgver="${_version:?the version could not be read from src-tauri/Cargo.toml — 
 # prerequisites page for the tray icon, `tauri` is built with `features = []`,
 # and the binary links neither it nor libappindicator. librsvg is absent for
 # the same reason: nothing here renders an SVG, and the icons are PNG.
+#
+# zenity is the one entry `readelf` cannot show, because the binary runs it
+# rather than links it. The dialog plugin goes through the desktop portal (ADR
+# 0020), and rfd's portal backend draws every message box with zenity, since
+# the portal has none. The one message box is the refusal of a database from a
+# newer walltare, and without zenity it fails silently and the app just exits.
+# zenity is also what Browse falls back to when no portal answers.
 depends=(
 	'webkit2gtk-4.1'
 	'gtk3'
@@ -72,6 +79,13 @@ depends=(
 	'libgcc'
 	'glibc'
 	'hicolor-icon-theme'
+	'zenity'
+)
+
+# Browse asks the portal's FileChooser, which is the desktop's own picker when a
+# backend for it is installed, and zenity's when none is.
+optdepends=(
+	"xdg-desktop-portal: the desktop's own folder picker for Browse, with a backend such as xdg-desktop-portal-kde or xdg-desktop-portal-gtk"
 )
 
 # `rust` is satisfied by the rustup package too, which provides it. bun builds

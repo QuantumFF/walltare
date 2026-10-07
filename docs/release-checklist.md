@@ -277,6 +277,12 @@ first item is not a first run.
       colour rather than red: a Library root is a stated preference, and an
       unmounted drive is the usual reason one goes missing. See
       [ADR 0011](adr/0011-written-paths.md).
+- [ ] **Browse opens the desktop's own folder picker.** Press Browse beside the
+      Library root. The desktop's picker opens through the portal, which is KDE's
+      dialog on Plasma and GNOME's on GNOME. A clean VM with no portal backend
+      gets zenity's dialog instead, which is also a pass. Pick a folder and the
+      field holds its absolute path. Nothing opening at all is the failure. See
+      [ADR 0020](adr/0020-settings-page.md).
 - [ ] **A hostile folder does not stop the scan.** Build one, from a real JPEG
       and a real PNG:
 
@@ -395,6 +401,11 @@ database.
       window behind it, and dismissing it ends the process. The number it should
       name for this build is `SCHEMA_VERSION` in `src-tauri/src/db.rs`, which is
       4 for this release.
+
+      The dialog is `zenity`, run by the app (ADR 0020). On the Arch pass the
+      package installed it. On the AppImage pass it is there only if the
+      VM has it, so a missing dialog there is a missing zenity: check
+      `which zenity` before calling it a failure.
 
       Then `mv walltare.db.bak walltare.db` and launch again: the library opens
       with every Comparison in it. See

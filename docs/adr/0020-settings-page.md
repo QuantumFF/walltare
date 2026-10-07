@@ -176,12 +176,20 @@ because the user just picked the folder they meant.
 
 > **Amended by [#433](https://github.com/QuantumFF/walltare/pull/433),
 > 2026-10-07.** The plugin is built with `xdg-portal` rather than its default
-> `gtk3`. Under `gtk3`, rfd draws GTK's chooser inside the app and never asks
-> xdg-desktop-portal, so a desktop configured for a different picker (KDE's,
-> here, under Hyprland) still got GTK's. Through the portal, Browse opens
-> whatever `FileChooser` the desktop names. The cost is that Browse now needs
-> a running portal with a FileChooser backend, and ~40 more crates (`ashpd`,
-> `zbus`, Wayland) in the lockfile.
+> `gtk3`, and rfd will not take both. Under `gtk3`, rfd draws GTK's chooser
+> inside the app and never asks xdg-desktop-portal, so a desktop configured for
+> a different picker (KDE's, here, under Hyprland) still got GTK's. Through the
+> portal, Browse opens whatever `FileChooser` the desktop names, and falls back
+> to `zenity` when no portal answers; with neither, Browse does nothing.
+>
+> The cost is `zenity`. The portal has no message boxes, so rfd's portal
+> backend draws every one with zenity, and the app's one message box is the
+> refusal of a database from a newer walltare (issue #199). Without zenity
+> that dialog fails, rfd reports the failure as a dismissal, and the app exits
+> with only a line on stderr. The Arch package depends on zenity for that
+> reason; the AppImage cannot, so on a host without it the refusal is silent.
+> The portal path also adds 39 crates (`ashpd`, `zbus`, Wayland) to the
+> lockfile, against the "six crates" under Consequences.
 
 ### Scanning is explicit, and nothing cancels it
 
