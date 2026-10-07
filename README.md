@@ -176,7 +176,10 @@ installed app, so only one checkout can run it at a time. `bun run dev:app`
 takes the first free port from 1420 and keeps its database and thumbnails in
 the checkout's `.dev-data/`, copied from your real database on its first run.
 Delete `.dev-data/` to take a fresh copy. It is still your real Library root and
-reject destination, so a Soft reject in a dev run moves the real file.
+reject destination, so a Soft reject in a dev run moves the real file. A worktree
+Orca makes links its `.dev-data/` to the main checkout's (`orca.yaml`), so it
+starts with the thumbnails already made, and dev runs in Orca worktrees share one
+database.
 
 The version number lives in `src-tauri/Cargo.toml` and everything else reads it
 from there.
