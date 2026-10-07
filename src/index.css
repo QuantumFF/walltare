@@ -179,7 +179,9 @@
    * A desktop app, not a page: a drag across the window or a double-click on
    * a label shouldn't paint a text selection, and a wallpaper shouldn't lift
    * off as a ghost image when the pointer goes down on it. The fields you
-   * type into keep their selection, or editing text there would break.
+   * type into keep their selection, or editing text there would break; the
+   * few texts worth copying out opt back in with `select-text` where they are
+   * drawn.
    */
   body {
     @apply bg-background text-foreground select-none;
