@@ -1,4 +1,4 @@
-import { PageBar } from "@/components/PageBar";
+import { PageBar, PageBarTitle } from "@/components/PageBar";
 // Both fields below are the one Written path field module, which resolves the
 // typed string through the same hook the rejecting bars read the stored
 // destination with — so "is this path relative" has one answer and one
@@ -631,13 +631,15 @@ export function SettingsView() {
             the other three destinations with a tab and names this one with a
             gear, so Settings is the one view whose title has to be written out
             (ADR 0015). */}
-        <h1 className="font-medium">Settings</h1>
+        <PageBarTitle asChild>
+          <h1>Settings</h1>
+        </PageBarTitle>
 
         {returnTo && (
           <Button
             variant="outline"
             size="sm"
-            className="ml-auto"
+            className="ml-auto rounded-full"
             aria-keyshortcuts="Escape"
             onClick={() => goBack(returnTo)}
           >

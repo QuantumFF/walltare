@@ -865,7 +865,7 @@ test("the expanded header sticks with a strip's height of itself still showing",
   ) as HTMLElement;
   // happy-dom lays nothing out, so the header says how tall it is.
   Object.defineProperty(header, "offsetHeight", {
-    get: () => (header.dataset.collapsed === "true" ? 44 : 200),
+    get: () => (header.dataset.collapsed === "true" ? 48 : 200),
   });
   await act(async () => {
     scroller.scrollTop = 100;
@@ -873,7 +873,7 @@ test("the expanded header sticks with a strip's height of itself still showing",
   });
   expect(header.dataset.collapsed).toBe("false");
   expect(header.className).toContain("sticky");
-  expect(header.style.top).toBe("-156px");
+  expect(header.style.top).toBe("-152px");
 
   await act(async () => {
     scroller.scrollTop = 600;
@@ -906,14 +906,14 @@ test("a resize while collapsed measures the expanded header again", async () => 
     // strip's height collapsed, and the expanded one the pills wrap to.
     let expanded = 200;
     Object.defineProperty(header, "offsetHeight", {
-      get: () => (header.dataset.collapsed === "true" ? 44 : expanded),
+      get: () => (header.dataset.collapsed === "true" ? 48 : expanded),
     });
     await act(async () => {
       scroller.scrollTop = 600;
       fireEvent.scroll(scroller);
     });
     expect(header.dataset.collapsed).toBe("true");
-    expect(header.style.marginBottom).toBe("156px");
+    expect(header.style.marginBottom).toBe("152px");
 
     // A narrower window wraps the pills onto another row.
     expanded = 240;
@@ -927,7 +927,7 @@ test("a resize while collapsed measures the expanded header again", async () => 
     });
 
     expect(header.dataset.collapsed).toBe("true");
-    expect(header.style.marginBottom).toBe("196px");
+    expect(header.style.marginBottom).toBe("192px");
   } finally {
     globalThis.ResizeObserver = Real;
   }

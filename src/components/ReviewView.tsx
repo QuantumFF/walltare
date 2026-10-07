@@ -5,7 +5,7 @@ import {
   NearDuplicatesSection,
   useNearDuplicates,
 } from "@/components/NearDuplicatesSection";
-import { PageBar } from "@/components/PageBar";
+import { PageBar, PageBarTitle } from "@/components/PageBar";
 import {
   RejectDestinationLine,
   useRejectDestination,
@@ -291,9 +291,9 @@ export function ReviewView() {
             that decides it is on another page and the cards below cannot say so
             for themselves — the worst wallpapers and the best both read as a
             worklist of whatever length was asked for, at a glance (#259). */}
-        <span className="font-medium whitespace-nowrap">
+        <PageBarTitle className="whitespace-nowrap">
           {ORDERING_SENTENCE[ordering]}
-        </span>
+        </PageBarTitle>
         <RejectDestinationLine destination={destination} />
 
         {/* The layout choice, as two buttons laid out rather than two entries
@@ -363,7 +363,7 @@ export function ReviewView() {
             void fetchReviewList(setRows);
             nearDuplicates.refresh();
           }}
-          className="gap-2"
+          className="gap-2 rounded-full"
           disabled={loading}
         >
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />

@@ -513,11 +513,14 @@ export function DiscoverView() {
         data-collapsed={collapsed}
         style={page.style}
         className={cn(
-          // The strip's ground and rule fade in with its controls.
-          "sticky z-20 border-b transition-[background-color,border-color] duration-200 motion-reduce:transition-none",
+          // The strip's ground fades in with its controls. Collapsed, it is a
+          // page bar like every other page's, so it draws no rule under itself
+          // either (ADR 0063): the Results pass under the ground the way a page
+          // passes under the chrome.
+          "sticky z-20 transition-[background-color] duration-200 motion-reduce:transition-none",
           collapsed
-            ? "top-0 h-11 border-border/60 bg-background/95 backdrop-blur"
-            : "border-transparent bg-background",
+            ? "top-0 h-12 bg-background/95 backdrop-blur"
+            : "bg-background",
         )}
       >
         <div

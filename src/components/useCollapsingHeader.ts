@@ -10,10 +10,12 @@ import {
 } from "react";
 
 /**
- * The sticky strip's height: a PageBar's `h-11`, so a collapsed header is the
- * same fixed bar every other page has under the chrome (ADR 0015).
+ * The sticky strip's height: a PageBar's `h-12`, so a collapsed header is the
+ * same fixed bar every other page has under the chrome (ADR 0015, ADR 0063).
+ * The class on the header is what sets it; this is the same number, for the
+ * arithmetic, and the two move together.
  */
-const STRIP_HEIGHT = 44;
+const STRIP_HEIGHT = 48;
 
 /**
  * How long the header's new shape takes to fade in once a scroll swaps it:

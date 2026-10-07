@@ -1,5 +1,5 @@
 import { rankKey } from "@/components/keymap";
-import { PageBar } from "@/components/PageBar";
+import { PageBar, PageBarTitle } from "@/components/PageBar";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { SegmentedGroup } from "@/components/ui/segmented";
@@ -408,15 +408,15 @@ export function RankView() {
     <>
       <h1 className="sr-only">Rank</h1>
       <PageBar>
-        <span
+        <PageBarTitle
           tabIndex={0}
           title={explanation}
           aria-describedby={UNDECIDED_EXPLANATION_ID}
           aria-live="polite"
-          className="rounded-sm font-medium focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          className="focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
         >
           {stats?.undecided_count ?? 0} / {stats?.eligible_count ?? 0} Undecided
-        </span>
+        </PageBarTitle>
         <span id={UNDECIDED_EXPLANATION_ID} className="sr-only">
           {explanation}
         </span>

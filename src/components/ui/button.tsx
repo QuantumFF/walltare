@@ -43,6 +43,11 @@ const buttonVariants = cva(
         "icon-lg": "size-9",
       },
     },
+    // A segment is a pill inside the pill its track is (`segmentedTrack`).
+    // Compound rather than in `segment` itself, because every size writes its
+    // own corner and the sizes come after the variants: as a plain variant
+    // class the size's corner would win.
+    compoundVariants: [{ variant: "segment", class: "rounded-full" }],
     defaultVariants: {
       variant: "default",
       size: "default",

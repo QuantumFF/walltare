@@ -436,26 +436,32 @@ test("the tab group is a tablist with one Tab stop, wherever the curator is", as
   expect(allTabs().map((el) => el.tabIndex)).toEqual([0, -1, -1, -1]);
 });
 
-test("the active tab is the filled one", async () => {
+test("the active tab is the word at full strength, and no tab is filled", async () => {
   await openApp();
 
   // happy-dom has no layout to measure, so the utility is what there is to
-  // assert. `secondary` is the assertion: one step off the background, not the
-  // inverted `primary` chip #44 turned down. A 2px underline held this spot
-  // until it turned out to be unreadable at a glance, which is the one thing
-  // the control exists to do.
-  // The inactive tab's own fill is `hover:bg-secondary/50`, so the assertion
-  // has to be the unprefixed utility rather than a substring of it.
-  const filled = (label: string) =>
-    tab(label).className.split(" ").includes("bg-secondary");
+  // assert. The current view is the one word in the foreground colour and the
+  // rest are faded (ADR 0063). A 2px underline held this spot until it turned
+  // out to be unreadable at a glance, and a `secondary` fill after it boxed one
+  // word in a row that is otherwise bare. The inactive tab's hover is
+  // `hover:text-muted-foreground`, so the assertion has to be the unprefixed
+  // utility rather than a substring of it.
+  const classes = (label: string) => tab(label).className.split(" ");
+  const strong = (label: string) => classes(label).includes("text-foreground");
 
-  expect(filled("Rank")).toBe(true);
-  expect(tab("Rank").className).not.toContain("bg-primary");
-  expect(filled("Review")).toBe(false);
+  expect(strong("Rank")).toBe(true);
+  expect(strong("Review")).toBe(false);
+  expect(classes("Review")).toContain("text-muted-foreground/45");
 
   await click(tab("Review"));
-  expect(filled("Review")).toBe(true);
-  expect(filled("Rank")).toBe(false);
+  expect(strong("Review")).toBe(true);
+  expect(strong("Rank")).toBe(false);
+
+  // No tab draws a fill in any state, hover included.
+  for (const el of allTabs()) {
+    const fills = el.className.split(" ").filter((c) => /(^|:)bg-/.test(c));
+    expect(fills).toEqual([]);
+  }
 });
 
 test("the chrome row is the same row on every view, and each page carries the bar below it", async () => {

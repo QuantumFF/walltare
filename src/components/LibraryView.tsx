@@ -411,7 +411,7 @@ export function LibraryView() {
             setUndersizedOnly((on) => !on);
             toTop();
           }}
-          className="shrink-0"
+          className="shrink-0 rounded-full"
         >
           {UNDERSIZED}
         </Button>
@@ -448,7 +448,7 @@ export function LibraryView() {
             {...orderingHandOff.trigger}
             aria-label="Order by"
             size="sm"
-            className="shrink-0 text-[0.8rem]"
+            className="shrink-0 rounded-full text-[0.8rem]"
           >
             <SelectValue />
           </SelectTrigger>
