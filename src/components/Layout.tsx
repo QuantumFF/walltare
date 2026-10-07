@@ -252,7 +252,7 @@ function Chrome() {
           data-tauri-drag-region
           className="flex items-center gap-2 text-sm font-semibold tracking-tight"
         >
-          <img src={appIcon} alt="" className="h-4 w-4" draggable={false} />
+          <img src={appIcon} alt="" className="h-4 w-4" />
           walltare
         </div>
 
