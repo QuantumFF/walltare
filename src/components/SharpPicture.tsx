@@ -158,7 +158,16 @@ export function SharpPicture({
     // Judged once the size is quiet, so dragging the window wider draws once at
     // the end rather than at every step.
     let settle: ReturnType<typeof setTimeout> | undefined;
+    // Whether the canvas had a box at the last observation. Losing it is the
+    // shell hiding the page under `display: none`.
+    let laidOut = canvas.getBoundingClientRect().width > 0;
     const observer = new ResizeObserver(() => {
+      const hadBox = laidOut;
+      laidOut = canvas.getBoundingClientRect().width > 0;
+      // Back from `display: none`, WebKitGTK 2.54 keeps the drawn pixels but
+      // paints the canvas blank until it is drawn into again, so it is copied
+      // onto itself, before the frame that shows it (ADR 0062).
+      if (laidOut && !hadBox && drawnWidth.current > 0) repaint(canvas);
       clearTimeout(settle);
       settle = setTimeout(() => {
         if (waiting.current) {
@@ -203,6 +212,20 @@ export function SharpPicture({
       )}
     </>
   );
+}
+
+/**
+ * Draws a canvas onto itself, pixel for pixel, so that WebKit paints it again.
+ * `copy` rather than the default `source-over`, which would stack a
+ * translucent picture's alpha on itself.
+ */
+function repaint(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  context.save();
+  context.globalCompositeOperation = "copy";
+  context.drawImage(canvas, 0, 0);
+  context.restore();
 }
 
 /** How many device pixels a canvas is laid out across. */

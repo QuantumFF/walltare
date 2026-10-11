@@ -118,3 +118,13 @@ should anyone want to read the number.
 **A download still fetches the file a second time.** The preview keeps only
 the 1920-pixel JPEG, not the file, so the download queue fetches it again, as
 it did after ADR 0055.
+
+> **Amended 2026-10-11.** Under WebKitGTK 2.54.1 a drawn canvas came back
+> blank after the shell hid the page under `display: none` and showed it
+> again. Every card at three columns and fewer went empty on a return from
+> another tab, and stayed empty, although the canvas still held its pixels.
+> A canvas is painted again only once it is drawn into, so a card's canvas is
+> now copied onto itself when it gets its box back, before the frame that
+> shows it. Nothing is fetched or decoded again. A card hidden at four and
+> five columns is copied too, so zooming back in after a return shows its
+> picture.
