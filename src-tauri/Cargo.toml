@@ -34,6 +34,12 @@ image_hasher = "3.1"
 # in a minor release.
 ureq = "~3.4"
 
+# Only for `set_cors_allowlist` on the main window's webview, which Tauri does
+# not expose (see `allow_the_image_schemes` in lib.rs). The same 2.0 line wry
+# builds against, so the tree holds it once.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0", features = ["v2_34"] }
+
 [dev-dependencies]
 tempfile = "3.27.0"
 
