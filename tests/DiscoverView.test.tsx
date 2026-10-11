@@ -2308,6 +2308,9 @@ test("a card draws a frame under the mouse, on a layer inside the picture", asyn
   expect(frame?.className).toContain("group-hover:opacity-100");
   expect(frame?.className).toContain("ring-inset");
   expect(frame?.parentElement?.className).toContain("overflow-hidden");
+  // No fade: WebKitGTK flashes an opacity transition's start value for a frame
+  // as it ends, which blinked the frame back on over the card just left.
+  expect(frame?.className).not.toContain("transition");
 });
 
 test("the keyboard's focus ring stays off a card the mouse chose, until an arrow key", async () => {
