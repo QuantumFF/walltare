@@ -112,6 +112,15 @@ row set (identical across twenty visits). Removing any of them would have been
 churn. What actually cost frames is in the decision above, and it was only
 found because the wheel and the scrollbar behaved differently.
 
+The blurs stopped being innocent with WebKitGTK 2.54.1 (October 2026). With
+them, opening Library pinned the web process's compositor thread at 100% and
+grew it past 3GB in fifteen seconds, and the window froze. That happened even
+with every image hidden. Turning off only the cards' badge blurs stopped it;
+turning off only the header's did not. So the cards' Score, Status and Undersized
+badges have no `backdrop-filter`. Their backgrounds are already opaque or
+half-opaque black, so the blur was cosmetic. Bring it back only after
+checking Library on the WebKitGTK of the day.
+
 ## Consequences
 
 The first `bun tauri dev` after this rebuilds every dependency at opt-level 3.

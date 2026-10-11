@@ -205,8 +205,9 @@ export const DIMMED_PICTURE = "opacity-60 grayscale";
  * locked 60fps to 38 with every frame late — which is why the wheel felt worse
  * than the scrollbar, where the pointer never crosses the grid. Dropping only
  * the transition still dropped half the frames, so it is the repaint and not
- * the animation. The overlay fade, the image scale, and the backdrop blurs all
- * measured free. See ADR 0006.
+ * the animation. The overlay fade and the image scale measured free. So did the
+ * badges' backdrop blurs, until WebKitGTK 2.54 spun its compositor on them
+ * forever; the badges are unblurred now. See ADR 0006.
  *
  * **Memoised, and every one of its props is a value or a stable identity so
  * that the memo holds.** This is what a card costs when a cursor moves past it:
@@ -479,7 +480,7 @@ export const WallpaperCard = memo(function WallpaperCard({
           wallpaper={wallpaper}
           evaluatedThreshold={evaluatedThreshold}
           moved={scoreMoved}
-          className="rounded-md px-1.5 py-0.5 text-[11px] tabular-nums backdrop-blur-md"
+          className="rounded-md px-1.5 py-0.5 text-[11px] tabular-nums"
         />
       </div>
 
@@ -524,7 +525,7 @@ export const WallpaperCard = memo(function WallpaperCard({
       {(wallpaper.status !== "active" || undersized) && (
         <div className="pointer-events-none absolute top-1.5 left-1.5 flex flex-col items-start gap-1">
           {wallpaper.status !== "active" && (
-            <div className="rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] text-white backdrop-blur-md">
+            <div className="rounded-md bg-black/60 px-1.5 py-0.5 text-[11px] text-white">
               {STATUS_LABEL[wallpaper.status]}
             </div>
           )}
@@ -532,7 +533,7 @@ export const WallpaperCard = memo(function WallpaperCard({
             <div
               data-slot="wallpaper-undersized"
               title={size ? readableSize(size) : undefined}
-              className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-neutral-900 backdrop-blur-md"
+              className="rounded-md bg-white px-1.5 py-0.5 text-[11px] font-medium text-neutral-900"
             >
               {UNDERSIZED}
             </div>
