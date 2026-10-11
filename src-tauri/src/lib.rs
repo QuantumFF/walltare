@@ -783,6 +783,30 @@ fn refuse_the_database(app: &AppHandle, database: i64, supported: i64) {
         .show(|_| std::process::exit(1));
 }
 
+/// Lets the page show what `wallpaper://` and `preview://` answer when the page
+/// itself was served over `http:`.
+///
+/// That is every dev run: Vite serves the document from `http://localhost`.
+/// WebKitGTK 2.54 refuses an `<img>` from a custom scheme on an `http:` page
+/// ("Domains, protocols and ports must match") without ever calling the
+/// handler, so a dev run showed every card empty. Registering the schemes as
+/// secure, local or CORS-enabled does not lift it; the webview's CORS allowlist
+/// does. A packaged build loads from `tauri://localhost` and was never refused,
+/// and the allowlist names only our own two schemes, so it is set there too
+/// rather than behind a dev-only `cfg`.
+#[cfg(target_os = "linux")]
+fn allow_the_image_schemes(app: &AppHandle) {
+    use webkit2gtk::WebViewExt;
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.with_webview(|webview| {
+            webview
+                .inner()
+                .set_cors_allowlist(&["wallpaper://*/*", "preview://*/*"]);
+        });
+    }
+}
+
 /// What the primary monitor says it is, which is the default behind the screen
 /// setting.
 ///
@@ -900,6 +924,8 @@ pub fn run() {
             // (ADR 0062).
             app.manage(previews::Previews::new(dir.join("previews")));
             serving::start(app.handle());
+            #[cfg(target_os = "linux")]
+            allow_the_image_schemes(app.handle());
             Ok(())
         })
         // Hands the request's URL to [`serving::serve`]. Nothing else: the
