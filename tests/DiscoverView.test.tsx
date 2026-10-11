@@ -1788,6 +1788,34 @@ test("a preview that loads while the page has no size draws once it has one", as
   }
 });
 
+test("a drawn preview is drawn into again when the page comes back from hiding", async () => {
+  const canvases = stubCanvases();
+  try {
+    answer = () => page(["qrow67"]);
+    await renderInApp(<DiscoverView />);
+    await loadPreview(cards()[0].querySelectorAll("img")[1]);
+    const canvas = cards()[0].querySelector("canvas")!;
+    expect(canvases.drawn.length).toBe(1);
+
+    // The shell hides the page and shows it again. WebKitGTK paints a canvas
+    // back from `display: none` blank until it is drawn into, so it is copied
+    // onto itself, and the file is not fetched again.
+    await canvases.resize(0);
+    expect(canvases.drawn.length).toBe(1);
+    await canvases.resize(640);
+    // Lengths and the canvas compared as values: a failing matcher handed an
+    // element prints happy-dom's whole tree, which runs bun out of memory.
+    expect(canvases.drawn.length).toBe(2);
+    const [source, ...at] = canvases.drawn[1];
+    expect(source === canvas).toBe(true);
+    expect(at).toEqual([0, 0]);
+    expect(canvases.modes.slice(1)).toEqual(["copy"]);
+    expect(cardPreviews()).toEqual([]);
+  } finally {
+    canvases.restore();
+  }
+});
+
 /**
  * Stands in for what happy-dom has no engine for: a 2D context that records
  * its draws, a canvas laid out `width` wide at the card's shape, and a resize
@@ -1796,8 +1824,18 @@ test("a preview that loads while the page has no size draws once it has one", as
  */
 function stubCanvases(width = 640) {
   const drawn: unknown[][] = [];
+  // The compositing mode each draw was made under, in step with `drawn`.
+  const modes: string[] = [];
   const context = {
-    drawImage: (...args: unknown[]) => drawn.push(args),
+    globalCompositeOperation: "source-over",
+    drawImage: (...args: unknown[]) => {
+      drawn.push(args);
+      modes.push(context.globalCompositeOperation);
+    },
+    save: () => {},
+    restore: () => {
+      context.globalCompositeOperation = "source-over";
+    },
   } as unknown as CanvasRenderingContext2D;
   const getContext = HTMLCanvasElement.prototype.getContext;
   const measure = HTMLCanvasElement.prototype.getBoundingClientRect;
@@ -1822,6 +1860,7 @@ function stubCanvases(width = 640) {
   } as unknown as typeof ResizeObserver;
   return {
     drawn,
+    modes,
     async resize(to: number) {
       width = to;
       for (const callback of onCanvasResize) callback();
